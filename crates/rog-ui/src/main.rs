@@ -6,23 +6,14 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, StandardItem};
-use ksni::Tray;
-use rog_core::TelemetrySnapshot;
+use ksni::{ToolTip, Tray, TrayMethods};
+use rog_core::{PowerSource, TelemetrySnapshot};
 use tracing::{info, warn};
 use zbus::zvariant::OwnedValue;
 
 const DAEMON_DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
-
-#[derive(Debug, Clone)]
-enum UiMessage {
-    Telemetry(TelemetrySnapshot),
-    CapsText(String),
-    DaemonError(String),
-    ShowWindow,
-    Quit,
-}
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -35,13 +26,18 @@ trait Daemon1 {
 }
 
 #[derive(Debug, Default)]
-struct TrayState {
-    last_summary: String,
+struct SharedUiState {
+    telemetry: Option<TelemetrySnapshot>,
+    caps_text: String,
+    daemon_error: Option<String>,
+    show_window: bool,
+    quit: bool,
 }
 
+#[derive(Debug)]
 struct RogTray {
-    tx: glib::Sender<UiMessage>,
-    state: Arc<Mutex<TrayState>>,
+    shared: Arc<Mutex<SharedUiState>>,
+    summary: String,
 }
 
 impl Tray for RogTray {
@@ -57,30 +53,30 @@ impl Tray for RogTray {
         "computer".to_string()
     }
 
-    fn tool_tip(&self) -> String {
-        self.state
-            .lock()
-            .ok()
-            .map(|s| s.last_summary.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "rog-helper".to_string())
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: "rog-helper".to_string(),
+            description: self.summary.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        if let Ok(mut st) = self.shared.lock() {
+            st.show_window = true;
+        }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let summary = self
-            .state
-            .lock()
-            .ok()
-            .map(|s| s.last_summary.clone())
-            .unwrap_or_default();
+        let summary = if self.summary.is_empty() {
+            "rog-helper".to_string()
+        } else {
+            self.summary.clone()
+        };
 
         vec![
             StandardItem {
-                label: if summary.is_empty() {
-                    "rog-helper".to_string()
-                } else {
-                    summary
-                },
+                label: summary,
                 enabled: false,
                 ..Default::default()
             }
@@ -88,7 +84,9 @@ impl Tray for RogTray {
             StandardItem {
                 label: "Open Main Window".to_string(),
                 activate: Box::new(|this: &mut RogTray| {
-                    let _ = this.tx.send(UiMessage::ShowWindow);
+                    if let Ok(mut st) = this.shared.lock() {
+                        st.show_window = true;
+                    }
                 }),
                 ..Default::default()
             }
@@ -96,7 +94,9 @@ impl Tray for RogTray {
             StandardItem {
                 label: "Quit".to_string(),
                 activate: Box::new(|this: &mut RogTray| {
-                    let _ = this.tx.send(UiMessage::Quit);
+                    if let Ok(mut st) = this.shared.lock() {
+                        st.quit = true;
+                    }
                 }),
                 ..Default::default()
             }
@@ -116,8 +116,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("starting rog-helper-ui");
 
-    // Required for libadwaita styling.
-    adw::init();
+    let _ = adw::init();
 
     let app = adw::Application::builder()
         .application_id("io.github.roghelper.UI")
@@ -129,11 +128,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn build_ui(app: &adw::Application) {
-    let (tx, rx) = glib::MainContext::channel::<UiMessage>(glib::Priority::default());
-
-    let tray_state = Arc::new(Mutex::new(TrayState::default()));
-    spawn_tray(tx.clone(), tray_state.clone());
-    spawn_telemetry_loop(tx.clone(), tray_state.clone());
+    let shared = Arc::new(Mutex::new(SharedUiState::default()));
+    spawn_background(shared.clone());
 
     let cpu_label = gtk::Label::new(Some("CPU: (n/a)"));
     cpu_label.set_xalign(0.0);
@@ -181,107 +177,149 @@ fn build_ui(app: &adw::Application) {
     let win = adw::ApplicationWindow::builder()
         .application(app)
         .title("rog-helper")
-        .default_width(520)
-        .default_height(360)
+        .default_width(560)
+        .default_height(380)
         .build();
     win.set_titlebar(Some(&header));
     win.set_content(Some(&stack));
+    win.present();
 
-    // Wire updates.
+    // Periodically refresh UI from the background thread state.
+    let shared_clone = shared.clone();
     let win_clone = win.clone();
     let app_clone = app.clone();
-    rx.attach(None, move |msg| {
-        match msg {
-            UiMessage::Telemetry(t) => {
-                let cpu = t
-                    .cpu_temp_c
-                    .map(|v| format!("{v:.1} C"))
-                    .unwrap_or_else(|| "(n/a)".to_string());
-                cpu_label.set_text(&format!("CPU: {cpu}"));
+    glib::timeout_add_local(Duration::from_millis(250), move || {
+        let (telemetry, caps_text, daemon_error, show_window, quit) = {
+            let mut st = match shared_clone.lock() {
+                Ok(st) => st,
+                Err(_) => return glib::ControlFlow::Continue,
+            };
+            let show_window = st.show_window;
+            st.show_window = false;
+            (
+                st.telemetry.clone(),
+                st.caps_text.clone(),
+                st.daemon_error.clone(),
+                show_window,
+                st.quit,
+            )
+        };
 
-                let gpu = t
-                    .gpu_temp_c
-                    .map(|v| format!("{v:.1} C"))
-                    .unwrap_or_else(|| "(n/a)".to_string());
-                gpu_label.set_text(&format!("GPU: {gpu}"));
-
-                let batt = t
-                    .battery_percent
-                    .map(|v| format!("{v:.0}%"))
-                    .unwrap_or_else(|| "(n/a)".to_string());
-                batt_label.set_text(&format!("Battery: {batt}"));
-
-                let power = t
-                    .power_source
-                    .map(|p| format!("{p:?}"))
-                    .unwrap_or_else(|| "(n/a)".to_string());
-                power_label.set_text(&format!("Power: {power}"));
-
-                status_label.set_text("");
-            }
-            UiMessage::CapsText(t) => {
-                diag_label.set_text(&t);
-            }
-            UiMessage::DaemonError(e) => {
-                status_label.set_text(&format!(
-                    "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
-                ));
-            }
-            UiMessage::ShowWindow => {
-                win_clone.present();
-            }
-            UiMessage::Quit => {
-                app_clone.quit();
-                return glib::ControlFlow::Break;
-            }
+        if show_window {
+            win_clone.present();
         }
+
+        if quit {
+            app_clone.quit();
+            return glib::ControlFlow::Break;
+        }
+
+        if let Some(t) = telemetry {
+            let cpu = t
+                .cpu_temp_c
+                .map(|v| format!("{v:.1} C"))
+                .unwrap_or_else(|| "(n/a)".to_string());
+            cpu_label.set_text(&format!("CPU: {cpu}"));
+
+            let gpu = t
+                .gpu_temp_c
+                .map(|v| format!("{v:.1} C"))
+                .unwrap_or_else(|| "(n/a)".to_string());
+            gpu_label.set_text(&format!("GPU: {gpu}"));
+
+            let batt = t
+                .battery_percent
+                .map(|v| format!("{v:.0}%"))
+                .unwrap_or_else(|| "(n/a)".to_string());
+            batt_label.set_text(&format!("Battery: {batt}"));
+
+            let power = t
+                .power_source
+                .map(|p| format!("{p:?}"))
+                .unwrap_or_else(|| "(n/a)".to_string());
+            power_label.set_text(&format!("Power: {power}"));
+        }
+
+        if caps_text.is_empty() {
+            diag_label.set_text("Loading diagnostics...");
+        } else {
+            diag_label.set_text(&caps_text);
+        }
+
+        if let Some(e) = daemon_error {
+            status_label.set_text(&format!(
+                "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
+            ));
+        } else {
+            status_label.set_text("");
+        }
+
         glib::ControlFlow::Continue
     });
-
-    win.present();
 }
 
-fn spawn_tray(tx: glib::Sender<UiMessage>, tray_state: Arc<Mutex<TrayState>>) {
-    std::thread::spawn(move || {
-        let tray = RogTray {
-            tx,
-            state: tray_state,
-        };
-        let service = ksni::TrayService::new(tray);
-        if let Err(e) = service.run() {
-            eprintln!("tray service error: {e:?}");
-        }
-    });
-}
-
-fn spawn_telemetry_loop(tx: glib::Sender<UiMessage>, tray_state: Arc<Mutex<TrayState>>) {
+fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                let _ = tx.send(UiMessage::DaemonError(format!(
-                    "failed to start tokio runtime: {e}"
-                )));
+                if let Ok(mut st) = shared.lock() {
+                    st.daemon_error = Some(format!("failed to start tokio runtime: {e}"));
+                }
                 return;
             }
         };
 
         rt.block_on(async move {
+            let tray = RogTray {
+                shared: shared.clone(),
+                summary: "rog-helper".to_string(),
+            };
+
+            // If SNI is missing (common on GNOME without an extension), continue without a tray.
+            let tray_handle = match tray.assume_sni_available(true).spawn().await {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    warn!("tray unavailable: {e}");
+                    None
+                }
+            };
+
             loop {
+                if shared.lock().map(|st| st.quit).unwrap_or(true) {
+                    break;
+                }
+
                 match fetch_telemetry().await {
                     Ok(t) => {
-                        update_tray_state(&tray_state, &t);
-                        let _ = tx.send(UiMessage::Telemetry(t));
+                        let summary = summary_from_telemetry(&t);
+                        if let Some(h) = &tray_handle {
+                            let _ = h.update(|tray| tray.summary = summary.clone()).await;
+                        }
+                        if let Ok(mut st) = shared.lock() {
+                            st.telemetry = Some(t);
+                            st.daemon_error = None;
+                        }
                     }
                     Err(e) => {
                         warn!("{e}");
-                        let _ = tx.send(UiMessage::DaemonError(e));
+                        if let Ok(mut st) = shared.lock() {
+                            st.daemon_error = Some(e);
+                        }
                     }
                 }
+
                 if let Ok(text) = fetch_caps_text().await {
-                    let _ = tx.send(UiMessage::CapsText(text));
+                    if let Ok(mut st) = shared.lock() {
+                        st.caps_text = text;
+                    }
                 }
+
                 tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+
+            if let Some(h) = tray_handle {
+                h.shutdown().await;
             }
         });
     });
@@ -302,7 +340,22 @@ async fn fetch_telemetry() -> Result<TelemetrySnapshot, String> {
     Ok(telemetry_from_dbus(map))
 }
 
-fn update_tray_state(state: &Arc<Mutex<TrayState>>, t: &TelemetrySnapshot) {
+async fn fetch_caps_text() -> Result<String, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+    let map = proxy
+        .get_caps()
+        .await
+        .map_err(|e| format!("daemon GetCaps failed: {e}"))?;
+
+    Ok(caps_text_from_dbus(map))
+}
+
+fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
     let mut parts = Vec::new();
     if let Some(p) = t.power_source {
         parts.push(format!("{p:?}"));
@@ -316,15 +369,10 @@ fn update_tray_state(state: &Arc<Mutex<TrayState>>, t: &TelemetrySnapshot) {
     if let Some(g) = t.gpu_temp_c {
         parts.push(format!("GPU {g:.0}C"));
     }
-
-    let summary = if parts.is_empty() {
+    if parts.is_empty() {
         "rog-helper".to_string()
     } else {
         parts.join(" | ")
-    };
-
-    if let Ok(mut guard) = state.lock() {
-        guard.last_summary = summary;
     }
 }
 
@@ -356,28 +404,13 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         .and_then(|v| <&str>::try_from(v).ok())
     {
         t.power_source = Some(match src {
-            "Ac" => rog_core::PowerSource::Ac,
-            "Battery" => rog_core::PowerSource::Battery,
-            _ => rog_core::PowerSource::Ac,
+            "Ac" => PowerSource::Ac,
+            "Battery" => PowerSource::Battery,
+            _ => PowerSource::Ac,
         });
     }
 
     t
-}
-
-async fn fetch_caps_text() -> Result<String, String> {
-    let conn = zbus::Connection::session()
-        .await
-        .map_err(|e| format!("session DBus unavailable: {e}"))?;
-    let proxy = Daemon1Proxy::new(&conn)
-        .await
-        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
-    let map = proxy
-        .get_caps()
-        .await
-        .map_err(|e| format!("daemon GetCaps failed: {e}"))?;
-
-    Ok(caps_text_from_dbus(map))
 }
 
 fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {

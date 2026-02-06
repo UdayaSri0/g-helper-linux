@@ -35,10 +35,41 @@ Terminal 2:
 cargo run -p rog-ui
 ```
 
+## Verify Daemon DBus API
+
+With `rog-helperd` running:
+
+```bash
+busctl --user list | rg -n "io\\.github\\.roghelper\\.Daemon"
+busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon
+busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetTelemetry
+```
+
+## Install (Local)
+
+Install binaries into `~/.cargo/bin`:
+
+```bash
+cargo install --path crates/rog-daemon --bin rog-helperd --locked
+cargo install --path crates/rog-ui --bin rog-helper-ui --locked
+cargo install --path crates/rog-cli --bin rog-helper --locked
+```
+
+## systemd --user
+
+Install the user service unit and start the daemon:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp packaging/systemd-user/rog-helperd.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now rog-helperd
+systemctl --user status rog-helperd --no-pager
+```
+
 CLI diagnostics:
 
 ```bash
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- sensors
 ```
-
