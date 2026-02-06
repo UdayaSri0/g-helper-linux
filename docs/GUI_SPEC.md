@@ -141,6 +141,7 @@ Milestone 1 notes:
 - Setting brightness via sysfs is only possible if the `brightness` attribute is writable by the
   user (often it is not). In that case, the UI must show read-only state and a hint to install
   `asusd`/`asusctl` (recommended) for unprivileged control.
+- RGB color/effects must be capability-gated (they typically require `asusd` Aura support).
 
 ## Settings (Milestone 2+)
 

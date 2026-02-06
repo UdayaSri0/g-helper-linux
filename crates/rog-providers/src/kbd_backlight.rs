@@ -106,7 +106,7 @@ impl KbdBacklightSysfs {
         })?;
 
         // sysfs prefers a newline-terminated write.
-        write!(f, "{clamped}\n")
+        writeln!(f, "{clamped}")
             .map_err(|e| RogError::Unexpected(format!("failed to write {}: {e}", p.display())))?;
         Ok(())
     }

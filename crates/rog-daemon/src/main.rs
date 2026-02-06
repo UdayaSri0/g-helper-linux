@@ -78,9 +78,22 @@ impl RogHelperDaemon {
             .get("mode")
             .and_then(|v| <&str>::try_from(v).ok())
             .unwrap_or("Static");
+        let rgb_hex = state.get("rgb_hex").and_then(|v| <&str>::try_from(v).ok());
         let mut brightness = u64_from_map(&state, "brightness").unwrap_or(0);
         if mode.eq_ignore_ascii_case("off") {
             brightness = 0;
+        }
+
+        if rgb_hex.is_some() {
+            return Err(fdo::Error::NotSupported(
+                "RGB color is not supported by the sysfs LED backend (requires asusd/Aura)."
+                    .to_string(),
+            ));
+        }
+        if !mode.eq_ignore_ascii_case("off") && !mode.eq_ignore_ascii_case("static") {
+            return Err(fdo::Error::NotSupported(format!(
+                "Lighting mode '{mode}' is not supported by the sysfs LED backend."
+            )));
         }
 
         kbd.set_brightness(brightness as u32)
@@ -370,6 +383,11 @@ impl RogHelperDaemon {
         m.insert("max_brightness".to_string(), OwnedValue::from(max as u64));
         m.insert("can_set".to_string(), OwnedValue::from(can_set));
         m.insert("mode".to_string(), ov(mode));
+        m.insert("supports_rgb".to_string(), OwnedValue::from(false));
+        m.insert(
+            "supported_modes".to_string(),
+            ov(vec!["Off".to_string(), "Static".to_string()]),
+        );
         Some(m)
     }
 }

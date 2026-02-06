@@ -39,6 +39,8 @@ cargo run -p rog-ui
 
 With `rog-helperd` running:
 
+If `rg` is not installed, either install `ripgrep` or replace `rg` with `grep -E`.
+
 ```bash
 busctl --user list | rg -n "io\\.github\\.roghelper\\.Daemon"
 busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon

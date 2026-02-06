@@ -9,7 +9,7 @@ use ksni::menu::{MenuItem, StandardItem};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{PowerSource, TelemetrySnapshot};
 use tracing::{info, warn};
-use zbus::zvariant::OwnedValue;
+use zbus::zvariant::{OwnedValue, Value};
 
 const DAEMON_DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
@@ -33,7 +33,7 @@ struct SharedUiState {
     caps_text: String,
     warnings: Vec<String>,
     lighting: Option<LightingInfo>,
-    pending_lighting_brightness: Option<u64>,
+    pending_lighting: Option<PendingLighting>,
     lighting_error: Option<String>,
     daemon_error: Option<String>,
     show_window: bool,
@@ -48,6 +48,15 @@ struct LightingInfo {
     max_brightness: u64,
     can_set: bool,
     mode: String,
+    supports_rgb: bool,
+    supported_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingLighting {
+    brightness: u64,
+    mode: String,
+    rgb_hex: Option<String>,
 }
 
 #[derive(Debug)]
@@ -206,8 +215,7 @@ fn build_ui(app: &adw::Application) {
     dash_root.append(&sensors_expander);
     dash_root.append(&status_label);
 
-    let dash = adw::ClampScrollable::new();
-    dash.set_child(Some(&dash_root));
+    let dash = clamped_scroller(&dash_root);
 
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
@@ -246,7 +254,7 @@ fn build_ui(app: &adw::Application) {
     diag_root.append(&copy_diag_button);
     diag_root.append(&diag_scroller);
 
-    let diag = adw::ClampScrollable::new();
+    let diag = adw::Clamp::new();
     diag.set_child(Some(&diag_root));
 
     // Lighting page (Milestone 1: keyboard backlight brightness via sysfs when available).
@@ -267,13 +275,32 @@ fn build_ui(app: &adw::Application) {
     lighting_mode.set_xalign(0.0);
     lighting_mode.add_css_class("dim-label");
 
+    let mode_combo = gtk::ComboBoxText::new();
+    mode_combo.set_sensitive(false);
+
     let brightness_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 3.0, 1.0);
     brightness_scale.set_hexpand(true);
     brightness_scale.set_draw_value(true);
     brightness_scale.set_value_pos(gtk::PositionType::Right);
 
-    let apply_brightness = gtk::Button::with_label("Apply brightness");
-    apply_brightness.add_css_class("suggested-action");
+    let rgb_label = gtk::Label::new(Some("RGB Color"));
+    rgb_label.set_xalign(0.0);
+    rgb_label.add_css_class("title-4");
+
+    let rgb_button = gtk::ColorButton::new();
+    rgb_button.set_use_alpha(false);
+    rgb_button.set_title("Keyboard RGB");
+    rgb_button.set_sensitive(false);
+
+    let rgb_hint = gtk::Label::new(Some(
+        "RGB/effects require asusd/Aura support. This device currently exposes keyboard brightness only.",
+    ));
+    rgb_hint.set_xalign(0.0);
+    rgb_hint.set_wrap(true);
+    rgb_hint.add_css_class("dim-label");
+
+    let apply_lighting = gtk::Button::with_label("Apply lighting");
+    apply_lighting.add_css_class("suggested-action");
 
     let lighting_error = gtk::Label::new(None);
     lighting_error.set_xalign(0.0);
@@ -284,10 +311,33 @@ fn build_ui(app: &adw::Application) {
     {
         let shared = shared.clone();
         let brightness_scale = brightness_scale.clone();
-        apply_brightness.connect_clicked(move |_| {
-            let desired = brightness_scale.value().round().max(0.0) as u64;
+        let mode_combo = mode_combo.clone();
+        let rgb_button = rgb_button.clone();
+        apply_lighting.connect_clicked(move |_| {
+            let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
+            let desired_mode = mode_combo
+                .active_id()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Static".to_string());
+
+            let mut desired_rgb_hex = None;
+            if let Ok(st) = shared.lock() {
+                if st
+                    .lighting
+                    .as_ref()
+                    .map(|l| l.supports_rgb)
+                    .unwrap_or(false)
+                {
+                    desired_rgb_hex = Some(rgba_to_hex(&rgb_button.rgba()));
+                }
+            }
+
             if let Ok(mut st) = shared.lock() {
-                st.pending_lighting_brightness = Some(desired);
+                st.pending_lighting = Some(PendingLighting {
+                    brightness: desired_brightness,
+                    mode: desired_mode,
+                    rgb_hex: desired_rgb_hex,
+                });
                 st.lighting_error = None;
             }
         });
@@ -302,12 +352,15 @@ fn build_ui(app: &adw::Application) {
     lighting_root.append(&lighting_backend);
     lighting_root.append(&lighting_current);
     lighting_root.append(&lighting_mode);
+    lighting_root.append(&mode_combo);
     lighting_root.append(&brightness_scale);
-    lighting_root.append(&apply_brightness);
+    lighting_root.append(&rgb_label);
+    lighting_root.append(&rgb_button);
+    lighting_root.append(&rgb_hint);
+    lighting_root.append(&apply_lighting);
     lighting_root.append(&lighting_error);
 
-    let lighting = adw::ClampScrollable::new();
-    lighting.set_child(Some(&lighting_root));
+    let lighting = clamped_scroller(&lighting_root);
 
     let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
@@ -337,6 +390,7 @@ fn build_ui(app: &adw::Application) {
     let shared_clone = shared.clone();
     let win_clone = win.clone();
     let app_clone = app.clone();
+    let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
@@ -442,7 +496,34 @@ fn build_ui(app: &adw::Application) {
             }
             let can_set = l.can_set;
             brightness_scale.set_sensitive(can_set);
-            apply_brightness.set_sensitive(can_set);
+            mode_combo.set_sensitive(can_set);
+            apply_lighting.set_sensitive(can_set);
+
+            let mut modes = l.supported_modes.clone();
+            if modes.is_empty() {
+                modes = vec!["Off".to_string(), "Static".to_string()];
+            }
+            if !mode_combo.is_focus() {
+                let mut last = last_supported_modes.borrow_mut();
+                if *last != modes {
+                    mode_combo.remove_all();
+                    for m in &modes {
+                        mode_combo.append(Some(m), m);
+                    }
+                    *last = modes.clone();
+                }
+
+                let desired = modes
+                    .iter()
+                    .find(|m| m.as_str().eq_ignore_ascii_case(&l.mode))
+                    .cloned()
+                    .or_else(|| modes.first().cloned())
+                    .unwrap_or_else(|| "Static".to_string());
+                mode_combo.set_active_id(Some(&desired));
+            }
+
+            rgb_button.set_sensitive(can_set && l.supports_rgb);
+            rgb_hint.set_visible(!l.supports_rgb);
 
             if !can_set && lighting_error_txt.is_none() {
                 lighting_error.set_visible(true);
@@ -455,7 +536,10 @@ fn build_ui(app: &adw::Application) {
             lighting_current.set_text("Brightness: (n/a)");
             lighting_mode.set_text("Mode: (n/a)");
             brightness_scale.set_sensitive(false);
-            apply_brightness.set_sensitive(false);
+            mode_combo.set_sensitive(false);
+            apply_lighting.set_sensitive(false);
+            rgb_button.set_sensitive(false);
+            rgb_hint.set_visible(true);
         }
 
         if let Some(msg) = lighting_error_txt {
@@ -505,12 +589,12 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                 }
 
                 // Apply pending lighting action before refreshing state.
-                let pending_brightness = shared
+                let pending = shared
                     .lock()
                     .ok()
-                    .and_then(|mut st| st.pending_lighting_brightness.take());
-                if let Some(b) = pending_brightness {
-                    if let Err(e) = apply_lighting_brightness(b).await {
+                    .and_then(|mut st| st.pending_lighting.take());
+                if let Some(p) = pending {
+                    if let Err(e) = apply_lighting(p).await {
                         if let Ok(mut st) = shared.lock() {
                             st.lighting_error = Some(e);
                         }
@@ -599,7 +683,7 @@ async fn fetch_state(
     ))
 }
 
-async fn apply_lighting_brightness(brightness: u64) -> Result<(), String> {
+async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| format!("session DBus unavailable: {e}"))?;
@@ -608,12 +692,23 @@ async fn apply_lighting_brightness(brightness: u64) -> Result<(), String> {
         .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
 
     let mut m = HashMap::new();
-    m.insert("brightness".to_string(), OwnedValue::from(brightness));
+    m.insert("brightness".to_string(), OwnedValue::from(p.brightness));
+    m.insert("mode".to_string(), ov(p.mode));
+    if let Some(rgb) = p.rgb_hex {
+        m.insert("rgb_hex".to_string(), ov(rgb));
+    }
     proxy
         .set_lighting(m)
         .await
         .map_err(|e| format!("daemon SetLighting failed: {e}"))?;
     Ok(())
+}
+
+fn ov<T>(v: T) -> OwnedValue
+where
+    T: Into<Value<'static>>,
+{
+    OwnedValue::try_from(v.into()).expect("OwnedValue conversion should succeed")
 }
 
 fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
@@ -708,6 +803,11 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
                 .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
         })
     }
+    fn vec_string(map: &HashMap<String, OwnedValue>, k: &str) -> Option<Vec<String>> {
+        map.get(k)
+            .cloned()
+            .and_then(|v| Vec::<String>::try_from(v).ok())
+    }
 
     Some(LightingInfo {
         backend: s(&map, "backend").unwrap_or_else(|| "(n/a)".to_string()),
@@ -716,6 +816,8 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         max_brightness: u(&map, "max_brightness").unwrap_or(3),
         can_set: b(&map, "can_set").unwrap_or(false),
         mode: s(&map, "mode").unwrap_or_else(|| "(n/a)".to_string()),
+        supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
+        supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
     })
 }
 
@@ -807,6 +909,27 @@ fn format_warnings(warnings: &[String]) -> String {
         out.push_str(w);
     }
     out
+}
+
+fn clamped_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    let clamp = adw::Clamp::new();
+    clamp.set_child(Some(child));
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_vexpand(true);
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_child(Some(&clamp));
+    scroller
+}
+
+fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
+    fn to_u8(v: f32) -> u8 {
+        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+    let r = to_u8(rgba.red());
+    let g = to_u8(rgba.green());
+    let b = to_u8(rgba.blue());
+    format!("#{r:02X}{g:02X}{b:02X}")
 }
 
 fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {

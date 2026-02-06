@@ -19,6 +19,8 @@ introspection output on the target machine.
 
 Run these on the target laptop and paste the output before implementing `asusd`/`supergfxd` calls:
 
+If `rg` is not installed, either install `ripgrep` or replace `rg` with `grep -E`.
+
 ```bash
 busctl --system list | rg -i "asus|rog|supergfx|power|upower"
 systemctl status asusd
