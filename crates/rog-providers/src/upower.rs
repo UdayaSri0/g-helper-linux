@@ -47,16 +47,26 @@ impl UPowerProvider {
             PowerSource::Ac
         });
 
-        // Prefer DisplayDevice for "main" battery.
-        let display_device: OwnedObjectPath = proxy
-            .get_property("DisplayDevice")
+        // Prefer UPower's "display device" (main battery). API differs by UPower version:
+        // some expose it as a method (GetDisplayDevice), older ones as a property (DisplayDevice).
+        let display_device = match proxy
+            .call::<_, _, OwnedObjectPath>("GetDisplayDevice", &())
             .await
-            .map_err(|e| RogError::Unexpected(format!("UPower DisplayDevice read failed: {e}")))?;
+        {
+            Ok(path) => Some(path),
+            Err(_) => proxy
+                .get_property::<OwnedObjectPath>("DisplayDevice")
+                .await
+                .ok(),
+        };
 
-        let battery_percent = read_battery_percentage(&self.conn, &display_device)
-            .await
-            .ok()
-            .flatten();
+        let battery_percent = match display_device {
+            Some(ref path) => read_battery_percentage(&self.conn, path)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
 
         let ac_online = read_any_line_power_online(&proxy, &self.conn)
             .await

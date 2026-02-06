@@ -174,14 +174,17 @@ fn build_ui(app: &adw::Application) {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&switcher));
 
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&stack));
+
     let win = adw::ApplicationWindow::builder()
         .application(app)
         .title("rog-helper")
         .default_width(560)
         .default_height(380)
         .build();
-    win.set_titlebar(Some(&header));
-    win.set_content(Some(&stack));
+    win.set_content(Some(&view));
     win.present();
 
     // Periodically refresh UI from the background thread state.

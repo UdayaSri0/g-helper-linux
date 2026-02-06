@@ -13,7 +13,7 @@ zbus.workspace = true
 
 # UI stack
 gtk4 = "0.11.0-alpha.3"
-adw = { package = "libadwaita", version = "0.9.0-alpha.0" }
+adw = { package = "libadwaita", version = "0.9.0-alpha.0", features = ["v1_4"] }
 ksni = "0.3.3"
 
 rog-core = { path = "../rog-core" }
