@@ -14,5 +14,6 @@ See:
 
 - `docs/BUILD.md`
 - `docs/ARCHITECTURE.md`
+- `docs/GUI_SPEC.md`
+- `docs/ROADMAP.md`
 - `docs/TROUBLESHOOTING.md`
-

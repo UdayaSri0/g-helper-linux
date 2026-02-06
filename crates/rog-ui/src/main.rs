@@ -22,6 +22,7 @@ const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 )]
 trait Daemon1 {
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
 }
 
@@ -29,6 +30,7 @@ trait Daemon1 {
 struct SharedUiState {
     telemetry: Option<TelemetrySnapshot>,
     caps_text: String,
+    warnings: Vec<String>,
     daemon_error: Option<String>,
     show_window: bool,
     quit: bool,
@@ -131,38 +133,107 @@ fn build_ui(app: &adw::Application) {
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
     spawn_background(shared.clone());
 
-    let cpu_label = gtk::Label::new(Some("CPU: (n/a)"));
-    cpu_label.set_xalign(0.0);
-    let gpu_label = gtk::Label::new(Some("GPU: (n/a)"));
-    gpu_label.set_xalign(0.0);
-    let batt_label = gtk::Label::new(Some("Battery: (n/a)"));
-    batt_label.set_xalign(0.0);
-    let power_label = gtk::Label::new(Some("Power: (n/a)"));
-    power_label.set_xalign(0.0);
+    // Small amount of app-specific CSS so the Dashboard reads like a dashboard instead of a list
+    // of labels.
+    install_css();
+
+    let (cpu_card, cpu_value) = metric_card("CPU Temperature");
+    let (gpu_card, gpu_value) = metric_card("GPU Temperature");
+    let (batt_card, batt_value) = metric_card("Battery");
+    let (power_card, power_value) = metric_card("Power Source");
+
+    let tiles = gtk::FlowBox::new();
+    tiles.set_selection_mode(gtk::SelectionMode::None);
+    tiles.set_min_children_per_line(1);
+    tiles.set_max_children_per_line(2);
+    tiles.set_row_spacing(12);
+    tiles.set_column_spacing(12);
+    tiles.set_halign(gtk::Align::Fill);
+    tiles.insert(&cpu_card, -1);
+    tiles.insert(&gpu_card, -1);
+    tiles.insert(&batt_card, -1);
+    tiles.insert(&power_card, -1);
+
+    let fans_label = gtk::Label::new(Some(""));
+    fans_label.set_xalign(0.0);
+    fans_label.set_wrap(true);
+    fans_label.add_css_class("dim-label");
+
+    let warnings_label = gtk::Label::new(Some(""));
+    warnings_label.set_xalign(0.0);
+    warnings_label.set_wrap(true);
+    warnings_label.add_css_class("dim-label");
+    warnings_label.set_visible(false);
+
+    let sensors_details = gtk::Label::new(Some(""));
+    sensors_details.set_xalign(0.0);
+    sensors_details.set_wrap(true);
+    sensors_details.set_selectable(true);
+    sensors_details.add_css_class("monospace");
+
+    let sensors_expander = gtk::Expander::new(Some("Sensors"));
+    sensors_expander.set_expanded(false);
+    sensors_expander.set_child(Some(&sensors_details));
+    sensors_expander.set_visible(false);
+
     let status_label = gtk::Label::new(Some(""));
     status_label.set_xalign(0.0);
+    status_label.set_wrap(true);
     status_label.add_css_class("dim-label");
 
-    let dash = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    dash.set_margin_top(16);
-    dash.set_margin_bottom(16);
-    dash.set_margin_start(16);
-    dash.set_margin_end(16);
-    dash.append(&cpu_label);
-    dash.append(&gpu_label);
-    dash.append(&batt_label);
-    dash.append(&power_label);
-    dash.append(&status_label);
+    let dash_root = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    dash_root.set_margin_top(16);
+    dash_root.set_margin_bottom(16);
+    dash_root.set_margin_start(16);
+    dash_root.set_margin_end(16);
+    dash_root.append(&tiles);
+    dash_root.append(&fans_label);
+    dash_root.append(&warnings_label);
+    dash_root.append(&sensors_expander);
+    dash_root.append(&status_label);
 
-    let diag_label = gtk::Label::new(Some("Loading diagnostics..."));
-    diag_label.set_xalign(0.0);
-    diag_label.set_wrap(true);
-    let diag = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    diag.set_margin_top(16);
-    diag.set_margin_bottom(16);
-    diag.set_margin_start(16);
-    diag.set_margin_end(16);
-    diag.append(&diag_label);
+    let dash = adw::ClampScrollable::new();
+    dash.set_child(Some(&dash_root));
+
+    let diag_buffer = gtk::TextBuffer::new(None);
+    diag_buffer.set_text("Loading diagnostics...");
+
+    let diag_view = gtk::TextView::with_buffer(&diag_buffer);
+    diag_view.set_editable(false);
+    diag_view.set_cursor_visible(false);
+    diag_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    diag_view.add_css_class("monospace");
+
+    let diag_scroller = gtk::ScrolledWindow::new();
+    diag_scroller.set_vexpand(true);
+    diag_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    diag_scroller.set_child(Some(&diag_view));
+
+    let copy_diag_button = gtk::Button::with_label("Copy diagnostics");
+    {
+        let shared = shared.clone();
+        copy_diag_button.connect_clicked(move |_| {
+            let text = shared
+                .lock()
+                .map(|st| st.caps_text.clone())
+                .unwrap_or_default();
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+            display.clipboard().set_text(&text);
+        });
+    }
+
+    let diag_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    diag_root.set_margin_top(16);
+    diag_root.set_margin_bottom(16);
+    diag_root.set_margin_start(16);
+    diag_root.set_margin_end(16);
+    diag_root.append(&copy_diag_button);
+    diag_root.append(&diag_scroller);
+
+    let diag = adw::ClampScrollable::new();
+    diag.set_child(Some(&diag_root));
 
     let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
@@ -192,7 +263,7 @@ fn build_ui(app: &adw::Application) {
     let win_clone = win.clone();
     let app_clone = app.clone();
     glib::timeout_add_local(Duration::from_millis(250), move || {
-        let (telemetry, caps_text, daemon_error, show_window, quit) = {
+        let (telemetry, caps_text, warnings, daemon_error, show_window, quit) = {
             let mut st = match shared_clone.lock() {
                 Ok(st) => st,
                 Err(_) => return glib::ControlFlow::Continue,
@@ -202,6 +273,7 @@ fn build_ui(app: &adw::Application) {
             (
                 st.telemetry.clone(),
                 st.caps_text.clone(),
+                st.warnings.clone(),
                 st.daemon_error.clone(),
                 show_window,
                 st.quit,
@@ -218,43 +290,55 @@ fn build_ui(app: &adw::Application) {
         }
 
         if let Some(t) = telemetry {
-            let cpu = t
-                .cpu_temp_c
-                .map(|v| format!("{v:.1} C"))
-                .unwrap_or_else(|| "(n/a)".to_string());
-            cpu_label.set_text(&format!("CPU: {cpu}"));
+            cpu_value.set_text(
+                &t.cpu_temp_c
+                    .map(|v| format!("{v:.1} C"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            gpu_value.set_text(
+                &t.gpu_temp_c
+                    .map(|v| format!("{v:.1} C"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_value.set_text(
+                &t.battery_percent
+                    .map(|v| format!("{v:.0}%"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            power_value.set_text(
+                &t.power_source
+                    .map(|p| match p {
+                        PowerSource::Ac => "AC".to_string(),
+                        PowerSource::Battery => "Battery".to_string(),
+                    })
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
 
-            let gpu = t
-                .gpu_temp_c
-                .map(|v| format!("{v:.1} C"))
-                .unwrap_or_else(|| "(n/a)".to_string());
-            gpu_label.set_text(&format!("GPU: {gpu}"));
+            let fans_summary = format_fans_summary(&t);
+            fans_label.set_visible(!fans_summary.is_empty());
+            fans_label.set_text(&fans_summary);
 
-            let batt = t
-                .battery_percent
-                .map(|v| format!("{v:.0}%"))
-                .unwrap_or_else(|| "(n/a)".to_string());
-            batt_label.set_text(&format!("Battery: {batt}"));
-
-            let power = t
-                .power_source
-                .map(|p| format!("{p:?}"))
-                .unwrap_or_else(|| "(n/a)".to_string());
-            power_label.set_text(&format!("Power: {power}"));
+            let sensors_text = format_sensors_details(&t);
+            sensors_expander.set_visible(!sensors_text.is_empty());
+            sensors_details.set_text(&sensors_text);
         }
 
-        if caps_text.is_empty() {
-            diag_label.set_text("Loading diagnostics...");
+        diag_buffer.set_text(if caps_text.is_empty() {
+            "Loading diagnostics..."
         } else {
-            diag_label.set_text(&caps_text);
-        }
+            &caps_text
+        });
 
         if let Some(e) = daemon_error {
+            warnings_label.set_visible(false);
             status_label.set_text(&format!(
                 "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
             ));
         } else {
             status_label.set_text("");
+            let warn_text = format_warnings(&warnings);
+            warnings_label.set_visible(!warn_text.is_empty());
+            warnings_label.set_text(&warn_text);
         }
 
         glib::ControlFlow::Continue
@@ -293,14 +377,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                     break;
                 }
 
-                match fetch_telemetry().await {
-                    Ok(t) => {
+                match fetch_state().await {
+                    Ok((t, caps_text, warnings)) => {
                         let summary = summary_from_telemetry(&t);
                         if let Some(h) = &tray_handle {
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
                         }
                         if let Ok(mut st) = shared.lock() {
                             st.telemetry = Some(t);
+                            st.caps_text = caps_text;
+                            st.warnings = warnings;
                             st.daemon_error = None;
                         }
                     }
@@ -309,12 +395,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                         if let Ok(mut st) = shared.lock() {
                             st.daemon_error = Some(e);
                         }
-                    }
-                }
-
-                if let Ok(text) = fetch_caps_text().await {
-                    if let Ok(mut st) = shared.lock() {
-                        st.caps_text = text;
                     }
                 }
 
@@ -328,34 +408,43 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
     });
 }
 
-async fn fetch_telemetry() -> Result<TelemetrySnapshot, String> {
+async fn fetch_state() -> Result<(TelemetrySnapshot, String, Vec<String>), String> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| format!("session DBus unavailable: {e}"))?;
     let proxy = Daemon1Proxy::new(&conn)
         .await
         .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
-    let map = proxy
-        .get_telemetry()
+    let state = proxy
+        .get_state()
         .await
-        .map_err(|e| format!("daemon GetTelemetry failed: {e}"))?;
+        .map_err(|e| format!("daemon GetState failed: {e}"))?;
 
-    Ok(telemetry_from_dbus(map))
-}
+    let caps_map = state
+        .get("caps")
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .unwrap_or_default();
+    let telemetry_map = state
+        .get("telemetry")
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .unwrap_or_default();
+    let warnings = state
+        .get("warnings")
+        .cloned()
+        .and_then(|v| Vec::<String>::try_from(v).ok())
+        .unwrap_or_default();
 
-async fn fetch_caps_text() -> Result<String, String> {
-    let conn = zbus::Connection::session()
-        .await
-        .map_err(|e| format!("session DBus unavailable: {e}"))?;
-    let proxy = Daemon1Proxy::new(&conn)
-        .await
-        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
-    let map = proxy
-        .get_caps()
-        .await
-        .map_err(|e| format!("daemon GetCaps failed: {e}"))?;
+    let mut caps_text = caps_text_from_dbus(caps_map);
+    if !warnings.is_empty() {
+        caps_text.push_str("\n\nWarnings:");
+        for w in &warnings {
+            caps_text.push_str(&format!("\n  {w}"));
+        }
+    }
 
-    Ok(caps_text_from_dbus(map))
+    Ok((telemetry_from_dbus(telemetry_map), caps_text, warnings))
 }
 
 fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
@@ -393,6 +482,24 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     if let Some(v) = map.get("gpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
         t.gpu_temp_c = Some(v as f32);
     }
+    if let Some(temps) = map
+        .get("temps_c")
+        .cloned()
+        .and_then(|v| HashMap::<String, f64>::try_from(v).ok())
+    {
+        for (k, v) in temps {
+            t.temps_c.insert(k, v as f32);
+        }
+    }
+    if let Some(fans) = map
+        .get("fans_rpm")
+        .cloned()
+        .and_then(|v| HashMap::<String, u32>::try_from(v).ok())
+    {
+        for (k, v) in fans {
+            t.fans_rpm.insert(k, v);
+        }
+    }
     if let Some(v) = map
         .get("battery_percent")
         .and_then(|v| f64::try_from(v).ok())
@@ -414,6 +521,96 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     }
 
     t
+}
+
+fn metric_card(title: &str) -> (gtk::Box, gtk::Label) {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    card.add_css_class("card");
+    card.add_css_class("metric-card");
+    card.set_hexpand(true);
+    card.set_size_request(220, -1);
+
+    let title_label = gtk::Label::new(Some(title));
+    title_label.set_xalign(0.0);
+    title_label.add_css_class("metric-title");
+
+    let value = gtk::Label::new(Some("(n/a)"));
+    value.set_xalign(0.0);
+    value.add_css_class("metric-value");
+
+    card.append(&title_label);
+    card.append(&value);
+    (card, value)
+}
+
+fn install_css() {
+    let css = r#"
+.metric-card { padding: 12px; }
+.metric-title { opacity: 0.85; }
+.metric-value { font-weight: 700; font-size: 26px; }
+"#;
+
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(css);
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
+fn format_fans_summary(t: &TelemetrySnapshot) -> String {
+    if t.fans_rpm.is_empty() {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+    for (k, v) in &t.fans_rpm {
+        parts.push(format!("{k}: {v} rpm"));
+    }
+    format!("Fans: {}", parts.join(" | "))
+}
+
+fn format_sensors_details(t: &TelemetrySnapshot) -> String {
+    if t.temps_c.is_empty() && t.fans_rpm.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    if !t.temps_c.is_empty() {
+        lines.push("Temperatures".to_string());
+        for (k, v) in &t.temps_c {
+            lines.push(format!("  {k}: {v:.1} C"));
+        }
+    }
+    if !t.fans_rpm.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("Fans".to_string());
+        for (k, v) in &t.fans_rpm {
+            lines.push(format!("  {k}: {v} rpm"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_warnings(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("Warnings:\n");
+    for (idx, w) in warnings.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str("  - ");
+        out.push_str(w);
+    }
+    out
 }
 
 fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {

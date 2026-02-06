@@ -6,6 +6,7 @@ use anyhow::Context;
 use regex::Regex;
 use rog_core::{AppState, DeviceCaps, PowerSource, TelemetrySnapshot};
 use rog_providers::hwmon::HwmonTelemetryProvider;
+use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
@@ -73,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("connect to UPower")?;
     let hwmon = HwmonTelemetryProvider::default();
+    let nvidia = NvidiaSmiTelemetryProvider::default();
 
     let mut caps = DeviceCaps::unknown();
     // Minimal caps for milestone 1: only what we can infer from sysfs.
@@ -121,6 +123,20 @@ async fn main() -> anyhow::Result<()> {
                     warnings.push(format!("hwmon unavailable: {e}"));
                     TelemetrySnapshot::empty_now(now_ms())
                 });
+
+                // Best-effort NVIDIA telemetry (read-only).
+                if telemetry.gpu_temp_c.is_none() {
+                    match nvidia.read_gpu_temp_c().await {
+                        Ok(Some(temp)) => {
+                            telemetry.gpu_temp_c = Some(temp);
+                            telemetry
+                                .temps_c
+                                .insert("nvidia-smi:gpu_temp".to_string(), temp);
+                        }
+                        Ok(None) => {}
+                        Err(e) => warnings.push(format!("nvidia-smi telemetry unavailable: {e}")),
+                    }
+                }
 
                 match upower.read_status().await {
                     Ok(st) => {

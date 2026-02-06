@@ -71,4 +71,3 @@ impl NvidiaSmiTelemetryProvider {
         Ok(Some(temp))
     }
 }
-

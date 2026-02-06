@@ -7,6 +7,7 @@ use regex::Regex;
 use rog_core::DeviceCaps;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
+use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
@@ -87,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Cmd::Sensors { root } => cmd_sensors(root.as_deref())?,
+        Cmd::Sensors { root } => cmd_sensors(root.as_deref()).await?,
         Cmd::Caps => cmd_caps().await?,
     }
 
@@ -178,7 +179,7 @@ async fn cmd_dbus(
     Ok(())
 }
 
-fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
+async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
     let provider = root
         .map(|p| HwmonTelemetryProvider::new(p.to_path_buf()))
         .unwrap_or_default();
@@ -194,7 +195,14 @@ fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
 
     println!();
     println!("telemetry snapshot:");
-    let snap = provider.read_snapshot().context("read hwmon snapshot")?;
+    let mut snap = provider.read_snapshot().context("read hwmon snapshot")?;
+    if snap.gpu_temp_c.is_none() {
+        let nvidia = NvidiaSmiTelemetryProvider::default();
+        if let Ok(Some(temp)) = nvidia.read_gpu_temp_c().await {
+            snap.gpu_temp_c = Some(temp);
+            snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
+        }
+    }
     println!("  timestamp_ms: {}", snap.timestamp_ms);
     println!("  cpu_temp_c: {:?}", snap.cpu_temp_c);
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
