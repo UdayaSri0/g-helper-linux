@@ -24,6 +24,7 @@ trait Daemon1 {
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> zbus::Result<()>;
 }
 
 #[derive(Debug, Default)]
@@ -31,9 +32,22 @@ struct SharedUiState {
     telemetry: Option<TelemetrySnapshot>,
     caps_text: String,
     warnings: Vec<String>,
+    lighting: Option<LightingInfo>,
+    pending_lighting_brightness: Option<u64>,
+    lighting_error: Option<String>,
     daemon_error: Option<String>,
     show_window: bool,
     quit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LightingInfo {
+    backend: String,
+    device: String,
+    brightness: u64,
+    max_brightness: u64,
+    can_set: bool,
+    mode: String,
 }
 
 #[derive(Debug)]
@@ -235,8 +249,69 @@ fn build_ui(app: &adw::Application) {
     let diag = adw::ClampScrollable::new();
     diag.set_child(Some(&diag_root));
 
+    // Lighting page (Milestone 1: keyboard backlight brightness via sysfs when available).
+    let lighting_title = gtk::Label::new(Some("Keyboard Lighting"));
+    lighting_title.set_xalign(0.0);
+    lighting_title.add_css_class("title-3");
+
+    let lighting_backend = gtk::Label::new(Some("Backend: (n/a)"));
+    lighting_backend.set_xalign(0.0);
+    lighting_backend.set_wrap(true);
+    lighting_backend.add_css_class("dim-label");
+
+    let lighting_current = gtk::Label::new(Some("Brightness: (n/a)"));
+    lighting_current.set_xalign(0.0);
+    lighting_current.add_css_class("dim-label");
+
+    let lighting_mode = gtk::Label::new(Some("Mode: (n/a)"));
+    lighting_mode.set_xalign(0.0);
+    lighting_mode.add_css_class("dim-label");
+
+    let brightness_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 3.0, 1.0);
+    brightness_scale.set_hexpand(true);
+    brightness_scale.set_draw_value(true);
+    brightness_scale.set_value_pos(gtk::PositionType::Right);
+
+    let apply_brightness = gtk::Button::with_label("Apply brightness");
+    apply_brightness.add_css_class("suggested-action");
+
+    let lighting_error = gtk::Label::new(None);
+    lighting_error.set_xalign(0.0);
+    lighting_error.set_wrap(true);
+    lighting_error.add_css_class("dim-label");
+    lighting_error.set_visible(false);
+
+    {
+        let shared = shared.clone();
+        let brightness_scale = brightness_scale.clone();
+        apply_brightness.connect_clicked(move |_| {
+            let desired = brightness_scale.value().round().max(0.0) as u64;
+            if let Ok(mut st) = shared.lock() {
+                st.pending_lighting_brightness = Some(desired);
+                st.lighting_error = None;
+            }
+        });
+    }
+
+    let lighting_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    lighting_root.set_margin_top(16);
+    lighting_root.set_margin_bottom(16);
+    lighting_root.set_margin_start(16);
+    lighting_root.set_margin_end(16);
+    lighting_root.append(&lighting_title);
+    lighting_root.append(&lighting_backend);
+    lighting_root.append(&lighting_current);
+    lighting_root.append(&lighting_mode);
+    lighting_root.append(&brightness_scale);
+    lighting_root.append(&apply_brightness);
+    lighting_root.append(&lighting_error);
+
+    let lighting = adw::ClampScrollable::new();
+    lighting.set_child(Some(&lighting_root));
+
     let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
+    stack.add_titled(&lighting, Some("lighting"), "Lighting");
     stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
 
     let switcher = adw::ViewSwitcher::new();
@@ -263,7 +338,16 @@ fn build_ui(app: &adw::Application) {
     let win_clone = win.clone();
     let app_clone = app.clone();
     glib::timeout_add_local(Duration::from_millis(250), move || {
-        let (telemetry, caps_text, warnings, daemon_error, show_window, quit) = {
+        let (
+            telemetry,
+            caps_text,
+            warnings,
+            lighting,
+            lighting_error_txt,
+            daemon_error,
+            show_window,
+            quit,
+        ) = {
             let mut st = match shared_clone.lock() {
                 Ok(st) => st,
                 Err(_) => return glib::ControlFlow::Continue,
@@ -274,6 +358,8 @@ fn build_ui(app: &adw::Application) {
                 st.telemetry.clone(),
                 st.caps_text.clone(),
                 st.warnings.clone(),
+                st.lighting.clone(),
+                st.lighting_error.clone(),
                 st.daemon_error.clone(),
                 show_window,
                 st.quit,
@@ -341,6 +427,47 @@ fn build_ui(app: &adw::Application) {
             warnings_label.set_text(&warn_text);
         }
 
+        // Lighting page (capability-driven).
+        if let Some(ref l) = lighting {
+            lighting_backend.set_text(&format!("Backend: {} ({})", l.backend, l.device));
+            lighting_current.set_text(&format!(
+                "Brightness: {}/{}",
+                l.brightness, l.max_brightness
+            ));
+            lighting_mode.set_text(&format!("Mode: {}", l.mode));
+
+            brightness_scale.set_range(0.0, l.max_brightness as f64);
+            if !brightness_scale.is_focus() {
+                brightness_scale.set_value(l.brightness as f64);
+            }
+            let can_set = l.can_set;
+            brightness_scale.set_sensitive(can_set);
+            apply_brightness.set_sensitive(can_set);
+
+            if !can_set && lighting_error_txt.is_none() {
+                lighting_error.set_visible(true);
+                lighting_error.set_text(
+                    "Keyboard backlight is read-only for this user. Install asusd/asusctl or add a udev rule to allow writing the LED brightness.",
+                );
+            }
+        } else {
+            lighting_backend.set_text("Backend: (n/a)");
+            lighting_current.set_text("Brightness: (n/a)");
+            lighting_mode.set_text("Mode: (n/a)");
+            brightness_scale.set_sensitive(false);
+            apply_brightness.set_sensitive(false);
+        }
+
+        if let Some(msg) = lighting_error_txt {
+            lighting_error.set_visible(true);
+            lighting_error.set_text(&msg);
+        } else if lighting.is_some() {
+            // keep whatever message we set above for read-only hint
+        } else {
+            lighting_error.set_visible(false);
+            lighting_error.set_text("");
+        }
+
         glib::ControlFlow::Continue
     });
 }
@@ -377,8 +504,21 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                     break;
                 }
 
+                // Apply pending lighting action before refreshing state.
+                let pending_brightness = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_lighting_brightness.take());
+                if let Some(b) = pending_brightness {
+                    if let Err(e) = apply_lighting_brightness(b).await {
+                        if let Ok(mut st) = shared.lock() {
+                            st.lighting_error = Some(e);
+                        }
+                    }
+                }
+
                 match fetch_state().await {
-                    Ok((t, caps_text, warnings)) => {
+                    Ok((t, caps_text, warnings, lighting)) => {
                         let summary = summary_from_telemetry(&t);
                         if let Some(h) = &tray_handle {
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
@@ -387,6 +527,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                             st.telemetry = Some(t);
                             st.caps_text = caps_text;
                             st.warnings = warnings;
+                            st.lighting = lighting;
                             st.daemon_error = None;
                         }
                     }
@@ -408,7 +549,8 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
     });
 }
 
-async fn fetch_state() -> Result<(TelemetrySnapshot, String, Vec<String>), String> {
+async fn fetch_state(
+) -> Result<(TelemetrySnapshot, String, Vec<String>, Option<LightingInfo>), String> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| format!("session DBus unavailable: {e}"))?;
@@ -435,6 +577,11 @@ async fn fetch_state() -> Result<(TelemetrySnapshot, String, Vec<String>), Strin
         .cloned()
         .and_then(|v| Vec::<String>::try_from(v).ok())
         .unwrap_or_default();
+    let lighting = state
+        .get("lighting")
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .and_then(lighting_from_dbus);
 
     let mut caps_text = caps_text_from_dbus(caps_map);
     if !warnings.is_empty() {
@@ -444,7 +591,29 @@ async fn fetch_state() -> Result<(TelemetrySnapshot, String, Vec<String>), Strin
         }
     }
 
-    Ok((telemetry_from_dbus(telemetry_map), caps_text, warnings))
+    Ok((
+        telemetry_from_dbus(telemetry_map),
+        caps_text,
+        warnings,
+        lighting,
+    ))
+}
+
+async fn apply_lighting_brightness(brightness: u64) -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+
+    let mut m = HashMap::new();
+    m.insert("brightness".to_string(), OwnedValue::from(brightness));
+    proxy
+        .set_lighting(m)
+        .await
+        .map_err(|e| format!("daemon SetLighting failed: {e}"))?;
+    Ok(())
 }
 
 fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
@@ -521,6 +690,33 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     }
 
     t
+}
+
+fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
+    fn s(map: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {
+        map.get(k)
+            .and_then(|v| <&str>::try_from(v).ok())
+            .map(|v| v.to_string())
+    }
+    fn b(map: &HashMap<String, OwnedValue>, k: &str) -> Option<bool> {
+        map.get(k).and_then(|v| bool::try_from(v).ok())
+    }
+    fn u(map: &HashMap<String, OwnedValue>, k: &str) -> Option<u64> {
+        map.get(k).and_then(|v| {
+            u64::try_from(v)
+                .ok()
+                .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
+        })
+    }
+
+    Some(LightingInfo {
+        backend: s(&map, "backend").unwrap_or_else(|| "(n/a)".to_string()),
+        device: s(&map, "device").unwrap_or_else(|| "(n/a)".to_string()),
+        brightness: u(&map, "brightness").unwrap_or(0),
+        max_brightness: u(&map, "max_brightness").unwrap_or(3),
+        can_set: b(&map, "can_set").unwrap_or(false),
+        mode: s(&map, "mode").unwrap_or_else(|| "(n/a)".to_string()),
+    })
 }
 
 fn metric_card(title: &str) -> (gtk::Box, gtk::Label) {

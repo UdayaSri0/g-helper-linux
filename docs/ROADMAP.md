@@ -10,7 +10,7 @@ issue labels so work stays organized.
   - `hwmon` (sysfs): CPU temps and fan RPMs when exposed.
   - NVIDIA GPU temp fallback (read-only): `nvidia-smi` query when `hwmon` lacks dGPU temps.
   - Session DBus daemon: `GetCaps`, `GetState`, `GetTelemetry` (`a{sv}`).
-  - UI: Dashboard + Diagnostics + tray (SNI).
+  - UI: Dashboard + Lighting (kbd brightness) + Diagnostics + tray (SNI).
 
 ## Milestones (Engineering Goals)
 
@@ -125,4 +125,3 @@ Community:
 
 - `good first issue`
 - `help wanted`
-

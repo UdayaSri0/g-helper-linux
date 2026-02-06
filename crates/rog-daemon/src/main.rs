@@ -6,10 +6,12 @@ use anyhow::Context;
 use regex::Regex;
 use rog_core::{AppState, DeviceCaps, PowerSource, TelemetrySnapshot};
 use rog_providers::hwmon::HwmonTelemetryProvider;
+use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
+use zbus::fdo;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{connection, interface};
 
@@ -22,14 +24,18 @@ struct SharedState {
     inner: RwLock<AppState>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RogHelperDaemon {
     state: Arc<SharedState>,
+    kbd_backlight: Option<KbdBacklightSysfs>,
 }
 
 impl RogHelperDaemon {
-    fn new(state: Arc<SharedState>) -> Self {
-        Self { state }
+    fn new(state: Arc<SharedState>, kbd_backlight: Option<KbdBacklightSysfs>) -> Self {
+        Self {
+            state,
+            kbd_backlight,
+        }
     }
 
     fn read_state(&self) -> AppState {
@@ -50,11 +56,36 @@ impl RogHelperDaemon {
     }
 
     fn get_state(&self) -> HashMap<String, OwnedValue> {
-        state_to_dbus(&self.read_state())
+        let mut m = state_to_dbus(&self.read_state());
+        if let Some(l) = self.lighting_to_dbus() {
+            m.insert("lighting".to_string(), ov(l));
+        }
+        m
     }
 
     fn get_telemetry(&self) -> HashMap<String, OwnedValue> {
         telemetry_to_dbus(&self.read_state().telemetry)
+    }
+
+    fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
+        let Some(kbd) = &self.kbd_backlight else {
+            return Err(fdo::Error::NotSupported(
+                "lighting not supported on this system".to_string(),
+            ));
+        };
+
+        let mode = state
+            .get("mode")
+            .and_then(|v| <&str>::try_from(v).ok())
+            .unwrap_or("Static");
+        let mut brightness = u64_from_map(&state, "brightness").unwrap_or(0);
+        if mode.eq_ignore_ascii_case("off") {
+            brightness = 0;
+        }
+
+        kbd.set_brightness(brightness as u32)
+            .map_err(map_rog_error_to_fdo)?;
+        Ok(())
     }
 }
 
@@ -75,6 +106,13 @@ async fn main() -> anyhow::Result<()> {
         .context("connect to UPower")?;
     let hwmon = HwmonTelemetryProvider::default();
     let nvidia = NvidiaSmiTelemetryProvider::default();
+    let kbd_backlight = match KbdBacklightSysfs::probe() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("kbd backlight probe failed: {e}");
+            None
+        }
+    };
 
     let mut caps = DeviceCaps::unknown();
     // Minimal caps for milestone 1: only what we can infer from sysfs.
@@ -83,9 +121,18 @@ async fn main() -> anyhow::Result<()> {
         TelemetrySnapshot::empty_now(now_ms())
     });
     caps.has_fan_reading = !hw_snapshot.fans_rpm.is_empty();
-    caps.has_kbd_backlight = detect_kbd_backlight();
+    caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
     caps.notes
         .push("Milestone 1: asusd/supergfxd not integrated yet.".to_string());
+    if let Some(kbd) = &kbd_backlight {
+        caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
+        caps.notes.push(format!(
+            "Keyboard backlight via {} (max {}, writable={}).",
+            kbd.led_name(),
+            kbd.max_brightness(),
+            kbd.can_set_brightness()
+        ));
+    }
 
     // Diagnostics: include relevant system bus names (no asusd/supergfxd hardcoding).
     let re = Regex::new("(?i)asus|rog|supergfx|power|upower").expect("valid regex");
@@ -101,7 +148,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Export DBus service on the session bus.
-    let daemon_iface = RogHelperDaemon::new(shared.clone());
+    let daemon = RogHelperDaemon::new(shared.clone(), kbd_backlight.clone());
+    let daemon_iface = daemon.clone();
     let _conn = connection::Builder::session()?
         .name(DBUS_NAME)?
         .serve_at(DBUS_PATH, daemon_iface)?
@@ -111,7 +159,6 @@ async fn main() -> anyhow::Result<()> {
     info!("DBus service online: {DBUS_NAME} {DBUS_PATH} ({DBUS_IFACE})");
 
     // Telemetry loop.
-    let daemon = RogHelperDaemon::new(shared.clone());
     let mut ticker = interval(Duration::from_secs(1));
 
     loop {
@@ -151,6 +198,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
+                if let Some(kbd) = &kbd_backlight {
+                    if !kbd.can_set_brightness() {
+                        warnings.push(format!(
+                            "Keyboard backlight ({}) is read-only (need asusd or a udev rule).",
+                            kbd.led_name()
+                        ));
+                    }
+                }
+
                 daemon.set_telemetry(telemetry, warnings);
             }
             _ = tokio::signal::ctrl_c() => {
@@ -179,7 +235,10 @@ fn detect_kbd_backlight() -> bool {
         let Some(name) = ent.file_name().to_str().map(|s| s.to_ascii_lowercase()) else {
             continue;
         };
-        if name.contains("kbd") || (name.contains("asus") && name.contains("keyboard")) {
+        if name.contains("kbd")
+            || name.contains("kbd_backlight")
+            || (name.contains("asus") && name.contains("keyboard"))
+        {
             return true;
         }
     }
@@ -273,4 +332,44 @@ where
     T: Into<Value<'static>>,
 {
     OwnedValue::try_from(v.into()).expect("OwnedValue conversion should succeed")
+}
+
+fn u64_from_map(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u64> {
+    let v = map.get(key)?;
+    u64::try_from(v)
+        .ok()
+        .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
+}
+
+fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
+    match e {
+        rog_core::RogError::DependencyMissing(msg) => fdo::Error::Failed(msg),
+        rog_core::RogError::NotSupported(msg) => fdo::Error::NotSupported(msg),
+        rog_core::RogError::PermissionDenied(msg) => fdo::Error::AccessDenied(msg),
+        rog_core::RogError::InvalidInput(msg) => fdo::Error::InvalidArgs(msg),
+        rog_core::RogError::TransientFailure(msg) => fdo::Error::TimedOut(msg),
+        rog_core::RogError::Unexpected(msg) => fdo::Error::Failed(msg),
+    }
+}
+
+impl RogHelperDaemon {
+    fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
+        let kbd = self.kbd_backlight.as_ref()?;
+        let brightness = kbd.read_brightness().ok()?;
+        let max = kbd.max_brightness();
+        let can_set = kbd.can_set_brightness();
+        let mode = if brightness == 0 { "Off" } else { "Static" };
+
+        let mut m = HashMap::new();
+        m.insert("backend".to_string(), ov("sysfs-led"));
+        m.insert("device".to_string(), ov(kbd.led_name().to_string()));
+        m.insert(
+            "brightness".to_string(),
+            OwnedValue::from(brightness as u64),
+        );
+        m.insert("max_brightness".to_string(), OwnedValue::from(max as u64));
+        m.insert("can_set".to_string(), OwnedValue::from(can_set));
+        m.insert("mode".to_string(), ov(mode));
+        Some(m)
+    }
 }

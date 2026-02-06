@@ -13,6 +13,7 @@ introspection output on the target machine.
   - path: `/io/github/roghelper/Daemon`
   - iface: `io.github.roghelper.Daemon1`
   - methods return `a{sv}` dictionaries for forward/backward compatibility (no hardcoded enum DBus types yet)
+  - includes `SetLighting` (Milestone 1: keyboard backlight brightness when available via sysfs)
 
 ## Phase 0 Discovery Commands
 

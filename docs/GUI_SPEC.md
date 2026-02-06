@@ -134,6 +134,14 @@ When `has_aura=true` or `has_kbd_backlight=true`:
 - Mode dropdown (capability-driven).
 - "Disable on battery" option (ties into Auto rules).
 
+Milestone 1 notes:
+
+- If the kernel exposes `asus::kbd_backlight` under `/sys/class/leds`, the daemon can report the
+  current keyboard backlight brightness.
+- Setting brightness via sysfs is only possible if the `brightness` attribute is writable by the
+  user (often it is not). In that case, the UI must show read-only state and a hint to install
+  `asusd`/`asusctl` (recommended) for unprivileged control.
+
 ## Settings (Milestone 2+)
 
 - Enable `rog-helperd` on login (systemd --user).
@@ -148,4 +156,3 @@ When `has_aura=true` or `has_kbd_backlight=true`:
   - Human-friendly message
   - Suggested action
   - "Copy technical details"
-
