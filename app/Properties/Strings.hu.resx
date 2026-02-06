@@ -1,0 +1,890 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!-- 
+    Microsoft ResX Schema 
+    
+    Version 2.0
+    
+    The primary goals of this format is to allow a simple XML format 
+    that is mostly human readable. The generation and parsing of the 
+    various data types are done through the TypeConverter classes 
+    associated with the data types.
+    
+    Example:
+    
+    ... ado.net/XML headers & schema ...
+    <resheader name="resmimetype">text/microsoft-resx</resheader>
+    <resheader name="version">2.0</resheader>
+    <resheader name="reader">System.Resources.ResXResourceReader, System.Windows.Forms, ...</resheader>
+    <resheader name="writer">System.Resources.ResXResourceWriter, System.Windows.Forms, ...</resheader>
+    <data name="Name1"><value>this is my long string</value><comment>this is a comment</comment></data>
+    <data name="Color1" type="System.Drawing.Color, System.Drawing">Blue</data>
+    <data name="Bitmap1" mimetype="application/x-microsoft.net.object.binary.base64">
+        <value>[base64 mime encoded serialized .NET Framework object]</value>
+    </data>
+    <data name="Icon1" type="System.Drawing.Icon, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+        <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
+        <comment>This is a comment</comment>
+    </data>
+                
+    There are any number of "resheader" rows that contain simple 
+    name/value pairs.
+    
+    Each data row contains a name, and value. The row also contains a 
+    type or mimetype. Type corresponds to a .NET class that support 
+    text/value conversion through the TypeConverter architecture. 
+    Classes that don't support this are serialized and stored with the 
+    mimetype set.
+    
+    The mimetype is used for serialized objects, and tells the 
+    ResXResourceReader how to depersist the object. This is currently not 
+    extensible. For a given mimetype the value must be set accordingly:
+    
+    Note - application/x-microsoft.net.object.binary.base64 is the format 
+    that the ResXResourceWriter will generate, however the reader can 
+    read any of the formats listed below.
+    
+    mimetype: application/x-microsoft.net.object.binary.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+            : and then encoded with base64 encoding.
+    
+    mimetype: application/x-microsoft.net.object.soap.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
+            : and then encoded with base64 encoding.
+
+    mimetype: application/x-microsoft.net.object.bytearray.base64
+    value   : The object must be serialized into a byte array 
+            : using a System.ComponentModel.TypeConverter
+            : and then encoded with base64 encoding.
+    -->
+  <xsd:schema xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata" id="root">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace"/>
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0"/>
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string"/>
+              <xsd:attribute name="type" type="xsd:string"/>
+              <xsd:attribute name="mimetype" type="xsd:string"/>
+              <xsd:attribute ref="xml:space"/>
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string"/>
+              <xsd:attribute name="name" type="xsd:string"/>
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1"/>
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2"/>
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1"/>
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3"/>
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4"/>
+              <xsd:attribute ref="xml:space"/>
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1"/>
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required"/>
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="Acceleration" xml:space="preserve">
+    <value>Gyorsítás</value>
+  </data>
+  <data name="ACPIError" xml:space="preserve">
+    <value>Nem sikerült csatlakozni az ASUS ACPI-hez, az alkalmazás nem működik enélkül. Próbáld meg telepíteni az ASUS rendszervezérlő interfész-t</value>
+  </data>
+  <data name="AlertAPUMemoryRestart" xml:space="preserve">
+    <value>Indítsd újra az eszközödet a változtatások érvényesítéséhez</value>
+  </data>
+  <data name="AlertAPUMemoryRestartTitle" xml:space="preserve">
+    <value>Újraindítás most?</value>
+  </data>
+  <data name="AlertDGPU" xml:space="preserve">
+    <value>Úgy tűnik használatban van a GPU. Biztosan letiltod?</value>
+  </data>
+  <data name="AlertDGPUTitle" xml:space="preserve">
+    <value>Eco mód</value>
+  </data>
+  <data name="AlertUltimateOff" xml:space="preserve">
+    <value>Az Ultimate mód kikapcsolása után újraindítás szükséges</value>
+  </data>
+  <data name="AlertUltimateOn" xml:space="preserve">
+    <value>Az Ultimate mód használatához újraindítás szükséges</value>
+  </data>
+  <data name="AlertUltimateTitle" xml:space="preserve">
+    <value>Újraindítja most?</value>
+  </data>
+  <data name="AllyController" xml:space="preserve">
+    <value>Ally vezérlő</value>
+  </data>
+  <data name="AnimationSpeed" xml:space="preserve">
+    <value>Animáció sebessége</value>
+  </data>
+  <data name="AnimeMatrix" xml:space="preserve">
+    <value>Anime Matrix</value>
+  </data>
+  <data name="AppAlreadyRunning" xml:space="preserve">
+    <value>Az alkalmazás már el lett inítva</value>
+  </data>
+  <data name="AppAlreadyRunningText" xml:space="preserve">
+    <value>A G-Helper már fut. A rendszertárcán megtalálod az alkalmazás ikonját.</value>
+  </data>
+  <data name="Apply" xml:space="preserve">
+    <value>Alkalmaz</value>
+  </data>
+  <data name="ApplyFanCurve" xml:space="preserve">
+    <value>Egyedi ventigörbe használata</value>
+  </data>
+  <data name="ApplyPowerLimits" xml:space="preserve">
+    <value>Teljesítménykorlátok alkalmazása</value>
+  </data>
+  <data name="ApplyWindowsPowerPlan" xml:space="preserve">
+    <value>A Windows energiagazdálkodási módok automatikus beállítása</value>
+  </data>
+  <data name="APUMemory" xml:space="preserve">
+    <value>A GPU-nak kiosztott memória</value>
+  </data>
+  <data name="AsusServicesRunning" xml:space="preserve">
+    <value>Asus szolgáltatások futnak</value>
+  </data>
+  <data name="AuraBatteryState" xml:space="preserve">
+    <value>Akkuállapot</value>
+  </data>
+  <data name="AuraBreathe" xml:space="preserve">
+    <value>Lélegző</value>
+  </data>
+  <data name="AuraClockwise" xml:space="preserve">
+    <value>Jobbra forog</value>
+  </data>
+  <data name="AuraColorCycle" xml:space="preserve">
+    <value>Színváltás</value>
+  </data>
+  <data name="AuraComet" xml:space="preserve">
+    <value>Üstökös</value>
+  </data>
+  <data name="AuraCounterClockwise" xml:space="preserve">
+    <value>Balra forog</value>
+  </data>
+  <data name="AuraFast" xml:space="preserve">
+    <value>Gyors</value>
+  </data>
+  <data name="AuraLightingMode" xml:space="preserve">
+    <value>Világítás típusa</value>
+  </data>
+  <data name="AuraNormal" xml:space="preserve">
+    <value>Normál</value>
+  </data>
+  <data name="AuraRainbow" xml:space="preserve">
+    <value>Szivárvány</value>
+  </data>
+  <data name="AuraRandomColor" xml:space="preserve">
+    <value>Véletlen</value>
+  </data>
+  <data name="AuraReact" xml:space="preserve">
+    <value>Reagál</value>
+  </data>
+  <data name="AuraSlow" xml:space="preserve">
+    <value>Lassú</value>
+  </data>
+  <data name="AuraStatic" xml:space="preserve">
+    <value>Állandó</value>
+  </data>
+  <data name="AuraStrobe" xml:space="preserve">
+    <value>Stroboszkóp</value>
+  </data>
+  <data name="AuraZoneAll" xml:space="preserve">
+    <value>Mindegyik</value>
+  </data>
+  <data name="AuraZoneDock" xml:space="preserve">
+    <value>Dokk</value>
+  </data>
+  <data name="AuraZoneLogo" xml:space="preserve">
+    <value>Logó</value>
+  </data>
+  <data name="AuraZoneScroll" xml:space="preserve">
+    <value>Görgetés</value>
+  </data>
+  <data name="AuraZoneUnderglow" xml:space="preserve">
+    <value>Alsó világítás</value>
+  </data>
+  <data name="AutoApply" xml:space="preserve">
+    <value>Automatikus alkalmazás</value>
+  </data>
+  <data name="AutoMode" xml:space="preserve">
+    <value>Automata</value>
+  </data>
+  <data name="AutoRefreshTooltip" xml:space="preserve">
+    <value>Átállítja 60Hz-re, hogy spóroljon az akku-val, majd töltőn vissza</value>
+  </data>
+  <data name="Awake" xml:space="preserve">
+    <value>Ébren</value>
+  </data>
+  <data name="BacklightLow" xml:space="preserve">
+    <value>Alacsony</value>
+  </data>
+  <data name="BacklightMax" xml:space="preserve">
+    <value>Maximum</value>
+  </data>
+  <data name="BacklightMid" xml:space="preserve">
+    <value>Közepes</value>
+  </data>
+  <data name="BacklightOff" xml:space="preserve">
+    <value>Ki</value>
+  </data>
+  <data name="BacklightTimeout" xml:space="preserve">
+    <value>Késleltetés töltés / akku módban (0 - BE)</value>
+  </data>
+  <data name="BacklightTimeoutBattery" xml:space="preserve">
+    <value>Háttérvilágítás időkorlátja akkumulátoros üzemmódban</value>
+  </data>
+  <data name="BacklightTimeoutPlugged" xml:space="preserve">
+    <value>Háttérvilágítás időkorlátja hálózati áramról való üzemeléskor</value>
+  </data>
+  <data name="Balanced" xml:space="preserve">
+    <value>Teljesítmény</value>
+  </data>
+  <data name="BatteryCharge" xml:space="preserve">
+    <value>Töltés</value>
+  </data>
+  <data name="BatteryChargeLimit" xml:space="preserve">
+    <value>Töltési korlát</value>
+  </data>
+  <data name="BatteryHealth" xml:space="preserve">
+    <value>Akku állapot</value>
+  </data>
+  <data name="BatteryLimitFull" xml:space="preserve">
+    <value>Egyszeri 100%-os feltöltés</value>
+  </data>
+  <data name="Binding" xml:space="preserve">
+    <value>Hozzárendelés</value>
+  </data>
+  <data name="BindingPrimary" xml:space="preserve">
+    <value>Elsődleges</value>
+  </data>
+  <data name="BindingSecondary" xml:space="preserve">
+    <value>Másodlagos</value>
+  </data>
+  <data name="BiosAndDriverUpdates" xml:space="preserve">
+    <value>BIOS és illesztőprogram frissítések</value>
+  </data>
+  <data name="Boot" xml:space="preserve">
+    <value>Rendszerbetöltés</value>
+  </data>
+  <data name="BootSound" xml:space="preserve">
+    <value>Rendszerindítási hang</value>
+  </data>
+  <data name="Brightness" xml:space="preserve">
+    <value>Fényerő</value>
+  </data>
+  <data name="BrightnessDown" xml:space="preserve">
+    <value>Fényerő csökkentése</value>
+  </data>
+  <data name="BrightnessUp" xml:space="preserve">
+    <value>Fényerő növelése</value>
+  </data>
+  <data name="BWTrayIcon" xml:space="preserve">
+    <value>Fekete-fehér tálca ikon</value>
+  </data>
+  <data name="Calibrate" xml:space="preserve">
+    <value>Kalibrálás</value>
+  </data>
+  <data name="Charging" xml:space="preserve">
+    <value>Töltés</value>
+  </data>
+  <data name="Color" xml:space="preserve">
+    <value>Szín</value>
+  </data>
+  <data name="Contrast" xml:space="preserve">
+    <value>Kontraszt</value>
+  </data>
+  <data name="Controller" xml:space="preserve">
+    <value>Kontroller</value>
+  </data>
+  <data name="CPUBoost" xml:space="preserve">
+    <value>CPU gyorsítás</value>
+  </data>
+  <data name="Custom" xml:space="preserve">
+    <value>Egyéni</value>
+  </data>
+  <data name="Deceleration" xml:space="preserve">
+    <value>Lassítás</value>
+  </data>
+  <data name="Default" xml:space="preserve">
+    <value>Alapért.</value>
+  </data>
+  <data name="DisableController" xml:space="preserve">
+    <value>Kontoller letiltása</value>
+  </data>
+  <data name="DisableOnLidClose" xml:space="preserve">
+    <value>Letiltása képernyő lehajtásakor</value>
+  </data>
+  <data name="DisableOverdrive" xml:space="preserve">
+    <value>Képernyőtúlhajtás letiltása</value>
+  </data>
+  <data name="Discharging" xml:space="preserve">
+    <value>Merülés</value>
+  </data>
+  <data name="DownloadColorProfiles" xml:space="preserve">
+    <value>Színprofilok letöltése</value>
+  </data>
+  <data name="DownloadUpdate" xml:space="preserve">
+    <value>Letöltés</value>
+  </data>
+  <data name="DriverAndSoftware" xml:space="preserve">
+    <value>Illesztőprogramok és alkalmazások</value>
+  </data>
+  <data name="EcoGPUTooltip" xml:space="preserve">
+    <value>Letiltja a dGPU-t, hogy spóroljon az akkuval</value>
+  </data>
+  <data name="EcoMode" xml:space="preserve">
+    <value>Eco</value>
+  </data>
+  <data name="EnableGPUOnShutdown" xml:space="preserve">
+    <value>GPU engedélyezése kikapcsoláskor (megakadályozza az Eco mód problémát)</value>
+  </data>
+  <data name="EnableOptimusText" xml:space="preserve">
+    <value>A dGPU letiltása Eco módba kapcsolással, miközben az NVIDIA Vezérlőpultban a Kijelző mód nincs Optimus-ra állítva, problémákat okozhat a fényerővezérlésben, amíg a következő újraindítás meg nem történik.
+
+Folytatni szeretnéd?</value>
+  </data>
+  <data name="EnableOptimusTitle" xml:space="preserve">
+    <value>NVIDIA kijelzőmód nincs Optimus-ra állítva</value>
+  </data>
+  <data name="EnergySettings" xml:space="preserve">
+    <value>Energia beállítások</value>
+  </data>
+  <data name="Export" xml:space="preserve">
+    <value>Profil exportálása</value>
+  </data>
+  <data name="Extra" xml:space="preserve">
+    <value>Extra</value>
+  </data>
+  <data name="ExtraSettings" xml:space="preserve">
+    <value>Extra beállítások</value>
+  </data>
+  <data name="FactoryDefaults" xml:space="preserve">
+    <value>Gyári alapértékek</value>
+  </data>
+  <data name="FanCurves" xml:space="preserve">
+    <value>Ventilátorgörbe</value>
+  </data>
+  <data name="FanProfileCPU" xml:space="preserve">
+    <value>CPU ventilátor profil</value>
+  </data>
+  <data name="FanProfileGPU" xml:space="preserve">
+    <value>GPU ventilátor profil</value>
+  </data>
+  <data name="FanProfileMid" xml:space="preserve">
+    <value>Középső ventilátor profil</value>
+  </data>
+  <data name="FanProfiles" xml:space="preserve">
+    <value>Ventilátor profilok</value>
+  </data>
+  <data name="FansAndPower" xml:space="preserve">
+    <value>Ventilátor és energia</value>
+  </data>
+  <data name="FanSpeed" xml:space="preserve">
+    <value>Ventilátor</value>
+  </data>
+  <data name="FansPower" xml:space="preserve">
+    <value>Venti + energia</value>
+  </data>
+  <data name="FlickerFreeDimming" xml:space="preserve">
+    <value>Villogásmentes halványítás</value>
+  </data>
+  <data name="FnLock" xml:space="preserve">
+    <value>Fn + F gyorsgombok feldolgozása Fn nélkül</value>
+  </data>
+  <data name="FnLockOff" xml:space="preserve">
+    <value>Fn-Lock Ki</value>
+  </data>
+  <data name="FnLockOn" xml:space="preserve">
+    <value>Fn-Lock Be</value>
+  </data>
+  <data name="GPUBoost" xml:space="preserve">
+    <value>Dinamikus gyorsítás</value>
+  </data>
+  <data name="GPUChanging" xml:space="preserve">
+    <value>Váltás...</value>
+  </data>
+  <data name="GPUCoreClockOffset" xml:space="preserve">
+    <value>Magórajel eltolás</value>
+  </data>
+  <data name="GPUMemoryClockOffset" xml:space="preserve">
+    <value>Memória órajel eltolás</value>
+  </data>
+  <data name="GPUMode" xml:space="preserve">
+    <value>GPU mód</value>
+  </data>
+  <data name="GPUModeEco" xml:space="preserve">
+    <value>Csak iGPU</value>
+  </data>
+  <data name="GPUModeStandard" xml:space="preserve">
+    <value>iGPU + dGPU</value>
+  </data>
+  <data name="GPUModeUltimate" xml:space="preserve">
+    <value>kizárólag dGPU</value>
+  </data>
+  <data name="GPUPower" xml:space="preserve">
+    <value>GPU erő</value>
+  </data>
+  <data name="GPUSettings" xml:space="preserve">
+    <value>GPU beállítások</value>
+  </data>
+  <data name="GPUTempTarget" xml:space="preserve">
+    <value>Célhőmérséklet</value>
+  </data>
+  <data name="HibernateAfter" xml:space="preserve">
+    <value>Akku módban az alvó módból Hibernálásig eltelt idő (0 - KI)</value>
+  </data>
+  <data name="High" xml:space="preserve">
+    <value>Magas</value>
+  </data>
+  <data name="ImageRotation" xml:space="preserve">
+    <value>Kép elforgatás</value>
+  </data>
+  <data name="Import" xml:space="preserve">
+    <value>Profil importálása</value>
+  </data>
+  <data name="KeyBindings" xml:space="preserve">
+    <value>Gyorsbillentyűk</value>
+  </data>
+  <data name="Keyboard" xml:space="preserve">
+    <value>Billentyűzet</value>
+  </data>
+  <data name="KillGpuApps" xml:space="preserve">
+    <value>Eco módba lépéskor minden alkalmazást leállít, ami a GPU-t használja</value>
+  </data>
+  <data name="LaptopBacklight" xml:space="preserve">
+    <value>Laptop háttérvilágítás</value>
+  </data>
+  <data name="LaptopKeyboard" xml:space="preserve">
+    <value>Laptop billentyűzet</value>
+  </data>
+  <data name="LaptopScreen" xml:space="preserve">
+    <value>Laptop kijelző</value>
+  </data>
+  <data name="LEDStatusIndicators" xml:space="preserve">
+    <value>LED Állapotjelzők</value>
+  </data>
+  <data name="Lid" xml:space="preserve">
+    <value>Fedél</value>
+  </data>
+  <data name="Lightbar" xml:space="preserve">
+    <value>Fénysáv</value>
+  </data>
+  <data name="Lighting" xml:space="preserve">
+    <value>Világítás</value>
+  </data>
+  <data name="LockScreen" xml:space="preserve">
+    <value>Képernyő zarolása</value>
+  </data>
+  <data name="Logo" xml:space="preserve">
+    <value>Logó</value>
+  </data>
+  <data name="Low" xml:space="preserve">
+    <value>Alacsony</value>
+  </data>
+  <data name="LSDeadzones" xml:space="preserve">
+    <value>Bal kar irányító holtjátékai</value>
+  </data>
+  <data name="LTDeadzones" xml:space="preserve">
+    <value>Bal ravasz holtjátékai</value>
+  </data>
+  <data name="MatrixAudio" xml:space="preserve">
+    <value>Hang vizualizáció</value>
+  </data>
+  <data name="MatrixBanner" xml:space="preserve">
+    <value>Bináris logó</value>
+  </data>
+  <data name="MatrixBright" xml:space="preserve">
+    <value>Fényes</value>
+  </data>
+  <data name="MatrixClock" xml:space="preserve">
+    <value>Óra</value>
+  </data>
+  <data name="MatrixDim" xml:space="preserve">
+    <value>Halvány</value>
+  </data>
+  <data name="MatrixLogo" xml:space="preserve">
+    <value>Rog logó</value>
+  </data>
+  <data name="MatrixMedium" xml:space="preserve">
+    <value>Közepes</value>
+  </data>
+  <data name="MatrixOff" xml:space="preserve">
+    <value>Ki</value>
+  </data>
+  <data name="MatrixPicture" xml:space="preserve">
+    <value>Kép</value>
+  </data>
+  <data name="MaxRefreshTooltip" xml:space="preserve">
+    <value>Max frissítési gyakoriság kevés késleltetéshez</value>
+  </data>
+  <data name="MinRefreshTooltip" xml:space="preserve">
+    <value>60Hz-s frissítési gyakoriság, hogy spóroljon az akkuval</value>
+  </data>
+  <data name="Minute" xml:space="preserve">
+    <value>perc</value>
+  </data>
+  <data name="Minutes" xml:space="preserve">
+    <value>perc</value>
+  </data>
+  <data name="MouseAngleSnapping" xml:space="preserve">
+    <value>Angle Snapping / Tuning</value>
+  </data>
+  <data name="MouseAutoPowerOff" xml:space="preserve">
+    <value>Automatikus kikapcsolás idő múlva</value>
+  </data>
+  <data name="MouseButtonResponse" xml:space="preserve">
+    <value>Gomb funkciója</value>
+  </data>
+  <data name="MouseImportFailed" xml:space="preserve">
+    <value>Importálás nem sikerült. A kiválasztott fájl nem érvényes egérprofil, vagy sérült.</value>
+  </data>
+  <data name="MouseLiftOffDistance" xml:space="preserve">
+    <value>Emelési távolság</value>
+  </data>
+  <data name="MouseLowBatteryWarning" xml:space="preserve">
+    <value>Alacsony akkumulátor figyelmeztetés ekkor</value>
+  </data>
+  <data name="MousePerformance" xml:space="preserve">
+    <value>Teljesítmény</value>
+  </data>
+  <data name="MouseSynchronize" xml:space="preserve">
+    <value>Szinkronizálás egérrel</value>
+  </data>
+  <data name="Multizone" xml:space="preserve">
+    <value>Multi Zóna</value>
+  </data>
+  <data name="MultizoneStrong" xml:space="preserve">
+    <value>Erős Multi Zóna</value>
+  </data>
+  <data name="Muted" xml:space="preserve">
+    <value>Mikrofon Ki</value>
+  </data>
+  <data name="MuteMic" xml:space="preserve">
+    <value>Mikrofon némítása</value>
+  </data>
+  <data name="Never" xml:space="preserve">
+    <value>Soha</value>
+  </data>
+  <data name="NewUpdates" xml:space="preserve">
+    <value>Új frissítés</value>
+  </data>
+  <data name="NoNewUpdates" xml:space="preserve">
+    <value>Nincs új frissítés</value>
+  </data>
+  <data name="NotConnected" xml:space="preserve">
+    <value>Nincs csatlakoztatva</value>
+  </data>
+  <data name="Off" xml:space="preserve">
+    <value>Ki</value>
+  </data>
+  <data name="On" xml:space="preserve">
+    <value>Be</value>
+  </data>
+  <data name="OneZone" xml:space="preserve">
+    <value>Egy Zóna</value>
+  </data>
+  <data name="OpenGHelper" xml:space="preserve">
+    <value>G-Helper ablak megnyitása</value>
+  </data>
+  <data name="Optimized" xml:space="preserve">
+    <value>Optimalizált</value>
+  </data>
+  <data name="OptimizedGPUTooltip" xml:space="preserve">
+    <value>Akkus módban váltson Eco módra, töltéskor pedig Standard-ra</value>
+  </data>
+  <data name="OptimizedUSBC" xml:space="preserve">
+    <value>Optimalizált módban USB-C-s töltés közben tartsa letiltva a GPU-t</value>
+  </data>
+  <data name="Other" xml:space="preserve">
+    <value>Egyéb</value>
+  </data>
+  <data name="Overdrive" xml:space="preserve">
+    <value>Túlhajtás</value>
+  </data>
+  <data name="PerformanceMode" xml:space="preserve">
+    <value>Üzemmód</value>
+  </data>
+  <data name="Peripherals" xml:space="preserve">
+    <value>Perifériák</value>
+  </data>
+  <data name="PictureGif" xml:space="preserve">
+    <value>Kép / Gif</value>
+  </data>
+  <data name="PlayPause" xml:space="preserve">
+    <value>Indít / Megállít</value>
+  </data>
+  <data name="PollingRate" xml:space="preserve">
+    <value>Polling Rate</value>
+  </data>
+  <data name="PowerLimits" xml:space="preserve">
+    <value>Teljesítménykorlátok</value>
+  </data>
+  <data name="PPTExperimental" xml:space="preserve">
+    <value>A Teljesítménykorlát egy kísérleti funkció. Használja körültekintően és saját felelősségére!</value>
+  </data>
+  <data name="PrintScreen" xml:space="preserve">
+    <value>PrintScreen</value>
+  </data>
+  <data name="Profile" xml:space="preserve">
+    <value>Profil</value>
+  </data>
+  <data name="Quit" xml:space="preserve">
+    <value>Bezárás</value>
+  </data>
+  <data name="Reset" xml:space="preserve">
+    <value>Visszaállítás</value>
+  </data>
+  <data name="RestartGPU" xml:space="preserve">
+    <value>Valami használja még a dGPU-t, ezzel megakadályozva az Eco móda lépést. Próbálja meg a G-Helper újraindítani a dGPU-t az eszközkezelőben? (Kérjük, saját felelősségére folytassa)</value>
+  </data>
+  <data name="RPM" xml:space="preserve">
+    <value>Fordulatszám</value>
+  </data>
+  <data name="RSDeadzones" xml:space="preserve">
+    <value>Jobb kar irányító holtjátékai</value>
+  </data>
+  <data name="RTDeadzones" xml:space="preserve">
+    <value>Right Trigger Deadzones</value>
+  </data>
+  <data name="RunOnStartup" xml:space="preserve">
+    <value>Indítás a rendszerrel</value>
+  </data>
+  <data name="ScalingQuality" xml:space="preserve">
+    <value>Scaling Quality</value>
+  </data>
+  <data name="ScreenPadDown" xml:space="preserve">
+    <value>Screenpad fényerő csökkentése</value>
+  </data>
+  <data name="ScreenPadUp" xml:space="preserve">
+    <value>Screenpad fényerő növelése</value>
+  </data>
+  <data name="Shutdown" xml:space="preserve">
+    <value>Leállítás</value>
+  </data>
+  <data name="Silent" xml:space="preserve">
+    <value>Csendes</value>
+  </data>
+  <data name="Sleep" xml:space="preserve">
+    <value>Alvás</value>
+  </data>
+  <data name="StandardGPUTooltip" xml:space="preserve">
+    <value>Általános használathoz engedélyezi a dGPU-t</value>
+  </data>
+  <data name="StandardMode" xml:space="preserve">
+    <value>Standard</value>
+  </data>
+  <data name="Start" xml:space="preserve">
+    <value>Indítás</value>
+  </data>
+  <data name="StartingServices" xml:space="preserve">
+    <value>Szolgáltatások elindítása</value>
+  </data>
+  <data name="StartupError" xml:space="preserve">
+    <value>Indítási hiba</value>
+  </data>
+  <data name="Stop" xml:space="preserve">
+    <value>Leállít</value>
+  </data>
+  <data name="StopGPUApps" xml:space="preserve">
+    <value>GPU alkalmazások leállítása</value>
+  </data>
+  <data name="StoppingServices" xml:space="preserve">
+    <value>Szolgáltatások leállítása</value>
+  </data>
+  <data name="ToggleAura" xml:space="preserve">
+    <value>AURA ki-/bekapcsolása</value>
+  </data>
+  <data name="ToggleClamshellMode" xml:space="preserve">
+    <value>Auto Toggle Clamshell Mode</value>
+  </data>
+  <data name="ToggleFnLock" xml:space="preserve">
+    <value>Fn-Lock ki-/bekapcsolása</value>
+  </data>
+  <data name="ToggleMiniled" xml:space="preserve">
+    <value>MiniLED ki-/bekapcsolása (ha támogatott)</value>
+  </data>
+  <data name="ToggleScreen" xml:space="preserve">
+    <value>Képernyő ki-/bekapcsolása</value>
+  </data>
+  <data name="ToggleTouchscreen" xml:space="preserve">
+    <value>Érintőképernyő ki-/bekapcsolása</value>
+  </data>
+  <data name="Touchscreen" xml:space="preserve">
+    <value>Touchscreen</value>
+  </data>
+  <data name="Turbo" xml:space="preserve">
+    <value>Turbó</value>
+  </data>
+  <data name="TurnedOff" xml:space="preserve">
+    <value>Kikapcsolva</value>
+  </data>
+  <data name="TurnOffOnBattery" xml:space="preserve">
+    <value>Akkus üzemmódban kikapcsol</value>
+  </data>
+  <data name="UltimateGPUTooltip" xml:space="preserve">
+    <value>A jobb FPS érdekében a laptop kijelzőt közvetlenül a GPU-n keresztül működteti</value>
+  </data>
+  <data name="UltimateMode" xml:space="preserve">
+    <value>Ultimate</value>
+  </data>
+  <data name="UndervoltingRisky" xml:space="preserve">
+    <value>Undervolting is an experimental and risky feature. If applied values are too low for your hardware, it can become unstable, shut down or cause data corruption. If you want to try - start from small values first, click Apply and test what works for you.</value>
+  </data>
+  <data name="Unmuted" xml:space="preserve">
+    <value>Mikrofon Be</value>
+  </data>
+  <data name="Updates" xml:space="preserve">
+    <value>Frissítések</value>
+  </data>
+  <data name="VersionLabel" xml:space="preserve">
+    <value>Verzió</value>
+  </data>
+  <data name="VibrationStrength" xml:space="preserve">
+    <value>Vibration Strength</value>
+  </data>
+  <data name="VisualMode" xml:space="preserve">
+    <value>Képernyőszín Mód</value>
+  </data>
+  <data name="VisualModesHDR" xml:space="preserve">
+    <value>Visual Modes are not available when HDR is active</value>
+  </data>
+  <data name="VisualModesScreen" xml:space="preserve">
+    <value>Visual Modes are not available when laptop screen is off</value>
+  </data>
+  <data name="VolumeDown" xml:space="preserve">
+    <value>Lehalkítás</value>
+  </data>
+  <data name="VolumeMute" xml:space="preserve">
+    <value>Némítás</value>
+  </data>
+  <data name="VolumeUp" xml:space="preserve">
+    <value>Hangosítás</value>
+  </data>
+  <data name="WindowTop" xml:space="preserve">
+    <value>Alkalmazás maradjon mindig felül</value>
+  </data>
+  <data name="Zoom" xml:space="preserve">
+    <value>Zoom</value>
+  </data>
+  <data name="Donate" xml:space="preserve">
+    <value>Donate</value>
+  </data>
+  <data name="Legend" xml:space="preserve">
+    <value>Legend</value>
+  </data>
+  <data name="LegendGray" xml:space="preserve">
+    <value>Can't check local version</value>
+    <comment>Can't check local version</comment>
+  </data>
+  <data name="LegendRed" xml:space="preserve">
+    <value>Update Available</value>
+    <comment>Update Available</comment>
+  </data>
+  <data name="LegendGreen" xml:space="preserve">
+    <value>Updated</value>
+    <comment>Updated</comment>
+  </data>
+  <data name="SlashBounce" xml:space="preserve">
+    <value>Bounce</value>
+  </data>
+  <data name="SlashMode" xml:space="preserve">
+    <value>Slash</value>
+  </data>
+  <data name="SlashLoading" xml:space="preserve">
+    <value>Loading</value>
+  </data>
+  <data name="SlashBitStream" xml:space="preserve">
+    <value>Bit Stream</value>
+  </data>
+  <data name="SlashTransmission" xml:space="preserve">
+    <value>Transmission</value>
+  </data>
+  <data name="SlashFlow" xml:space="preserve">
+    <value>Flow</value>
+  </data>
+  <data name="SlashFlux" xml:space="preserve">
+    <value>Flux</value>
+  </data>
+  <data name="SlashPhantom" xml:space="preserve">
+    <value>Phantom</value>
+  </data>
+  <data name="SlashSpectrum" xml:space="preserve">
+    <value>Spectrum</value>
+  </data>
+  <data name="SlashHazard" xml:space="preserve">
+    <value>Hazard</value>
+  </data>
+  <data name="SlashInterfacing" xml:space="preserve">
+    <value>Interfacing</value>
+  </data>
+  <data name="SlashRamp" xml:space="preserve">
+    <value>Ramp</value>
+  </data>
+  <data name="SlashGameOver" xml:space="preserve">
+    <value>Game Over</value>
+  </data>
+  <data name="SlashStart" xml:space="preserve">
+    <value>Start</value>
+  </data>
+  <data name="SlashBuzzer" xml:space="preserve">
+    <value>Buzzer</value>
+  </data>
+  <data name="SlashStatic" xml:space="preserve">
+    <value>Static</value>
+  </data>
+  <data name="SlashBatteryLevel" xml:space="preserve">
+    <value>Battery Level</value>
+  </data>
+  <data name="IntervalOff" xml:space="preserve">
+    <value>Interval Off</value>
+  </data>
+  <data name="IntervalSeconds" xml:space="preserve">
+    <value>Interval {0}s</value>
+  </data>
+  <data name="DisableDynamicLighting" xml:space="preserve">
+    <value>Please disable Windows &gt; Dynamic Lighting</value>
+  </data>
+  <data name="AmbientModeResources" xml:space="preserve">
+    <value>Ambient mode may increase resource usage</value>
+  </data>
+  <data name="MouseMotionSync" xml:space="preserve">
+    <value>Motion Sync</value>
+  </data>
+  <data name="MouseZoneMode" xml:space="preserve">
+    <value>Zone Mode</value>
+  </data>
+</root>
