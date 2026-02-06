@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=rog-helper
+Comment=ASUS ROG control app (Linux)
+Exec=rog-helper-ui
+Icon=rog-helper
+Terminal=false
+Categories=System;Settings;
+

@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/rog-core",
+  "crates/rog-providers",
+  "crates/rog-daemon",
+  "crates/rog-ui",
+  "crates/rog-cli",
+]
+
+default-members = [
+  "crates/rog-cli",
+  "crates/rog-daemon",
+  "crates/rog-ui",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = ""
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# zbus 5.x is current; keep features minimal
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+zvariant = "5"
