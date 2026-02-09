@@ -256,6 +256,129 @@ fn build_ui(app: &adw::Application) {
 
     let battery = clamped_scroller(&battery_root);
 
+    // RAM page (read-only table of best-effort procfs memory telemetry).
+    let ram_title = gtk::Label::new(Some("RAM"));
+    ram_title.set_xalign(0.0);
+    ram_title.add_css_class("title-3");
+
+    let ram_hint = gtk::Label::new(Some(
+        "Memory telemetry is best-effort. Values come from /proc (meminfo/vmstat/pressure) when available.",
+    ));
+    ram_hint.set_xalign(0.0);
+    ram_hint.set_wrap(true);
+    ram_hint.add_css_class("dim-label");
+
+    let ram_core_title = gtk::Label::new(Some("Core"));
+    ram_core_title.set_xalign(0.0);
+    ram_core_title.add_css_class("title-4");
+
+    let ram_core_grid = gtk::Grid::new();
+    ram_core_grid.set_row_spacing(10);
+    ram_core_grid.set_column_spacing(18);
+    ram_core_grid.set_hexpand(true);
+
+    let ram_total = kv_row(&ram_core_grid, 0, "Total RAM");
+    let ram_used = kv_row(&ram_core_grid, 1, "Used RAM");
+    let ram_avail = kv_row(&ram_core_grid, 2, "Available");
+    let ram_free = kv_row(&ram_core_grid, 3, "Free");
+    let ram_cached = kv_row(&ram_core_grid, 4, "Cached");
+    let ram_buffers = kv_row(&ram_core_grid, 5, "Buffers");
+    let ram_shared = kv_row(&ram_core_grid, 6, "Shared");
+    let ram_anon = kv_row(&ram_core_grid, 7, "App/Anon");
+
+    let ram_swap_title = gtk::Label::new(Some("Swap"));
+    ram_swap_title.set_xalign(0.0);
+    ram_swap_title.add_css_class("title-4");
+
+    let ram_swap_grid = gtk::Grid::new();
+    ram_swap_grid.set_row_spacing(10);
+    ram_swap_grid.set_column_spacing(18);
+    ram_swap_grid.set_hexpand(true);
+
+    let ram_swap_total = kv_row(&ram_swap_grid, 0, "Swap Total");
+    let ram_swap_used = kv_row(&ram_swap_grid, 1, "Swap Used");
+    let ram_swap_free = kv_row(&ram_swap_grid, 2, "Swap Free");
+    let ram_swap_in = kv_row(&ram_swap_grid, 3, "Swap In");
+    let ram_swap_out = kv_row(&ram_swap_grid, 4, "Swap Out");
+    let ram_zram = kv_row(&ram_swap_grid, 5, "zram");
+    let ram_zswap = kv_row(&ram_swap_grid, 6, "zswap");
+
+    let ram_psi_title = gtk::Label::new(Some("Memory Pressure (PSI)"));
+    ram_psi_title.set_xalign(0.0);
+    ram_psi_title.add_css_class("title-4");
+
+    let ram_psi_grid = gtk::Grid::new();
+    ram_psi_grid.set_row_spacing(10);
+    ram_psi_grid.set_column_spacing(18);
+    ram_psi_grid.set_hexpand(true);
+
+    let ram_psi_some = kv_row(&ram_psi_grid, 0, "some (10/60/300)");
+    let ram_psi_full = kv_row(&ram_psi_grid, 1, "full (10/60/300)");
+
+    let ram_adv_title = gtk::Label::new(Some("Advanced Breakdown"));
+    ram_adv_title.set_xalign(0.0);
+    ram_adv_title.add_css_class("title-4");
+
+    let ram_adv_grid = gtk::Grid::new();
+    ram_adv_grid.set_row_spacing(10);
+    ram_adv_grid.set_column_spacing(18);
+    ram_adv_grid.set_hexpand(true);
+
+    let ram_active = kv_row(&ram_adv_grid, 0, "Active");
+    let ram_inactive = kv_row(&ram_adv_grid, 1, "Inactive");
+    let ram_slab = kv_row(&ram_adv_grid, 2, "Slab");
+    let ram_sreclaim = kv_row(&ram_adv_grid, 3, "SReclaimable");
+    let ram_sunreclaim = kv_row(&ram_adv_grid, 4, "SUnreclaim");
+    let ram_mapped = kv_row(&ram_adv_grid, 5, "Mapped");
+    let ram_dirty = kv_row(&ram_adv_grid, 6, "Dirty");
+    let ram_writeback = kv_row(&ram_adv_grid, 7, "Writeback");
+    let ram_pagetables = kv_row(&ram_adv_grid, 8, "PageTables");
+    let ram_kernelstack = kv_row(&ram_adv_grid, 9, "KernelStack");
+
+    let ram_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    ram_adv_box.append(&ram_adv_title);
+    ram_adv_box.append(&ram_adv_grid);
+
+    let ram_adv_expander = gtk::Expander::new(Some("Advanced"));
+    ram_adv_expander.set_expanded(false);
+    ram_adv_expander.set_child(Some(&ram_adv_box));
+
+    let ram_top_buffer = gtk::TextBuffer::new(None);
+    ram_top_buffer.set_text("Loading...");
+
+    let ram_top_view = gtk::TextView::with_buffer(&ram_top_buffer);
+    ram_top_view.set_editable(false);
+    ram_top_view.set_cursor_visible(false);
+    ram_top_view.set_wrap_mode(gtk::WrapMode::None);
+    ram_top_view.add_css_class("monospace");
+
+    let ram_top_scroller = gtk::ScrolledWindow::new();
+    ram_top_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    ram_top_scroller.set_child(Some(&ram_top_view));
+    ram_top_scroller.set_size_request(-1, 180);
+
+    let ram_top_expander = gtk::Expander::new(Some("Top Memory Users"));
+    ram_top_expander.set_expanded(false);
+    ram_top_expander.set_child(Some(&ram_top_scroller));
+
+    let ram_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    ram_root.set_margin_top(16);
+    ram_root.set_margin_bottom(16);
+    ram_root.set_margin_start(16);
+    ram_root.set_margin_end(16);
+    ram_root.append(&ram_title);
+    ram_root.append(&ram_hint);
+    ram_root.append(&ram_core_title);
+    ram_root.append(&ram_core_grid);
+    ram_root.append(&ram_swap_title);
+    ram_root.append(&ram_swap_grid);
+    ram_root.append(&ram_psi_title);
+    ram_root.append(&ram_psi_grid);
+    ram_root.append(&ram_adv_expander);
+    ram_root.append(&ram_top_expander);
+
+    let ram = clamped_scroller(&ram_root);
+
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
 
@@ -404,6 +527,7 @@ fn build_ui(app: &adw::Application) {
     let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
     stack.add_titled(&battery, Some("battery"), "Battery");
+    stack.add_titled(&ram, Some("ram"), "RAM");
     stack.add_titled(&lighting, Some("lighting"), "Lighting");
     stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
 
@@ -543,6 +667,52 @@ fn build_ui(app: &adw::Application) {
                 &t.battery_time_to_empty_s
                     .map(format_duration_short)
                     .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+
+            // RAM.
+            ram_total.set_text(&format_bytes_gib_opt(t.mem_total_bytes));
+            ram_used.set_text(&format_used_ram(t.mem_used_bytes, t.mem_used_percent));
+            ram_avail.set_text(&format_bytes_gib_opt(t.mem_available_bytes));
+            ram_free.set_text(&format_bytes_gib_opt(t.mem_free_bytes));
+            ram_cached.set_text(&format_bytes_gib_opt(t.mem_cached_bytes));
+            ram_buffers.set_text(&format_bytes_gib_opt(t.mem_buffers_bytes));
+            ram_shared.set_text(&format_bytes_gib_opt(t.mem_shared_bytes));
+            ram_anon.set_text(&format_bytes_gib_opt(t.mem_anon_bytes));
+
+            ram_swap_total.set_text(&format_bytes_gib_opt(t.swap_total_bytes));
+            ram_swap_used.set_text(&format_bytes_gib_opt(t.swap_used_bytes));
+            ram_swap_free.set_text(&format_bytes_gib_opt(t.swap_free_bytes));
+            ram_swap_in.set_text(&format_rate_pages_opt(t.swap_in_pages_per_s));
+            ram_swap_out.set_text(&format_rate_pages_opt(t.swap_out_pages_per_s));
+            ram_zram.set_text(&format_zram_opt(t.zram_used_bytes, t.zram_total_bytes));
+            ram_zswap.set_text(&format_bool_opt(t.zswap_enabled));
+
+            ram_psi_some.set_text(&format_psi_opt(
+                t.psi_mem_some_avg10,
+                t.psi_mem_some_avg60,
+                t.psi_mem_some_avg300,
+            ));
+            ram_psi_full.set_text(&format_psi_opt(
+                t.psi_mem_full_avg10,
+                t.psi_mem_full_avg60,
+                t.psi_mem_full_avg300,
+            ));
+
+            ram_active.set_text(&format_bytes_gib_opt(t.mem_active_bytes));
+            ram_inactive.set_text(&format_bytes_gib_opt(t.mem_inactive_bytes));
+            ram_slab.set_text(&format_bytes_gib_opt(t.mem_slab_bytes));
+            ram_sreclaim.set_text(&format_bytes_gib_opt(t.mem_sreclaimable_bytes));
+            ram_sunreclaim.set_text(&format_bytes_gib_opt(t.mem_sunreclaim_bytes));
+            ram_mapped.set_text(&format_bytes_gib_opt(t.mem_mapped_bytes));
+            ram_dirty.set_text(&format_bytes_mib_opt(t.mem_dirty_bytes));
+            ram_writeback.set_text(&format_bytes_mib_opt(t.mem_writeback_bytes));
+            ram_pagetables.set_text(&format_bytes_mib_opt(t.mem_pagetables_bytes));
+            ram_kernelstack.set_text(&format_bytes_mib_opt(t.mem_kernelstack_bytes));
+
+            ram_top_buffer.set_text(
+                t.mem_top_processes
+                    .as_deref()
+                    .unwrap_or("Top processes: (n/a)"),
             );
 
             let fans_summary = format_fans_summary(&t);
@@ -923,6 +1093,98 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     t.battery_time_to_empty_s = map.get("battery_time_to_empty_s").and_then(u64_from_value);
     t.battery_time_to_full_s = map.get("battery_time_to_full_s").and_then(u64_from_value);
 
+    // Memory.
+    t.mem_total_bytes = map.get("mem_total_bytes").and_then(u64_from_value);
+    t.mem_used_bytes = map.get("mem_used_bytes").and_then(u64_from_value);
+    if let Some(v) = map
+        .get("mem_used_percent")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.mem_used_percent = Some(v as f32);
+    }
+    t.mem_available_bytes = map.get("mem_available_bytes").and_then(u64_from_value);
+    t.mem_free_bytes = map.get("mem_free_bytes").and_then(u64_from_value);
+    t.mem_cached_bytes = map.get("mem_cached_bytes").and_then(u64_from_value);
+    t.mem_buffers_bytes = map.get("mem_buffers_bytes").and_then(u64_from_value);
+    t.mem_shared_bytes = map.get("mem_shared_bytes").and_then(u64_from_value);
+    t.mem_anon_bytes = map.get("mem_anon_bytes").and_then(u64_from_value);
+
+    t.swap_total_bytes = map.get("swap_total_bytes").and_then(u64_from_value);
+    t.swap_used_bytes = map.get("swap_used_bytes").and_then(u64_from_value);
+    t.swap_free_bytes = map.get("swap_free_bytes").and_then(u64_from_value);
+    if let Some(v) = map
+        .get("swap_in_pages_per_s")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.swap_in_pages_per_s = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("swap_out_pages_per_s")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.swap_out_pages_per_s = Some(v as f32);
+    }
+    t.zram_total_bytes = map.get("zram_total_bytes").and_then(u64_from_value);
+    t.zram_used_bytes = map.get("zram_used_bytes").and_then(u64_from_value);
+    t.zswap_enabled = map
+        .get("zswap_enabled")
+        .and_then(|v| bool::try_from(v).ok());
+
+    if let Some(v) = map
+        .get("psi_mem_some_avg10")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_some_avg10 = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("psi_mem_some_avg60")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_some_avg60 = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("psi_mem_some_avg300")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_some_avg300 = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("psi_mem_full_avg10")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_full_avg10 = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("psi_mem_full_avg60")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_full_avg60 = Some(v as f32);
+    }
+    if let Some(v) = map
+        .get("psi_mem_full_avg300")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.psi_mem_full_avg300 = Some(v as f32);
+    }
+
+    t.mem_active_bytes = map.get("mem_active_bytes").and_then(u64_from_value);
+    t.mem_inactive_bytes = map.get("mem_inactive_bytes").and_then(u64_from_value);
+    t.mem_dirty_bytes = map.get("mem_dirty_bytes").and_then(u64_from_value);
+    t.mem_writeback_bytes = map.get("mem_writeback_bytes").and_then(u64_from_value);
+    t.mem_slab_bytes = map.get("mem_slab_bytes").and_then(u64_from_value);
+    t.mem_sreclaimable_bytes = map.get("mem_sreclaimable_bytes").and_then(u64_from_value);
+    t.mem_sunreclaim_bytes = map.get("mem_sunreclaim_bytes").and_then(u64_from_value);
+    t.mem_pagetables_bytes = map.get("mem_pagetables_bytes").and_then(u64_from_value);
+    t.mem_kernelstack_bytes = map.get("mem_kernelstack_bytes").and_then(u64_from_value);
+    t.mem_mapped_bytes = map.get("mem_mapped_bytes").and_then(u64_from_value);
+
+    if let Some(v) = map
+        .get("mem_top_processes")
+        .and_then(|v| <&str>::try_from(v).ok())
+    {
+        t.mem_top_processes = Some(v.to_string());
+    }
+
     t
 }
 
@@ -974,6 +1236,71 @@ fn format_duration_short(secs: u64) -> String {
         format!("{h}h {m}m")
     } else {
         format!("{m}m")
+    }
+}
+
+fn format_bytes_gib_opt(bytes: Option<u64>) -> String {
+    let Some(bytes) = bytes else {
+        return "(n/a)".to_string();
+    };
+    let gib = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+    format!("{gib:.1} GiB")
+}
+
+fn format_bytes_mib_opt(bytes: Option<u64>) -> String {
+    let Some(bytes) = bytes else {
+        return "(n/a)".to_string();
+    };
+    let mib = (bytes as f64) / (1024.0 * 1024.0);
+    format!("{mib:.0} MiB")
+}
+
+fn format_used_ram(used_bytes: Option<u64>, used_percent: Option<f32>) -> String {
+    match (used_bytes, used_percent) {
+        (Some(b), Some(p)) => {
+            let gib = (b as f64) / (1024.0 * 1024.0 * 1024.0);
+            format!("{gib:.1} GiB ({p:.0}%)")
+        }
+        (Some(b), None) => format_bytes_gib_opt(Some(b)),
+        _ => "(n/a)".to_string(),
+    }
+}
+
+fn format_rate_pages_opt(rate: Option<f32>) -> String {
+    let Some(rate) = rate else {
+        return "(n/a)".to_string();
+    };
+    if !rate.is_finite() {
+        return "(n/a)".to_string();
+    }
+    format!("{rate:.0} pages/s")
+}
+
+fn format_zram_opt(used_bytes: Option<u64>, total_bytes: Option<u64>) -> String {
+    match (used_bytes, total_bytes) {
+        (Some(used), Some(total)) if total > 0 => {
+            let used_gib = (used as f64) / (1024.0 * 1024.0 * 1024.0);
+            let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
+            let pct = (used as f64) / (total as f64) * 100.0;
+            format!("{used_gib:.1}/{total_gib:.1} GiB ({pct:.0}%)")
+        }
+        (Some(used), _) => format_bytes_gib_opt(Some(used)),
+        _ => "(n/a)".to_string(),
+    }
+}
+
+fn format_bool_opt(v: Option<bool>) -> String {
+    match v {
+        Some(true) => "Yes".to_string(),
+        Some(false) => "No".to_string(),
+        None => "(n/a)".to_string(),
+    }
+}
+
+fn format_psi_opt(avg10: Option<f32>, avg60: Option<f32>, avg300: Option<f32>) -> String {
+    match (avg10, avg60, avg300) {
+        (Some(a10), Some(a60), Some(a300)) => format!("{a10:.2} / {a60:.2} / {a300:.2}"),
+        _ => "(n/a)".to_string(),
     }
 }
 

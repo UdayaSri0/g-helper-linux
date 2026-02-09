@@ -3,6 +3,7 @@
 pub mod dbus;
 pub mod hwmon;
 pub mod kbd_backlight;
+pub mod memory;
 pub mod nvidia_smi;
 pub mod power_supply;
 pub mod upower;
