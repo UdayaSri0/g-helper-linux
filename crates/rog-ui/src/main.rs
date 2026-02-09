@@ -7,7 +7,7 @@ use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{ToolTip, Tray, TrayMethods};
-use rog_core::{BatteryState, PowerSource, TelemetrySnapshot};
+use rog_core::{BatteryState, PowerSource, TelemetrySnapshot, TopProcessMem};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -343,23 +343,104 @@ fn build_ui(app: &adw::Application) {
     ram_adv_expander.set_expanded(false);
     ram_adv_expander.set_child(Some(&ram_adv_box));
 
-    let ram_top_buffer = gtk::TextBuffer::new(None);
-    ram_top_buffer.set_text("Loading...");
+    // Top memory users table.
+    let ram_top_grid = gtk::Grid::new();
+    ram_top_grid.set_row_spacing(6);
+    ram_top_grid.set_column_spacing(12);
+    ram_top_grid.set_hexpand(true);
 
-    let ram_top_view = gtk::TextView::with_buffer(&ram_top_buffer);
-    ram_top_view.set_editable(false);
-    ram_top_view.set_cursor_visible(false);
-    ram_top_view.set_wrap_mode(gtk::WrapMode::None);
-    ram_top_view.add_css_class("monospace");
+    let headers = [
+        ("Process", 0.0),
+        ("RSS", 1.0),
+        ("Swap", 1.0),
+        ("PID", 1.0),
+        ("User", 0.0),
+    ];
+    for (col, (title, xalign)) in headers.iter().enumerate() {
+        let h = gtk::Label::new(Some(title));
+        h.set_xalign(*xalign);
+        h.add_css_class("table-head");
+        if col == 1 || col == 2 || col == 3 {
+            h.add_css_class("monospace");
+        }
+        ram_top_grid.attach(&h, col as i32, 0, 1, 1);
+    }
+
+    let mut ram_top_rows: Vec<(gtk::Label, gtk::Label, gtk::Label, gtk::Label, gtk::Label)> =
+        Vec::new();
+    for row in 0..10 {
+        let name = gtk::Label::new(Some(""));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+
+        let rss = gtk::Label::new(Some(""));
+        rss.set_xalign(1.0);
+        rss.add_css_class("monospace");
+
+        let swap = gtk::Label::new(Some(""));
+        swap.set_xalign(1.0);
+        swap.add_css_class("monospace");
+
+        let pid = gtk::Label::new(Some(""));
+        pid.set_xalign(1.0);
+        pid.add_css_class("monospace");
+
+        let user = gtk::Label::new(Some(""));
+        user.set_xalign(0.0);
+
+        let grid_row = (row + 1) as i32;
+        ram_top_grid.attach(&name, 0, grid_row, 1, 1);
+        ram_top_grid.attach(&rss, 1, grid_row, 1, 1);
+        ram_top_grid.attach(&swap, 2, grid_row, 1, 1);
+        ram_top_grid.attach(&pid, 3, grid_row, 1, 1);
+        ram_top_grid.attach(&user, 4, grid_row, 1, 1);
+
+        ram_top_rows.push((name, rss, swap, pid, user));
+    }
 
     let ram_top_scroller = gtk::ScrolledWindow::new();
     ram_top_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    ram_top_scroller.set_child(Some(&ram_top_view));
-    ram_top_scroller.set_size_request(-1, 180);
+    ram_top_scroller.set_child(Some(&ram_top_grid));
+    ram_top_scroller.set_size_request(-1, 220);
+
+    let copy_top_button = gtk::Button::with_label("Copy top processes");
+    copy_top_button.set_halign(gtk::Align::End);
+    {
+        let shared = shared.clone();
+        copy_top_button.connect_clicked(move |_| {
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+
+            let text = shared
+                .lock()
+                .ok()
+                .and_then(|st| st.telemetry.clone())
+                .and_then(|t| {
+                    if let Some(txt) = t.mem_top_processes {
+                        return Some(txt);
+                    }
+                    t.mem_top_processes_rows
+                        .as_deref()
+                        .map(format_top_processes_text)
+                })
+                .unwrap_or_else(|| "Top processes: (n/a)".to_string());
+            display.clipboard().set_text(&text);
+        });
+    }
+
+    let ram_top_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let ram_top_hint = gtk::Label::new(Some("Sorted by RSS (top 10). Updates every ~5s."));
+    ram_top_hint.set_xalign(0.0);
+    ram_top_hint.set_wrap(true);
+    ram_top_hint.add_css_class("dim-label");
+    ram_top_box.append(&ram_top_hint);
+    ram_top_box.append(&ram_top_scroller);
+    ram_top_box.append(&copy_top_button);
 
     let ram_top_expander = gtk::Expander::new(Some("Top Memory Users"));
     ram_top_expander.set_expanded(false);
-    ram_top_expander.set_child(Some(&ram_top_scroller));
+    ram_top_expander.set_child(Some(&ram_top_box));
 
     let ram_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     ram_root.set_margin_top(16);
@@ -709,11 +790,32 @@ fn build_ui(app: &adw::Application) {
             ram_pagetables.set_text(&format_bytes_mib_opt(t.mem_pagetables_bytes));
             ram_kernelstack.set_text(&format_bytes_mib_opt(t.mem_kernelstack_bytes));
 
-            ram_top_buffer.set_text(
-                t.mem_top_processes
-                    .as_deref()
-                    .unwrap_or("Top processes: (n/a)"),
-            );
+            let rows = t.mem_top_processes_rows.as_deref().unwrap_or_default();
+            if rows.is_empty() {
+                for (idx, (name, rss, swap, pid, user)) in ram_top_rows.iter().enumerate() {
+                    name.set_text(if idx == 0 { "(n/a)" } else { "" });
+                    rss.set_text("");
+                    swap.set_text("");
+                    pid.set_text("");
+                    user.set_text("");
+                }
+            } else {
+                for (idx, (name, rss, swap, pid, user)) in ram_top_rows.iter().enumerate() {
+                    if let Some(p) = rows.get(idx) {
+                        name.set_text(&p.name);
+                        rss.set_text(&format_bytes_human(p.rss_bytes));
+                        swap.set_text(&format_bytes_human(p.swap_bytes));
+                        pid.set_text(&p.pid.to_string());
+                        user.set_text(&p.user);
+                    } else {
+                        name.set_text("");
+                        rss.set_text("");
+                        swap.set_text("");
+                        pid.set_text("");
+                        user.set_text("");
+                    }
+                }
+            }
 
             let fans_summary = format_fans_summary(&t);
             fans_label.set_visible(!fans_summary.is_empty());
@@ -1185,6 +1287,46 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         t.mem_top_processes = Some(v.to_string());
     }
 
+    if let Some(rows) = map
+        .get("mem_top_processes_rows")
+        .cloned()
+        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
+    {
+        let mut out = Vec::new();
+        for r in rows {
+            let user = r
+                .get("user")
+                .and_then(|v| <&str>::try_from(v).ok())
+                .map(|v| v.to_string());
+            let pid = r
+                .get("pid")
+                .and_then(u64_from_value)
+                .and_then(|v| u32::try_from(v).ok());
+            let rss_bytes = r.get("rss_bytes").and_then(u64_from_value);
+            let swap_bytes = r.get("swap_bytes").and_then(u64_from_value);
+            let name = r
+                .get("name")
+                .and_then(|v| <&str>::try_from(v).ok())
+                .map(|v| v.to_string());
+
+            let (Some(user), Some(pid), Some(rss_bytes), Some(swap_bytes), Some(name)) =
+                (user, pid, rss_bytes, swap_bytes, name)
+            else {
+                continue;
+            };
+            out.push(TopProcessMem {
+                user,
+                pid,
+                rss_bytes,
+                swap_bytes,
+                name,
+            });
+        }
+        if !out.is_empty() {
+            t.mem_top_processes_rows = Some(out);
+        }
+    }
+
     t
 }
 
@@ -1304,6 +1446,46 @@ fn format_psi_opt(avg10: Option<f32>, avg60: Option<f32>, avg300: Option<f32>) -
     }
 }
 
+fn format_bytes_human(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let b = bytes as f64;
+    if b >= 10.0 * GIB {
+        format!("{:.0} GiB", b / GIB)
+    } else if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else if b >= 10.0 * MIB {
+        format!("{:.0} MiB", b / MIB)
+    } else if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= 10.0 * KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
+    let mut out = String::new();
+    out.push_str("PROCESS             RSS       SWAP     PID USER\n");
+    out.push_str("------------------------------------------------\n");
+    for p in rows {
+        out.push_str(&format!(
+            "{name:<18} {rss:>9} {swap:>9} {pid:>7} {user}\n",
+            name = p.name,
+            rss = format_bytes_human(p.rss_bytes),
+            swap = format_bytes_human(p.swap_bytes),
+            pid = p.pid,
+            user = p.user,
+        ));
+    }
+    out
+}
+
 fn kv_row(grid: &gtk::Grid, row: i32, key: &str) -> gtk::Label {
     let k = gtk::Label::new(Some(key));
     k.set_xalign(0.0);
@@ -1380,6 +1562,7 @@ fn install_css() {
 .metric-value { font-weight: 700; font-size: 26px; }
 .kv-key { opacity: 0.85; }
 .kv-value { font-weight: 600; }
+.table-head { opacity: 0.85; font-weight: 700; }
 "#;
 
     let provider = gtk::CssProvider::new();

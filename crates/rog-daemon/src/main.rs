@@ -179,7 +179,8 @@ async fn main() -> anyhow::Result<()> {
     let mut ticker = interval(Duration::from_secs(1));
     let mut last_swap: Option<(u64, u64, u64)> = None; // (ts_ms, pswpin, pswpout)
     let mut next_top_update_ms: u64 = 0;
-    let mut cached_top: Option<String> = None;
+    let mut cached_top_rows: Option<Vec<rog_core::TopProcessMem>> = None;
+    let mut cached_top_text: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -259,13 +260,17 @@ async fn main() -> anyhow::Result<()> {
                 // Top memory users (update less frequently to keep proc scanning cheap).
                 let now = now_ms();
                 if now >= next_top_update_ms {
-                    match memory.read_top_memory_processes(10) {
-                        Ok(txt) => cached_top = Some(txt),
+                    match memory.read_top_memory_processes_rows(10) {
+                        Ok(rows) => {
+                            cached_top_text = Some(format_top_processes_text(&rows));
+                            cached_top_rows = Some(rows);
+                        }
                         Err(e) => warnings.push(format!("top processes unavailable: {e}")),
                     }
                     next_top_update_ms = now.saturating_add(5_000);
                 }
-                telemetry.mem_top_processes = cached_top.clone();
+                telemetry.mem_top_processes = cached_top_text.clone();
+                telemetry.mem_top_processes_rows = cached_top_rows.clone();
 
                 // Best-effort battery details via sysfs (fills gaps UPower might not expose).
                 match power_supply.read_battery_status() {
@@ -590,6 +595,19 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     if let Some(ref v) = t.mem_top_processes {
         m.insert("mem_top_processes".to_string(), ov(v.clone()));
     }
+    if let Some(ref rows) = t.mem_top_processes_rows {
+        let mut out_rows: Vec<HashMap<String, OwnedValue>> = Vec::with_capacity(rows.len());
+        for p in rows {
+            let mut r = HashMap::new();
+            r.insert("user".to_string(), ov(p.user.clone()));
+            r.insert("pid".to_string(), OwnedValue::from(p.pid));
+            r.insert("rss_bytes".to_string(), OwnedValue::from(p.rss_bytes));
+            r.insert("swap_bytes".to_string(), OwnedValue::from(p.swap_bytes));
+            r.insert("name".to_string(), ov(p.name.clone()));
+            out_rows.push(r);
+        }
+        m.insert("mem_top_processes_rows".to_string(), ov(out_rows));
+    }
     m
 }
 
@@ -610,6 +628,46 @@ fn battery_state_to_str(s: BatteryState) -> &'static str {
         BatteryState::PendingCharge => "PendingCharge",
         BatteryState::PendingDischarge => "PendingDischarge",
         BatteryState::NotCharging => "NotCharging",
+    }
+}
+
+fn format_top_processes_text(rows: &[rog_core::TopProcessMem]) -> String {
+    let mut out = String::new();
+    out.push_str("USER        PID      RSS     SWAP  NAME\n");
+    out.push_str("----------------------------------------\n");
+    for p in rows {
+        out.push_str(&format!(
+            "{user:<10} {pid:>6} {rss:>8} {swap:>8}  {name}\n",
+            user = p.user,
+            pid = p.pid,
+            rss = format_bytes_short(p.rss_bytes),
+            swap = format_bytes_short(p.swap_bytes),
+            name = p.name
+        ));
+    }
+    out
+}
+
+fn format_bytes_short(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let b = bytes as f64;
+    if b >= 10.0 * GIB {
+        format!("{:.0}G", b / GIB)
+    } else if b >= GIB {
+        format!("{:.1}G", b / GIB)
+    } else if b >= 10.0 * MIB {
+        format!("{:.0}M", b / MIB)
+    } else if b >= MIB {
+        format!("{:.1}M", b / MIB)
+    } else if b >= 10.0 * KIB {
+        format!("{:.0}K", b / KIB)
+    } else if b >= KIB {
+        format!("{:.1}K", b / KIB)
+    } else {
+        format!("{bytes}B")
     }
 }
 

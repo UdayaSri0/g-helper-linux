@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rog_core::{RogError, RogResult};
+use rog_core::{RogError, RogResult, TopProcessMem};
 
 #[derive(Debug, Clone)]
 pub struct MemoryTelemetryProvider {
@@ -177,7 +177,7 @@ impl MemoryTelemetryProvider {
         }
     }
 
-    pub fn read_top_memory_processes(&self, limit: usize) -> RogResult<String> {
+    pub fn read_top_memory_processes_rows(&self, limit: usize) -> RogResult<Vec<TopProcessMem>> {
         let proc_dir = &self.proc_root;
         let passwd_map = read_passwd_users();
 
@@ -213,17 +213,32 @@ impl MemoryTelemetryProvider {
                 .then_with(|| a.pid.cmp(&b.pid))
         });
 
-        let mut out = String::new();
-        out.push_str("USER        PID      RSS     SWAP  NAME\n");
-        out.push_str("----------------------------------------\n");
+        let mut out = Vec::new();
         for p in procs.into_iter().take(limit.max(1).min(15)) {
             let user = passwd_map
                 .get(&p.uid)
                 .cloned()
                 .unwrap_or_else(|| p.uid.to_string());
+            out.push(TopProcessMem {
+                user,
+                pid: p.pid,
+                rss_bytes: p.rss_bytes,
+                swap_bytes: p.swap_bytes,
+                name: p.name,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn read_top_memory_processes(&self, limit: usize) -> RogResult<String> {
+        let rows = self.read_top_memory_processes_rows(limit)?;
+        let mut out = String::new();
+        out.push_str("USER        PID      RSS     SWAP  NAME\n");
+        out.push_str("----------------------------------------\n");
+        for p in rows {
             out.push_str(&format!(
                 "{user:<10} {pid:>6} {rss:>8} {swap:>8}  {name}\n",
-                user = user,
+                user = p.user,
                 pid = p.pid,
                 rss = format_bytes_short(p.rss_bytes),
                 swap = format_bytes_short(p.swap_bytes),

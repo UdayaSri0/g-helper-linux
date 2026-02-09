@@ -22,6 +22,15 @@ pub enum BatteryState {
     NotCharging,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopProcessMem {
+    pub user: String,
+    pub pid: u32,
+    pub rss_bytes: u64,
+    pub swap_bytes: u64,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PerformanceProfile {
     Silent,
@@ -323,6 +332,7 @@ pub struct TelemetrySnapshot {
     pub mem_mapped_bytes: Option<u64>,
 
     pub mem_top_processes: Option<String>,
+    pub mem_top_processes_rows: Option<Vec<TopProcessMem>>,
 }
 
 impl TelemetrySnapshot {
@@ -382,6 +392,7 @@ impl TelemetrySnapshot {
             mem_mapped_bytes: None,
 
             mem_top_processes: None,
+            mem_top_processes_rows: None,
         }
     }
 }
