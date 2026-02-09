@@ -10,6 +10,18 @@ pub enum PowerSource {
     Battery,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatteryState {
+    Unknown,
+    Charging,
+    Discharging,
+    Empty,
+    Full,
+    PendingCharge,
+    PendingDischarge,
+    NotCharging,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PerformanceProfile {
     Silent,
@@ -262,6 +274,14 @@ pub struct TelemetrySnapshot {
     pub power_source: Option<PowerSource>,
     pub battery_percent: Option<f32>,
     pub ac_online: Option<bool>,
+
+    pub battery_state: Option<BatteryState>,
+    pub battery_health_percent: Option<f32>,
+    pub battery_cycle_count: Option<u32>,
+    pub battery_charge_power_w: Option<f32>,
+    pub battery_discharge_power_w: Option<f32>,
+    pub battery_time_to_empty_s: Option<u64>,
+    pub battery_time_to_full_s: Option<u64>,
 }
 
 impl TelemetrySnapshot {
@@ -275,6 +295,13 @@ impl TelemetrySnapshot {
             power_source: None,
             battery_percent: None,
             ac_online: None,
+            battery_state: None,
+            battery_health_percent: None,
+            battery_cycle_count: None,
+            battery_charge_power_w: None,
+            battery_discharge_power_w: None,
+            battery_time_to_empty_s: None,
+            battery_time_to_full_s: None,
         }
     }
 }

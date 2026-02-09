@@ -4,10 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use regex::Regex;
-use rog_core::{AppState, DeviceCaps, PowerSource, TelemetrySnapshot};
+use rog_core::{AppState, BatteryState, DeviceCaps, PowerSource, TelemetrySnapshot};
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
+use rog_providers::power_supply::PowerSupplySysfsProvider;
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
@@ -119,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .context("connect to UPower")?;
     let hwmon = HwmonTelemetryProvider::default();
     let nvidia = NvidiaSmiTelemetryProvider::default();
+    let power_supply = PowerSupplySysfsProvider::default();
     let kbd_backlight = match KbdBacklightSysfs::probe() {
         Ok(v) => v,
         Err(e) => {
@@ -184,6 +186,22 @@ async fn main() -> anyhow::Result<()> {
                     TelemetrySnapshot::empty_now(now_ms())
                 });
 
+                // Best-effort battery details via sysfs (fills gaps UPower might not expose).
+                match power_supply.read_battery_status() {
+                    Ok(st) => {
+                        telemetry.battery_health_percent =
+                            telemetry.battery_health_percent.or(st.battery_health_percent);
+                        telemetry.battery_cycle_count =
+                            telemetry.battery_cycle_count.or(st.battery_cycle_count);
+                        telemetry.battery_charge_power_w =
+                            telemetry.battery_charge_power_w.or(st.battery_charge_power_w);
+                        telemetry.battery_discharge_power_w =
+                            telemetry.battery_discharge_power_w.or(st.battery_discharge_power_w);
+                        telemetry.battery_state = telemetry.battery_state.or(st.battery_state);
+                    }
+                    Err(e) => warnings.push(format!("power_supply sysfs unavailable: {e}")),
+                }
+
                 // Best-effort NVIDIA telemetry (read-only).
                 if telemetry.gpu_temp_c.is_none() {
                     match nvidia.read_gpu_temp_c().await {
@@ -203,6 +221,17 @@ async fn main() -> anyhow::Result<()> {
                         telemetry.power_source = st.power_source;
                         telemetry.battery_percent = st.battery_percent;
                         telemetry.ac_online = st.ac_online;
+                        telemetry.battery_state = st.battery_state.or(telemetry.battery_state);
+                        telemetry.battery_health_percent =
+                            telemetry.battery_health_percent.or(st.battery_health_percent);
+                        telemetry.battery_cycle_count =
+                            telemetry.battery_cycle_count.or(st.battery_cycle_count);
+                        telemetry.battery_charge_power_w =
+                            st.battery_charge_power_w.or(telemetry.battery_charge_power_w);
+                        telemetry.battery_discharge_power_w =
+                            st.battery_discharge_power_w.or(telemetry.battery_discharge_power_w);
+                        telemetry.battery_time_to_empty_s = st.battery_time_to_empty_s;
+                        telemetry.battery_time_to_full_s = st.battery_time_to_full_s;
                         // Use UPower's timestamp as the authoritative timestamp if hwmon failed.
                         telemetry.timestamp_ms = telemetry.timestamp_ms.max(st.timestamp_ms);
                     }
@@ -330,6 +359,36 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     if let Some(v) = t.ac_online {
         m.insert("ac_online".to_string(), OwnedValue::from(v));
     }
+    if let Some(v) = t.battery_state {
+        m.insert("battery_state".to_string(), ov(battery_state_to_str(v)));
+    }
+    if let Some(v) = t.battery_health_percent {
+        m.insert(
+            "battery_health_percent".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.battery_cycle_count {
+        m.insert("battery_cycle_count".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.battery_charge_power_w {
+        m.insert(
+            "battery_charge_power_w".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.battery_discharge_power_w {
+        m.insert(
+            "battery_discharge_power_w".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.battery_time_to_empty_s {
+        m.insert("battery_time_to_empty_s".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.battery_time_to_full_s {
+        m.insert("battery_time_to_full_s".to_string(), OwnedValue::from(v));
+    }
     m
 }
 
@@ -337,6 +396,19 @@ fn power_source_to_str(p: PowerSource) -> &'static str {
     match p {
         PowerSource::Ac => "Ac",
         PowerSource::Battery => "Battery",
+    }
+}
+
+fn battery_state_to_str(s: BatteryState) -> &'static str {
+    match s {
+        BatteryState::Unknown => "Unknown",
+        BatteryState::Charging => "Charging",
+        BatteryState::Discharging => "Discharging",
+        BatteryState::Empty => "Empty",
+        BatteryState::Full => "Full",
+        BatteryState::PendingCharge => "PendingCharge",
+        BatteryState::PendingDischarge => "PendingDischarge",
+        BatteryState::NotCharging => "NotCharging",
     }
 }
 

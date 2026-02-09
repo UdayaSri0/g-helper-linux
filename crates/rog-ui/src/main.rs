@@ -7,7 +7,7 @@ use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{ToolTip, Tray, TrayMethods};
-use rog_core::{PowerSource, TelemetrySnapshot};
+use rog_core::{BatteryState, PowerSource, TelemetrySnapshot};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -163,6 +163,11 @@ fn build_ui(app: &adw::Application) {
     let (cpu_card, cpu_value) = metric_card("CPU Temperature");
     let (gpu_card, gpu_value) = metric_card("GPU Temperature");
     let (batt_card, batt_value) = metric_card("Battery");
+    let (batt_state_card, batt_state_value) = metric_card("Charging Status");
+    let (batt_health_card, batt_health_value) = metric_card("Battery Health");
+    let (batt_cycles_card, batt_cycles_value) = metric_card("Cycle Count");
+    let (pwr_in_card, pwr_in_value) = metric_card("Power Input");
+    let (pwr_draw_card, pwr_draw_value) = metric_card("Power Draw");
     let (power_card, power_value) = metric_card("Power Source");
 
     let tiles = gtk::FlowBox::new();
@@ -175,6 +180,11 @@ fn build_ui(app: &adw::Application) {
     tiles.insert(&cpu_card, -1);
     tiles.insert(&gpu_card, -1);
     tiles.insert(&batt_card, -1);
+    tiles.insert(&batt_state_card, -1);
+    tiles.insert(&batt_health_card, -1);
+    tiles.insert(&batt_cycles_card, -1);
+    tiles.insert(&pwr_in_card, -1);
+    tiles.insert(&pwr_draw_card, -1);
     tiles.insert(&power_card, -1);
 
     let fans_label = gtk::Label::new(Some(""));
@@ -443,6 +453,27 @@ fn build_ui(app: &adw::Application) {
             batt_value.set_text(
                 &t.battery_percent
                     .map(|v| format!("{v:.0}%"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_state_value.set_text(&format_battery_state(&t));
+            batt_health_value.set_text(
+                &t.battery_health_percent
+                    .map(|v| format!("{v:.0}%"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_cycles_value.set_text(
+                &t.battery_cycle_count
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            pwr_in_value.set_text(
+                &t.battery_charge_power_w
+                    .map(|v| format!("{v:.1} W"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            pwr_draw_value.set_text(
+                &t.battery_discharge_power_w
+                    .map(|v| format!("{v:.1} W"))
                     .unwrap_or_else(|| "(n/a)".to_string()),
             );
             power_value.set_text(
@@ -784,7 +815,106 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         });
     }
 
+    if let Some(src) = map
+        .get("battery_state")
+        .and_then(|v| <&str>::try_from(v).ok())
+    {
+        t.battery_state = Some(match src {
+            "Charging" => BatteryState::Charging,
+            "Discharging" => BatteryState::Discharging,
+            "Empty" => BatteryState::Empty,
+            "Full" => BatteryState::Full,
+            "PendingCharge" => BatteryState::PendingCharge,
+            "PendingDischarge" => BatteryState::PendingDischarge,
+            "NotCharging" => BatteryState::NotCharging,
+            _ => BatteryState::Unknown,
+        });
+    }
+
+    if let Some(v) = map
+        .get("battery_health_percent")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.battery_health_percent = Some(v as f32);
+    }
+
+    if let Some(v) = map
+        .get("battery_cycle_count")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        t.battery_cycle_count = Some(v);
+    }
+
+    if let Some(v) = map
+        .get("battery_charge_power_w")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.battery_charge_power_w = Some(v as f32);
+    }
+
+    if let Some(v) = map
+        .get("battery_discharge_power_w")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.battery_discharge_power_w = Some(v as f32);
+    }
+
+    t.battery_time_to_empty_s = map.get("battery_time_to_empty_s").and_then(u64_from_value);
+    t.battery_time_to_full_s = map.get("battery_time_to_full_s").and_then(u64_from_value);
+
     t
+}
+
+fn u64_from_value(v: &OwnedValue) -> Option<u64> {
+    u64::try_from(v)
+        .ok()
+        .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
+}
+
+fn format_battery_state(t: &TelemetrySnapshot) -> String {
+    let Some(s) = t.battery_state else {
+        return "(n/a)".to_string();
+    };
+
+    let label = match s {
+        BatteryState::Unknown => "Unknown",
+        BatteryState::Charging => "Charging",
+        BatteryState::Discharging => "Discharging",
+        BatteryState::Empty => "Empty",
+        BatteryState::Full => "Full",
+        BatteryState::PendingCharge => "Pending",
+        BatteryState::PendingDischarge => "Pending",
+        BatteryState::NotCharging => "Not charging",
+    };
+
+    match s {
+        BatteryState::Charging | BatteryState::PendingCharge => {
+            if let Some(secs) = t.battery_time_to_full_s {
+                format!("{label} ({})", format_duration_short(secs))
+            } else {
+                label.to_string()
+            }
+        }
+        BatteryState::Discharging | BatteryState::PendingDischarge => {
+            if let Some(secs) = t.battery_time_to_empty_s {
+                format!("{label} ({})", format_duration_short(secs))
+            } else {
+                label.to_string()
+            }
+        }
+        _ => label.to_string(),
+    }
+}
+
+fn format_duration_short(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
