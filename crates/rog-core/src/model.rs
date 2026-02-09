@@ -282,6 +282,47 @@ pub struct TelemetrySnapshot {
     pub battery_discharge_power_w: Option<f32>,
     pub battery_time_to_empty_s: Option<u64>,
     pub battery_time_to_full_s: Option<u64>,
+
+    // Memory (RAM + swap) telemetry. Values are best-effort and may be unavailable depending on
+    // kernel/features/permissions.
+    pub mem_total_bytes: Option<u64>,
+    pub mem_used_bytes: Option<u64>,
+    pub mem_used_percent: Option<f32>,
+    pub mem_available_bytes: Option<u64>,
+    pub mem_free_bytes: Option<u64>,
+    pub mem_cached_bytes: Option<u64>,
+    pub mem_buffers_bytes: Option<u64>,
+    pub mem_shared_bytes: Option<u64>,
+    pub mem_anon_bytes: Option<u64>,
+
+    pub swap_total_bytes: Option<u64>,
+    pub swap_used_bytes: Option<u64>,
+    pub swap_free_bytes: Option<u64>,
+    pub swap_in_pages_per_s: Option<f32>,
+    pub swap_out_pages_per_s: Option<f32>,
+    pub zram_total_bytes: Option<u64>,
+    pub zram_used_bytes: Option<u64>,
+    pub zswap_enabled: Option<bool>,
+
+    pub psi_mem_some_avg10: Option<f32>,
+    pub psi_mem_some_avg60: Option<f32>,
+    pub psi_mem_some_avg300: Option<f32>,
+    pub psi_mem_full_avg10: Option<f32>,
+    pub psi_mem_full_avg60: Option<f32>,
+    pub psi_mem_full_avg300: Option<f32>,
+
+    pub mem_active_bytes: Option<u64>,
+    pub mem_inactive_bytes: Option<u64>,
+    pub mem_dirty_bytes: Option<u64>,
+    pub mem_writeback_bytes: Option<u64>,
+    pub mem_slab_bytes: Option<u64>,
+    pub mem_sreclaimable_bytes: Option<u64>,
+    pub mem_sunreclaim_bytes: Option<u64>,
+    pub mem_pagetables_bytes: Option<u64>,
+    pub mem_kernelstack_bytes: Option<u64>,
+    pub mem_mapped_bytes: Option<u64>,
+
+    pub mem_top_processes: Option<String>,
 }
 
 impl TelemetrySnapshot {
@@ -302,6 +343,45 @@ impl TelemetrySnapshot {
             battery_discharge_power_w: None,
             battery_time_to_empty_s: None,
             battery_time_to_full_s: None,
+
+            mem_total_bytes: None,
+            mem_used_bytes: None,
+            mem_used_percent: None,
+            mem_available_bytes: None,
+            mem_free_bytes: None,
+            mem_cached_bytes: None,
+            mem_buffers_bytes: None,
+            mem_shared_bytes: None,
+            mem_anon_bytes: None,
+
+            swap_total_bytes: None,
+            swap_used_bytes: None,
+            swap_free_bytes: None,
+            swap_in_pages_per_s: None,
+            swap_out_pages_per_s: None,
+            zram_total_bytes: None,
+            zram_used_bytes: None,
+            zswap_enabled: None,
+
+            psi_mem_some_avg10: None,
+            psi_mem_some_avg60: None,
+            psi_mem_some_avg300: None,
+            psi_mem_full_avg10: None,
+            psi_mem_full_avg60: None,
+            psi_mem_full_avg300: None,
+
+            mem_active_bytes: None,
+            mem_inactive_bytes: None,
+            mem_dirty_bytes: None,
+            mem_writeback_bytes: None,
+            mem_slab_bytes: None,
+            mem_sreclaimable_bytes: None,
+            mem_sunreclaim_bytes: None,
+            mem_pagetables_bytes: None,
+            mem_kernelstack_bytes: None,
+            mem_mapped_bytes: None,
+
+            mem_top_processes: None,
         }
     }
 }

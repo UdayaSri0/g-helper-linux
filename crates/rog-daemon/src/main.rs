@@ -7,6 +7,7 @@ use regex::Regex;
 use rog_core::{AppState, BatteryState, DeviceCaps, PowerSource, TelemetrySnapshot};
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
+use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::power_supply::PowerSupplySysfsProvider;
 use rog_providers::upower::UPowerProvider;
@@ -120,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         .context("connect to UPower")?;
     let hwmon = HwmonTelemetryProvider::default();
     let nvidia = NvidiaSmiTelemetryProvider::default();
+    let memory = MemoryTelemetryProvider::default();
     let power_supply = PowerSupplySysfsProvider::default();
     let kbd_backlight = match KbdBacklightSysfs::probe() {
         Ok(v) => v,
@@ -175,6 +177,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Telemetry loop.
     let mut ticker = interval(Duration::from_secs(1));
+    let mut last_swap: Option<(u64, u64, u64)> = None; // (ts_ms, pswpin, pswpout)
+    let mut next_top_update_ms: u64 = 0;
+    let mut cached_top: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -185,6 +190,82 @@ async fn main() -> anyhow::Result<()> {
                     warnings.push(format!("hwmon unavailable: {e}"));
                     TelemetrySnapshot::empty_now(now_ms())
                 });
+
+                // Best-effort memory (RAM/swap) telemetry from procfs.
+                match memory.read_snapshot() {
+                    Ok(mem) => {
+                        telemetry.mem_total_bytes = mem.mem_total_bytes;
+                        telemetry.mem_used_bytes = mem.mem_used_bytes;
+                        telemetry.mem_used_percent = mem.mem_used_percent;
+                        telemetry.mem_available_bytes = mem.mem_available_bytes;
+                        telemetry.mem_free_bytes = mem.mem_free_bytes;
+                        telemetry.mem_cached_bytes = mem.mem_cached_bytes;
+                        telemetry.mem_buffers_bytes = mem.mem_buffers_bytes;
+                        telemetry.mem_shared_bytes = mem.mem_shared_bytes;
+                        telemetry.mem_anon_bytes = mem.mem_anon_bytes;
+
+                        telemetry.swap_total_bytes = mem.swap_total_bytes;
+                        telemetry.swap_used_bytes = mem.swap_used_bytes;
+                        telemetry.swap_free_bytes = mem.swap_free_bytes;
+                        telemetry.zram_total_bytes = mem.zram_total_bytes;
+                        telemetry.zram_used_bytes = mem.zram_used_bytes;
+                        telemetry.zswap_enabled = mem.zswap_enabled;
+
+                        telemetry.psi_mem_some_avg10 = mem.psi_mem_some_avg10;
+                        telemetry.psi_mem_some_avg60 = mem.psi_mem_some_avg60;
+                        telemetry.psi_mem_some_avg300 = mem.psi_mem_some_avg300;
+                        telemetry.psi_mem_full_avg10 = mem.psi_mem_full_avg10;
+                        telemetry.psi_mem_full_avg60 = mem.psi_mem_full_avg60;
+                        telemetry.psi_mem_full_avg300 = mem.psi_mem_full_avg300;
+
+                        telemetry.mem_active_bytes = mem.mem_active_bytes;
+                        telemetry.mem_inactive_bytes = mem.mem_inactive_bytes;
+                        telemetry.mem_dirty_bytes = mem.mem_dirty_bytes;
+                        telemetry.mem_writeback_bytes = mem.mem_writeback_bytes;
+                        telemetry.mem_slab_bytes = mem.mem_slab_bytes;
+                        telemetry.mem_sreclaimable_bytes = mem.mem_sreclaimable_bytes;
+                        telemetry.mem_sunreclaim_bytes = mem.mem_sunreclaim_bytes;
+                        telemetry.mem_pagetables_bytes = mem.mem_pagetables_bytes;
+                        telemetry.mem_kernelstack_bytes = mem.mem_kernelstack_bytes;
+                        telemetry.mem_mapped_bytes = mem.mem_mapped_bytes;
+                    }
+                    Err(e) => warnings.push(format!("memory telemetry unavailable: {e}")),
+                }
+
+                // Swap in/out rate (vmstat deltas).
+                match memory.read_vmstat_swap_counters() {
+                    Ok(Some(c)) => {
+                        let now = now_ms();
+                        if let Some((prev_ts, prev_in, prev_out)) = last_swap {
+                            let dt_ms = now.saturating_sub(prev_ts);
+                            if dt_ms > 0 {
+                                let dt_s = (dt_ms as f32) / 1000.0;
+                                if c.pswpin_pages >= prev_in {
+                                    let din = (c.pswpin_pages - prev_in) as f32 / dt_s;
+                                    telemetry.swap_in_pages_per_s = Some(din);
+                                }
+                                if c.pswpout_pages >= prev_out {
+                                    let dout = (c.pswpout_pages - prev_out) as f32 / dt_s;
+                                    telemetry.swap_out_pages_per_s = Some(dout);
+                                }
+                            }
+                        }
+                        last_swap = Some((now, c.pswpin_pages, c.pswpout_pages));
+                    }
+                    Ok(None) => {}
+                    Err(e) => warnings.push(format!("vmstat unavailable: {e}")),
+                }
+
+                // Top memory users (update less frequently to keep proc scanning cheap).
+                let now = now_ms();
+                if now >= next_top_update_ms {
+                    match memory.read_top_memory_processes(10) {
+                        Ok(txt) => cached_top = Some(txt),
+                        Err(e) => warnings.push(format!("top processes unavailable: {e}")),
+                    }
+                    next_top_update_ms = now.saturating_add(5_000);
+                }
+                telemetry.mem_top_processes = cached_top.clone();
 
                 // Best-effort battery details via sysfs (fills gaps UPower might not expose).
                 match power_supply.read_battery_status() {
@@ -388,6 +469,126 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     }
     if let Some(v) = t.battery_time_to_full_s {
         m.insert("battery_time_to_full_s".to_string(), OwnedValue::from(v));
+    }
+
+    // Memory.
+    if let Some(v) = t.mem_total_bytes {
+        m.insert("mem_total_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_used_bytes {
+        m.insert("mem_used_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_used_percent {
+        m.insert("mem_used_percent".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.mem_available_bytes {
+        m.insert("mem_available_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_free_bytes {
+        m.insert("mem_free_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_cached_bytes {
+        m.insert("mem_cached_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_buffers_bytes {
+        m.insert("mem_buffers_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_shared_bytes {
+        m.insert("mem_shared_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_anon_bytes {
+        m.insert("mem_anon_bytes".to_string(), OwnedValue::from(v));
+    }
+
+    if let Some(v) = t.swap_total_bytes {
+        m.insert("swap_total_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.swap_used_bytes {
+        m.insert("swap_used_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.swap_free_bytes {
+        m.insert("swap_free_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.swap_in_pages_per_s {
+        m.insert(
+            "swap_in_pages_per_s".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.swap_out_pages_per_s {
+        m.insert(
+            "swap_out_pages_per_s".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.zram_total_bytes {
+        m.insert("zram_total_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.zram_used_bytes {
+        m.insert("zram_used_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.zswap_enabled {
+        m.insert("zswap_enabled".to_string(), OwnedValue::from(v));
+    }
+
+    if let Some(v) = t.psi_mem_some_avg10 {
+        m.insert("psi_mem_some_avg10".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.psi_mem_some_avg60 {
+        m.insert("psi_mem_some_avg60".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.psi_mem_some_avg300 {
+        m.insert(
+            "psi_mem_some_avg300".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+    if let Some(v) = t.psi_mem_full_avg10 {
+        m.insert("psi_mem_full_avg10".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.psi_mem_full_avg60 {
+        m.insert("psi_mem_full_avg60".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.psi_mem_full_avg300 {
+        m.insert(
+            "psi_mem_full_avg300".to_string(),
+            OwnedValue::from(v as f64),
+        );
+    }
+
+    if let Some(v) = t.mem_active_bytes {
+        m.insert("mem_active_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_inactive_bytes {
+        m.insert("mem_inactive_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_dirty_bytes {
+        m.insert("mem_dirty_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_writeback_bytes {
+        m.insert("mem_writeback_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_slab_bytes {
+        m.insert("mem_slab_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_sreclaimable_bytes {
+        m.insert("mem_sreclaimable_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_sunreclaim_bytes {
+        m.insert("mem_sunreclaim_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_pagetables_bytes {
+        m.insert("mem_pagetables_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_kernelstack_bytes {
+        m.insert("mem_kernelstack_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.mem_mapped_bytes {
+        m.insert("mem_mapped_bytes".to_string(), OwnedValue::from(v));
+    }
+
+    if let Some(ref v) = t.mem_top_processes {
+        m.insert("mem_top_processes".to_string(), ov(v.clone()));
     }
     m
 }
