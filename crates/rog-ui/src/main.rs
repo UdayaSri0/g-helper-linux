@@ -163,11 +163,6 @@ fn build_ui(app: &adw::Application) {
     let (cpu_card, cpu_value) = metric_card("CPU Temperature");
     let (gpu_card, gpu_value) = metric_card("GPU Temperature");
     let (batt_card, batt_value) = metric_card("Battery");
-    let (batt_state_card, batt_state_value) = metric_card("Charging Status");
-    let (batt_health_card, batt_health_value) = metric_card("Battery Health");
-    let (batt_cycles_card, batt_cycles_value) = metric_card("Cycle Count");
-    let (pwr_in_card, pwr_in_value) = metric_card("Power Input");
-    let (pwr_draw_card, pwr_draw_value) = metric_card("Power Draw");
     let (power_card, power_value) = metric_card("Power Source");
 
     let tiles = gtk::FlowBox::new();
@@ -180,11 +175,6 @@ fn build_ui(app: &adw::Application) {
     tiles.insert(&cpu_card, -1);
     tiles.insert(&gpu_card, -1);
     tiles.insert(&batt_card, -1);
-    tiles.insert(&batt_state_card, -1);
-    tiles.insert(&batt_health_card, -1);
-    tiles.insert(&batt_cycles_card, -1);
-    tiles.insert(&pwr_in_card, -1);
-    tiles.insert(&pwr_draw_card, -1);
     tiles.insert(&power_card, -1);
 
     let fans_label = gtk::Label::new(Some(""));
@@ -226,6 +216,45 @@ fn build_ui(app: &adw::Application) {
     dash_root.append(&status_label);
 
     let dash = clamped_scroller(&dash_root);
+
+    // Battery page (read-only table of best-effort battery telemetry).
+    let battery_title = gtk::Label::new(Some("Battery"));
+    battery_title.set_xalign(0.0);
+    battery_title.add_css_class("title-3");
+
+    let battery_hint = gtk::Label::new(Some(
+        "Battery telemetry is best-effort. Some fields may be unavailable depending on hardware/UPower/sysfs.",
+    ));
+    battery_hint.set_xalign(0.0);
+    battery_hint.set_wrap(true);
+    battery_hint.add_css_class("dim-label");
+
+    let batt_grid = gtk::Grid::new();
+    batt_grid.set_row_spacing(10);
+    batt_grid.set_column_spacing(18);
+    batt_grid.set_hexpand(true);
+
+    let batt_tbl_percent = kv_row(&batt_grid, 0, "Charge");
+    let batt_tbl_state = kv_row(&batt_grid, 1, "Status");
+    let batt_tbl_source = kv_row(&batt_grid, 2, "Power Source");
+    let batt_tbl_ac_online = kv_row(&batt_grid, 3, "AC Online");
+    let batt_tbl_charge_power = kv_row(&batt_grid, 4, "Power Input");
+    let batt_tbl_discharge_power = kv_row(&batt_grid, 5, "Power Draw");
+    let batt_tbl_health = kv_row(&batt_grid, 6, "Health");
+    let batt_tbl_cycles = kv_row(&batt_grid, 7, "Cycle Count");
+    let batt_tbl_ttf = kv_row(&batt_grid, 8, "Time to Full");
+    let batt_tbl_tte = kv_row(&batt_grid, 9, "Time to Empty");
+
+    let battery_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    battery_root.set_margin_top(16);
+    battery_root.set_margin_bottom(16);
+    battery_root.set_margin_start(16);
+    battery_root.set_margin_end(16);
+    battery_root.append(&battery_title);
+    battery_root.append(&battery_hint);
+    battery_root.append(&batt_grid);
+
+    let battery = clamped_scroller(&battery_root);
 
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
@@ -374,6 +403,7 @@ fn build_ui(app: &adw::Application) {
 
     let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
+    stack.add_titled(&battery, Some("battery"), "Battery");
     stack.add_titled(&lighting, Some("lighting"), "Lighting");
     stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
 
@@ -455,33 +485,63 @@ fn build_ui(app: &adw::Application) {
                     .map(|v| format!("{v:.0}%"))
                     .unwrap_or_else(|| "(n/a)".to_string()),
             );
-            batt_state_value.set_text(&format_battery_state(&t));
-            batt_health_value.set_text(
-                &t.battery_health_percent
-                    .map(|v| format!("{v:.0}%"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_cycles_value.set_text(
-                &t.battery_cycle_count
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            pwr_in_value.set_text(
-                &t.battery_charge_power_w
-                    .map(|v| format!("{v:.1} W"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            pwr_draw_value.set_text(
-                &t.battery_discharge_power_w
-                    .map(|v| format!("{v:.1} W"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
             power_value.set_text(
                 &t.power_source
                     .map(|p| match p {
                         PowerSource::Ac => "AC".to_string(),
                         PowerSource::Battery => "Battery".to_string(),
                     })
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+
+            // Battery table.
+            batt_tbl_percent.set_text(
+                &t.battery_percent
+                    .map(|v| format!("{v:.0}%"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_state.set_text(&format_battery_state(&t));
+            batt_tbl_source.set_text(
+                &t.power_source
+                    .map(|p| match p {
+                        PowerSource::Ac => "AC".to_string(),
+                        PowerSource::Battery => "Battery".to_string(),
+                    })
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_ac_online.set_text(
+                &t.ac_online
+                    .map(|v| if v { "Yes" } else { "No" }.to_string())
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_charge_power.set_text(
+                &t.battery_charge_power_w
+                    .map(|v| format!("{v:.1} W"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_discharge_power.set_text(
+                &t.battery_discharge_power_w
+                    .map(|v| format!("{v:.1} W"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_health.set_text(
+                &t.battery_health_percent
+                    .map(|v| format!("{v:.0}%"))
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_cycles.set_text(
+                &t.battery_cycle_count
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_ttf.set_text(
+                &t.battery_time_to_full_s
+                    .map(format_duration_short)
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            batt_tbl_tte.set_text(
+                &t.battery_time_to_empty_s
+                    .map(format_duration_short)
                     .unwrap_or_else(|| "(n/a)".to_string()),
             );
 
@@ -917,6 +977,21 @@ fn format_duration_short(secs: u64) -> String {
     }
 }
 
+fn kv_row(grid: &gtk::Grid, row: i32, key: &str) -> gtk::Label {
+    let k = gtk::Label::new(Some(key));
+    k.set_xalign(0.0);
+    k.add_css_class("kv-key");
+
+    let v = gtk::Label::new(Some("(n/a)"));
+    v.set_xalign(1.0);
+    v.set_hexpand(true);
+    v.add_css_class("kv-value");
+
+    grid.attach(&k, 0, row, 1, 1);
+    grid.attach(&v, 1, row, 1, 1);
+    v
+}
+
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
     fn s(map: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {
         map.get(k)
@@ -976,6 +1051,8 @@ fn install_css() {
 .metric-card { padding: 12px; }
 .metric-title { opacity: 0.85; }
 .metric-value { font-weight: 700; font-size: 26px; }
+.kv-key { opacity: 0.85; }
+.kv-value { font-weight: 600; }
 "#;
 
     let provider = gtk::CssProvider::new();
