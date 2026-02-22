@@ -4,12 +4,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use regex::Regex;
-use rog_core::{AppState, BatteryState, DeviceCaps, PowerSource, TelemetrySnapshot};
+use rog_core::{
+    AppState, BatteryLimitPercent, BatteryState, CpuCaps, CpuTelemetry, DeviceCaps, GpuMode,
+    PerformanceProfile, PowerSource, TelemetrySnapshot,
+};
+use rog_providers::asusd::AsusdPlatformProvider;
+use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::power_supply::PowerSupplySysfsProvider;
+use rog_providers::supergfx::SupergfxProvider;
+use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
@@ -24,19 +31,39 @@ const DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 #[derive(Debug)]
 struct SharedState {
     inner: RwLock<AppState>,
+    control: RwLock<ControlState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ControlState {
+    profile: Option<PerformanceProfile>,
+    gpu_mode: Option<GpuMode>,
+    battery_limit: Option<BatteryLimitPercent>,
 }
 
 #[derive(Debug, Clone)]
 struct RogHelperDaemon {
     state: Arc<SharedState>,
     kbd_backlight: Option<KbdBacklightSysfs>,
+    asusd: Option<AsusdPlatformProvider>,
+    supergfx: Option<SupergfxProvider>,
+    cpu: CpuTelemetryProvider,
 }
 
 impl RogHelperDaemon {
-    fn new(state: Arc<SharedState>, kbd_backlight: Option<KbdBacklightSysfs>) -> Self {
+    fn new(
+        state: Arc<SharedState>,
+        kbd_backlight: Option<KbdBacklightSysfs>,
+        asusd: Option<AsusdPlatformProvider>,
+        supergfx: Option<SupergfxProvider>,
+        cpu: CpuTelemetryProvider,
+    ) -> Self {
         Self {
             state,
             kbd_backlight,
+            asusd,
+            supergfx,
+            cpu,
         }
     }
 
@@ -49,6 +76,42 @@ impl RogHelperDaemon {
         guard.telemetry = telemetry;
         guard.warnings = warnings;
     }
+
+    fn set_cpu_telemetry(&self, cpu: CpuTelemetry) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        guard.cpu = cpu;
+    }
+
+    fn set_cpu_caps(&self, caps: CpuCaps) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        guard.cpu_caps = caps;
+    }
+
+    fn read_control_state(&self) -> ControlState {
+        self.state.control.read().expect("rwlock poisoned").clone()
+    }
+
+    fn set_control_state(
+        &self,
+        profile: Option<PerformanceProfile>,
+        gpu_mode: Option<GpuMode>,
+        battery_limit: Option<BatteryLimitPercent>,
+    ) {
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.profile = profile;
+        guard.gpu_mode = gpu_mode;
+        guard.battery_limit = battery_limit;
+    }
+
+    fn refresh_cpu_state(&self) -> rog_core::RogResult<()> {
+        let (timestamp_ms, temp_c) = {
+            let state = self.state.inner.read().expect("rwlock poisoned");
+            (state.telemetry.timestamp_ms, state.telemetry.cpu_temp_c)
+        };
+        let cpu = self.cpu.read_snapshot(timestamp_ms, temp_c)?;
+        self.set_cpu_telemetry(cpu);
+        Ok(())
+    }
 }
 
 #[interface(name = "io.github.roghelper.Daemon1")]
@@ -58,15 +121,44 @@ impl RogHelperDaemon {
     }
 
     fn get_state(&self) -> HashMap<String, OwnedValue> {
-        let mut m = state_to_dbus(&self.read_state());
+        let state = self.read_state();
+        let mut m = state_to_dbus(&state);
+        m.insert(
+            "cpu_caps".to_string(),
+            ov(cpu_caps_to_dbus(&state.cpu_caps)),
+        );
+        m.insert("cpu".to_string(), ov(cpu_to_dbus(&state.cpu)));
         if let Some(l) = self.lighting_to_dbus() {
             m.insert("lighting".to_string(), ov(l));
+        }
+        let control = self.read_control_state();
+        if let Some(p) = control.profile {
+            m.insert("profile".to_string(), ov(profile_to_str(p)));
+        }
+        if let Some(g) = control.gpu_mode {
+            m.insert("gpu_mode".to_string(), ov(gpu_mode_to_str(g)));
+        }
+        if let Some(lim) = control.battery_limit {
+            m.insert("battery_limit".to_string(), OwnedValue::from(lim.0 as u64));
         }
         m
     }
 
     fn get_telemetry(&self) -> HashMap<String, OwnedValue> {
         telemetry_to_dbus(&self.read_state().telemetry)
+    }
+
+    fn get_cpu_caps(&self) -> HashMap<String, OwnedValue> {
+        cpu_caps_to_dbus(&self.read_state().cpu_caps)
+    }
+
+    fn get_cpu_telemetry(&self) -> HashMap<String, OwnedValue> {
+        cpu_to_dbus(&self.read_state().cpu)
+    }
+
+    fn get_cpu_diagnostics(&self) -> String {
+        let state = self.read_state();
+        cpu_diagnostics_text(&state.cpu_caps, &state.cpu)
     }
 
     fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
@@ -102,6 +194,128 @@ impl RogHelperDaemon {
             .map_err(map_rog_error_to_fdo)?;
         Ok(())
     }
+
+    async fn set_profile(&self, profile: &str) -> fdo::Result<()> {
+        let Some(asusd) = &self.asusd else {
+            return Err(fdo::Error::NotSupported(
+                "profile control requires asusd platform interface".to_string(),
+            ));
+        };
+
+        let profile = parse_profile_request(profile).map_err(fdo::Error::InvalidArgs)?;
+        asusd
+            .set_profile(profile.clone())
+            .await
+            .map_err(map_rog_error_to_fdo)?;
+
+        let confirmed = asusd.get_profile().await.unwrap_or(profile);
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.profile = Some(confirmed);
+        Ok(())
+    }
+
+    async fn set_gpu_mode(&self, mode: &str) -> fdo::Result<()> {
+        let Some(supergfx) = &self.supergfx else {
+            return Err(fdo::Error::NotSupported(
+                "GPU mode control requires supergfxd".to_string(),
+            ));
+        };
+
+        let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
+        supergfx
+            .set_mode(mode.clone())
+            .await
+            .map_err(map_rog_error_to_fdo)?;
+
+        let confirmed = supergfx.get_mode().await.unwrap_or(mode);
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.gpu_mode = Some(confirmed);
+        Ok(())
+    }
+
+    async fn set_battery_limit(&self, limit: u64) -> fdo::Result<()> {
+        let Some(asusd) = &self.asusd else {
+            return Err(fdo::Error::NotSupported(
+                "battery limit control requires asusd platform interface".to_string(),
+            ));
+        };
+
+        let limit = u8::try_from(limit)
+            .map_err(|_| fdo::Error::InvalidArgs("battery limit must fit into u8".to_string()))?;
+        asusd
+            .set_limit(BatteryLimitPercent(limit))
+            .await
+            .map_err(map_rog_error_to_fdo)?;
+
+        let confirmed = asusd
+            .get_limit()
+            .await
+            .unwrap_or(BatteryLimitPercent(limit));
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.battery_limit = Some(confirmed);
+        Ok(())
+    }
+
+    async fn set_cpu_turbo(&self, enabled: bool) -> fdo::Result<()> {
+        self.cpu.set_boost(enabled).map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
+
+    async fn set_cpu_power_mode(&self, mode: &str) -> fdo::Result<()> {
+        self.cpu
+            .set_power_mode(mode)
+            .map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
+
+    async fn set_cpu_governor(&self, governor: &str) -> fdo::Result<()> {
+        self.cpu
+            .set_governor(governor)
+            .map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
+
+    async fn set_cpu_epp(&self, epp: &str) -> fdo::Result<()> {
+        self.cpu.set_epp(epp).map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
+
+    async fn set_cpu_freq_limits(&self, min_mhz: u64, max_mhz: u64) -> fdo::Result<()> {
+        let min = if min_mhz == 0 {
+            None
+        } else {
+            Some(u32::try_from(min_mhz).map_err(|_| {
+                fdo::Error::InvalidArgs("min_mhz does not fit into u32".to_string())
+            })?)
+        };
+        let max = if max_mhz == 0 {
+            None
+        } else {
+            Some(u32::try_from(max_mhz).map_err(|_| {
+                fdo::Error::InvalidArgs("max_mhz does not fit into u32".to_string())
+            })?)
+        };
+
+        self.cpu
+            .set_freq_limits(min, max)
+            .map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
+
+    async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
+        let core_id = u32::try_from(core_id)
+            .map_err(|_| fdo::Error::InvalidArgs("core_id does not fit into u32".to_string()))?;
+        self.cpu
+            .set_core_online(core_id, online)
+            .map_err(map_rog_error_to_fdo)?;
+        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
+        Ok(())
+    }
 }
 
 #[tokio::main]
@@ -120,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("connect to UPower")?;
     let hwmon = HwmonTelemetryProvider::default();
+    let cpu = CpuTelemetryProvider::default();
     let nvidia = NvidiaSmiTelemetryProvider::default();
     let memory = MemoryTelemetryProvider::default();
     let power_supply = PowerSupplySysfsProvider::default();
@@ -130,17 +345,37 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+    let asusd = match AsusdPlatformProvider::connect_system().await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("asusd platform provider probe failed: {e}");
+            None
+        }
+    };
+    let supergfx = match SupergfxProvider::connect_system().await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("supergfx provider probe failed: {e}");
+            None
+        }
+    };
 
     let mut caps = DeviceCaps::unknown();
-    // Minimal caps for milestone 1: only what we can infer from sysfs.
     let hw_snapshot = hwmon.read_snapshot().unwrap_or_else(|e| {
         warn!("hwmon read failed: {e}");
         TelemetrySnapshot::empty_now(now_ms())
     });
+    let cpu_caps = cpu.probe_caps();
+    let initial_cpu = cpu
+        .read_snapshot(now_ms(), hw_snapshot.cpu_temp_c)
+        .unwrap_or_else(|e| {
+            warn!("cpu telemetry read failed: {e}");
+            CpuTelemetry::empty_now(now_ms())
+        });
     caps.has_fan_reading = !hw_snapshot.fans_rpm.is_empty();
     caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
-    caps.notes
-        .push("Milestone 1: asusd/supergfxd not integrated yet.".to_string());
+    let mut control_state = ControlState::default();
+
     if let Some(kbd) = &kbd_backlight {
         caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
         caps.notes.push(format!(
@@ -151,6 +386,96 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
+    caps.notes.push(format!(
+        "CPU controls: cpufreq={}, epp={}, boost={}, writable={}.",
+        cpu_caps.has_cpufreq, cpu_caps.has_epp, cpu_caps.has_boost_toggle, cpu_caps.policy_writable
+    ));
+    if cpu_caps.has_package_power {
+        caps.notes
+            .push("CPU package power telemetry via RAPL is available.".to_string());
+    }
+    for path in &cpu_caps.sysfs_paths {
+        caps.endpoints.push(format!("cpu-sysfs:{path}"));
+    }
+
+    match &asusd {
+        Some(provider) => {
+            caps.endpoints
+                .push(format!("asusd-platform:{}", provider.endpoint_tag()));
+            match provider.probe_caps().await {
+                Ok(pcaps) => {
+                    caps.has_profiles = pcaps.has_profiles;
+                    caps.has_charge_limit = pcaps.has_charge_limit;
+                    if !pcaps.profile_choices.is_empty() {
+                        let choices = pcaps
+                            .profile_choices
+                            .iter()
+                            .map(|p| profile_to_str(p.clone()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        caps.notes
+                            .push(format!("asusd profiles available: {choices}"));
+                    }
+                }
+                Err(e) => caps
+                    .notes
+                    .push(format!("asusd platform probing failed: {e}")),
+            }
+
+            if caps.has_profiles {
+                match provider.get_profile().await {
+                    Ok(v) => control_state.profile = Some(v),
+                    Err(e) => caps
+                        .notes
+                        .push(format!("could not read current profile from asusd: {e}")),
+                }
+            }
+            if caps.has_charge_limit {
+                match provider.get_limit().await {
+                    Ok(v) => control_state.battery_limit = Some(v),
+                    Err(e) => caps
+                        .notes
+                        .push(format!("could not read charge limit from asusd: {e}")),
+                }
+            }
+        }
+        None => caps
+            .notes
+            .push("asusd not detected; profile/charge controls disabled.".to_string()),
+    }
+
+    match &supergfx {
+        Some(provider) => {
+            caps.endpoints
+                .push(format!("supergfxd:{}", provider.endpoint_tag()));
+            match provider.probe_caps().await {
+                Ok(gcaps) => {
+                    caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
+                    caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
+                    if !gcaps.raw_supported_modes.is_empty() {
+                        caps.notes.push(format!(
+                            "supergfxd supported modes: {}",
+                            gcaps.raw_supported_modes.join(", ")
+                        ));
+                    }
+                }
+                Err(e) => caps.notes.push(format!("supergfxd probing failed: {e}")),
+            }
+
+            if caps.has_gpu_modes {
+                match provider.get_mode().await {
+                    Ok(v) => control_state.gpu_mode = Some(v),
+                    Err(e) => caps.notes.push(format!(
+                        "could not read current GPU mode from supergfxd: {e}"
+                    )),
+                }
+            }
+        }
+        None => caps
+            .notes
+            .push("supergfxd not detected; GPU mode controls disabled.".to_string()),
+    }
+
     // Diagnostics: include relevant system bus names (no asusd/supergfxd hardcoding).
     let re = Regex::new("(?i)asus|rog|supergfx|power|upower").expect("valid regex");
     if let Ok(names) = rog_providers::dbus::list_system_bus_names_matching(&re).await {
@@ -159,13 +484,28 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let init_state = AppState::new(caps, hw_snapshot);
+    let has_profiles = caps.has_profiles;
+    let has_charge_limit = caps.has_charge_limit;
+    let has_gpu_modes = caps.has_gpu_modes;
+    let cpu_policy_writable = cpu_caps.policy_writable;
+
+    let mut init_state = AppState::new(caps, hw_snapshot);
+    init_state.cpu_caps = cpu_caps.clone();
+    init_state.cpu = initial_cpu;
     let shared = Arc::new(SharedState {
         inner: RwLock::new(init_state),
+        control: RwLock::new(control_state),
     });
 
     // Export DBus service on the session bus.
-    let daemon = RogHelperDaemon::new(shared.clone(), kbd_backlight.clone());
+    let daemon = RogHelperDaemon::new(
+        shared.clone(),
+        kbd_backlight.clone(),
+        asusd.clone(),
+        supergfx.clone(),
+        cpu.clone(),
+    );
+    daemon.set_cpu_caps(cpu_caps.clone());
     let daemon_iface = daemon.clone();
     let _conn = connection::Builder::session()?
         .name(DBUS_NAME)?
@@ -334,7 +674,50 @@ async fn main() -> anyhow::Result<()> {
                         ));
                     }
                 }
+                if !cpu_policy_writable {
+                    warnings.push(
+                        "CPU controls are read-only for this user (check daemon permissions)."
+                            .to_string(),
+                    );
+                }
 
+                match cpu.read_snapshot(now_ms(), telemetry.cpu_temp_c) {
+                    Ok(cpu_snapshot) => daemon.set_cpu_telemetry(cpu_snapshot),
+                    Err(e) => warnings.push(format!("cpu telemetry unavailable: {e}")),
+                }
+
+                let mut current_profile = None;
+                let mut current_gpu_mode = None;
+                let mut current_battery_limit = None;
+
+                if let Some(provider) = &asusd {
+                    if has_profiles {
+                        match provider.get_profile().await {
+                            Ok(v) => current_profile = Some(v),
+                            Err(e) => warnings.push(format!("profile read failed: {e}")),
+                        }
+                    }
+                    if has_charge_limit {
+                        match provider.get_limit().await {
+                            Ok(v) => current_battery_limit = Some(v),
+                            Err(e) => warnings.push(format!("charge limit read failed: {e}")),
+                        }
+                    }
+                }
+
+                if let Some(provider) = &supergfx {
+                    if has_gpu_modes {
+                        match provider.get_mode().await {
+                            Ok(v) => current_gpu_mode = Some(v),
+                            Err(e) => warnings.push(format!("GPU mode read failed: {e}")),
+                        }
+                        if let Ok(Some(hint)) = provider.can_switch_now().await {
+                            warnings.push(format!("GPU switch hint: {hint}"));
+                        }
+                    }
+                }
+
+                daemon.set_control_state(current_profile, current_gpu_mode, current_battery_limit);
                 daemon.set_telemetry(telemetry, warnings);
             }
             _ = tokio::signal::ctrl_c() => {
@@ -411,6 +794,113 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     );
     m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
     m.insert("notes".to_string(), ov(c.notes.clone()));
+    m
+}
+
+fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("has_cpufreq".to_string(), OwnedValue::from(c.has_cpufreq));
+    m.insert("has_epp".to_string(), OwnedValue::from(c.has_epp));
+    m.insert(
+        "has_boost_toggle".to_string(),
+        OwnedValue::from(c.has_boost_toggle),
+    );
+    m.insert(
+        "has_package_power".to_string(),
+        OwnedValue::from(c.has_package_power),
+    );
+    m.insert(
+        "policy_writable".to_string(),
+        OwnedValue::from(c.policy_writable),
+    );
+    m.insert(
+        "has_min_freq_limit".to_string(),
+        OwnedValue::from(c.has_min_freq_limit),
+    );
+    m.insert(
+        "has_max_freq_limit".to_string(),
+        OwnedValue::from(c.has_max_freq_limit),
+    );
+    m.insert("has_governor".to_string(), OwnedValue::from(c.has_governor));
+    m.insert(
+        "has_core_online".to_string(),
+        OwnedValue::from(c.has_core_online),
+    );
+    if let Some(v) = &c.scaling_driver {
+        m.insert("scaling_driver".to_string(), ov(v.clone()));
+    }
+    m.insert(
+        "cpu_count".to_string(),
+        OwnedValue::from(c.cpu_count as u64),
+    );
+    m.insert(
+        "thread_count".to_string(),
+        OwnedValue::from(c.thread_count as u64),
+    );
+    m.insert(
+        "governor_choices".to_string(),
+        ov(c.governor_choices.clone()),
+    );
+    m.insert("epp_choices".to_string(), ov(c.epp_choices.clone()));
+    m.insert("sysfs_paths".to_string(), ov(c.sysfs_paths.clone()));
+    m
+}
+
+fn cpu_to_dbus(c: &CpuTelemetry) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("timestamp_ms".to_string(), OwnedValue::from(c.timestamp_ms));
+    if let Some(v) = c.temp_c {
+        m.insert("temp_c".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = c.usage_percent {
+        m.insert("usage_percent".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = c.avg_freq_mhz {
+        m.insert("avg_freq_mhz".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = c.package_power_w {
+        m.insert("package_power_w".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = &c.status {
+        m.insert("status".to_string(), ov(v.clone()));
+    }
+    if let Some(v) = c.turbo_boost_enabled {
+        m.insert("turbo_boost_enabled".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = &c.governor {
+        m.insert("governor".to_string(), ov(v.clone()));
+    }
+    if let Some(v) = &c.epp {
+        m.insert("epp".to_string(), ov(v.clone()));
+    }
+    if let Some(v) = c.min_freq_mhz {
+        m.insert("min_freq_mhz".to_string(), OwnedValue::from(v as u64));
+    }
+    if let Some(v) = c.max_freq_mhz {
+        m.insert("max_freq_mhz".to_string(), OwnedValue::from(v as u64));
+    }
+    if !c.per_core.is_empty() {
+        let mut rows: Vec<HashMap<String, OwnedValue>> = Vec::with_capacity(c.per_core.len());
+        for core in &c.per_core {
+            let mut row = HashMap::new();
+            row.insert("core_id".to_string(), OwnedValue::from(core.core_id as u64));
+            if let Some(v) = core.usage_percent {
+                row.insert("usage_percent".to_string(), OwnedValue::from(v as f64));
+            }
+            if let Some(v) = core.current_freq_mhz {
+                row.insert("current_freq_mhz".to_string(), OwnedValue::from(v as u64));
+            }
+            if let Some(v) = core.min_freq_mhz {
+                row.insert("min_freq_mhz".to_string(), OwnedValue::from(v as u64));
+            }
+            if let Some(v) = core.max_freq_mhz {
+                row.insert("max_freq_mhz".to_string(), OwnedValue::from(v as u64));
+            }
+            row.insert("online".to_string(), OwnedValue::from(core.online));
+            rows.push(row);
+        }
+        m.insert("per_core".to_string(), ov(rows));
+    }
     m
 }
 
@@ -629,6 +1119,137 @@ fn battery_state_to_str(s: BatteryState) -> &'static str {
         BatteryState::PendingDischarge => "PendingDischarge",
         BatteryState::NotCharging => "NotCharging",
     }
+}
+
+fn profile_to_str(profile: PerformanceProfile) -> &'static str {
+    match profile {
+        PerformanceProfile::Silent => "Silent",
+        PerformanceProfile::Balanced => "Balanced",
+        PerformanceProfile::Turbo => "Turbo",
+        PerformanceProfile::Custom(_) => "Custom",
+    }
+}
+
+fn gpu_mode_to_str(mode: GpuMode) -> &'static str {
+    match mode {
+        GpuMode::Integrated => "Integrated",
+        GpuMode::Hybrid => "Hybrid",
+        GpuMode::Dedicated => "Dedicated",
+        GpuMode::Other(_) => "Other",
+    }
+}
+
+fn parse_profile_request(v: &str) -> Result<PerformanceProfile, String> {
+    let key: String = v
+        .to_ascii_lowercase()
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect();
+
+    match key.as_str() {
+        "silent" | "quiet" | "lowpower" => Ok(PerformanceProfile::Silent),
+        "balanced" => Ok(PerformanceProfile::Balanced),
+        "turbo" | "performance" => Ok(PerformanceProfile::Turbo),
+        "custom" => Ok(PerformanceProfile::Custom("Custom".to_string())),
+        _ => Err(format!(
+            "unknown profile '{v}', expected Silent|Balanced|Turbo"
+        )),
+    }
+}
+
+fn parse_gpu_mode_request(v: &str) -> Result<GpuMode, String> {
+    let key: String = v
+        .to_ascii_lowercase()
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect();
+
+    match key.as_str() {
+        "integrated" => Ok(GpuMode::Integrated),
+        "hybrid" | "dynamic" | "optimus" => Ok(GpuMode::Hybrid),
+        "dedicated" | "discrete" | "asusmuxdgpu" | "asusegpu" | "vfio" => Ok(GpuMode::Dedicated),
+        "other" => Ok(GpuMode::Other("Other".to_string())),
+        _ => Err(format!(
+            "unknown GPU mode '{v}', expected Integrated|Hybrid|Dedicated"
+        )),
+    }
+}
+
+fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
+    let mut out = String::new();
+    out.push_str("CPU Diagnostics\n");
+    out.push_str("================\n");
+    out.push_str(&format!("has_cpufreq: {}\n", caps.has_cpufreq));
+    out.push_str(&format!("has_governor: {}\n", caps.has_governor));
+    out.push_str(&format!("has_epp: {}\n", caps.has_epp));
+    out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
+    out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
+    out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
+    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
+    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    if let Some(driver) = &caps.scaling_driver {
+        out.push_str(&format!("scaling_driver: {driver}\n"));
+    }
+    if !caps.governor_choices.is_empty() {
+        out.push_str(&format!(
+            "governor_choices: {}\n",
+            caps.governor_choices.join(", ")
+        ));
+    }
+    if !caps.epp_choices.is_empty() {
+        out.push_str(&format!("epp_choices: {}\n", caps.epp_choices.join(", ")));
+    }
+
+    out.push_str("\nCurrent\n");
+    out.push_str("-------\n");
+    out.push_str(&format!("temp_c: {:?}\n", cpu.temp_c));
+    out.push_str(&format!("usage_percent: {:?}\n", cpu.usage_percent));
+    out.push_str(&format!("avg_freq_mhz: {:?}\n", cpu.avg_freq_mhz));
+    out.push_str(&format!("package_power_w: {:?}\n", cpu.package_power_w));
+    out.push_str(&format!("status: {:?}\n", cpu.status));
+    out.push_str(&format!(
+        "turbo_boost_enabled: {:?}\n",
+        cpu.turbo_boost_enabled
+    ));
+    out.push_str(&format!("governor: {:?}\n", cpu.governor));
+    out.push_str(&format!("epp: {:?}\n", cpu.epp));
+    out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
+    out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
+
+    out.push_str("\nPer-core\n");
+    out.push_str("--------\n");
+    out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+    for core in &cpu.per_core {
+        out.push_str(&format!(
+            "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+            core.core_id,
+            if core.online { "yes" } else { "no" },
+            core.usage_percent
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "-".to_string()),
+            core.current_freq_mhz
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            core.min_freq_mhz
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            core.max_freq_mhz
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        ));
+    }
+
+    if !caps.sysfs_paths.is_empty() {
+        out.push_str("\nDetected sysfs paths\n");
+        out.push_str("-------------------\n");
+        for p in &caps.sysfs_paths {
+            out.push_str(&format!("{p}\n"));
+        }
+    }
+
+    out
 }
 
 fn format_top_processes_text(rows: &[rog_core::TopProcessMem]) -> String {

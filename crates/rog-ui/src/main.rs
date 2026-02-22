@@ -5,15 +5,21 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 use gtk4 as gtk;
-use ksni::menu::{MenuItem, StandardItem};
+use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
-use rog_core::{BatteryState, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem};
+use rog_core::{
+    BatteryState, CpuCaps, CpuTelemetry, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem,
+};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
 const DAEMON_DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
+const APP_DISPLAY_NAME: &str = "rog-helper";
+const APP_BINARY_NAME: &str = "rog-helper-ui";
+const APP_DEVELOPER_FALLBACK: &str = "rog-helper contributors";
+const APP_SOURCE_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -24,20 +30,48 @@ trait Daemon1 {
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
     fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> zbus::Result<()>;
+    fn set_profile(&self, profile: &str) -> zbus::Result<()>;
+    fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
+    fn set_battery_limit(&self, limit: u64) -> zbus::Result<()>;
+    fn set_cpu_turbo(&self, enabled: bool) -> zbus::Result<()>;
+    fn set_cpu_power_mode(&self, mode: &str) -> zbus::Result<()>;
+    fn set_cpu_governor(&self, governor: &str) -> zbus::Result<()>;
+    fn set_cpu_epp(&self, epp: &str) -> zbus::Result<()>;
+    fn set_cpu_freq_limits(&self, min_mhz: u64, max_mhz: u64) -> zbus::Result<()>;
+    fn set_cpu_core_online(&self, core_id: u64, online: bool) -> zbus::Result<()>;
 }
 
 #[derive(Debug)]
 struct SharedUiState {
     telemetry: Option<TelemetrySnapshot>,
+    cpu: Option<CpuTelemetry>,
+    cpu_caps: CpuCaps,
+    cpu_usage_history: Vec<f32>,
+    cpu_temp_history: Vec<f32>,
+    cpu_power_history: Vec<f32>,
     caps: DeviceCaps,
     caps_text: String,
     warnings: Vec<String>,
+    profile: Option<String>,
+    gpu_mode: Option<String>,
+    battery_limit: Option<u8>,
     lighting: Option<LightingInfo>,
+    pending_profile: Option<String>,
+    pending_gpu_mode: Option<String>,
+    pending_battery_limit: Option<u8>,
+    pending_cpu_actions: Vec<PendingCpuAction>,
     pending_lighting: Option<PendingLighting>,
     lighting_error: Option<String>,
+    action_error: Option<String>,
+    pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
     show_window: bool,
+    show_about: bool,
+    show_gpu_page: bool,
     quit: bool,
 }
 
@@ -45,17 +79,49 @@ impl Default for SharedUiState {
     fn default() -> Self {
         Self {
             telemetry: None,
+            cpu: None,
+            cpu_caps: CpuCaps::unknown(),
+            cpu_usage_history: Vec::new(),
+            cpu_temp_history: Vec::new(),
+            cpu_power_history: Vec::new(),
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
             warnings: Vec::new(),
+            profile: None,
+            gpu_mode: None,
+            battery_limit: None,
             lighting: None,
+            pending_profile: None,
+            pending_gpu_mode: None,
+            pending_battery_limit: None,
+            pending_cpu_actions: Vec::new(),
             pending_lighting: None,
             lighting_error: None,
+            action_error: None,
+            pending_toast: None,
             daemon_error: None,
             show_window: false,
+            show_about: false,
+            show_gpu_page: false,
             quit: false,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum PendingCpuAction {
+    SetTurbo(bool),
+    SetPowerMode(String),
+    SetGovernor(String),
+    SetEpp(String),
+    SetFreqLimits {
+        min_mhz: Option<u32>,
+        max_mhz: Option<u32>,
+    },
+    SetCoreOnline {
+        core_id: u32,
+        online: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +290,29 @@ impl Tray for RogTray {
             self.summary.clone()
         };
 
+        let (has_profiles, has_gpu_modes, current_profile, current_gpu_mode, reboot_hint) = self
+            .shared
+            .lock()
+            .map(|st| {
+                (
+                    st.caps.has_profiles,
+                    st.caps.has_gpu_modes,
+                    st.profile.clone(),
+                    st.gpu_mode.clone(),
+                    st.caps.requires_reboot_for_gpu_switch,
+                )
+            })
+            .unwrap_or((false, false, None, None, false));
+
+        let profile_selected = current_profile
+            .as_deref()
+            .map(tray_profile_index_from_text)
+            .unwrap_or(1);
+        let gpu_selected = current_gpu_mode
+            .as_deref()
+            .map(|v| gpu_mode_to_dropdown_index(v) as usize)
+            .unwrap_or(1);
+
         vec![
             StandardItem {
                 label: summary,
@@ -236,6 +325,113 @@ impl Tray for RogTray {
                 activate: Box::new(|this: &mut RogTray| {
                     if let Ok(mut st) = this.shared.lock() {
                         st.show_window = true;
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Open GPU Page".to_string(),
+                activate: Box::new(|this: &mut RogTray| {
+                    if let Ok(mut st) = this.shared.lock() {
+                        st.show_window = true;
+                        st.show_gpu_page = true;
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Profile".to_string(),
+                enabled: has_profiles,
+                submenu: vec![RadioGroup {
+                    selected: profile_selected,
+                    select: Box::new(|this: &mut RogTray, index: usize| {
+                        let profile = match index {
+                            0 => "Silent",
+                            1 => "Balanced",
+                            _ => "Turbo",
+                        };
+                        if let Ok(mut st) = this.shared.lock() {
+                            st.pending_profile = Some(profile.to_string());
+                            st.action_error = None;
+                        }
+                    }),
+                    options: vec![
+                        RadioItem {
+                            label: "Silent".to_string(),
+                            ..Default::default()
+                        },
+                        RadioItem {
+                            label: "Balanced".to_string(),
+                            ..Default::default()
+                        },
+                        RadioItem {
+                            label: "Turbo".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "GPU Mode".to_string(),
+                enabled: has_gpu_modes,
+                submenu: vec![
+                    RadioGroup {
+                        selected: gpu_selected,
+                        select: Box::new(|this: &mut RogTray, index: usize| {
+                            let mode = match index {
+                                0 => "Integrated",
+                                1 => "Hybrid",
+                                _ => "Dedicated",
+                            };
+                            if let Ok(mut st) = this.shared.lock() {
+                                st.pending_gpu_mode = Some(mode.to_string());
+                                st.action_error = None;
+                            }
+                        }),
+                        options: vec![
+                            RadioItem {
+                                label: "Integrated".to_string(),
+                                ..Default::default()
+                            },
+                            RadioItem {
+                                label: "Hybrid".to_string(),
+                                ..Default::default()
+                            },
+                            RadioItem {
+                                label: "Dedicated".to_string(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: if reboot_hint {
+                            "Switch may require reboot/logout".to_string()
+                        } else {
+                            "Switch applies immediately or with logout".to_string()
+                        },
+                        enabled: false,
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "About".to_string(),
+                activate: Box::new(|this: &mut RogTray| {
+                    if let Ok(mut st) = this.shared.lock() {
+                        st.show_window = true;
+                        st.show_about = true;
                     }
                 }),
                 ..Default::default()
@@ -355,26 +551,100 @@ fn build_ui(app: &adw::Application) {
     profile_row.set_activatable(false);
     quick_actions_group.add(&profile_row);
 
-    let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Discrete"]);
+    {
+        let shared = shared.clone();
+        profile_quiet.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            if let Ok(mut st) = shared.lock() {
+                st.pending_profile = Some("Silent".to_string());
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        profile_balanced.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            if let Ok(mut st) = shared.lock() {
+                st.pending_profile = Some("Balanced".to_string());
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        profile_turbo.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            if let Ok(mut st) = shared.lock() {
+                st.pending_profile = Some("Turbo".to_string());
+                st.action_error = None;
+            }
+        });
+    }
+
+    let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
     gpu_mode_dropdown.set_sensitive(false);
+    let gpu_apply_button = gtk::Button::with_label("Apply");
+    gpu_apply_button.set_sensitive(false);
+    gpu_control_box.append(&gpu_mode_dropdown);
+    gpu_control_box.append(&gpu_apply_button);
     let gpu_mode_row = adw::ActionRow::builder()
         .title("GPU Mode")
         .subtitle("Unavailable")
         .build();
-    gpu_mode_row.add_suffix(&gpu_mode_dropdown);
+    gpu_mode_row.add_suffix(&gpu_control_box);
     gpu_mode_row.set_activatable(false);
     quick_actions_group.add(&gpu_mode_row);
+    {
+        let shared = shared.clone();
+        let gpu_mode_dropdown = gpu_mode_dropdown.clone();
+        gpu_apply_button.connect_clicked(move |_| {
+            let mode = match gpu_mode_dropdown.selected() {
+                0 => "Integrated",
+                1 => "Hybrid",
+                _ => "Dedicated",
+            };
+            if let Ok(mut st) = shared.lock() {
+                st.pending_gpu_mode = Some(mode.to_string());
+                st.action_error = None;
+            }
+        });
+    }
 
+    let charge_limit_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
     charge_limit_spin.set_value(80.0);
     charge_limit_spin.set_sensitive(false);
+    charge_limit_spin.set_numeric(true);
+    let charge_apply_button = gtk::Button::with_label("Apply");
+    charge_apply_button.set_sensitive(false);
+    charge_limit_box.append(&charge_limit_spin);
+    charge_limit_box.append(&charge_apply_button);
     let charge_limit_row = adw::ActionRow::builder()
         .title("Charge Limit")
         .subtitle("Unavailable")
         .build();
-    charge_limit_row.add_suffix(&charge_limit_spin);
+    charge_limit_row.add_suffix(&charge_limit_box);
     charge_limit_row.set_activatable(false);
     quick_actions_group.add(&charge_limit_row);
+    {
+        let shared = shared.clone();
+        let charge_limit_spin = charge_limit_spin.clone();
+        charge_apply_button.connect_clicked(move |_| {
+            let limit = charge_limit_spin.value().round().clamp(0.0, 100.0) as u8;
+            if let Ok(mut st) = shared.lock() {
+                st.pending_battery_limit = Some(limit);
+                st.action_error = None;
+            }
+        });
+    }
 
     let kbd_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let kbd_brightness_spin = gtk::SpinButton::with_range(0.0, 3.0, 1.0);
@@ -450,6 +720,283 @@ fn build_ui(app: &adw::Application) {
     dash_root.append(&status_label);
 
     let dash = clamped_scroller(&dash_root);
+
+    let cpu_page = adw::PreferencesPage::new();
+
+    let cpu_overview_group = adw::PreferencesGroup::builder().title("Overview").build();
+    let cpu_card_temp = MetricCard::new("CPU Temperature");
+    let cpu_card_usage = MetricCard::new("CPU Usage");
+    let cpu_card_power = MetricCard::new("CPU Package Power");
+    let cpu_card_clock = MetricCard::new("Avg Clock");
+    let cpu_metrics_grid = gtk::FlowBox::new();
+    cpu_metrics_grid.set_selection_mode(gtk::SelectionMode::None);
+    cpu_metrics_grid.set_min_children_per_line(1);
+    cpu_metrics_grid.set_max_children_per_line(2);
+    cpu_metrics_grid.set_row_spacing(12);
+    cpu_metrics_grid.set_column_spacing(12);
+    cpu_metrics_grid.insert(cpu_card_temp.widget(), -1);
+    cpu_metrics_grid.insert(cpu_card_usage.widget(), -1);
+    cpu_metrics_grid.insert(cpu_card_power.widget(), -1);
+    cpu_metrics_grid.insert(cpu_card_clock.widget(), -1);
+    cpu_overview_group.add(&cpu_metrics_grid);
+    cpu_page.add(&cpu_overview_group);
+
+    let cpu_banner_group = adw::PreferencesGroup::new();
+    let cpu_read_only_banner = adw::Banner::new("CPU controls are read-only");
+    cpu_read_only_banner.set_button_label(Some("Fix permissions"));
+    cpu_read_only_banner.set_revealed(false);
+    cpu_banner_group.add(&cpu_read_only_banner);
+    cpu_page.add(&cpu_banner_group);
+
+    cpu_read_only_banner.connect_button_clicked(move |banner| {
+        let parent = banner
+            .root()
+            .and_then(|root| root.downcast::<adw::ApplicationWindow>().ok());
+        let dialog = adw::MessageDialog::new(
+            parent.as_ref(),
+            Some("CPU controls require write permissions"),
+            Some(
+                "Run rog-helperd with required permissions (or configure polkit/system service) so CPU sysfs writes are allowed.",
+            ),
+        );
+        dialog.add_response("close", "Close");
+        dialog.set_close_response("close");
+        dialog.set_default_response(Some("close"));
+        dialog.present();
+    });
+
+    let cpu_quick_group = adw::PreferencesGroup::builder()
+        .title("Quick Controls")
+        .description("Safe controls applied through daemon policy endpoints.")
+        .build();
+
+    let cpu_turbo_switch = gtk::Switch::new();
+    let cpu_turbo_row = adw::ActionRow::builder().title("Turbo Boost").build();
+    cpu_turbo_row.add_suffix(&cpu_turbo_switch);
+    cpu_turbo_row.set_activatable(false);
+    cpu_quick_group.add(&cpu_turbo_row);
+
+    let cpu_power_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    cpu_power_buttons.add_css_class("linked");
+    let cpu_power_quiet = gtk::ToggleButton::with_label("Quiet");
+    let cpu_power_balanced = gtk::ToggleButton::with_label("Balanced");
+    let cpu_power_perf = gtk::ToggleButton::with_label("Performance");
+    cpu_power_balanced.set_group(Some(&cpu_power_quiet));
+    cpu_power_perf.set_group(Some(&cpu_power_quiet));
+    cpu_power_balanced.set_active(true);
+    cpu_power_buttons.append(&cpu_power_quiet);
+    cpu_power_buttons.append(&cpu_power_balanced);
+    cpu_power_buttons.append(&cpu_power_perf);
+    let cpu_power_row = adw::ActionRow::builder().title("Power Mode").build();
+    cpu_power_row.add_suffix(&cpu_power_buttons);
+    cpu_power_row.set_activatable(false);
+    cpu_quick_group.add(&cpu_power_row);
+
+    let cpu_min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    cpu_min_scale.set_draw_value(true);
+    cpu_min_scale.set_value_pos(gtk::PositionType::Right);
+    cpu_min_scale.set_hexpand(true);
+    let cpu_min_row = adw::ActionRow::builder().title("Min Frequency").build();
+    cpu_min_row.add_suffix(&cpu_min_scale);
+    cpu_min_row.set_activatable(false);
+    cpu_quick_group.add(&cpu_min_row);
+
+    let cpu_max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    cpu_max_scale.set_draw_value(true);
+    cpu_max_scale.set_value_pos(gtk::PositionType::Right);
+    cpu_max_scale.set_hexpand(true);
+    let cpu_max_row = adw::ActionRow::builder().title("Max Frequency").build();
+    cpu_max_row.add_suffix(&cpu_max_scale);
+    cpu_max_row.set_activatable(false);
+    cpu_quick_group.add(&cpu_max_row);
+
+    let cpu_apply_quick = gtk::Button::with_label("Apply CPU Quick Controls");
+    cpu_apply_quick.add_css_class("suggested-action");
+    let cpu_apply_row = adw::ActionRow::builder().title("Apply").build();
+    cpu_apply_row.add_suffix(&cpu_apply_quick);
+    cpu_apply_row.set_activatable(false);
+    cpu_quick_group.add(&cpu_apply_row);
+
+    {
+        let shared = shared.clone();
+        let cpu_turbo_switch = cpu_turbo_switch.clone();
+        let cpu_min_scale = cpu_min_scale.clone();
+        let cpu_max_scale = cpu_max_scale.clone();
+        let cpu_power_quiet = cpu_power_quiet.clone();
+        let cpu_power_balanced = cpu_power_balanced.clone();
+        cpu_apply_quick.connect_clicked(move |_| {
+            let mut actions = Vec::new();
+            let caps = shared
+                .lock()
+                .ok()
+                .map(|st| st.cpu_caps.clone())
+                .unwrap_or_else(CpuCaps::unknown);
+
+            if caps.has_boost_toggle && caps.policy_writable {
+                actions.push(PendingCpuAction::SetTurbo(cpu_turbo_switch.is_active()));
+            }
+
+            let mode = if cpu_power_quiet.is_active() {
+                "Quiet"
+            } else if cpu_power_balanced.is_active() {
+                "Balanced"
+            } else {
+                "Performance"
+            };
+            if caps.has_cpufreq && caps.policy_writable {
+                actions.push(PendingCpuAction::SetPowerMode(mode.to_string()));
+            }
+
+            if caps.has_cpufreq
+                && caps.policy_writable
+                && (caps.has_min_freq_limit || caps.has_max_freq_limit)
+            {
+                let min_mhz = if caps.has_min_freq_limit {
+                    Some(cpu_min_scale.value().round().max(0.0) as u32)
+                } else {
+                    None
+                };
+                let max_mhz = if caps.has_max_freq_limit {
+                    Some(cpu_max_scale.value().round().max(0.0) as u32)
+                } else {
+                    None
+                };
+                actions.push(PendingCpuAction::SetFreqLimits { min_mhz, max_mhz });
+            }
+
+            if let Ok(mut st) = shared.lock() {
+                st.pending_cpu_actions.extend(actions);
+                st.action_error = None;
+            }
+        });
+    }
+
+    cpu_page.add(&cpu_quick_group);
+
+    let cpu_policy_group = adw::PreferencesGroup::builder()
+        .title("Policy")
+        .description("EPP controls how aggressively CPU frequency/power is tuned.")
+        .build();
+    let cpu_scaling_driver = pref_value_row(&cpu_policy_group, "Scaling driver", false);
+    let cpu_cpu_count = pref_value_row(&cpu_policy_group, "CPU cores", false);
+    let cpu_thread_count = pref_value_row(&cpu_policy_group, "Threads", false);
+
+    let cpu_governor_combo = gtk::ComboBoxText::new();
+    cpu_governor_combo.set_sensitive(false);
+    let cpu_governor_row = adw::ActionRow::builder().title("Governor").build();
+    cpu_governor_row.add_suffix(&cpu_governor_combo);
+    cpu_governor_row.set_activatable(false);
+    cpu_policy_group.add(&cpu_governor_row);
+
+    let cpu_epp_combo = gtk::ComboBoxText::new();
+    cpu_epp_combo.set_sensitive(false);
+    let cpu_epp_row = adw::ActionRow::builder()
+        .title("Energy Performance Preference")
+        .build();
+    cpu_epp_row.add_suffix(&cpu_epp_combo);
+    cpu_epp_row.set_activatable(false);
+    cpu_policy_group.add(&cpu_epp_row);
+
+    let cpu_policy_hint = gtk::Label::new(Some(
+        "Lower EPP favors performance; higher EPP favors battery life and lower thermals.",
+    ));
+    cpu_policy_hint.set_wrap(true);
+    cpu_policy_hint.set_xalign(0.0);
+    cpu_policy_hint.add_css_class("dim-label");
+    cpu_policy_group.add(&cpu_policy_hint);
+
+    let cpu_apply_policy = gtk::Button::with_label("Apply Policy");
+    let cpu_apply_policy_row = adw::ActionRow::builder().title("Apply").build();
+    cpu_apply_policy_row.add_suffix(&cpu_apply_policy);
+    cpu_apply_policy_row.set_activatable(false);
+    cpu_policy_group.add(&cpu_apply_policy_row);
+
+    {
+        let shared = shared.clone();
+        let cpu_governor_combo = cpu_governor_combo.clone();
+        let cpu_epp_combo = cpu_epp_combo.clone();
+        cpu_apply_policy.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(gov) = cpu_governor_combo.active_id() {
+                    st.pending_cpu_actions
+                        .push(PendingCpuAction::SetGovernor(gov.to_string()));
+                }
+                if let Some(epp) = cpu_epp_combo.active_id() {
+                    st.pending_cpu_actions
+                        .push(PendingCpuAction::SetEpp(epp.to_string()));
+                }
+                st.action_error = None;
+            }
+        });
+    }
+
+    cpu_page.add(&cpu_policy_group);
+
+    let cpu_per_core_group = adw::PreferencesGroup::builder()
+        .title("Per-Core")
+        .description("Core id, usage, current/min/max frequency.")
+        .build();
+    let cpu_per_core_buffer = gtk::TextBuffer::new(None);
+    cpu_per_core_buffer.set_text("Loading CPU cores...");
+    let cpu_per_core_view = gtk::TextView::with_buffer(&cpu_per_core_buffer);
+    cpu_per_core_view.set_editable(false);
+    cpu_per_core_view.set_cursor_visible(false);
+    cpu_per_core_view.set_wrap_mode(gtk::WrapMode::None);
+    cpu_per_core_view.add_css_class("monospace");
+    let cpu_per_core_scroll = gtk::ScrolledWindow::new();
+    cpu_per_core_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    cpu_per_core_scroll.set_min_content_height(220);
+    cpu_per_core_scroll.set_child(Some(&cpu_per_core_view));
+    cpu_per_core_group.add(&cpu_per_core_scroll);
+    cpu_page.add(&cpu_per_core_group);
+
+    let cpu_adv_group = adw::PreferencesGroup::builder().title("Advanced").build();
+    let cpu_advanced_expander = gtk::Expander::new(Some("Advanced CPU Controls"));
+    cpu_advanced_expander.set_expanded(false);
+    let cpu_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+
+    let cpu_core_toggle_title = gtk::Label::new(Some("Core Online/Offline"));
+    cpu_core_toggle_title.set_xalign(0.0);
+    cpu_core_toggle_title.add_css_class("heading");
+    let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    cpu_adv_box.append(&cpu_core_toggle_title);
+    cpu_adv_box.append(&cpu_core_toggle_box);
+
+    let cpu_raw_paths = gtk::TextBuffer::new(None);
+    cpu_raw_paths.set_text("");
+    let cpu_raw_paths_view = gtk::TextView::with_buffer(&cpu_raw_paths);
+    cpu_raw_paths_view.set_editable(false);
+    cpu_raw_paths_view.set_cursor_visible(false);
+    cpu_raw_paths_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    cpu_raw_paths_view.add_css_class("monospace");
+    let cpu_raw_paths_scroll = gtk::ScrolledWindow::new();
+    cpu_raw_paths_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    cpu_raw_paths_scroll.set_min_content_height(120);
+    cpu_raw_paths_scroll.set_child(Some(&cpu_raw_paths_view));
+    cpu_adv_box.append(&cpu_raw_paths_scroll);
+
+    let cpu_copy_diag = gtk::Button::with_label("Copy CPU diagnostics");
+    {
+        let shared = shared.clone();
+        cpu_copy_diag.connect_clicked(move |_| {
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+            let text = shared
+                .lock()
+                .ok()
+                .map(|st| cpu_diagnostics_text(&st.cpu_caps, st.cpu.as_ref()))
+                .unwrap_or_else(|| "CPU diagnostics unavailable".to_string());
+            display.clipboard().set_text(&text);
+        });
+    }
+    cpu_adv_box.append(&cpu_copy_diag);
+
+    cpu_advanced_expander.set_child(Some(&cpu_adv_box));
+    cpu_adv_group.add(&cpu_advanced_expander);
+    cpu_page.add(&cpu_adv_group);
+
+    let cpu_view = clamped_scroller(&cpu_page);
 
     let battery_page = adw::PreferencesPage::new();
     let battery_group_status = adw::PreferencesGroup::builder()
@@ -567,6 +1114,96 @@ fn build_ui(app: &adw::Application) {
 
     let ram = clamped_scroller(&ram_page);
 
+    let gpu_page = adw::PreferencesPage::new();
+
+    let gpu_state_group = adw::PreferencesGroup::builder()
+        .title("Current State")
+        .description("Read from daemon-backed asusd/supergfx providers when available.")
+        .build();
+    let gpu_page_current_profile = pref_value_row(&gpu_state_group, "Profile", false);
+    let gpu_page_current_mode = pref_value_row(&gpu_state_group, "GPU Mode", false);
+    let gpu_page_switch_hint = pref_value_row(&gpu_state_group, "Switch Hint", false);
+    gpu_page.add(&gpu_state_group);
+
+    let gpu_controls_group = adw::PreferencesGroup::builder()
+        .title("Controls")
+        .description("Changes are applied through rog-helperd session DBus API.")
+        .build();
+
+    let gpu_page_profile_combo = gtk::ComboBoxText::new();
+    for label in ["Silent", "Balanced", "Turbo"] {
+        gpu_page_profile_combo.append(Some(label), label);
+    }
+    gpu_page_profile_combo.set_active_id(Some("Balanced"));
+    gpu_page_profile_combo.set_sensitive(false);
+    let gpu_page_profile_apply = gtk::Button::with_label("Apply");
+    gpu_page_profile_apply.set_sensitive(false);
+    let gpu_page_profile_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    gpu_page_profile_box.append(&gpu_page_profile_combo);
+    gpu_page_profile_box.append(&gpu_page_profile_apply);
+    let gpu_page_profile_row = adw::ActionRow::builder()
+        .title("Performance Profile")
+        .subtitle("Unavailable")
+        .build();
+    gpu_page_profile_row.add_suffix(&gpu_page_profile_box);
+    gpu_page_profile_row.set_activatable(false);
+    gpu_controls_group.add(&gpu_page_profile_row);
+
+    {
+        let shared = shared.clone();
+        let gpu_page_profile_combo = gpu_page_profile_combo.clone();
+        gpu_page_profile_apply.connect_clicked(move |_| {
+            let Some(profile) = gpu_page_profile_combo.active_id() else {
+                return;
+            };
+            if let Ok(mut st) = shared.lock() {
+                st.pending_profile = Some(profile.to_string());
+                st.action_error = None;
+            }
+        });
+    }
+
+    let gpu_page_mode_combo = gtk::ComboBoxText::new();
+    for label in ["Integrated", "Hybrid", "Dedicated"] {
+        gpu_page_mode_combo.append(Some(label), label);
+    }
+    gpu_page_mode_combo.set_active_id(Some("Hybrid"));
+    gpu_page_mode_combo.set_sensitive(false);
+    let gpu_page_mode_apply = gtk::Button::with_label("Apply");
+    gpu_page_mode_apply.set_sensitive(false);
+    let gpu_page_mode_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    gpu_page_mode_box.append(&gpu_page_mode_combo);
+    gpu_page_mode_box.append(&gpu_page_mode_apply);
+    let gpu_page_mode_row = adw::ActionRow::builder()
+        .title("GPU Mode")
+        .subtitle("Unavailable")
+        .build();
+    gpu_page_mode_row.add_suffix(&gpu_page_mode_box);
+    gpu_page_mode_row.set_activatable(false);
+    gpu_controls_group.add(&gpu_page_mode_row);
+
+    {
+        let shared = shared.clone();
+        let gpu_page_mode_combo = gpu_page_mode_combo.clone();
+        gpu_page_mode_apply.connect_clicked(move |_| {
+            let Some(mode) = gpu_page_mode_combo.active_id() else {
+                return;
+            };
+            if let Ok(mut st) = shared.lock() {
+                st.pending_gpu_mode = Some(mode.to_string());
+                st.action_error = None;
+            }
+        });
+    }
+
+    gpu_page.add(&gpu_controls_group);
+
+    let gpu_status_group = adw::PreferencesGroup::builder().title("Status").build();
+    let gpu_page_last_action = pref_value_row(&gpu_status_group, "Last action", false);
+    gpu_page.add(&gpu_status_group);
+
+    let gpu = clamped_scroller(&gpu_page);
+
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
     let diag_view = gtk::TextView::with_buffer(&diag_buffer);
@@ -604,6 +1241,47 @@ fn build_ui(app: &adw::Application) {
     diag_root.append(&diag_scroller);
 
     let diag = clamped_scroller(&diag_root);
+
+    let about_page = adw::PreferencesPage::new();
+
+    let about_app_group = adw::PreferencesGroup::builder()
+        .title("App")
+        .description("Linux-native control app for ASUS ROG laptops.")
+        .build();
+    let about_name = pref_value_row(&about_app_group, "Name", false);
+    let about_binary = pref_value_row(&about_app_group, "Binary", false);
+    let about_version = pref_value_row(&about_app_group, "Version", false);
+    let about_license = pref_value_row(&about_app_group, "License", false);
+    let about_dbus = pref_value_row(&about_app_group, "Session DBus API", true);
+    about_page.add(&about_app_group);
+
+    let about_dev_group = adw::PreferencesGroup::builder().title("Developer").build();
+    let about_developer = pref_value_row(&about_dev_group, "Maintainer", false);
+    let about_source = pref_value_row(&about_dev_group, "Source", false);
+    about_page.add(&about_dev_group);
+
+    let source_url = if env!("CARGO_PKG_REPOSITORY").trim().is_empty() {
+        APP_SOURCE_FALLBACK_URL
+    } else {
+        env!("CARGO_PKG_REPOSITORY")
+    };
+    let developers = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
+        APP_DEVELOPER_FALLBACK.to_string()
+    } else {
+        env!("CARGO_PKG_AUTHORS").replace(':', ", ")
+    };
+
+    about_name.set_text(APP_DISPLAY_NAME);
+    about_binary.set_text(APP_BINARY_NAME);
+    about_version.set_text(env!("CARGO_PKG_VERSION"));
+    about_license.set_text(env!("CARGO_PKG_LICENSE"));
+    about_dbus.set_text(&format!(
+        "{DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} ({DAEMON_DBUS_IFACE})"
+    ));
+    about_developer.set_text(&developers);
+    about_source.set_text(source_url);
+
+    let about = clamped_scroller(&about_page);
 
     let lighting_page = adw::PreferencesPage::new();
     let lighting_overview_group = adw::PreferencesGroup::builder()
@@ -694,10 +1372,13 @@ fn build_ui(app: &adw::Application) {
     let lighting = clamped_scroller(&lighting_page);
 
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
+    stack.add_titled(&cpu_view, Some("cpu"), "CPU");
+    stack.add_titled(&gpu, Some("gpu"), "GPU");
     stack.add_titled(&battery, Some("battery"), "Battery");
     stack.add_titled(&ram, Some("ram"), "RAM");
     stack.add_titled(&lighting, Some("lighting"), "Lighting");
     stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
+    stack.add_titled(&about, Some("about"), "About");
 
     let switcher = adw::ViewSwitcher::new();
     switcher.set_stack(Some(&stack));
@@ -709,13 +1390,16 @@ fn build_ui(app: &adw::Application) {
     view.add_top_bar(&header);
     view.set_content(Some(&stack));
 
+    let toast_overlay = adw::ToastOverlay::new();
+    toast_overlay.set_child(Some(&view));
+
     let win = adw::ApplicationWindow::builder()
         .application(app)
         .title("rog-helper")
         .default_width(560)
         .default_height(380)
         .build();
-    win.set_content(Some(&view));
+    win.set_content(Some(&toast_overlay));
     win.present();
 
     {
@@ -745,17 +1429,30 @@ fn build_ui(app: &adw::Application) {
     let shared_clone = shared.clone();
     let win_clone = win.clone();
     let app_clone = app.clone();
+    let stack_clone = stack.clone();
+    let toast_overlay_clone = toast_overlay.clone();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
+            cpu,
+            cpu_caps,
             caps,
             caps_text,
             warnings,
+            profile,
+            gpu_mode,
+            battery_limit,
             lighting,
             lighting_error_txt,
+            action_error_txt,
             daemon_error,
             show_window,
+            show_about,
+            show_gpu_page,
+            pending_toast,
             quit,
         ) = {
             let mut st = match shared_clone.lock() {
@@ -764,21 +1461,48 @@ fn build_ui(app: &adw::Application) {
             };
             let show_window = st.show_window;
             st.show_window = false;
+            let show_about = st.show_about;
+            st.show_about = false;
+            let show_gpu_page = st.show_gpu_page;
+            st.show_gpu_page = false;
+            let pending_toast = st.pending_toast.take();
             (
                 st.telemetry.clone(),
+                st.cpu.clone(),
+                st.cpu_caps.clone(),
                 st.caps.clone(),
                 st.caps_text.clone(),
                 st.warnings.clone(),
+                st.profile.clone(),
+                st.gpu_mode.clone(),
+                st.battery_limit,
                 st.lighting.clone(),
                 st.lighting_error.clone(),
+                st.action_error.clone(),
                 st.daemon_error.clone(),
                 show_window,
+                show_about,
+                show_gpu_page,
+                pending_toast,
                 st.quit,
             )
         };
 
         if show_window {
             win_clone.present();
+        }
+        if show_about {
+            stack_clone.set_visible_child_name("about");
+            win_clone.present();
+        }
+        if show_gpu_page {
+            stack_clone.set_visible_child_name("gpu");
+            win_clone.present();
+        }
+        if let Some((msg, is_error)) = pending_toast {
+            let toast = adw::Toast::new(&msg);
+            toast.set_timeout(if is_error { 4 } else { 2 });
+            toast_overlay_clone.add_toast(toast);
         }
 
         if quit {
@@ -993,16 +1717,255 @@ fn build_ui(app: &adw::Application) {
             details_fan_group.set_visible(!fan_entries.is_empty());
         }
 
+        // CPU page + cards.
+        if let Some(cpu_data) = cpu.as_ref() {
+            if let Some(v) = cpu_data.temp_c {
+                cpu_card_temp.set_value(format!("{v:.1}"));
+                cpu_card_temp.set_unit(Some("°C"));
+            } else {
+                cpu_card_temp.set_value("--");
+                cpu_card_temp.set_unit(None);
+            }
+            if let Some(v) = cpu_data.usage_percent {
+                cpu_card_usage.set_value(format!("{v:.0}"));
+                cpu_card_usage.set_unit(Some("%"));
+            } else {
+                cpu_card_usage.set_value("--");
+                cpu_card_usage.set_unit(None);
+            }
+            if let Some(v) = cpu_data.package_power_w {
+                cpu_card_power.widget().set_visible(true);
+                cpu_card_power.set_value(format!("{v:.1}"));
+                cpu_card_power.set_unit(Some("W"));
+            } else {
+                cpu_card_power
+                    .widget()
+                    .set_visible(cpu_caps.has_package_power);
+                cpu_card_power.set_value("--");
+                cpu_card_power.set_unit(None);
+            }
+            if let Some(v) = cpu_data.avg_freq_mhz {
+                cpu_card_clock.set_value(format!("{:.2}", v / 1000.0));
+                cpu_card_clock.set_unit(Some("GHz"));
+            } else {
+                cpu_card_clock.set_value("--");
+                cpu_card_clock.set_unit(None);
+            }
+            cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
+
+            cpu_scaling_driver.set_text(
+                &cpu_caps
+                    .scaling_driver
+                    .clone()
+                    .unwrap_or_else(|| "(n/a)".to_string()),
+            );
+            cpu_cpu_count.set_text(&cpu_caps.cpu_count.to_string());
+            cpu_thread_count.set_text(&cpu_caps.thread_count.to_string());
+
+            cpu_turbo_switch.set_sensitive(cpu_caps.has_boost_toggle && cpu_caps.policy_writable);
+            if let Some(v) = cpu_data.turbo_boost_enabled {
+                if !cpu_turbo_switch.has_focus() {
+                    cpu_turbo_switch.set_active(v);
+                }
+            }
+            cpu_turbo_row.set_subtitle(if cpu_caps.has_boost_toggle {
+                if cpu_caps.policy_writable {
+                    "Enable/disable CPU turbo boost"
+                } else {
+                    "Read-only for this user"
+                }
+            } else {
+                "Not supported on this system"
+            });
+
+            let quick_sensitive = cpu_caps.policy_writable && cpu_caps.has_cpufreq;
+            cpu_power_quiet.set_sensitive(quick_sensitive);
+            cpu_power_balanced.set_sensitive(quick_sensitive);
+            cpu_power_perf.set_sensitive(quick_sensitive);
+            cpu_apply_quick.set_sensitive(quick_sensitive);
+            cpu_min_scale.set_sensitive(quick_sensitive && cpu_caps.has_min_freq_limit);
+            cpu_max_scale.set_sensitive(quick_sensitive && cpu_caps.has_max_freq_limit);
+            if let Some(v) = cpu_data.min_freq_mhz {
+                if !cpu_min_scale.has_focus() {
+                    cpu_min_scale.set_value(v as f64);
+                }
+            }
+            if let Some(v) = cpu_data.max_freq_mhz {
+                if !cpu_max_scale.has_focus() {
+                    cpu_max_scale.set_value(v as f64);
+                }
+            }
+
+            let power_mode_hint = cpu_data
+                .epp
+                .as_deref()
+                .map(|v| normalize_label(v))
+                .unwrap_or_default();
+            if power_mode_hint.contains("power") {
+                cpu_power_quiet.set_active(true);
+            } else if power_mode_hint.contains("perform") {
+                cpu_power_perf.set_active(true);
+            } else {
+                cpu_power_balanced.set_active(true);
+            }
+
+            cpu_governor_combo.set_sensitive(cpu_caps.policy_writable && cpu_caps.has_governor);
+            cpu_epp_combo.set_sensitive(cpu_caps.policy_writable && cpu_caps.has_epp);
+            cpu_apply_policy.set_sensitive(
+                cpu_caps.policy_writable && (cpu_caps.has_governor || cpu_caps.has_epp),
+            );
+
+            {
+                let mut last = last_cpu_governors.borrow_mut();
+                if *last != cpu_caps.governor_choices {
+                    cpu_governor_combo.remove_all();
+                    for gov in &cpu_caps.governor_choices {
+                        cpu_governor_combo.append(Some(gov), gov);
+                    }
+                    *last = cpu_caps.governor_choices.clone();
+                }
+            }
+            {
+                let mut last = last_cpu_epp.borrow_mut();
+                if *last != cpu_caps.epp_choices {
+                    cpu_epp_combo.remove_all();
+                    for epp in &cpu_caps.epp_choices {
+                        cpu_epp_combo.append(Some(epp), epp);
+                    }
+                    *last = cpu_caps.epp_choices.clone();
+                }
+            }
+            if let Some(ref gov) = cpu_data.governor {
+                if !cpu_governor_combo.has_focus() {
+                    cpu_governor_combo.set_active_id(Some(gov));
+                }
+            }
+            if let Some(ref epp) = cpu_data.epp {
+                if !cpu_epp_combo.has_focus() {
+                    cpu_epp_combo.set_active_id(Some(epp));
+                }
+            }
+
+            cpu_read_only_banner.set_revealed(cpu_caps.has_cpufreq && !cpu_caps.policy_writable);
+            cpu_read_only_banner.set_title(if cpu_caps.policy_writable {
+                "CPU controls are writable"
+            } else {
+                "CPU controls are read-only"
+            });
+
+            let mut table = String::new();
+            table.push_str("CORE  ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
+            table.push_str("---------------------------------------------------\n");
+            for core in &cpu_data.per_core {
+                table.push_str(&format!(
+                    "{:<4}  {:<6}  {:>6}  {:>8}  {:>8}  {:>8}\n",
+                    core.core_id,
+                    if core.online { "yes" } else { "no" },
+                    core.usage_percent
+                        .map(|v| format!("{v:.1}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    core.current_freq_mhz
+                        .map(|v| format!("{:.2}", v as f32 / 1000.0))
+                        .unwrap_or_else(|| "-".to_string()),
+                    core.min_freq_mhz
+                        .map(|v| format!("{:.2}", v as f32 / 1000.0))
+                        .unwrap_or_else(|| "-".to_string()),
+                    core.max_freq_mhz
+                        .map(|v| format!("{:.2}", v as f32 / 1000.0))
+                        .unwrap_or_else(|| "-".to_string()),
+                ));
+            }
+            cpu_per_core_buffer.set_text(&table);
+
+            while let Some(child) = cpu_core_toggle_box.first_child() {
+                cpu_core_toggle_box.remove(&child);
+            }
+            for core in &cpu_data.per_core {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let label = gtk::Label::new(Some(&format!("Core {}", core.core_id)));
+                label.set_xalign(0.0);
+                label.set_hexpand(true);
+                let switch = gtk::Switch::new();
+                switch.set_active(core.online);
+                let allow_toggle =
+                    cpu_caps.has_core_online && cpu_caps.policy_writable && core.core_id != 0;
+                switch.set_sensitive(allow_toggle);
+                if allow_toggle {
+                    let shared = shared_clone.clone();
+                    let win = win_clone.clone();
+                    let core_id = core.core_id;
+                    let original_online = core.online;
+                    switch.connect_active_notify(move |sw| {
+                        let desired_online = sw.is_active();
+                        if desired_online == original_online {
+                            return;
+                        }
+                        let dialog = adw::MessageDialog::new(
+                            Some(&win),
+                            Some("Confirm Core Toggle"),
+                            Some(
+                                "Changing core online/offline state can impact stability and thermals. Continue?",
+                            ),
+                        );
+                        dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
+                        dialog.set_close_response("cancel");
+                        dialog.set_default_response(Some("cancel"));
+
+                        let shared_apply = shared.clone();
+                        let sw_apply = sw.clone();
+                        dialog.connect_response(Some("apply"), move |d, _| {
+                            if let Ok(mut st) = shared_apply.lock() {
+                                st.pending_cpu_actions.push(PendingCpuAction::SetCoreOnline {
+                                    core_id,
+                                    online: desired_online,
+                                });
+                                st.action_error = None;
+                            }
+                            d.close();
+                            sw_apply.set_sensitive(false);
+                        });
+
+                        let sw_cancel = sw.clone();
+                        dialog.connect_response(Some("cancel"), move |d, _| {
+                            sw_cancel.set_active(original_online);
+                            d.close();
+                        });
+                        dialog.present();
+                    });
+                }
+                row.append(&label);
+                row.append(&switch);
+                cpu_core_toggle_box.append(&row);
+            }
+
+            let raw_paths_text = if cpu_caps.sysfs_paths.is_empty() {
+                "No CPU sysfs paths detected.".to_string()
+            } else {
+                cpu_caps.sysfs_paths.join("\n")
+            };
+            cpu_raw_paths.set_text(&raw_paths_text);
+        } else {
+            cpu_card_temp.set_value("--");
+            cpu_card_usage.set_value("--");
+            cpu_card_power.set_value("--");
+            cpu_card_clock.set_value("--");
+            cpu_read_only_banner.set_revealed(false);
+            cpu_per_core_buffer.set_text("CPU telemetry unavailable.");
+            cpu_raw_paths.set_text("");
+        }
+
         diag_buffer.set_text(if caps_text.is_empty() {
             "Loading diagnostics..."
         } else {
             &caps_text
         });
 
-        if let Some(e) = daemon_error {
+        if let Some(ref e) = daemon_error {
             status_label.set_text(&format!(
                 "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
             ));
+        } else if let Some(ref e) = action_error_txt {
+            status_label.set_text(&e);
         } else {
             status_label.set_text("");
         }
@@ -1040,26 +2003,100 @@ fn build_ui(app: &adw::Application) {
         profile_quiet.set_sensitive(caps.has_profiles);
         profile_balanced.set_sensitive(caps.has_profiles);
         profile_turbo.set_sensitive(caps.has_profiles);
+        gpu_page_profile_combo.set_sensitive(caps.has_profiles);
+        gpu_page_profile_apply.set_sensitive(caps.has_profiles);
         if caps.has_profiles {
             profile_row.set_subtitle("Quiet / Balanced / Turbo");
+            if let Some(current) = profile.as_deref() {
+                if profile_name_is(current, "silent") {
+                    profile_quiet.set_active(true);
+                } else if profile_name_is(current, "balanced") {
+                    profile_balanced.set_active(true);
+                } else if profile_name_is(current, "turbo")
+                    || profile_name_is(current, "performance")
+                {
+                    profile_turbo.set_active(true);
+                }
+                profile_row.set_subtitle(&format!("Current: {current}"));
+                gpu_page_current_profile.set_text(current);
+                if !gpu_page_profile_combo.has_focus() {
+                    if profile_name_is(current, "silent") {
+                        gpu_page_profile_combo.set_active_id(Some("Silent"));
+                    } else if profile_name_is(current, "balanced") {
+                        gpu_page_profile_combo.set_active_id(Some("Balanced"));
+                    } else if profile_name_is(current, "turbo")
+                        || profile_name_is(current, "performance")
+                    {
+                        gpu_page_profile_combo.set_active_id(Some("Turbo"));
+                    }
+                }
+            }
+            gpu_page_profile_row.set_subtitle("Apply profile through daemon");
         } else {
             profile_row.set_subtitle("Not supported");
+            gpu_page_current_profile.set_text("(n/a)");
+            gpu_page_profile_row.set_subtitle("Unavailable");
         }
 
         gpu_mode_row.set_visible(caps.has_gpu_modes);
+        gpu_page_mode_combo.set_sensitive(caps.has_gpu_modes);
+        gpu_page_mode_apply.set_sensitive(caps.has_gpu_modes);
         if caps.has_gpu_modes {
-            gpu_mode_dropdown.set_sensitive(false);
-            if caps.requires_reboot_for_gpu_switch {
-                gpu_mode_row.set_subtitle("Requires reboot for switch");
+            gpu_mode_dropdown.set_sensitive(true);
+            gpu_apply_button.set_sensitive(true);
+            if let Some(current) = gpu_mode.as_deref() {
+                gpu_mode_dropdown.set_selected(gpu_mode_to_dropdown_index(current));
+                gpu_mode_row.set_subtitle(&format!("Current: {current}"));
+                gpu_page_current_mode.set_text(current);
+                if !gpu_page_mode_combo.has_focus() {
+                    match gpu_mode_to_dropdown_index(current) {
+                        0 => gpu_page_mode_combo.set_active_id(Some("Integrated")),
+                        1 => gpu_page_mode_combo.set_active_id(Some("Hybrid")),
+                        _ => gpu_page_mode_combo.set_active_id(Some("Dedicated")),
+                    };
+                }
             } else {
-                gpu_mode_row.set_subtitle("Control path pending daemon write API");
+                gpu_mode_row.set_subtitle("Select mode and apply");
+                gpu_page_current_mode.set_text("(n/a)");
             }
+            if caps.requires_reboot_for_gpu_switch {
+                gpu_mode_row.set_subtitle("Switch may require reboot/logout");
+                gpu_page_switch_hint.set_text("Switch may require reboot/logout.");
+            } else {
+                gpu_page_switch_hint.set_text("Switch applies immediately or after logout.");
+            }
+            gpu_page_mode_row.set_subtitle("Apply GPU mode through daemon");
+        } else {
+            gpu_mode_dropdown.set_sensitive(false);
+            gpu_apply_button.set_sensitive(false);
+            gpu_page_current_mode.set_text("(n/a)");
+            gpu_page_switch_hint.set_text("(n/a)");
+            gpu_page_mode_row.set_subtitle("Unavailable");
         }
 
         charge_limit_row.set_visible(caps.has_charge_limit);
         if caps.has_charge_limit {
+            charge_limit_spin.set_sensitive(true);
+            charge_apply_button.set_sensitive(true);
+            if let Some(limit) = battery_limit {
+                if !charge_limit_spin.has_focus() {
+                    charge_limit_spin.set_value(limit as f64);
+                }
+                charge_limit_row.set_subtitle(&format!("Current: {limit}%"));
+            } else {
+                charge_limit_row.set_subtitle("Set desired limit and apply");
+            }
+        } else {
             charge_limit_spin.set_sensitive(false);
-            charge_limit_row.set_subtitle("Control path pending daemon write API");
+            charge_apply_button.set_sensitive(false);
+        }
+
+        if let Some(ref msg) = action_error_txt {
+            gpu_page_last_action.set_text(msg);
+        } else if daemon_error.is_some() {
+            gpu_page_last_action.set_text("Daemon unavailable.");
+        } else {
+            gpu_page_last_action.set_text("OK");
         }
 
         let has_kbd_backlight = caps.has_kbd_backlight || lighting.is_some();
@@ -1193,6 +2230,65 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                     break;
                 }
 
+                let pending_profile = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_profile.take());
+                if let Some(profile) = pending_profile {
+                    if let Err(e) = apply_profile(profile).await {
+                        if let Ok(mut st) = shared.lock() {
+                            st.action_error = Some(e);
+                        }
+                    }
+                }
+
+                let pending_gpu_mode = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_gpu_mode.take());
+                if let Some(mode) = pending_gpu_mode {
+                    if let Err(e) = apply_gpu_mode(mode).await {
+                        if let Ok(mut st) = shared.lock() {
+                            st.action_error = Some(e);
+                        }
+                    }
+                }
+
+                let pending_battery_limit = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_battery_limit.take());
+                if let Some(limit) = pending_battery_limit {
+                    if let Err(e) = apply_battery_limit(limit).await {
+                        if let Ok(mut st) = shared.lock() {
+                            st.action_error = Some(e);
+                        }
+                    }
+                }
+
+                let pending_cpu_actions = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| std::mem::take(&mut st.pending_cpu_actions))
+                    .unwrap_or_default();
+                if !pending_cpu_actions.is_empty() {
+                    match apply_cpu_actions(pending_cpu_actions).await {
+                        Ok(()) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = None;
+                                st.pending_toast =
+                                    Some(("CPU settings applied".to_string(), false));
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = Some(e.clone());
+                                st.pending_toast = Some((e, true));
+                            }
+                        }
+                    }
+                }
+
                 // Apply pending lighting action before refreshing state.
                 let pending = shared
                     .lock()
@@ -1207,16 +2303,47 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                 }
 
                 match fetch_state().await {
-                    Ok((t, caps, caps_text, warnings, lighting)) => {
+                    Ok((
+                        t,
+                        cpu,
+                        cpu_caps,
+                        caps,
+                        caps_text,
+                        warnings,
+                        profile,
+                        gpu_mode,
+                        battery_limit,
+                        lighting,
+                    )) => {
                         let summary = summary_from_telemetry(&t);
                         if let Some(h) = &tray_handle {
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
                         }
                         if let Ok(mut st) = shared.lock() {
                             st.telemetry = Some(t);
+                            st.cpu = cpu.clone();
+                            st.cpu_caps = cpu_caps;
+                            push_history(
+                                &mut st.cpu_usage_history,
+                                cpu.as_ref().and_then(|c| c.usage_percent),
+                                600,
+                            );
+                            push_history(
+                                &mut st.cpu_temp_history,
+                                cpu.as_ref().and_then(|c| c.temp_c),
+                                600,
+                            );
+                            push_history(
+                                &mut st.cpu_power_history,
+                                cpu.as_ref().and_then(|c| c.package_power_w),
+                                600,
+                            );
                             st.caps = caps;
                             st.caps_text = caps_text;
                             st.warnings = warnings;
+                            st.profile = profile;
+                            st.gpu_mode = gpu_mode;
+                            st.battery_limit = battery_limit;
                             st.lighting = lighting;
                             st.daemon_error = None;
                         }
@@ -1242,9 +2369,14 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
 async fn fetch_state() -> Result<
     (
         TelemetrySnapshot,
+        Option<CpuTelemetry>,
+        CpuCaps,
         DeviceCaps,
         String,
         Vec<String>,
+        Option<String>,
+        Option<String>,
+        Option<u8>,
         Option<LightingInfo>,
     ),
     String,
@@ -1270,11 +2402,33 @@ async fn fetch_state() -> Result<
         .cloned()
         .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
         .unwrap_or_default();
+    let cpu_map = state
+        .get("cpu")
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .unwrap_or_default();
+    let cpu_caps_map = state
+        .get("cpu_caps")
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .unwrap_or_default();
     let warnings = state
         .get("warnings")
         .cloned()
         .and_then(|v| Vec::<String>::try_from(v).ok())
         .unwrap_or_default();
+    let profile = state
+        .get("profile")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
+    let gpu_mode = state
+        .get("gpu_mode")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
+    let battery_limit = state
+        .get("battery_limit")
+        .and_then(u64_from_value)
+        .and_then(|v| u8::try_from(v).ok());
     let lighting = state
         .get("lighting")
         .cloned()
@@ -1282,6 +2436,12 @@ async fn fetch_state() -> Result<
         .and_then(lighting_from_dbus);
 
     let caps = caps_from_dbus(&caps_map);
+    let cpu_caps = cpu_caps_from_dbus(&cpu_caps_map);
+    let cpu = if cpu_map.is_empty() {
+        None
+    } else {
+        Some(cpu_telemetry_from_dbus(cpu_map))
+    };
     let mut caps_text = caps_text_from_dbus(caps_map);
     if !warnings.is_empty() {
         caps_text.push_str("\n\nWarnings:");
@@ -1292,9 +2452,14 @@ async fn fetch_state() -> Result<
 
     Ok((
         telemetry_from_dbus(telemetry_map),
+        cpu,
+        cpu_caps,
         caps,
         caps_text,
         warnings,
+        profile,
+        gpu_mode,
+        battery_limit,
         lighting,
     ))
 }
@@ -1317,6 +2482,111 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
         .set_lighting(m)
         .await
         .map_err(|e| format!("daemon SetLighting failed: {e}"))?;
+    Ok(())
+}
+
+async fn apply_profile(profile: String) -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+    proxy
+        .set_profile(&profile)
+        .await
+        .map_err(|e| format!("daemon SetProfile failed: {e}"))?;
+    Ok(())
+}
+
+async fn apply_gpu_mode(mode: String) -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+    proxy
+        .set_gpu_mode(&mode)
+        .await
+        .map_err(|e| format!("daemon SetGpuMode failed: {e}"))?;
+    Ok(())
+}
+
+async fn apply_battery_limit(limit: u8) -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+    proxy
+        .set_battery_limit(limit as u64)
+        .await
+        .map_err(|e| format!("daemon SetBatteryLimit failed: {e}"))?;
+    Ok(())
+}
+
+async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String> {
+    if actions.is_empty() {
+        return Ok(());
+    }
+
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+
+    for action in actions {
+        match action {
+            PendingCpuAction::SetTurbo(enabled) => {
+                proxy
+                    .set_cpu_turbo(enabled)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuTurbo failed: {e}"))?;
+            }
+            PendingCpuAction::SetPowerMode(mode) => {
+                proxy
+                    .set_cpu_power_mode(&mode)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuPowerMode failed: {e}"))?;
+            }
+            PendingCpuAction::SetGovernor(governor) => {
+                proxy
+                    .set_cpu_governor(&governor)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuGovernor failed: {e}"))?;
+            }
+            PendingCpuAction::SetEpp(epp) => {
+                proxy
+                    .set_cpu_epp(&epp)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuEpp failed: {e}"))?;
+            }
+            PendingCpuAction::SetFreqLimits { min_mhz, max_mhz } => {
+                let min_mhz = min_mhz.unwrap_or(0) as u64;
+                let max_mhz = max_mhz.unwrap_or(0) as u64;
+                if min_mhz > 0 && max_mhz > 0 && min_mhz > max_mhz {
+                    return Err(format!(
+                        "min frequency ({min_mhz} MHz) cannot exceed max frequency ({max_mhz} MHz)"
+                    ));
+                }
+                proxy
+                    .set_cpu_freq_limits(min_mhz, max_mhz)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuFreqLimits failed: {e}"))?;
+            }
+            PendingCpuAction::SetCoreOnline { core_id, online } => {
+                proxy
+                    .set_cpu_core_online(core_id as u64, online)
+                    .await
+                    .map_err(|e| format!("daemon SetCpuCoreOnline failed: {e}"))?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1345,6 +2615,20 @@ fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
         "rog-helper".to_string()
     } else {
         parts.join(" | ")
+    }
+}
+
+fn push_history(buf: &mut Vec<f32>, value: Option<f32>, max_samples: usize) {
+    let Some(value) = value else {
+        return;
+    };
+    if !value.is_finite() {
+        return;
+    }
+    buf.push(value);
+    if buf.len() > max_samples {
+        let drop_n = buf.len() - max_samples;
+        buf.drain(..drop_n);
     }
 }
 
@@ -1583,6 +2867,95 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     t
 }
 
+fn cpu_telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> CpuTelemetry {
+    let timestamp_ms = map
+        .get("timestamp_ms")
+        .and_then(u64_from_value)
+        .unwrap_or_default();
+    let mut out = CpuTelemetry::empty_now(timestamp_ms);
+
+    out.temp_c = map
+        .get("temp_c")
+        .and_then(|v| f64::try_from(v).ok())
+        .map(|v| v as f32);
+    out.usage_percent = map
+        .get("usage_percent")
+        .and_then(|v| f64::try_from(v).ok())
+        .map(|v| v as f32);
+    out.avg_freq_mhz = map
+        .get("avg_freq_mhz")
+        .and_then(|v| f64::try_from(v).ok())
+        .map(|v| v as f32);
+    out.package_power_w = map
+        .get("package_power_w")
+        .and_then(|v| f64::try_from(v).ok())
+        .map(|v| v as f32);
+    out.status = map
+        .get("status")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
+    out.turbo_boost_enabled = map
+        .get("turbo_boost_enabled")
+        .and_then(|v| bool::try_from(v).ok());
+    out.governor = map
+        .get("governor")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
+    out.epp = map
+        .get("epp")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
+    out.min_freq_mhz = map
+        .get("min_freq_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
+    out.max_freq_mhz = map
+        .get("max_freq_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
+
+    if let Some(rows) = map
+        .get("per_core")
+        .cloned()
+        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
+    {
+        let mut per_core = Vec::with_capacity(rows.len());
+        for row in rows {
+            let core_id = row
+                .get("core_id")
+                .and_then(u64_from_value)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or_default();
+            per_core.push(rog_core::CpuCoreTelemetry {
+                core_id,
+                usage_percent: row
+                    .get("usage_percent")
+                    .and_then(|v| f64::try_from(v).ok())
+                    .map(|v| v as f32),
+                current_freq_mhz: row
+                    .get("current_freq_mhz")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                min_freq_mhz: row
+                    .get("min_freq_mhz")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                max_freq_mhz: row
+                    .get("max_freq_mhz")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                online: row
+                    .get("online")
+                    .and_then(|v| bool::try_from(v).ok())
+                    .unwrap_or(true),
+            });
+        }
+        out.per_core = per_core;
+    }
+
+    out
+}
+
 fn u64_from_value(v: &OwnedValue) -> Option<u64> {
     u64::try_from(v)
         .ok()
@@ -1739,6 +3112,114 @@ fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
     out
 }
 
+fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
+    let mut out = String::new();
+    out.push_str("CPU Diagnostics\n");
+    out.push_str("================\n");
+    out.push_str(&format!("has_cpufreq: {}\n", caps.has_cpufreq));
+    out.push_str(&format!("has_governor: {}\n", caps.has_governor));
+    out.push_str(&format!("has_epp: {}\n", caps.has_epp));
+    out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
+    out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
+    out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
+    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
+    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    if let Some(driver) = &caps.scaling_driver {
+        out.push_str(&format!("scaling_driver: {driver}\n"));
+    }
+    if !caps.governor_choices.is_empty() {
+        out.push_str(&format!(
+            "governor_choices: {}\n",
+            caps.governor_choices.join(", ")
+        ));
+    }
+    if !caps.epp_choices.is_empty() {
+        out.push_str(&format!("epp_choices: {}\n", caps.epp_choices.join(", ")));
+    }
+    if !caps.sysfs_paths.is_empty() {
+        out.push_str("sysfs_paths:\n");
+        for path in &caps.sysfs_paths {
+            out.push_str(&format!("  {path}\n"));
+        }
+    }
+
+    out.push_str("\nCurrent\n");
+    out.push_str("-------\n");
+    if let Some(cpu) = cpu {
+        out.push_str(&format!("temp_c: {:?}\n", cpu.temp_c));
+        out.push_str(&format!("usage_percent: {:?}\n", cpu.usage_percent));
+        out.push_str(&format!("avg_freq_mhz: {:?}\n", cpu.avg_freq_mhz));
+        out.push_str(&format!("package_power_w: {:?}\n", cpu.package_power_w));
+        out.push_str(&format!("status: {:?}\n", cpu.status));
+        out.push_str(&format!(
+            "turbo_boost_enabled: {:?}\n",
+            cpu.turbo_boost_enabled
+        ));
+        out.push_str(&format!("governor: {:?}\n", cpu.governor));
+        out.push_str(&format!("epp: {:?}\n", cpu.epp));
+        out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
+        out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
+
+        out.push_str("\nPer-core\n");
+        out.push_str("--------\n");
+        out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+        for core in &cpu.per_core {
+            out.push_str(&format!(
+                "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+                core.core_id,
+                if core.online { "yes" } else { "no" },
+                core.usage_percent
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                core.current_freq_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                core.min_freq_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                core.max_freq_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ));
+        }
+    } else {
+        out.push_str("CPU telemetry unavailable.\n");
+    }
+
+    out
+}
+
+fn normalize_label(v: &str) -> String {
+    v.to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect()
+}
+
+fn profile_name_is(v: &str, expected: &str) -> bool {
+    normalize_label(v) == normalize_label(expected)
+}
+
+fn tray_profile_index_from_text(v: &str) -> usize {
+    let key = normalize_label(v);
+    match key.as_str() {
+        "silent" | "quiet" | "lowpower" => 0,
+        "balanced" => 1,
+        "turbo" | "performance" => 2,
+        _ => 1,
+    }
+}
+
+fn gpu_mode_to_dropdown_index(v: &str) -> u32 {
+    let key = normalize_label(v);
+    match key.as_str() {
+        "integrated" => 0,
+        "hybrid" => 1,
+        "dedicated" | "discrete" | "asusmuxdgpu" | "asusegpu" | "vfio" => 2,
+        _ => 1,
+    }
+}
+
 fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -> gtk::Label {
     let row = adw::ActionRow::builder().title(title).build();
     let value = gtk::Label::new(Some("(n/a)"));
@@ -1871,6 +3352,48 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     let g = to_u8(rgba.green());
     let b = to_u8(rgba.blue());
     format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
+    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
+        map.get(key)
+            .and_then(|v| bool::try_from(v).ok())
+            .unwrap_or(false)
+    }
+    fn u32v(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
+        map.get(key)
+            .and_then(u64_from_value)
+            .and_then(|v| u32::try_from(v).ok())
+    }
+    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+        map.get(key)
+            .and_then(|v| <&str>::try_from(v).ok())
+            .map(|v| v.to_string())
+    }
+    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        map.get(key)
+            .cloned()
+            .and_then(|v| Vec::<String>::try_from(v).ok())
+            .unwrap_or_default()
+    }
+
+    CpuCaps {
+        has_cpufreq: b(map, "has_cpufreq"),
+        has_epp: b(map, "has_epp"),
+        has_boost_toggle: b(map, "has_boost_toggle"),
+        has_package_power: b(map, "has_package_power"),
+        policy_writable: b(map, "policy_writable"),
+        has_min_freq_limit: b(map, "has_min_freq_limit"),
+        has_max_freq_limit: b(map, "has_max_freq_limit"),
+        has_governor: b(map, "has_governor"),
+        has_core_online: b(map, "has_core_online"),
+        scaling_driver: s(map, "scaling_driver"),
+        cpu_count: u32v(map, "cpu_count").unwrap_or(0),
+        thread_count: u32v(map, "thread_count").unwrap_or(0),
+        governor_choices: vec_string(map, "governor_choices"),
+        epp_choices: vec_string(map, "epp_choices"),
+        sysfs_paths: vec_string(map, "sysfs_paths"),
+    }
 }
 
 fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {

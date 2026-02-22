@@ -46,6 +46,14 @@ Terminal 2:
 cargo run -p rog-ui
 ```
 
+## About Page
+
+`rog-helper-ui` now includes an **About** page (in the top view switcher) and a tray **About** menu
+action. It shows:
+
+- App details: name, binary, version, license, and session DBus API endpoint.
+- Developer details: maintainer/contributors and source repository URL.
+
 ## Verify Daemon DBus API
 
 With `rog-helperd` running:

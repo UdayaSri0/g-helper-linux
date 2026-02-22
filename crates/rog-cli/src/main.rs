@@ -5,9 +5,12 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::DeviceCaps;
+use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
+use rog_providers::supergfx::SupergfxProvider;
+use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
@@ -213,7 +216,7 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
 }
 
 async fn cmd_caps() -> anyhow::Result<()> {
-    info!("probing DeviceCaps (milestone 1)");
+    info!("probing DeviceCaps");
 
     let hwmon = HwmonTelemetryProvider::default();
     let snap = hwmon.read_snapshot().unwrap_or_else(|e| {
@@ -224,8 +227,57 @@ async fn cmd_caps() -> anyhow::Result<()> {
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
     caps.has_kbd_backlight = detect_kbd_backlight();
-    caps.notes
-        .push("Milestone 1: asusd/supergfxd not integrated yet.".to_string());
+
+    if let Ok(Some(asusd)) = AsusdPlatformProvider::connect_system().await {
+        caps.endpoints
+            .push(format!("asusd-platform:{}", asusd.endpoint_tag()));
+        match asusd.probe_caps().await {
+            Ok(pcaps) => {
+                caps.has_profiles = pcaps.has_profiles;
+                caps.has_charge_limit = pcaps.has_charge_limit;
+            }
+            Err(e) => caps.notes.push(format!("asusd probing failed: {e}")),
+        }
+        if caps.has_profiles {
+            if let Ok(p) = asusd.get_profile().await {
+                caps.notes.push(format!("Current profile: {p:?}"));
+            }
+        }
+        if caps.has_charge_limit {
+            if let Ok(l) = asusd.get_limit().await {
+                caps.notes.push(format!("Current charge limit: {}%", l.0));
+            }
+        }
+    } else {
+        caps.notes
+            .push("asusd not detected; profile/charge controls unavailable.".to_string());
+    }
+
+    if let Ok(Some(supergfx)) = SupergfxProvider::connect_system().await {
+        caps.endpoints
+            .push(format!("supergfxd:{}", supergfx.endpoint_tag()));
+        match supergfx.probe_caps().await {
+            Ok(gcaps) => {
+                caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
+                caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
+                if !gcaps.raw_supported_modes.is_empty() {
+                    caps.notes.push(format!(
+                        "supergfx supported modes: {}",
+                        gcaps.raw_supported_modes.join(", ")
+                    ));
+                }
+            }
+            Err(e) => caps.notes.push(format!("supergfx probing failed: {e}")),
+        }
+        if caps.has_gpu_modes {
+            if let Ok(m) = supergfx.get_mode().await {
+                caps.notes.push(format!("Current GPU mode: {m:?}"));
+            }
+        }
+    } else {
+        caps.notes
+            .push("supergfxd not detected; GPU mode controls unavailable.".to_string());
+    }
 
     // Include filtered DBus names as endpoints for diagnostics.
     let re = Regex::new("(?i)asus|rog|supergfx|power|upower")?;
