@@ -1,5 +1,34 @@
 # Troubleshooting
 
+## `Cargo.lock` parse error (`version = 4`)
+
+If you see:
+
+```text
+error: failed to parse lock file at: .../Cargo.lock
+Caused by:
+  lock file version 4 requires `-Znext-lockfile-bump`
+```
+
+your Cargo is too old for this workspace lockfile.
+
+Fix by installing/updating Rust via `rustup` (recommended over distro `apt` packages):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustup toolchain install stable
+rustup default stable
+cargo --version
+rustc --version
+```
+
+Then retry:
+
+```bash
+cargo build --workspace
+```
+
 ## Daemon not reachable in UI
 
 The UI talks to `rog-helperd` over the *session* bus.
