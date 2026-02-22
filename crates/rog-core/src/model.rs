@@ -398,9 +398,97 @@ impl TelemetrySnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuCoreTelemetry {
+    pub core_id: u32,
+    pub usage_percent: Option<f32>,
+    pub current_freq_mhz: Option<u32>,
+    pub min_freq_mhz: Option<u32>,
+    pub max_freq_mhz: Option<u32>,
+    pub online: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuTelemetry {
+    pub timestamp_ms: u64,
+    pub temp_c: Option<f32>,
+    pub usage_percent: Option<f32>,
+    pub avg_freq_mhz: Option<f32>,
+    pub package_power_w: Option<f32>,
+    pub status: Option<String>,
+    pub turbo_boost_enabled: Option<bool>,
+    pub governor: Option<String>,
+    pub epp: Option<String>,
+    pub min_freq_mhz: Option<u32>,
+    pub max_freq_mhz: Option<u32>,
+    pub per_core: Vec<CpuCoreTelemetry>,
+}
+
+impl CpuTelemetry {
+    pub fn empty_now(timestamp_ms: u64) -> Self {
+        Self {
+            timestamp_ms,
+            temp_c: None,
+            usage_percent: None,
+            avg_freq_mhz: None,
+            package_power_w: None,
+            status: None,
+            turbo_boost_enabled: None,
+            governor: None,
+            epp: None,
+            min_freq_mhz: None,
+            max_freq_mhz: None,
+            per_core: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuCaps {
+    pub has_cpufreq: bool,
+    pub has_epp: bool,
+    pub has_boost_toggle: bool,
+    pub has_package_power: bool,
+    pub policy_writable: bool,
+    pub has_min_freq_limit: bool,
+    pub has_max_freq_limit: bool,
+    pub has_governor: bool,
+    pub has_core_online: bool,
+    pub scaling_driver: Option<String>,
+    pub cpu_count: u32,
+    pub thread_count: u32,
+    pub governor_choices: Vec<String>,
+    pub epp_choices: Vec<String>,
+    pub sysfs_paths: Vec<String>,
+}
+
+impl CpuCaps {
+    pub fn unknown() -> Self {
+        Self {
+            has_cpufreq: false,
+            has_epp: false,
+            has_boost_toggle: false,
+            has_package_power: false,
+            policy_writable: false,
+            has_min_freq_limit: false,
+            has_max_freq_limit: false,
+            has_governor: false,
+            has_core_online: false,
+            scaling_driver: None,
+            cpu_count: 0,
+            thread_count: 0,
+            governor_choices: Vec::new(),
+            epp_choices: Vec::new(),
+            sysfs_paths: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
     pub caps: DeviceCaps,
     pub telemetry: TelemetrySnapshot,
+    pub cpu_caps: CpuCaps,
+    pub cpu: CpuTelemetry,
     pub warnings: Vec<String>,
 }
 
@@ -408,6 +496,8 @@ impl AppState {
     pub fn new(caps: DeviceCaps, telemetry: TelemetrySnapshot) -> Self {
         Self {
             caps,
+            cpu_caps: CpuCaps::unknown(),
+            cpu: CpuTelemetry::empty_now(telemetry.timestamp_ms),
             telemetry,
             warnings: Vec::new(),
         }
