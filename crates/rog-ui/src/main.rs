@@ -7,7 +7,7 @@ use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{ToolTip, Tray, TrayMethods};
-use rog_core::{BatteryState, PowerSource, TelemetrySnapshot};
+use rog_core::{BatteryState, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -27,9 +27,10 @@ trait Daemon1 {
     fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> zbus::Result<()>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SharedUiState {
     telemetry: Option<TelemetrySnapshot>,
+    caps: DeviceCaps,
     caps_text: String,
     warnings: Vec<String>,
     lighting: Option<LightingInfo>,
@@ -38,6 +39,23 @@ struct SharedUiState {
     daemon_error: Option<String>,
     show_window: bool,
     quit: bool,
+}
+
+impl Default for SharedUiState {
+    fn default() -> Self {
+        Self {
+            telemetry: None,
+            caps: DeviceCaps::unknown(),
+            caps_text: String::new(),
+            warnings: Vec::new(),
+            lighting: None,
+            pending_lighting: None,
+            lighting_error: None,
+            daemon_error: None,
+            show_window: false,
+            quit: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +75,113 @@ struct PendingLighting {
     brightness: u64,
     mode: String,
     rgb_hex: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MetricCard {
+    root: gtk::Box,
+    value_label: gtk::Label,
+    unit_label: gtk::Label,
+    subtitle_label: gtk::Label,
+    chip_label: gtk::Label,
+}
+
+impl MetricCard {
+    fn new(title: &str) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        root.add_css_class("card");
+        root.add_css_class("metric-card");
+        root.set_hexpand(true);
+        root.set_size_request(240, -1);
+
+        let title_label = gtk::Label::new(Some(title));
+        title_label.set_xalign(0.0);
+        title_label.add_css_class("caption");
+        title_label.add_css_class("dim-label");
+
+        let value_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        value_row.set_halign(gtk::Align::Start);
+
+        let value_label = gtk::Label::new(Some("--"));
+        value_label.set_xalign(0.0);
+        value_label.add_css_class("title-1");
+
+        let unit_label = gtk::Label::new(None);
+        unit_label.set_xalign(0.0);
+        unit_label.add_css_class("title-4");
+        unit_label.add_css_class("dim-label");
+        unit_label.set_visible(false);
+
+        value_row.append(&value_label);
+        value_row.append(&unit_label);
+
+        let subtitle_label = gtk::Label::new(None);
+        subtitle_label.set_xalign(0.0);
+        subtitle_label.add_css_class("dim-label");
+        subtitle_label.set_visible(false);
+
+        let chip_label = gtk::Label::new(None);
+        chip_label.set_xalign(0.0);
+        chip_label.add_css_class("status-chip");
+        chip_label.set_visible(false);
+
+        root.append(&title_label);
+        root.append(&value_row);
+        root.append(&subtitle_label);
+        root.append(&chip_label);
+
+        Self {
+            root,
+            value_label,
+            unit_label,
+            subtitle_label,
+            chip_label,
+        }
+    }
+
+    fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    fn set_value(&self, value: impl AsRef<str>) {
+        self.value_label.set_text(value.as_ref());
+    }
+
+    fn set_unit(&self, unit: Option<&str>) {
+        if let Some(unit) = unit {
+            self.unit_label.set_text(unit);
+            self.unit_label.set_visible(true);
+        } else {
+            self.unit_label.set_visible(false);
+            self.unit_label.set_text("");
+        }
+    }
+
+    fn set_subtitle(&self, subtitle: Option<&str>) {
+        if let Some(subtitle) = subtitle {
+            self.subtitle_label.set_text(subtitle);
+            self.subtitle_label.set_visible(true);
+        } else {
+            self.subtitle_label.set_text("");
+            self.subtitle_label.set_visible(false);
+        }
+    }
+
+    fn set_status_chip(&self, chip_text: Option<&str>) {
+        if let Some(chip_text) = chip_text {
+            self.chip_label.set_text(chip_text);
+            self.chip_label.set_visible(true);
+        } else {
+            self.chip_label.set_text("");
+            self.chip_label.set_visible(false);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DetailRow {
+    row: adw::ActionRow,
+    value_label: gtk::Label,
 }
 
 #[derive(Debug)]
@@ -156,48 +281,156 @@ fn build_ui(app: &adw::Application) {
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
     spawn_background(shared.clone());
 
-    // Small amount of app-specific CSS so the Dashboard reads like a dashboard instead of a list
-    // of labels.
     install_css();
 
-    let (cpu_card, cpu_value) = metric_card("CPU Temperature");
-    let (gpu_card, gpu_value) = metric_card("GPU Temperature");
-    let (batt_card, batt_value) = metric_card("Battery");
-    let (power_card, power_value) = metric_card("Power Source");
+    let stack = adw::ViewStack::new();
+    stack.set_vexpand(true);
 
-    let tiles = gtk::FlowBox::new();
-    tiles.set_selection_mode(gtk::SelectionMode::None);
-    tiles.set_min_children_per_line(1);
-    tiles.set_max_children_per_line(2);
-    tiles.set_row_spacing(12);
-    tiles.set_column_spacing(12);
-    tiles.set_halign(gtk::Align::Fill);
-    tiles.insert(&cpu_card, -1);
-    tiles.insert(&gpu_card, -1);
-    tiles.insert(&batt_card, -1);
-    tiles.insert(&power_card, -1);
+    let cpu_card = MetricCard::new("CPU Temperature");
+    let gpu_card = MetricCard::new("GPU Temperature");
+    let batt_card = MetricCard::new("Battery");
+    let power_card = MetricCard::new("Power Source");
+    let fans_card = MetricCard::new("Fans");
+    let nvme_card = MetricCard::new("NVMe Temperature");
 
-    let fans_label = gtk::Label::new(Some(""));
-    fans_label.set_xalign(0.0);
-    fans_label.set_wrap(true);
-    fans_label.add_css_class("dim-label");
+    let metrics_grid = gtk::FlowBox::new();
+    metrics_grid.set_selection_mode(gtk::SelectionMode::None);
+    metrics_grid.set_min_children_per_line(1);
+    metrics_grid.set_max_children_per_line(2);
+    metrics_grid.set_row_spacing(12);
+    metrics_grid.set_column_spacing(12);
+    metrics_grid.insert(cpu_card.widget(), -1);
+    metrics_grid.insert(gpu_card.widget(), -1);
+    metrics_grid.insert(batt_card.widget(), -1);
+    metrics_grid.insert(power_card.widget(), -1);
+    metrics_grid.insert(fans_card.widget(), -1);
+    metrics_grid.insert(nvme_card.widget(), -1);
 
-    let warnings_label = gtk::Label::new(Some(""));
-    warnings_label.set_xalign(0.0);
-    warnings_label.set_wrap(true);
-    warnings_label.add_css_class("dim-label");
-    warnings_label.set_visible(false);
+    let warning_banner = adw::Banner::new("Keyboard backlight is read-only");
+    warning_banner.set_button_label(Some("Fix permissions"));
+    warning_banner.set_revealed(false);
 
-    let sensors_details = gtk::Label::new(Some(""));
-    sensors_details.set_xalign(0.0);
-    sensors_details.set_wrap(true);
-    sensors_details.set_selectable(true);
-    sensors_details.add_css_class("monospace");
+    let warning_subtitle = gtk::Label::new(Some(""));
+    warning_subtitle.set_xalign(0.0);
+    warning_subtitle.set_wrap(true);
+    warning_subtitle.add_css_class("dim-label");
+    warning_subtitle.set_visible(false);
 
-    let sensors_expander = gtk::Expander::new(Some("Sensors"));
-    sensors_expander.set_expanded(false);
-    sensors_expander.set_child(Some(&sensors_details));
-    sensors_expander.set_visible(false);
+    let open_diagnostics_button = gtk::Button::with_label("Open Diagnostics");
+    open_diagnostics_button.add_css_class("flat");
+    open_diagnostics_button.set_halign(gtk::Align::Start);
+    open_diagnostics_button.set_visible(false);
+
+    let warning_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    warning_area.append(&warning_banner);
+    warning_area.append(&warning_subtitle);
+    warning_area.append(&open_diagnostics_button);
+    warning_area.set_visible(false);
+
+    let quick_actions_title = gtk::Label::new(Some("Quick Actions"));
+    quick_actions_title.set_xalign(0.0);
+    quick_actions_title.add_css_class("title-3");
+
+    let quick_actions_group = adw::PreferencesGroup::builder()
+        .description("Controls are shown or disabled based on discovered device capabilities.")
+        .build();
+
+    let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    profile_buttons.add_css_class("linked");
+    let profile_quiet = gtk::ToggleButton::with_label("Quiet");
+    let profile_balanced = gtk::ToggleButton::with_label("Balanced");
+    let profile_turbo = gtk::ToggleButton::with_label("Turbo");
+    profile_balanced.set_group(Some(&profile_quiet));
+    profile_turbo.set_group(Some(&profile_quiet));
+    profile_balanced.set_active(true);
+    profile_buttons.append(&profile_quiet);
+    profile_buttons.append(&profile_balanced);
+    profile_buttons.append(&profile_turbo);
+
+    let profile_row = adw::ActionRow::builder()
+        .title("Performance Profile")
+        .subtitle("Not supported")
+        .build();
+    profile_row.add_suffix(&profile_buttons);
+    profile_row.set_activatable(false);
+    quick_actions_group.add(&profile_row);
+
+    let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Discrete"]);
+    gpu_mode_dropdown.set_sensitive(false);
+    let gpu_mode_row = adw::ActionRow::builder()
+        .title("GPU Mode")
+        .subtitle("Unavailable")
+        .build();
+    gpu_mode_row.add_suffix(&gpu_mode_dropdown);
+    gpu_mode_row.set_activatable(false);
+    quick_actions_group.add(&gpu_mode_row);
+
+    let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
+    charge_limit_spin.set_value(80.0);
+    charge_limit_spin.set_sensitive(false);
+    let charge_limit_row = adw::ActionRow::builder()
+        .title("Charge Limit")
+        .subtitle("Unavailable")
+        .build();
+    charge_limit_row.add_suffix(&charge_limit_spin);
+    charge_limit_row.set_activatable(false);
+    quick_actions_group.add(&charge_limit_row);
+
+    let kbd_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let kbd_brightness_spin = gtk::SpinButton::with_range(0.0, 3.0, 1.0);
+    kbd_brightness_spin.set_sensitive(false);
+    kbd_brightness_spin.set_numeric(true);
+    let kbd_apply_button = gtk::Button::with_label("Apply");
+    kbd_apply_button.set_sensitive(false);
+    kbd_control_box.append(&kbd_brightness_spin);
+    kbd_control_box.append(&kbd_apply_button);
+
+    let kbd_backlight_row = adw::ActionRow::builder()
+        .title("Keyboard Backlight")
+        .subtitle("Unavailable")
+        .build();
+    kbd_backlight_row.add_suffix(&kbd_control_box);
+    kbd_backlight_row.set_activatable(false);
+    quick_actions_group.add(&kbd_backlight_row);
+
+    {
+        let shared = shared.clone();
+        let kbd_brightness_spin = kbd_brightness_spin.clone();
+        kbd_apply_button.connect_clicked(move |_| {
+            let desired_brightness = kbd_brightness_spin.value().round().max(0.0) as u64;
+            let desired_mode = shared
+                .lock()
+                .ok()
+                .and_then(|st| st.lighting.as_ref().map(|l| l.mode.clone()))
+                .unwrap_or_else(|| "Static".to_string());
+            if let Ok(mut st) = shared.lock() {
+                st.pending_lighting = Some(PendingLighting {
+                    brightness: desired_brightness,
+                    mode: desired_mode,
+                    rgb_hex: None,
+                });
+                st.lighting_error = None;
+            }
+        });
+    }
+
+    let details_temp_group = adw::PreferencesGroup::builder()
+        .title("Temperatures")
+        .build();
+    let details_fan_group = adw::PreferencesGroup::builder().title("Fans").build();
+    let details_endpoints_group = adw::PreferencesGroup::builder().title("Endpoints").build();
+    let detail_temp_rows = build_detail_rows(&details_temp_group, 8);
+    let detail_fan_rows = build_detail_rows(&details_fan_group, 6);
+    let detail_endpoint_rows = build_detail_rows(&details_endpoints_group, 6);
+
+    let details_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    details_box.append(&details_temp_group);
+    details_box.append(&details_fan_group);
+    details_box.append(&details_endpoints_group);
+
+    let details_expander = gtk::Expander::new(Some("Details"));
+    details_expander.set_expanded(false);
+    details_expander.set_child(Some(&details_box));
 
     let status_label = gtk::Label::new(Some(""));
     status_label.set_xalign(0.0);
@@ -205,183 +438,137 @@ fn build_ui(app: &adw::Application) {
     status_label.add_css_class("dim-label");
 
     let dash_root = gtk::Box::new(gtk::Orientation::Vertical, 18);
-    dash_root.set_margin_top(16);
-    dash_root.set_margin_bottom(16);
-    dash_root.set_margin_start(16);
-    dash_root.set_margin_end(16);
-    dash_root.append(&tiles);
-    dash_root.append(&fans_label);
-    dash_root.append(&warnings_label);
-    dash_root.append(&sensors_expander);
+    dash_root.set_margin_top(18);
+    dash_root.set_margin_bottom(18);
+    dash_root.set_margin_start(18);
+    dash_root.set_margin_end(18);
+    dash_root.append(&warning_area);
+    dash_root.append(&metrics_grid);
+    dash_root.append(&quick_actions_title);
+    dash_root.append(&quick_actions_group);
+    dash_root.append(&details_expander);
     dash_root.append(&status_label);
 
     let dash = clamped_scroller(&dash_root);
 
-    // Battery page (read-only table of best-effort battery telemetry).
-    let battery_title = gtk::Label::new(Some("Battery"));
-    battery_title.set_xalign(0.0);
-    battery_title.add_css_class("title-3");
+    let battery_page = adw::PreferencesPage::new();
+    let battery_group_status = adw::PreferencesGroup::builder()
+        .title("Status")
+        .description("Battery telemetry is best-effort and depends on available providers.")
+        .build();
+    let batt_tbl_percent = pref_value_row(&battery_group_status, "Charge", false);
+    let batt_tbl_state = pref_value_row(&battery_group_status, "Status", false);
+    let batt_tbl_source = pref_value_row(&battery_group_status, "Power Source", false);
+    let batt_tbl_ac_online = pref_value_row(&battery_group_status, "AC Online", false);
+    battery_page.add(&battery_group_status);
 
-    let battery_hint = gtk::Label::new(Some(
-        "Battery telemetry is best-effort. Some fields may be unavailable depending on hardware/UPower/sysfs.",
-    ));
-    battery_hint.set_xalign(0.0);
-    battery_hint.set_wrap(true);
-    battery_hint.add_css_class("dim-label");
+    let battery_group_power = adw::PreferencesGroup::builder().title("Power").build();
+    let batt_tbl_charge_power = pref_value_row(&battery_group_power, "Power Input", false);
+    let batt_tbl_discharge_power = pref_value_row(&battery_group_power, "Power Draw", false);
+    let batt_tbl_ttf = pref_value_row(&battery_group_power, "Time to Full", false);
+    let batt_tbl_tte = pref_value_row(&battery_group_power, "Time to Empty", false);
+    battery_page.add(&battery_group_power);
 
-    let batt_grid = gtk::Grid::new();
-    batt_grid.set_row_spacing(10);
-    batt_grid.set_column_spacing(18);
-    batt_grid.set_hexpand(true);
+    let battery_group_health = adw::PreferencesGroup::builder().title("Health").build();
+    let batt_tbl_health = pref_value_row(&battery_group_health, "Health", false);
+    let batt_tbl_cycles = pref_value_row(&battery_group_health, "Cycle Count", true);
+    battery_page.add(&battery_group_health);
 
-    let batt_tbl_percent = kv_row(&batt_grid, 0, "Charge");
-    let batt_tbl_state = kv_row(&batt_grid, 1, "Status");
-    let batt_tbl_source = kv_row(&batt_grid, 2, "Power Source");
-    let batt_tbl_ac_online = kv_row(&batt_grid, 3, "AC Online");
-    let batt_tbl_charge_power = kv_row(&batt_grid, 4, "Power Input");
-    let batt_tbl_discharge_power = kv_row(&batt_grid, 5, "Power Draw");
-    let batt_tbl_health = kv_row(&batt_grid, 6, "Health");
-    let batt_tbl_cycles = kv_row(&batt_grid, 7, "Cycle Count");
-    let batt_tbl_ttf = kv_row(&batt_grid, 8, "Time to Full");
-    let batt_tbl_tte = kv_row(&batt_grid, 9, "Time to Empty");
+    let battery = clamped_scroller(&battery_page);
 
-    let battery_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    battery_root.set_margin_top(16);
-    battery_root.set_margin_bottom(16);
-    battery_root.set_margin_start(16);
-    battery_root.set_margin_end(16);
-    battery_root.append(&battery_title);
-    battery_root.append(&battery_hint);
-    battery_root.append(&batt_grid);
+    let ram_page = adw::PreferencesPage::new();
+    let ram_group_core = adw::PreferencesGroup::builder()
+        .title("Core Memory")
+        .description("Values are read from procfs when available.")
+        .build();
+    let ram_total = pref_value_row(&ram_group_core, "Total RAM", false);
+    let ram_used = pref_value_row(&ram_group_core, "Used RAM", false);
+    let ram_avail = pref_value_row(&ram_group_core, "Available", false);
+    let ram_free = pref_value_row(&ram_group_core, "Free", false);
+    let ram_cached = pref_value_row(&ram_group_core, "Cached", false);
+    let ram_buffers = pref_value_row(&ram_group_core, "Buffers", false);
+    let ram_shared = pref_value_row(&ram_group_core, "Shared", false);
+    let ram_anon = pref_value_row(&ram_group_core, "App/Anon", false);
+    ram_page.add(&ram_group_core);
 
-    let battery = clamped_scroller(&battery_root);
+    let ram_group_swap = adw::PreferencesGroup::builder().title("Swap").build();
+    let ram_swap_total = pref_value_row(&ram_group_swap, "Swap Total", false);
+    let ram_swap_used = pref_value_row(&ram_group_swap, "Swap Used", false);
+    let ram_swap_free = pref_value_row(&ram_group_swap, "Swap Free", false);
+    let ram_swap_in = pref_value_row(&ram_group_swap, "Swap In", false);
+    let ram_swap_out = pref_value_row(&ram_group_swap, "Swap Out", false);
+    let ram_zram = pref_value_row(&ram_group_swap, "zram", false);
+    let ram_zswap = pref_value_row(&ram_group_swap, "zswap", false);
+    ram_page.add(&ram_group_swap);
 
-    // RAM page (read-only table of best-effort procfs memory telemetry).
-    let ram_title = gtk::Label::new(Some("RAM"));
-    ram_title.set_xalign(0.0);
-    ram_title.add_css_class("title-3");
+    let ram_group_pressure = adw::PreferencesGroup::builder()
+        .title("Memory Pressure (PSI)")
+        .build();
+    let ram_psi_some = pref_value_row(&ram_group_pressure, "some (10/60/300)", true);
+    let ram_psi_full = pref_value_row(&ram_group_pressure, "full (10/60/300)", true);
+    ram_page.add(&ram_group_pressure);
 
-    let ram_hint = gtk::Label::new(Some(
-        "Memory telemetry is best-effort. Values come from /proc (meminfo/vmstat/pressure) when available.",
-    ));
-    ram_hint.set_xalign(0.0);
-    ram_hint.set_wrap(true);
-    ram_hint.add_css_class("dim-label");
+    let ram_group_adv = adw::PreferencesGroup::builder()
+        .title("Advanced Breakdown")
+        .build();
+    let ram_active = pref_value_row(&ram_group_adv, "Active", false);
+    let ram_inactive = pref_value_row(&ram_group_adv, "Inactive", false);
+    let ram_slab = pref_value_row(&ram_group_adv, "Slab", false);
+    let ram_sreclaim = pref_value_row(&ram_group_adv, "SReclaimable", false);
+    let ram_sunreclaim = pref_value_row(&ram_group_adv, "SUnreclaim", false);
+    let ram_mapped = pref_value_row(&ram_group_adv, "Mapped", false);
+    let ram_dirty = pref_value_row(&ram_group_adv, "Dirty", false);
+    let ram_writeback = pref_value_row(&ram_group_adv, "Writeback", false);
+    let ram_pagetables = pref_value_row(&ram_group_adv, "PageTables", false);
+    let ram_kernelstack = pref_value_row(&ram_group_adv, "KernelStack", false);
+    ram_page.add(&ram_group_adv);
 
-    let ram_core_title = gtk::Label::new(Some("Core"));
-    ram_core_title.set_xalign(0.0);
-    ram_core_title.add_css_class("title-4");
+    let copy_top_button = gtk::Button::with_label("Copy");
+    let ram_group_top = adw::PreferencesGroup::builder()
+        .title("Top Memory Users")
+        .description("Sorted by RSS (top 10).")
+        .header_suffix(&copy_top_button)
+        .build();
+    let mut ram_top_rows: Vec<(adw::ActionRow, gtk::Label)> = Vec::new();
+    for _ in 0..10 {
+        let row = adw::ActionRow::builder().title("(n/a)").build();
+        let value = gtk::Label::new(Some(""));
+        value.set_xalign(1.0);
+        value.add_css_class("monospace");
+        row.add_suffix(&value);
+        row.set_activatable(false);
+        ram_group_top.add(&row);
+        ram_top_rows.push((row, value));
+    }
+    ram_page.add(&ram_group_top);
 
-    let ram_core_grid = gtk::Grid::new();
-    ram_core_grid.set_row_spacing(10);
-    ram_core_grid.set_column_spacing(18);
-    ram_core_grid.set_hexpand(true);
+    {
+        let shared = shared.clone();
+        copy_top_button.connect_clicked(move |_| {
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+            let text = shared
+                .lock()
+                .ok()
+                .and_then(|st| st.telemetry.clone())
+                .and_then(|t| {
+                    if let Some(txt) = t.mem_top_processes {
+                        return Some(txt);
+                    }
+                    t.mem_top_processes_rows
+                        .as_deref()
+                        .map(format_top_processes_text)
+                })
+                .unwrap_or_else(|| "Top processes: (n/a)".to_string());
+            display.clipboard().set_text(&text);
+        });
+    }
 
-    let ram_total = kv_row(&ram_core_grid, 0, "Total RAM");
-    let ram_used = kv_row(&ram_core_grid, 1, "Used RAM");
-    let ram_avail = kv_row(&ram_core_grid, 2, "Available");
-    let ram_free = kv_row(&ram_core_grid, 3, "Free");
-    let ram_cached = kv_row(&ram_core_grid, 4, "Cached");
-    let ram_buffers = kv_row(&ram_core_grid, 5, "Buffers");
-    let ram_shared = kv_row(&ram_core_grid, 6, "Shared");
-    let ram_anon = kv_row(&ram_core_grid, 7, "App/Anon");
-
-    let ram_swap_title = gtk::Label::new(Some("Swap"));
-    ram_swap_title.set_xalign(0.0);
-    ram_swap_title.add_css_class("title-4");
-
-    let ram_swap_grid = gtk::Grid::new();
-    ram_swap_grid.set_row_spacing(10);
-    ram_swap_grid.set_column_spacing(18);
-    ram_swap_grid.set_hexpand(true);
-
-    let ram_swap_total = kv_row(&ram_swap_grid, 0, "Swap Total");
-    let ram_swap_used = kv_row(&ram_swap_grid, 1, "Swap Used");
-    let ram_swap_free = kv_row(&ram_swap_grid, 2, "Swap Free");
-    let ram_swap_in = kv_row(&ram_swap_grid, 3, "Swap In");
-    let ram_swap_out = kv_row(&ram_swap_grid, 4, "Swap Out");
-    let ram_zram = kv_row(&ram_swap_grid, 5, "zram");
-    let ram_zswap = kv_row(&ram_swap_grid, 6, "zswap");
-
-    let ram_psi_title = gtk::Label::new(Some("Memory Pressure (PSI)"));
-    ram_psi_title.set_xalign(0.0);
-    ram_psi_title.add_css_class("title-4");
-
-    let ram_psi_grid = gtk::Grid::new();
-    ram_psi_grid.set_row_spacing(10);
-    ram_psi_grid.set_column_spacing(18);
-    ram_psi_grid.set_hexpand(true);
-
-    let ram_psi_some = kv_row(&ram_psi_grid, 0, "some (10/60/300)");
-    let ram_psi_full = kv_row(&ram_psi_grid, 1, "full (10/60/300)");
-
-    let ram_adv_title = gtk::Label::new(Some("Advanced Breakdown"));
-    ram_adv_title.set_xalign(0.0);
-    ram_adv_title.add_css_class("title-4");
-
-    let ram_adv_grid = gtk::Grid::new();
-    ram_adv_grid.set_row_spacing(10);
-    ram_adv_grid.set_column_spacing(18);
-    ram_adv_grid.set_hexpand(true);
-
-    let ram_active = kv_row(&ram_adv_grid, 0, "Active");
-    let ram_inactive = kv_row(&ram_adv_grid, 1, "Inactive");
-    let ram_slab = kv_row(&ram_adv_grid, 2, "Slab");
-    let ram_sreclaim = kv_row(&ram_adv_grid, 3, "SReclaimable");
-    let ram_sunreclaim = kv_row(&ram_adv_grid, 4, "SUnreclaim");
-    let ram_mapped = kv_row(&ram_adv_grid, 5, "Mapped");
-    let ram_dirty = kv_row(&ram_adv_grid, 6, "Dirty");
-    let ram_writeback = kv_row(&ram_adv_grid, 7, "Writeback");
-    let ram_pagetables = kv_row(&ram_adv_grid, 8, "PageTables");
-    let ram_kernelstack = kv_row(&ram_adv_grid, 9, "KernelStack");
-
-    let ram_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    ram_adv_box.append(&ram_adv_title);
-    ram_adv_box.append(&ram_adv_grid);
-
-    let ram_adv_expander = gtk::Expander::new(Some("Advanced"));
-    ram_adv_expander.set_expanded(false);
-    ram_adv_expander.set_child(Some(&ram_adv_box));
-
-    let ram_top_buffer = gtk::TextBuffer::new(None);
-    ram_top_buffer.set_text("Loading...");
-
-    let ram_top_view = gtk::TextView::with_buffer(&ram_top_buffer);
-    ram_top_view.set_editable(false);
-    ram_top_view.set_cursor_visible(false);
-    ram_top_view.set_wrap_mode(gtk::WrapMode::None);
-    ram_top_view.add_css_class("monospace");
-
-    let ram_top_scroller = gtk::ScrolledWindow::new();
-    ram_top_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    ram_top_scroller.set_child(Some(&ram_top_view));
-    ram_top_scroller.set_size_request(-1, 180);
-
-    let ram_top_expander = gtk::Expander::new(Some("Top Memory Users"));
-    ram_top_expander.set_expanded(false);
-    ram_top_expander.set_child(Some(&ram_top_scroller));
-
-    let ram_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    ram_root.set_margin_top(16);
-    ram_root.set_margin_bottom(16);
-    ram_root.set_margin_start(16);
-    ram_root.set_margin_end(16);
-    ram_root.append(&ram_title);
-    ram_root.append(&ram_hint);
-    ram_root.append(&ram_core_title);
-    ram_root.append(&ram_core_grid);
-    ram_root.append(&ram_swap_title);
-    ram_root.append(&ram_swap_grid);
-    ram_root.append(&ram_psi_title);
-    ram_root.append(&ram_psi_grid);
-    ram_root.append(&ram_adv_expander);
-    ram_root.append(&ram_top_expander);
-
-    let ram = clamped_scroller(&ram_root);
+    let ram = clamped_scroller(&ram_page);
 
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
-
     let diag_view = gtk::TextView::with_buffer(&diag_buffer);
     diag_view.set_editable(false);
     diag_view.set_cursor_visible(false);
@@ -409,66 +596,65 @@ fn build_ui(app: &adw::Application) {
     }
 
     let diag_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    diag_root.set_margin_top(16);
-    diag_root.set_margin_bottom(16);
-    diag_root.set_margin_start(16);
-    diag_root.set_margin_end(16);
+    diag_root.set_margin_top(18);
+    diag_root.set_margin_bottom(18);
+    diag_root.set_margin_start(18);
+    diag_root.set_margin_end(18);
     diag_root.append(&copy_diag_button);
     diag_root.append(&diag_scroller);
 
-    let diag = adw::Clamp::new();
-    diag.set_child(Some(&diag_root));
+    let diag = clamped_scroller(&diag_root);
 
-    // Lighting page (Milestone 1: keyboard backlight brightness via sysfs when available).
-    let lighting_title = gtk::Label::new(Some("Keyboard Lighting"));
-    lighting_title.set_xalign(0.0);
-    lighting_title.add_css_class("title-3");
+    let lighting_page = adw::PreferencesPage::new();
+    let lighting_overview_group = adw::PreferencesGroup::builder()
+        .title("Keyboard Lighting")
+        .description("Controls are capability-driven and depend on writable backends.")
+        .build();
+    let lighting_backend = pref_value_row(&lighting_overview_group, "Backend", false);
+    let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
+    let lighting_mode = pref_value_row(&lighting_overview_group, "Mode", false);
+    lighting_page.add(&lighting_overview_group);
 
-    let lighting_backend = gtk::Label::new(Some("Backend: (n/a)"));
-    lighting_backend.set_xalign(0.0);
-    lighting_backend.set_wrap(true);
-    lighting_backend.add_css_class("dim-label");
-
-    let lighting_current = gtk::Label::new(Some("Brightness: (n/a)"));
-    lighting_current.set_xalign(0.0);
-    lighting_current.add_css_class("dim-label");
-
-    let lighting_mode = gtk::Label::new(Some("Mode: (n/a)"));
-    lighting_mode.set_xalign(0.0);
-    lighting_mode.add_css_class("dim-label");
-
+    let lighting_controls_group = adw::PreferencesGroup::builder().title("Controls").build();
     let mode_combo = gtk::ComboBoxText::new();
     mode_combo.set_sensitive(false);
+    let mode_row = adw::ActionRow::builder().title("Lighting Mode").build();
+    mode_row.add_suffix(&mode_combo);
+    mode_row.set_activatable(false);
+    lighting_controls_group.add(&mode_row);
 
     let brightness_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 3.0, 1.0);
     brightness_scale.set_hexpand(true);
     brightness_scale.set_draw_value(true);
     brightness_scale.set_value_pos(gtk::PositionType::Right);
-
-    let rgb_label = gtk::Label::new(Some("RGB Color"));
-    rgb_label.set_xalign(0.0);
-    rgb_label.add_css_class("title-4");
+    let brightness_row = adw::ActionRow::builder().title("Brightness").build();
+    brightness_row.add_suffix(&brightness_scale);
+    brightness_row.set_activatable(false);
+    lighting_controls_group.add(&brightness_row);
 
     let rgb_button = gtk::ColorButton::new();
     rgb_button.set_use_alpha(false);
     rgb_button.set_title("Keyboard RGB");
     rgb_button.set_sensitive(false);
-
-    let rgb_hint = gtk::Label::new(Some(
-        "RGB/effects require asusd/Aura support. This device currently exposes keyboard brightness only.",
-    ));
-    rgb_hint.set_xalign(0.0);
-    rgb_hint.set_wrap(true);
-    rgb_hint.add_css_class("dim-label");
+    let rgb_row = adw::ActionRow::builder()
+        .title("RGB Color")
+        .subtitle("Requires Aura/asusd support")
+        .build();
+    rgb_row.add_suffix(&rgb_button);
+    rgb_row.set_activatable(false);
+    lighting_controls_group.add(&rgb_row);
 
     let apply_lighting = gtk::Button::with_label("Apply lighting");
     apply_lighting.add_css_class("suggested-action");
+    let apply_row = adw::ActionRow::builder().title("Apply Changes").build();
+    apply_row.add_suffix(&apply_lighting);
+    apply_row.set_activatable(false);
+    lighting_controls_group.add(&apply_row);
+    lighting_page.add(&lighting_controls_group);
 
-    let lighting_error = gtk::Label::new(None);
-    lighting_error.set_xalign(0.0);
-    lighting_error.set_wrap(true);
-    lighting_error.add_css_class("dim-label");
-    lighting_error.set_visible(false);
+    let lighting_status_group = adw::PreferencesGroup::builder().title("Status").build();
+    let lighting_error = pref_value_row(&lighting_status_group, "Last action", false);
+    lighting_page.add(&lighting_status_group);
 
     {
         let shared = shared.clone();
@@ -505,26 +691,8 @@ fn build_ui(app: &adw::Application) {
         });
     }
 
-    let lighting_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    lighting_root.set_margin_top(16);
-    lighting_root.set_margin_bottom(16);
-    lighting_root.set_margin_start(16);
-    lighting_root.set_margin_end(16);
-    lighting_root.append(&lighting_title);
-    lighting_root.append(&lighting_backend);
-    lighting_root.append(&lighting_current);
-    lighting_root.append(&lighting_mode);
-    lighting_root.append(&mode_combo);
-    lighting_root.append(&brightness_scale);
-    lighting_root.append(&rgb_label);
-    lighting_root.append(&rgb_button);
-    lighting_root.append(&rgb_hint);
-    lighting_root.append(&apply_lighting);
-    lighting_root.append(&lighting_error);
+    let lighting = clamped_scroller(&lighting_page);
 
-    let lighting = clamped_scroller(&lighting_root);
-
-    let stack = adw::ViewStack::new();
     stack.add_titled(&dash, Some("dashboard"), "Dashboard");
     stack.add_titled(&battery, Some("battery"), "Battery");
     stack.add_titled(&ram, Some("ram"), "RAM");
@@ -550,6 +718,29 @@ fn build_ui(app: &adw::Application) {
     win.set_content(Some(&view));
     win.present();
 
+    {
+        let win = win.clone();
+        warning_banner.connect_button_clicked(move |_| {
+            let dialog = adw::MessageDialog::new(
+                Some(&win),
+                Some("Fix keyboard backlight permissions"),
+                Some(
+                    "1. Install and start asusd/asusctl.\n2. Restart the user daemon.\n3. Or add a udev rule to grant write access to /sys/class/leds/asus::kbd_backlight/brightness.",
+                ),
+            );
+            dialog.add_response("close", "Close");
+            dialog.set_close_response("close");
+            dialog.set_default_response(Some("close"));
+            dialog.present();
+        });
+    }
+    {
+        let stack = stack.clone();
+        open_diagnostics_button.connect_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+
     // Periodically refresh UI from the background thread state.
     let shared_clone = shared.clone();
     let win_clone = win.clone();
@@ -558,6 +749,7 @@ fn build_ui(app: &adw::Application) {
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
+            caps,
             caps_text,
             warnings,
             lighting,
@@ -574,6 +766,7 @@ fn build_ui(app: &adw::Application) {
             st.show_window = false;
             (
                 st.telemetry.clone(),
+                st.caps.clone(),
                 st.caps_text.clone(),
                 st.warnings.clone(),
                 st.lighting.clone(),
@@ -594,29 +787,81 @@ fn build_ui(app: &adw::Application) {
         }
 
         if let Some(t) = telemetry {
-            cpu_value.set_text(
-                &t.cpu_temp_c
-                    .map(|v| format!("{v:.1} C"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            gpu_value.set_text(
-                &t.gpu_temp_c
-                    .map(|v| format!("{v:.1} C"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_value.set_text(
-                &t.battery_percent
-                    .map(|v| format!("{v:.0}%"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            power_value.set_text(
-                &t.power_source
-                    .map(|p| match p {
-                        PowerSource::Ac => "AC".to_string(),
-                        PowerSource::Battery => "Battery".to_string(),
-                    })
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
+            if let Some(v) = t.cpu_temp_c {
+                cpu_card.set_value(format!("{v:.1}"));
+                cpu_card.set_unit(Some("°C"));
+            } else {
+                cpu_card.set_value("--");
+                cpu_card.set_unit(None);
+            }
+
+            if let Some(v) = t.gpu_temp_c {
+                gpu_card.set_value(format!("{v:.1}"));
+                gpu_card.set_unit(Some("°C"));
+            } else {
+                gpu_card.set_value("--");
+                gpu_card.set_unit(None);
+            }
+
+            if let Some(v) = t.battery_percent {
+                batt_card.set_value(format!("{v:.0}"));
+                batt_card.set_unit(Some("%"));
+            } else {
+                batt_card.set_value("--");
+                batt_card.set_unit(None);
+            }
+            let battery_chip = t.battery_state.map(|s| match s {
+                BatteryState::Unknown => "Unknown".to_string(),
+                BatteryState::Charging => "Charging".to_string(),
+                BatteryState::Discharging => "Discharging".to_string(),
+                BatteryState::Empty => "Empty".to_string(),
+                BatteryState::Full => "Full".to_string(),
+                BatteryState::PendingCharge => "Pending Charge".to_string(),
+                BatteryState::PendingDischarge => "Pending Discharge".to_string(),
+                BatteryState::NotCharging => "Not Charging".to_string(),
+            });
+            batt_card.set_status_chip(battery_chip.as_deref());
+
+            power_card.set_value(match t.power_source {
+                Some(PowerSource::Ac) => "AC".to_string(),
+                Some(PowerSource::Battery) => "Battery".to_string(),
+                None => "--".to_string(),
+            });
+            power_card.set_unit(None);
+
+            if t.fans_rpm.is_empty() {
+                fans_card.set_value("--");
+                fans_card.set_unit(None);
+                fans_card.set_subtitle(None);
+            } else {
+                let max_rpm = t.fans_rpm.values().copied().max().unwrap_or(0);
+                fans_card.set_value(max_rpm.to_string());
+                fans_card.set_unit(Some("rpm"));
+                let count = t.fans_rpm.len();
+                let fan_word = if count == 1 { "fan" } else { "fans" };
+                fans_card.set_subtitle(Some(&format!("{count} {fan_word} detected")));
+            }
+
+            let nvme_temp = t
+                .temps_c
+                .iter()
+                .filter_map(|(name, value)| {
+                    if name.to_ascii_lowercase().contains("nvme") {
+                        Some(*value)
+                    } else {
+                        None
+                    }
+                })
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some(v) = nvme_temp {
+                nvme_card.widget().set_visible(true);
+                nvme_card.set_value(format!("{v:.1}"));
+                nvme_card.set_unit(Some("°C"));
+            } else {
+                nvme_card.widget().set_visible(false);
+                nvme_card.set_value("--");
+                nvme_card.set_unit(None);
+            }
 
             // Battery table.
             batt_tbl_percent.set_text(
@@ -709,19 +954,43 @@ fn build_ui(app: &adw::Application) {
             ram_pagetables.set_text(&format_bytes_mib_opt(t.mem_pagetables_bytes));
             ram_kernelstack.set_text(&format_bytes_mib_opt(t.mem_kernelstack_bytes));
 
-            ram_top_buffer.set_text(
-                t.mem_top_processes
-                    .as_deref()
-                    .unwrap_or("Top processes: (n/a)"),
-            );
+            let rows = t.mem_top_processes_rows.as_deref().unwrap_or_default();
+            for (idx, (row, value)) in ram_top_rows.iter().enumerate() {
+                if let Some(p) = rows.get(idx) {
+                    row.set_title(&p.name);
+                    value.set_text(&format!(
+                        "{} RSS | {} SWAP | pid {} | {}",
+                        format_bytes_human(p.rss_bytes),
+                        format_bytes_human(p.swap_bytes),
+                        p.pid,
+                        p.user
+                    ));
+                } else if idx == 0 {
+                    row.set_title("(n/a)");
+                    value.set_text("");
+                } else {
+                    row.set_title("");
+                    value.set_text("");
+                }
+            }
 
-            let fans_summary = format_fans_summary(&t);
-            fans_label.set_visible(!fans_summary.is_empty());
-            fans_label.set_text(&fans_summary);
+            let mut temp_entries: Vec<(String, String)> = t
+                .temps_c
+                .iter()
+                .map(|(k, v)| (k.clone(), format!("{v:.1} °C")))
+                .collect();
+            temp_entries.sort_by(|a, b| a.0.cmp(&b.0));
+            update_detail_rows(&detail_temp_rows, &temp_entries);
+            details_temp_group.set_visible(!temp_entries.is_empty());
 
-            let sensors_text = format_sensors_details(&t);
-            sensors_expander.set_visible(!sensors_text.is_empty());
-            sensors_details.set_text(&sensors_text);
+            let mut fan_entries: Vec<(String, String)> = t
+                .fans_rpm
+                .iter()
+                .map(|(k, v)| (k.clone(), format!("{v} rpm")))
+                .collect();
+            fan_entries.sort_by(|a, b| a.0.cmp(&b.0));
+            update_detail_rows(&detail_fan_rows, &fan_entries);
+            details_fan_group.set_visible(!fan_entries.is_empty());
         }
 
         diag_buffer.set_text(if caps_text.is_empty() {
@@ -731,25 +1000,105 @@ fn build_ui(app: &adw::Application) {
         });
 
         if let Some(e) = daemon_error {
-            warnings_label.set_visible(false);
             status_label.set_text(&format!(
                 "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
             ));
         } else {
             status_label.set_text("");
-            let warn_text = format_warnings(&warnings);
-            warnings_label.set_visible(!warn_text.is_empty());
-            warnings_label.set_text(&warn_text);
         }
+
+        let read_only_kbd = lighting.as_ref().map(|l| !l.can_set).unwrap_or(false)
+            || warnings
+                .iter()
+                .any(|w| is_kbd_backlight_read_only_warning(w));
+
+        if read_only_kbd {
+            warning_banner.set_title("Keyboard backlight is read-only");
+            warning_banner.set_button_label(Some("Fix permissions"));
+            warning_subtitle
+                .set_text("Install asusd/asusctl or add a udev rule to allow write access.");
+            warning_subtitle.set_visible(true);
+            warning_banner.set_revealed(true);
+            warning_area.set_visible(true);
+            open_diagnostics_button.set_visible(true);
+        } else if !warnings.is_empty() {
+            warning_banner.set_title("Hardware warnings detected");
+            warning_banner.set_button_label(None);
+            warning_subtitle.set_text(&warnings.join("\n"));
+            warning_subtitle.set_visible(true);
+            warning_banner.set_revealed(true);
+            warning_area.set_visible(true);
+            open_diagnostics_button.set_visible(true);
+        } else {
+            warning_banner.set_revealed(false);
+            warning_subtitle.set_visible(false);
+            warning_subtitle.set_text("");
+            warning_area.set_visible(false);
+            open_diagnostics_button.set_visible(false);
+        }
+
+        profile_quiet.set_sensitive(caps.has_profiles);
+        profile_balanced.set_sensitive(caps.has_profiles);
+        profile_turbo.set_sensitive(caps.has_profiles);
+        if caps.has_profiles {
+            profile_row.set_subtitle("Quiet / Balanced / Turbo");
+        } else {
+            profile_row.set_subtitle("Not supported");
+        }
+
+        gpu_mode_row.set_visible(caps.has_gpu_modes);
+        if caps.has_gpu_modes {
+            gpu_mode_dropdown.set_sensitive(false);
+            if caps.requires_reboot_for_gpu_switch {
+                gpu_mode_row.set_subtitle("Requires reboot for switch");
+            } else {
+                gpu_mode_row.set_subtitle("Control path pending daemon write API");
+            }
+        }
+
+        charge_limit_row.set_visible(caps.has_charge_limit);
+        if caps.has_charge_limit {
+            charge_limit_spin.set_sensitive(false);
+            charge_limit_row.set_subtitle("Control path pending daemon write API");
+        }
+
+        let has_kbd_backlight = caps.has_kbd_backlight || lighting.is_some();
+        kbd_backlight_row.set_visible(has_kbd_backlight);
+        if has_kbd_backlight {
+            if let Some(ref l) = lighting {
+                kbd_brightness_spin.set_range(0.0, l.max_brightness as f64);
+                if !kbd_brightness_spin.has_focus() {
+                    kbd_brightness_spin.set_value(l.brightness as f64);
+                }
+                kbd_brightness_spin.set_sensitive(l.can_set);
+                kbd_apply_button.set_sensitive(l.can_set);
+                if l.can_set {
+                    kbd_backlight_row.set_subtitle("Adjust brightness");
+                } else {
+                    kbd_backlight_row.set_subtitle("Read-only for this user");
+                }
+            } else {
+                kbd_brightness_spin.set_sensitive(false);
+                kbd_apply_button.set_sensitive(false);
+                kbd_backlight_row.set_subtitle("Unavailable");
+            }
+        }
+
+        let endpoint_entries: Vec<(String, String)> = caps
+            .endpoints
+            .iter()
+            .take(6)
+            .enumerate()
+            .map(|(idx, endpoint)| (format!("Endpoint {}", idx + 1), endpoint.clone()))
+            .collect();
+        update_detail_rows(&detail_endpoint_rows, &endpoint_entries);
+        details_endpoints_group.set_visible(!endpoint_entries.is_empty());
 
         // Lighting page (capability-driven).
         if let Some(ref l) = lighting {
-            lighting_backend.set_text(&format!("Backend: {} ({})", l.backend, l.device));
-            lighting_current.set_text(&format!(
-                "Brightness: {}/{}",
-                l.brightness, l.max_brightness
-            ));
-            lighting_mode.set_text(&format!("Mode: {}", l.mode));
+            lighting_backend.set_text(&format!("{} ({})", l.backend, l.device));
+            lighting_current.set_text(&format!("{}/{}", l.brightness, l.max_brightness));
+            lighting_mode.set_text(&l.mode);
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
             if !brightness_scale.is_focus() {
@@ -784,33 +1133,28 @@ fn build_ui(app: &adw::Application) {
             }
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
-            rgb_hint.set_visible(!l.supports_rgb);
-
-            if !can_set && lighting_error_txt.is_none() {
-                lighting_error.set_visible(true);
-                lighting_error.set_text(
-                    "Keyboard backlight is read-only for this user. Install asusd/asusctl or add a udev rule to allow writing the LED brightness.",
-                );
-            }
+            rgb_row.set_subtitle(if l.supports_rgb {
+                "Supported by backend"
+            } else {
+                "Requires Aura/asusd support"
+            });
         } else {
-            lighting_backend.set_text("Backend: (n/a)");
-            lighting_current.set_text("Brightness: (n/a)");
-            lighting_mode.set_text("Mode: (n/a)");
+            lighting_backend.set_text("(n/a)");
+            lighting_current.set_text("(n/a)");
+            lighting_mode.set_text("(n/a)");
             brightness_scale.set_sensitive(false);
             mode_combo.set_sensitive(false);
             apply_lighting.set_sensitive(false);
             rgb_button.set_sensitive(false);
-            rgb_hint.set_visible(true);
+            rgb_row.set_subtitle("Requires Aura/asusd support");
         }
 
         if let Some(msg) = lighting_error_txt {
-            lighting_error.set_visible(true);
             lighting_error.set_text(&msg);
         } else if lighting.is_some() {
-            // keep whatever message we set above for read-only hint
-        } else {
-            lighting_error.set_visible(false);
             lighting_error.set_text("");
+        } else {
+            lighting_error.set_text("(n/a)");
         }
 
         glib::ControlFlow::Continue
@@ -863,13 +1207,14 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                 }
 
                 match fetch_state().await {
-                    Ok((t, caps_text, warnings, lighting)) => {
+                    Ok((t, caps, caps_text, warnings, lighting)) => {
                         let summary = summary_from_telemetry(&t);
                         if let Some(h) = &tray_handle {
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
                         }
                         if let Ok(mut st) = shared.lock() {
                             st.telemetry = Some(t);
+                            st.caps = caps;
                             st.caps_text = caps_text;
                             st.warnings = warnings;
                             st.lighting = lighting;
@@ -894,8 +1239,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
     });
 }
 
-async fn fetch_state(
-) -> Result<(TelemetrySnapshot, String, Vec<String>, Option<LightingInfo>), String> {
+async fn fetch_state() -> Result<
+    (
+        TelemetrySnapshot,
+        DeviceCaps,
+        String,
+        Vec<String>,
+        Option<LightingInfo>,
+    ),
+    String,
+> {
     let conn = zbus::Connection::session()
         .await
         .map_err(|e| format!("session DBus unavailable: {e}"))?;
@@ -928,6 +1281,7 @@ async fn fetch_state(
         .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
         .and_then(lighting_from_dbus);
 
+    let caps = caps_from_dbus(&caps_map);
     let mut caps_text = caps_text_from_dbus(caps_map);
     if !warnings.is_empty() {
         caps_text.push_str("\n\nWarnings:");
@@ -938,6 +1292,7 @@ async fn fetch_state(
 
     Ok((
         telemetry_from_dbus(telemetry_map),
+        caps,
         caps_text,
         warnings,
         lighting,
@@ -1185,6 +1540,46 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         t.mem_top_processes = Some(v.to_string());
     }
 
+    if let Some(rows) = map
+        .get("mem_top_processes_rows")
+        .cloned()
+        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
+    {
+        let mut out = Vec::new();
+        for r in rows {
+            let user = r
+                .get("user")
+                .and_then(|v| <&str>::try_from(v).ok())
+                .map(|v| v.to_string());
+            let pid = r
+                .get("pid")
+                .and_then(u64_from_value)
+                .and_then(|v| u32::try_from(v).ok());
+            let rss_bytes = r.get("rss_bytes").and_then(u64_from_value);
+            let swap_bytes = r.get("swap_bytes").and_then(u64_from_value);
+            let name = r
+                .get("name")
+                .and_then(|v| <&str>::try_from(v).ok())
+                .map(|v| v.to_string());
+
+            let (Some(user), Some(pid), Some(rss_bytes), Some(swap_bytes), Some(name)) =
+                (user, pid, rss_bytes, swap_bytes, name)
+            else {
+                continue;
+            };
+            out.push(TopProcessMem {
+                user,
+                pid,
+                rss_bytes,
+                swap_bytes,
+                name,
+            });
+        }
+        if !out.is_empty() {
+            t.mem_top_processes_rows = Some(out);
+        }
+    }
+
     t
 }
 
@@ -1304,19 +1699,92 @@ fn format_psi_opt(avg10: Option<f32>, avg60: Option<f32>, avg300: Option<f32>) -
     }
 }
 
-fn kv_row(grid: &gtk::Grid, row: i32, key: &str) -> gtk::Label {
-    let k = gtk::Label::new(Some(key));
-    k.set_xalign(0.0);
-    k.add_css_class("kv-key");
+fn format_bytes_human(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-    let v = gtk::Label::new(Some("(n/a)"));
-    v.set_xalign(1.0);
-    v.set_hexpand(true);
-    v.add_css_class("kv-value");
+    let b = bytes as f64;
+    if b >= 10.0 * GIB {
+        format!("{:.0} GiB", b / GIB)
+    } else if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else if b >= 10.0 * MIB {
+        format!("{:.0} MiB", b / MIB)
+    } else if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= 10.0 * KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
 
-    grid.attach(&k, 0, row, 1, 1);
-    grid.attach(&v, 1, row, 1, 1);
-    v
+fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
+    let mut out = String::new();
+    out.push_str("PROCESS             RSS       SWAP     PID USER\n");
+    out.push_str("------------------------------------------------\n");
+    for p in rows {
+        out.push_str(&format!(
+            "{name:<18} {rss:>9} {swap:>9} {pid:>7} {user}\n",
+            name = p.name,
+            rss = format_bytes_human(p.rss_bytes),
+            swap = format_bytes_human(p.swap_bytes),
+            pid = p.pid,
+            user = p.user,
+        ));
+    }
+    out
+}
+
+fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -> gtk::Label {
+    let row = adw::ActionRow::builder().title(title).build();
+    let value = gtk::Label::new(Some("(n/a)"));
+    value.set_xalign(1.0);
+    value.set_halign(gtk::Align::End);
+    if monospace {
+        value.add_css_class("monospace");
+    }
+    row.add_suffix(&value);
+    row.set_activatable(false);
+    group.add(&row);
+    value
+}
+
+fn build_detail_rows(group: &adw::PreferencesGroup, count: usize) -> Vec<DetailRow> {
+    let mut rows = Vec::with_capacity(count);
+    for _ in 0..count {
+        let row = adw::ActionRow::builder().title("").build();
+        let value = gtk::Label::new(Some(""));
+        value.set_xalign(1.0);
+        value.set_halign(gtk::Align::End);
+        value.add_css_class("monospace");
+        row.add_suffix(&value);
+        row.set_activatable(false);
+        row.set_visible(false);
+        group.add(&row);
+        rows.push(DetailRow {
+            row,
+            value_label: value,
+        });
+    }
+    rows
+}
+
+fn update_detail_rows(rows: &[DetailRow], entries: &[(String, String)]) {
+    for (idx, detail_row) in rows.iter().enumerate() {
+        if let Some((title, value)) = entries.get(idx) {
+            detail_row.row.set_title(title);
+            detail_row.value_label.set_text(value);
+            detail_row.row.set_visible(true);
+        } else {
+            detail_row.row.set_title("");
+            detail_row.value_label.set_text("");
+            detail_row.row.set_visible(false);
+        }
+    }
 }
 
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
@@ -1353,33 +1821,14 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
     })
 }
 
-fn metric_card(title: &str) -> (gtk::Box, gtk::Label) {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    card.add_css_class("card");
-    card.add_css_class("metric-card");
-    card.set_hexpand(true);
-    card.set_size_request(220, -1);
-
-    let title_label = gtk::Label::new(Some(title));
-    title_label.set_xalign(0.0);
-    title_label.add_css_class("metric-title");
-
-    let value = gtk::Label::new(Some("(n/a)"));
-    value.set_xalign(0.0);
-    value.add_css_class("metric-value");
-
-    card.append(&title_label);
-    card.append(&value);
-    (card, value)
-}
-
 fn install_css() {
     let css = r#"
-.metric-card { padding: 12px; }
-.metric-title { opacity: 0.85; }
-.metric-value { font-weight: 700; font-size: 26px; }
-.kv-key { opacity: 0.85; }
-.kv-value { font-weight: 600; }
+.metric-card { padding: 14px; border-radius: 12px; }
+.status-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.12);
+}
 "#;
 
     let provider = gtk::CssProvider::new();
@@ -1394,59 +1843,17 @@ fn install_css() {
     );
 }
 
-fn format_fans_summary(t: &TelemetrySnapshot) -> String {
-    if t.fans_rpm.is_empty() {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-    for (k, v) in &t.fans_rpm {
-        parts.push(format!("{k}: {v} rpm"));
-    }
-    format!("Fans: {}", parts.join(" | "))
-}
-
-fn format_sensors_details(t: &TelemetrySnapshot) -> String {
-    if t.temps_c.is_empty() && t.fans_rpm.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = Vec::new();
-    if !t.temps_c.is_empty() {
-        lines.push("Temperatures".to_string());
-        for (k, v) in &t.temps_c {
-            lines.push(format!("  {k}: {v:.1} C"));
-        }
-    }
-    if !t.fans_rpm.is_empty() {
-        if !lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines.push("Fans".to_string());
-        for (k, v) in &t.fans_rpm {
-            lines.push(format!("  {k}: {v} rpm"));
-        }
-    }
-    lines.join("\n")
-}
-
-fn format_warnings(warnings: &[String]) -> String {
-    if warnings.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("Warnings:\n");
-    for (idx, w) in warnings.iter().enumerate() {
-        if idx > 0 {
-            out.push('\n');
-        }
-        out.push_str("  - ");
-        out.push_str(w);
-    }
-    out
+fn is_kbd_backlight_read_only_warning(warning: &str) -> bool {
+    let lower = warning.to_ascii_lowercase();
+    lower.contains("kbd_backlight")
+        || lower.contains("keyboard backlight")
+        || (lower.contains("read-only") && lower.contains("backlight"))
 }
 
 fn clamped_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
     let clamp = adw::Clamp::new();
+    clamp.set_maximum_size(980);
+    clamp.set_tightening_threshold(720);
     clamp.set_child(Some(child));
 
     let scroller = gtk::ScrolledWindow::new();
@@ -1464,6 +1871,33 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     let g = to_u8(rgba.green());
     let b = to_u8(rgba.blue());
     format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
+    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
+        map.get(key)
+            .and_then(|v| bool::try_from(v).ok())
+            .unwrap_or(false)
+    }
+    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        map.get(key)
+            .cloned()
+            .and_then(|v| Vec::<String>::try_from(v).ok())
+            .unwrap_or_default()
+    }
+
+    DeviceCaps {
+        has_profiles: b(map, "has_profiles"),
+        has_fan_curves: b(map, "has_fan_curves"),
+        has_fan_reading: b(map, "has_fan_reading"),
+        has_charge_limit: b(map, "has_charge_limit"),
+        has_gpu_modes: b(map, "has_gpu_modes"),
+        has_aura: b(map, "has_aura"),
+        has_kbd_backlight: b(map, "has_kbd_backlight"),
+        requires_reboot_for_gpu_switch: b(map, "requires_reboot_for_gpu_switch"),
+        endpoints: vec_string(map, "endpoints"),
+        notes: vec_string(map, "notes"),
+    }
 }
 
 fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {

@@ -36,12 +36,12 @@ impl PowerSupplySysfsProvider {
             None => return Ok(PowerSupplyBatteryStatus::default()),
         };
 
-        let mut out = PowerSupplyBatteryStatus::default();
-
-        out.battery_state = read_string_trimmed(bat.join("status")).and_then(parse_battery_state);
-        out.battery_cycle_count = read_u32(bat.join("cycle_count"));
-
-        out.battery_health_percent = read_battery_health_percent(&bat);
+        let mut out = PowerSupplyBatteryStatus {
+            battery_state: read_string_trimmed(bat.join("status")).and_then(parse_battery_state),
+            battery_cycle_count: read_u32(bat.join("cycle_count")),
+            battery_health_percent: read_battery_health_percent(&bat),
+            ..Default::default()
+        };
 
         // Power rate: prefer power_now (microwatts), else current_now * voltage_now.
         let power_w = read_power_w(&bat);

@@ -2,7 +2,7 @@
 
 ## Prereqs
 
-- Rust toolchain (stable)
+- Rust toolchain via `rustup` (`cargo` 1.83+; this repo uses lockfile v4)
 - System deps (names vary by distro):
   - GTK4 development packages
   - libadwaita development packages
@@ -13,6 +13,17 @@ Ubuntu/Debian example:
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev
+```
+
+Install/refresh Rust toolchain (recommended on Ubuntu/Debian where `apt` Rust is often behind):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustup toolchain install stable
+rustup default stable
+cargo --version
+rustc --version
 ```
 
 ## Build
