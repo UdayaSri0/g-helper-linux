@@ -214,7 +214,7 @@ impl MemoryTelemetryProvider {
         });
 
         let mut out = Vec::new();
-        for p in procs.into_iter().take(limit.max(1).min(15)) {
+        for p in procs.into_iter().take(limit.clamp(1, 15)) {
             let user = passwd_map
                 .get(&p.uid)
                 .cloned()

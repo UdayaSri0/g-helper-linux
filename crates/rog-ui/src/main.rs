@@ -388,7 +388,7 @@ fn build_ui(app: &adw::Application) {
         let user = gtk::Label::new(Some(""));
         user.set_xalign(0.0);
 
-        let grid_row = (row + 1) as i32;
+        let grid_row = row + 1;
         ram_top_grid.attach(&name, 0, grid_row, 1, 1);
         ram_top_grid.attach(&rss, 1, grid_row, 1, 1);
         ram_top_grid.attach(&swap, 2, grid_row, 1, 1);
