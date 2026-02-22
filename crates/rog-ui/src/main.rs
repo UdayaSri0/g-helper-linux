@@ -705,13 +705,8 @@ fn build_ui(app: &adw::Application) {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&switcher));
 
-    let switcher_bar = adw::ViewSwitcherBar::new();
-    switcher_bar.set_stack(Some(&stack));
-    switcher_bar.set_reveal(true);
-
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
-    view.add_bottom_bar(&switcher_bar);
     view.set_content(Some(&stack));
 
     let win = adw::ApplicationWindow::builder()
