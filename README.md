@@ -1,3 +1,4 @@
+v0.16
 # rog-helper (working name)
 
 Linux-native control app (tray + window) for ASUS ROG laptops using the existing ASUS Linux ecosystem.
