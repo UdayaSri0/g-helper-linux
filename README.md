@@ -101,6 +101,10 @@ Important gaps in the current implementation:
 
 Some related domain types and traits already exist in `rog-core` and `rog-providers`, but they are not fully wired into runtime behavior yet.
 
+Hardware support note:
+
+- unless a real machine record has been added under the hardware-validation docs, treat support for that machine or scenario as untested rather than validated
+
 ## Quick Start
 
 ### Prerequisites
@@ -192,4 +196,5 @@ Current first-release behavior to expect:
 - [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
 - [docs/UI_PAGES.md](docs/UI_PAGES.md)
 - [docs/HARDWARE_SUPPORT.md](docs/HARDWARE_SUPPORT.md)
+- [docs/HARDWARE_VALIDATION_TEMPLATE.md](docs/HARDWARE_VALIDATION_TEMPLATE.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

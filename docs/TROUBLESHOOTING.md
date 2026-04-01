@@ -315,6 +315,11 @@ cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
 ```
 
+When you are doing real hardware validation instead of one-off troubleshooting, record the outputs in:
+
+- [docs/HARDWARE_SUPPORT.md](HARDWARE_SUPPORT.md)
+- [docs/HARDWARE_VALIDATION_TEMPLATE.md](HARDWARE_VALIDATION_TEMPLATE.md)
+
 If documentation and runtime behavior still seem inconsistent, inspect the current source in:
 
 - `crates/rog-daemon/src/main.rs`

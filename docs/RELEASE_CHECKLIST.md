@@ -4,7 +4,7 @@ Use this checklist before calling the repository release-ready.
 
 ## Documentation
 
-- [ ] `README.md` reflects the current implementation and degraded-state behavior
+- [ ] `README.md` reflects the current implementation and does not overstate hardware support
 - [ ] `docs/ARCHITECTURE.md` matches the real runtime architecture
 - [ ] `docs/BUILD.md` matches the current build and run flow
 - [ ] `docs/ROADMAP.md` does not describe already implemented features as future work
@@ -13,7 +13,8 @@ Use this checklist before calling the repository release-ready.
 - [ ] `docs/PROVIDER_MATRIX.md` matches the current provider layer
 - [ ] `docs/PERMISSIONS.md` matches the current trust and write-access boundaries
 - [ ] `docs/TROUBLESHOOTING.md` covers the current failure modes with practical steps
-- [ ] `docs/HARDWARE_SUPPORT.md` contains current real-machine validation notes, not placeholders only
+- [ ] `docs/HARDWARE_SUPPORT.md` honestly distinguishes recorded evidence from untested scenarios
+- [ ] `docs/HARDWARE_VALIDATION_TEMPLATE.md` is still suitable for new machine records
 
 ## Cargo Metadata
 
@@ -71,20 +72,37 @@ Important note:
 - [ ] warning banner wording and Diagnostics page feel intentional rather than broken
 - [ ] disabled quick controls still show a clear human-readable reason
 
-## Hardware Validation Matrix
+## Hardware Validation Evidence
 
-Every row below should be covered by at least one real machine or explicitly marked `untested` in `docs/HARDWARE_SUPPORT.md`.
+This section is only complete when evidence is committed and reviewable.
 
-- [ ] `asusd` missing flow verified
-- [ ] `supergfxd` missing flow verified
-- [ ] CPU readable-but-not-writable flow verified
-- [ ] CPU writable flow verified
-- [ ] keyboard backlight readable-but-not-writable flow verified when hardware exposes the backend
-- [ ] fan count `0` behavior verified on a machine without usable fan RPM exposure
-- [ ] fan count `1` behavior verified or explicitly not represented in the test fleet
-- [ ] fan count `2` behavior verified or explicitly not represented in the test fleet
-- [ ] fan count `3+` behavior verified or explicitly not represented in the test fleet
-- [ ] hybrid CPU topology with physical cores != logical threads verified or explicitly not represented in the test fleet
+- [ ] every tested machine has a completed record based on `docs/HARDWARE_VALIDATION_TEMPLATE.md`
+- [ ] every machine record includes tested date and tester
+- [ ] every machine record includes model, distro, kernel, desktop environment, CPU, GPU, `asusd` version, and `supergfxd` version
+- [ ] every machine record includes startup results for daemon, UI, tray, and diagnostics CLI
+- [ ] every machine record includes results for profile control, GPU mode control, battery limit, keyboard backlight, CPU telemetry, CPU write controls, and fan telemetry
+- [ ] command evidence is attached or summarized for `services`, `dbus`, `sensors`, `caps`, and session DBus introspection
+- [ ] screenshot or text evidence is attached for relevant Dashboard, CPU, GPU, Diagnostics, and Lighting states
+- [ ] `docs/HARDWARE_SUPPORT.md` lists recorded machines and does not imply evidence that has not been captured
+
+## Scenario Coverage Review
+
+Every row below should be marked either:
+
+- covered by a real machine record, or
+- explicitly `Untested`, or
+- explicitly `Not represented in current test fleet`
+
+- [ ] `asusd` missing flow
+- [ ] `supergfxd` missing flow
+- [ ] CPU readable-but-not-writable flow
+- [ ] CPU writable flow
+- [ ] keyboard backlight readable-but-not-writable flow
+- [ ] fan count `0`
+- [ ] fan count `1`
+- [ ] fan count `2`
+- [ ] fan count `3+`
+- [ ] hybrid CPU topology with physical cores != logical threads
 
 ## Feature Verification
 
@@ -103,16 +121,6 @@ Every row below should be covered by at least one real machine or explicitly mar
 - [ ] Diagnostics page copy flow verified
 - [ ] About page metadata verified
 
-## Evidence Collection
-
-- [ ] `cargo run -p rog-cli -- services` captured on each validation machine
-- [ ] `cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"` captured on each validation machine
-- [ ] `cargo run -p rog-cli -- sensors` captured on each validation machine
-- [ ] `cargo run -p rog-cli -- caps` captured on each validation machine
-- [ ] CPU and Diagnostics screenshots captured for machines with CPU permission issues
-- [ ] Dashboard, GPU, and Diagnostics screenshots captured for missing-backend scenarios
-- [ ] fan telemetry screenshots captured for each distinct fan-count scenario in the test fleet
-
 ## Release Readiness Notes
 
 Review and explicitly record:
@@ -129,5 +137,4 @@ Current repository note:
 
 - [ ] docs, code, and packaging reviewed together
 - [ ] known limitations documented
-- [ ] release notes drafted
 - [ ] follow-up issues captured for remaining gaps
