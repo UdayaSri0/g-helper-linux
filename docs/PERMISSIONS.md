@@ -101,7 +101,7 @@ Examples:
 - EPP
 - boost toggle
 - min/max frequency limits
-- per-core online state
+- per-logical-CPU online state
 
 Current effect of failure:
 

@@ -193,6 +193,11 @@ Current telemetry keys are grouped below.
 
 `policy_writable` is a coarse any-writable summary. The release-grade source of truth for CPU write availability is `control_access`.
 
+Count semantics:
+
+- `cpu_count` is the detected physical-core count
+- `thread_count` is the detected logical CPU / thread count
+
 `control_access` is currently a list of row maps with:
 
 - `kind` -> `boost` | `power_mode` | `governor` | `epp` | `freq_limits` | `core_online`
@@ -227,12 +232,20 @@ Current keys:
 
 `per_core` is currently a list of row maps with:
 
-- `core_id`
+- `logical_cpu_id`
+- `physical_core_index`
+- `policy_id`
+- `thread_index`
+- `thread_count`
 - `usage_percent`
 - `current_freq_mhz`
 - `min_freq_mhz`
 - `max_freq_mhz`
 - `online`
+
+Compatibility note:
+
+- the daemon still includes `core_id` as a compatibility alias for `logical_cpu_id`
 
 ## `GetCpuDiagnostics` Response
 
@@ -243,7 +256,7 @@ Current keys:
 - readable/writable sysfs paths involved in each control
 - suggested shell checks and restart guidance
 - current CPU telemetry summary
-- per-core table
+- logical CPU / thread table
 
 This is intended for diagnostics and copy-to-clipboard workflows rather than as a machine-friendly API.
 
@@ -340,7 +353,7 @@ Important note:
 ### `SetCpuCoreOnline`
 
 - arguments:
-  - `core_id` as `u64`
+  - `core_id` as `u64` logical CPU / thread id
   - `online` as `bool`
 
 ## Errors

@@ -309,8 +309,9 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
-        let core_id = u32::try_from(core_id)
-            .map_err(|_| fdo::Error::InvalidArgs("core_id does not fit into u32".to_string()))?;
+        let core_id = u32::try_from(core_id).map_err(|_| {
+            fdo::Error::InvalidArgs("logical CPU id does not fit into u32".to_string())
+        })?;
         self.cpu
             .set_core_online(core_id, online)
             .map_err(map_rog_error_to_fdo)?;
@@ -915,7 +916,30 @@ fn cpu_to_dbus(c: &CpuTelemetry) -> HashMap<String, OwnedValue> {
         let mut rows: Vec<HashMap<String, OwnedValue>> = Vec::with_capacity(c.per_core.len());
         for core in &c.per_core {
             let mut row = HashMap::new();
-            row.insert("core_id".to_string(), OwnedValue::from(core.core_id as u64));
+            row.insert(
+                "logical_cpu_id".to_string(),
+                OwnedValue::from(core.logical_cpu_id as u64),
+            );
+            // Compatibility alias for older clients that still expect "core_id".
+            row.insert(
+                "core_id".to_string(),
+                OwnedValue::from(core.logical_cpu_id as u64),
+            );
+            if let Some(v) = core.physical_core_index {
+                row.insert(
+                    "physical_core_index".to_string(),
+                    OwnedValue::from(v as u64),
+                );
+            }
+            if let Some(v) = core.policy_id {
+                row.insert("policy_id".to_string(), OwnedValue::from(v as u64));
+            }
+            if let Some(v) = core.thread_index {
+                row.insert("thread_index".to_string(), OwnedValue::from(v as u64));
+            }
+            if let Some(v) = core.thread_count {
+                row.insert("thread_count".to_string(), OwnedValue::from(v as u64));
+            }
             if let Some(v) = core.usage_percent {
                 row.insert("usage_percent".to_string(), OwnedValue::from(v as f64));
             }
@@ -1270,8 +1294,11 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
     out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
     out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
-    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
-    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    out.push_str(&format!("cpu_count (physical cores): {}\n", caps.cpu_count));
+    out.push_str(&format!(
+        "thread_count (logical threads): {}\n",
+        caps.thread_count
+    ));
     if let Some(driver) = &caps.scaling_driver {
         out.push_str(&format!("scaling_driver: {driver}\n"));
     }
@@ -1334,13 +1361,24 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
     out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
 
-    out.push_str("\nPer-core\n");
-    out.push_str("--------\n");
-    out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+    out.push_str("\nLogical CPUs / Threads\n");
+    out.push_str("----------------------\n");
+    out.push_str("cpu  pcore  thr   pol   online  usage%  cur_mhz  min_mhz  max_mhz\n");
     for core in &cpu.per_core {
+        let thread_label = match (core.thread_index, core.thread_count) {
+            (Some(index), Some(count)) => format!("{index}/{count}"),
+            _ => "-".to_string(),
+        };
         out.push_str(&format!(
-            "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
-            core.core_id,
+            "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+            core.logical_cpu_id,
+            core.physical_core_index
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            thread_label,
+            core.policy_id
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             if core.online { "yes" } else { "no" },
             core.usage_percent
                 .map(|v| format!("{v:.1}"))

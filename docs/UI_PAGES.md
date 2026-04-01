@@ -52,9 +52,9 @@ For each page, it lists:
 - average clock
 - CPU access-status banner when writes are blocked or partially unavailable
 - scaling driver
-- CPU core count
-- thread count
-- per-core state table
+- physical core count
+- logical thread count
+- logical CPU / thread state table
 - detected CPU sysfs access report with readable/writable paths
 - CPU diagnostics copy action
 
@@ -66,14 +66,14 @@ For each page, it lists:
 - max frequency control
 - governor apply
 - EPP apply
-- per-core online/offline toggle
+- per-logical-CPU online/offline toggle
 
 ### Capability dependencies
 
 - control availability depends on `cpu_caps`
 - write controls depend on per-control entries in `cpu_caps.control_access`
 - `policy_writable` remains a coarse any-writable summary
-- per-core toggle support depends on `has_core_online` plus `core_online` access state
+- logical CPU toggle support depends on `has_core_online` plus `core_online` access state
 
 ### Missing or planned
 

@@ -399,7 +399,11 @@ impl TelemetrySnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuCoreTelemetry {
-    pub core_id: u32,
+    pub logical_cpu_id: u32,
+    pub physical_core_index: Option<u32>,
+    pub policy_id: Option<u32>,
+    pub thread_index: Option<u32>,
+    pub thread_count: Option<u32>,
     pub usage_percent: Option<f32>,
     pub current_freq_mhz: Option<u32>,
     pub min_freq_mhz: Option<u32>,

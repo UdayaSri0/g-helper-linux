@@ -889,8 +889,8 @@ fn build_ui(app: &adw::Application) {
         .description("EPP controls how aggressively CPU frequency/power is tuned.")
         .build();
     let cpu_scaling_driver = pref_value_row(&cpu_policy_group, "Scaling driver", false);
-    let cpu_cpu_count = pref_value_row(&cpu_policy_group, "CPU cores", false);
-    let cpu_thread_count = pref_value_row(&cpu_policy_group, "Threads", false);
+    let cpu_cpu_count = pref_value_row(&cpu_policy_group, "Physical cores", false);
+    let cpu_thread_count = pref_value_row(&cpu_policy_group, "Logical threads", false);
 
     let cpu_governor_combo = gtk::ComboBoxText::new();
     cpu_governor_combo.set_sensitive(false);
@@ -953,11 +953,13 @@ fn build_ui(app: &adw::Application) {
     cpu_page.add(&cpu_policy_group);
 
     let cpu_per_core_group = adw::PreferencesGroup::builder()
-        .title("Per-Core")
-        .description("Core id, usage, current/min/max frequency.")
+        .title("Logical CPUs / Threads")
+        .description(
+            "Each row is one logical CPU/thread. Physical core count is shown above, and cpufreq policy ids are shown when the kernel exposes them.",
+        )
         .build();
     let cpu_per_core_buffer = gtk::TextBuffer::new(None);
-    cpu_per_core_buffer.set_text("Loading CPU cores...");
+    cpu_per_core_buffer.set_text("Loading logical CPUs / threads...");
     let cpu_per_core_view = gtk::TextView::with_buffer(&cpu_per_core_buffer);
     cpu_per_core_view.set_editable(false);
     cpu_per_core_view.set_cursor_visible(false);
@@ -965,7 +967,7 @@ fn build_ui(app: &adw::Application) {
     cpu_per_core_view.add_css_class("monospace");
     let cpu_per_core_scroll = gtk::ScrolledWindow::new();
     cpu_per_core_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    cpu_per_core_scroll.set_min_content_height(220);
+    cpu_per_core_scroll.set_min_content_height(320);
     cpu_per_core_scroll.set_child(Some(&cpu_per_core_view));
     cpu_per_core_group.add(&cpu_per_core_scroll);
     cpu_page.add(&cpu_per_core_group);
@@ -975,7 +977,7 @@ fn build_ui(app: &adw::Application) {
     cpu_advanced_expander.set_expanded(false);
     let cpu_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let cpu_core_toggle_title = gtk::Label::new(Some("Core Online/Offline"));
+    let cpu_core_toggle_title = gtk::Label::new(Some("Logical CPU Online/Offline"));
     cpu_core_toggle_title.set_xalign(0.0);
     cpu_core_toggle_title.add_css_class("heading");
     let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1893,12 +1895,23 @@ fn build_ui(app: &adw::Application) {
             cpu_read_only_banner.set_title(&cpu_banner_title(&cpu_caps));
 
             let mut table = String::new();
-            table.push_str("CORE  ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
-            table.push_str("---------------------------------------------------\n");
+            table
+                .push_str("CPU  PCORE  THR   POL   ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
+            table.push_str(
+                "------------------------------------------------------------------------\n",
+            );
             for core in &cpu_data.per_core {
+                let thread_label = format_cpu_thread_position(core.thread_index, core.thread_count);
                 table.push_str(&format!(
-                    "{:<4}  {:<6}  {:>6}  {:>8}  {:>8}  {:>8}\n",
-                    core.core_id,
+                    "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:>6}  {:>8}  {:>8}  {:>8}\n",
+                    core.logical_cpu_id,
+                    core.physical_core_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    thread_label,
+                    core.policy_id
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
                     if core.online { "yes" } else { "no" },
                     core.usage_percent
                         .map(|v| format!("{v:.1}"))
@@ -1921,18 +1934,27 @@ fn build_ui(app: &adw::Application) {
             }
             for core in &cpu_data.per_core {
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                let label = gtk::Label::new(Some(&format!("Core {}", core.core_id)));
+                let label = gtk::Label::new(Some(&format!(
+                    "CPU {} ({})",
+                    core.logical_cpu_id,
+                    format_cpu_toggle_summary(
+                        core.physical_core_index,
+                        core.thread_index,
+                        core.thread_count
+                    )
+                )));
                 label.set_xalign(0.0);
+                label.set_wrap(true);
                 label.set_hexpand(true);
                 let switch = gtk::Switch::new();
                 switch.set_active(core.online);
                 let allow_toggle =
-                    cpu_caps.has_core_online && core_online_writable && core.core_id != 0;
+                    cpu_caps.has_core_online && core_online_writable && core.logical_cpu_id != 0;
                 switch.set_sensitive(allow_toggle);
                 if allow_toggle {
                     let shared = shared_clone.clone();
                     let win = win_clone.clone();
-                    let core_id = core.core_id;
+                    let core_id = core.logical_cpu_id;
                     let original_online = core.online;
                     switch.connect_active_notify(move |sw| {
                         let desired_online = sw.is_active();
@@ -1941,9 +1963,9 @@ fn build_ui(app: &adw::Application) {
                         }
                         let dialog = adw::MessageDialog::new(
                             Some(&win),
-                            Some("Confirm Core Toggle"),
+                            Some("Confirm Logical CPU Toggle"),
                             Some(
-                                "Changing core online/offline state can impact stability and thermals. Continue?",
+                                "Changing a logical CPU online/offline state can impact stability and thermals. Continue?",
                             ),
                         );
                         dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
@@ -1984,7 +2006,7 @@ fn build_ui(app: &adw::Application) {
             cpu_card_power.set_value("--");
             cpu_card_clock.set_value("--");
             cpu_read_only_banner.set_revealed(false);
-            cpu_per_core_buffer.set_text("CPU telemetry unavailable.");
+            cpu_per_core_buffer.set_text("Logical CPU / thread telemetry unavailable.");
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
@@ -2960,13 +2982,30 @@ fn cpu_telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> CpuTelemetry {
     {
         let mut per_core = Vec::with_capacity(rows.len());
         for row in rows {
-            let core_id = row
-                .get("core_id")
+            let logical_cpu_id = row
+                .get("logical_cpu_id")
+                .or_else(|| row.get("core_id"))
                 .and_then(u64_from_value)
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or_default();
             per_core.push(rog_core::CpuCoreTelemetry {
-                core_id,
+                logical_cpu_id,
+                physical_core_index: row
+                    .get("physical_core_index")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                policy_id: row
+                    .get("policy_id")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                thread_index: row
+                    .get("thread_index")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                thread_count: row
+                    .get("thread_count")
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
                 usage_percent: row
                     .get("usage_percent")
                     .and_then(|v| f64::try_from(v).ok())
@@ -3151,6 +3190,33 @@ fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
     out
 }
 
+fn format_cpu_thread_position(thread_index: Option<u32>, thread_count: Option<u32>) -> String {
+    match (thread_index, thread_count) {
+        (Some(index), Some(count)) if count > 0 => format!("{index}/{count}"),
+        _ => "-".to_string(),
+    }
+}
+
+fn format_cpu_toggle_summary(
+    physical_core_index: Option<u32>,
+    thread_index: Option<u32>,
+    thread_count: Option<u32>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(physical_core_index) = physical_core_index {
+        parts.push(format!("physical core {physical_core_index}"));
+    }
+    let thread_label = format_cpu_thread_position(thread_index, thread_count);
+    if thread_label != "-" {
+        parts.push(format!("thread {thread_label}"));
+    }
+    if parts.is_empty() {
+        "topology unavailable".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 fn cpu_control_subtitle<'a>(
     caps: &'a CpuCaps,
     kind: CpuControlKind,
@@ -3259,8 +3325,11 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
     out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
     out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
     out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
-    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
-    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    out.push_str(&format!("cpu_count (physical cores): {}\n", caps.cpu_count));
+    out.push_str(&format!(
+        "thread_count (logical threads): {}\n",
+        caps.thread_count
+    ));
     if let Some(driver) = &caps.scaling_driver {
         out.push_str(&format!("scaling_driver: {driver}\n"));
     }
@@ -3299,13 +3368,21 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
         out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
         out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
 
-        out.push_str("\nPer-core\n");
-        out.push_str("--------\n");
-        out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+        out.push_str("\nLogical CPUs / Threads\n");
+        out.push_str("----------------------\n");
+        out.push_str("cpu  pcore  thr   pol   online  usage%  cur_mhz  min_mhz  max_mhz\n");
         for core in &cpu.per_core {
+            let thread_label = format_cpu_thread_position(core.thread_index, core.thread_count);
             out.push_str(&format!(
-                "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
-                core.core_id,
+                "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+                core.logical_cpu_id,
+                core.physical_core_index
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                thread_label,
+                core.policy_id
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
                 if core.online { "yes" } else { "no" },
                 core.usage_percent
                     .map(|v| format!("{v:.1}"))

@@ -90,13 +90,13 @@ Current content:
   - max frequency
 - policy section for:
   - scaling driver
-  - core count
-  - thread count
+  - physical core count
+  - logical thread count
   - governor
   - energy performance preference
-- per-core table
+- logical CPU / thread table
 - advanced section for:
-  - core online/offline toggles
+  - logical CPU online/offline toggles
   - CPU sysfs access report with readable/writable paths
   - copy CPU diagnostics
 
@@ -105,7 +105,8 @@ Current behavior:
 - CPU controls can be visible but read-only
 - write access is gated per control from daemon-reported CPU access status
 - blocked write paths are surfaced in diagnostics instead of a fake repair action
-- core toggles require user confirmation in the current UI
+- logical CPU toggles require user confirmation in the current UI
+- the main CPU row table is ordered by logical CPU id and distinguishes physical-core count from logical-thread rows
 
 ### GPU
 
