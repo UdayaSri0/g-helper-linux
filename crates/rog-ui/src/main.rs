@@ -8,9 +8,9 @@ use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
-    BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuPathAccess,
-    CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState, FeatureAvailability, PowerSource,
-    TelemetrySnapshot, TopProcessMem,
+    BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry,
+    CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState, FeatureAvailability,
+    PowerSource, TelemetrySnapshot, TopProcessMem,
 };
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
@@ -528,11 +528,11 @@ fn build_ui(app: &adw::Application) {
     quick_actions_title.add_css_class("title-3");
 
     let quick_actions_group = adw::PreferencesGroup::builder()
-        .description("Controls are shown or disabled based on discovered device capabilities.")
+        .description("Controls stay visible when unavailable so the reason is easy to inspect.")
         .build();
 
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    profile_buttons.add_css_class("linked");
+    style_linked_toggle_row(&profile_buttons);
     let profile_quiet = gtk::ToggleButton::with_label("Quiet");
     let profile_balanced = gtk::ToggleButton::with_label("Balanced");
     let profile_turbo = gtk::ToggleButton::with_label("Turbo");
@@ -590,9 +590,12 @@ fn build_ui(app: &adw::Application) {
 
     let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
+    style_dropdown_control(&gpu_mode_dropdown);
     gpu_mode_dropdown.set_sensitive(false);
     let gpu_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_apply_button);
     gpu_apply_button.set_sensitive(false);
+    style_inline_control_box(&gpu_control_box);
     gpu_control_box.append(&gpu_mode_dropdown);
     gpu_control_box.append(&gpu_apply_button);
     let gpu_mode_row = adw::ActionRow::builder()
@@ -620,11 +623,14 @@ fn build_ui(app: &adw::Application) {
 
     let charge_limit_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
+    style_spin_control(&charge_limit_spin, 5);
     charge_limit_spin.set_value(80.0);
     charge_limit_spin.set_sensitive(false);
     charge_limit_spin.set_numeric(true);
     let charge_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&charge_apply_button);
     charge_apply_button.set_sensitive(false);
+    style_inline_control_box(&charge_limit_box);
     charge_limit_box.append(&charge_limit_spin);
     charge_limit_box.append(&charge_apply_button);
     let charge_limit_row = adw::ActionRow::builder()
@@ -648,10 +654,13 @@ fn build_ui(app: &adw::Application) {
 
     let kbd_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let kbd_brightness_spin = gtk::SpinButton::with_range(0.0, 3.0, 1.0);
+    style_spin_control(&kbd_brightness_spin, 4);
     kbd_brightness_spin.set_sensitive(false);
     kbd_brightness_spin.set_numeric(true);
     let kbd_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&kbd_apply_button);
     kbd_apply_button.set_sensitive(false);
+    style_inline_control_box(&kbd_control_box);
     kbd_control_box.append(&kbd_brightness_spin);
     kbd_control_box.append(&kbd_apply_button);
 
@@ -746,7 +755,7 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_banner_group = adw::PreferencesGroup::new();
     let cpu_read_only_banner = adw::Banner::new("Some CPU controls are unavailable");
-    cpu_read_only_banner.set_button_label(Some("Open Diagnostics"));
+    cpu_read_only_banner.set_button_label(Some("Review Access"));
     cpu_read_only_banner.set_revealed(false);
     cpu_banner_group.add(&cpu_read_only_banner);
     cpu_page.add(&cpu_banner_group);
@@ -783,17 +792,21 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_quick_group = adw::PreferencesGroup::builder()
         .title("Quick Controls")
-        .description("Safe controls applied through daemon policy endpoints.")
+        .description("Stage common CPU changes here, then apply them together.")
         .build();
 
     let cpu_turbo_switch = gtk::Switch::new();
-    let cpu_turbo_row = adw::ActionRow::builder().title("Turbo Boost").build();
+    cpu_turbo_switch.set_valign(gtk::Align::Center);
+    let cpu_turbo_row = adw::ActionRow::builder()
+        .title("Turbo Boost")
+        .subtitle("Checking support...")
+        .build();
     cpu_turbo_row.add_suffix(&cpu_turbo_switch);
     cpu_turbo_row.set_activatable(false);
     cpu_quick_group.add(&cpu_turbo_row);
 
     let cpu_power_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    cpu_power_buttons.add_css_class("linked");
+    style_linked_toggle_row(&cpu_power_buttons);
     let cpu_power_quiet = gtk::ToggleButton::with_label("Quiet");
     let cpu_power_balanced = gtk::ToggleButton::with_label("Balanced");
     let cpu_power_perf = gtk::ToggleButton::with_label("Performance");
@@ -803,32 +816,47 @@ fn build_ui(app: &adw::Application) {
     cpu_power_buttons.append(&cpu_power_quiet);
     cpu_power_buttons.append(&cpu_power_balanced);
     cpu_power_buttons.append(&cpu_power_perf);
-    let cpu_power_row = adw::ActionRow::builder().title("Power Mode").build();
+    let cpu_power_row = adw::ActionRow::builder()
+        .title("Power Preset")
+        .subtitle("Checking support...")
+        .build();
     cpu_power_row.add_suffix(&cpu_power_buttons);
     cpu_power_row.set_activatable(false);
     cpu_quick_group.add(&cpu_power_row);
 
     let cpu_min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    style_scale_control(&cpu_min_scale);
     cpu_min_scale.set_draw_value(true);
     cpu_min_scale.set_value_pos(gtk::PositionType::Right);
     cpu_min_scale.set_hexpand(true);
-    let cpu_min_row = adw::ActionRow::builder().title("Min Frequency").build();
+    let cpu_min_row = adw::ActionRow::builder()
+        .title("Min Frequency Limit")
+        .subtitle("Checking support...")
+        .build();
     cpu_min_row.add_suffix(&cpu_min_scale);
     cpu_min_row.set_activatable(false);
     cpu_quick_group.add(&cpu_min_row);
 
     let cpu_max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    style_scale_control(&cpu_max_scale);
     cpu_max_scale.set_draw_value(true);
     cpu_max_scale.set_value_pos(gtk::PositionType::Right);
     cpu_max_scale.set_hexpand(true);
-    let cpu_max_row = adw::ActionRow::builder().title("Max Frequency").build();
+    let cpu_max_row = adw::ActionRow::builder()
+        .title("Max Frequency Limit")
+        .subtitle("Checking support...")
+        .build();
     cpu_max_row.add_suffix(&cpu_max_scale);
     cpu_max_row.set_activatable(false);
     cpu_quick_group.add(&cpu_max_row);
 
-    let cpu_apply_quick = gtk::Button::with_label("Apply CPU Quick Controls");
+    let cpu_apply_quick = gtk::Button::with_label("Apply");
+    style_apply_button(&cpu_apply_quick);
     cpu_apply_quick.add_css_class("suggested-action");
-    let cpu_apply_row = adw::ActionRow::builder().title("Apply").build();
+    let cpu_apply_row = adw::ActionRow::builder()
+        .title("Apply Quick Controls")
+        .subtitle("Turbo, preset, and frequency changes are sent together.")
+        .build();
     cpu_apply_row.add_suffix(&cpu_apply_quick);
     cpu_apply_row.set_activatable(false);
     cpu_quick_group.add(&cpu_apply_row);
@@ -890,23 +918,29 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_policy_group = adw::PreferencesGroup::builder()
         .title("Policy")
-        .description("EPP controls how aggressively CPU frequency/power is tuned.")
+        .description("Direct Linux governor and EPP controls for finer tuning.")
         .build();
     let cpu_scaling_driver = pref_value_row(&cpu_policy_group, "Scaling driver", false);
     let cpu_cpu_count = pref_value_row(&cpu_policy_group, "Physical cores", false);
     let cpu_thread_count = pref_value_row(&cpu_policy_group, "Logical threads", false);
 
     let cpu_governor_combo = gtk::ComboBoxText::new();
+    style_combo_control(&cpu_governor_combo);
     cpu_governor_combo.set_sensitive(false);
-    let cpu_governor_row = adw::ActionRow::builder().title("Governor").build();
+    let cpu_governor_row = adw::ActionRow::builder()
+        .title("Governor")
+        .subtitle("Checking support...")
+        .build();
     cpu_governor_row.add_suffix(&cpu_governor_combo);
     cpu_governor_row.set_activatable(false);
     cpu_policy_group.add(&cpu_governor_row);
 
     let cpu_epp_combo = gtk::ComboBoxText::new();
+    style_combo_control(&cpu_epp_combo);
     cpu_epp_combo.set_sensitive(false);
     let cpu_epp_row = adw::ActionRow::builder()
         .title("Energy Performance Preference")
+        .subtitle("Checking support...")
         .build();
     cpu_epp_row.add_suffix(&cpu_epp_combo);
     cpu_epp_row.set_activatable(false);
@@ -920,8 +954,12 @@ fn build_ui(app: &adw::Application) {
     cpu_policy_hint.add_css_class("dim-label");
     cpu_policy_group.add(&cpu_policy_hint);
 
-    let cpu_apply_policy = gtk::Button::with_label("Apply Policy");
-    let cpu_apply_policy_row = adw::ActionRow::builder().title("Apply").build();
+    let cpu_apply_policy = gtk::Button::with_label("Apply");
+    style_apply_button(&cpu_apply_policy);
+    let cpu_apply_policy_row = adw::ActionRow::builder()
+        .title("Apply Governor / EPP")
+        .subtitle("Governor and EPP changes are sent together.")
+        .build();
     cpu_apply_policy_row.add_suffix(&cpu_apply_policy);
     cpu_apply_policy_row.set_activatable(false);
     cpu_policy_group.add(&cpu_apply_policy_row);
@@ -959,7 +997,7 @@ fn build_ui(app: &adw::Application) {
     let cpu_per_core_group = adw::PreferencesGroup::builder()
         .title("Logical CPUs / Threads")
         .description(
-            "Each row is one logical CPU/thread. Physical core count is shown above, and cpufreq policy ids are shown when the kernel exposes them.",
+            "Scrollable table of logical CPUs showing topology, policy id, online state, usage, and current frequency limits.",
         )
         .build();
     let cpu_per_core_buffer = gtk::TextBuffer::new(None);
@@ -976,15 +1014,17 @@ fn build_ui(app: &adw::Application) {
     cpu_per_core_group.add(&cpu_per_core_scroll);
     cpu_page.add(&cpu_per_core_group);
 
-    let cpu_adv_group = adw::PreferencesGroup::builder().title("Advanced").build();
-    let cpu_advanced_expander = gtk::Expander::new(Some("Advanced CPU Controls"));
+    let cpu_adv_group = adw::PreferencesGroup::builder()
+        .title("Advanced & Access")
+        .build();
+    let cpu_advanced_expander = gtk::Expander::new(Some("Logical CPU Toggles and Access Details"));
     cpu_advanced_expander.set_expanded(false);
     let cpu_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let cpu_core_toggle_title = gtk::Label::new(Some("Logical CPU Online/Offline"));
+    let cpu_core_toggle_title = gtk::Label::new(Some("Logical CPU Online / Offline"));
     cpu_core_toggle_title.set_xalign(0.0);
     cpu_core_toggle_title.add_css_class("heading");
-    let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
     cpu_adv_box.append(&cpu_core_toggle_title);
     cpu_adv_box.append(&cpu_core_toggle_box);
 
@@ -992,7 +1032,8 @@ fn build_ui(app: &adw::Application) {
     cpu_adv_box.append(&cpu_access_hint);
     cpu_adv_box.append(&cpu_access_report_scroll);
 
-    let cpu_copy_diag = gtk::Button::with_label("Copy CPU diagnostics");
+    let cpu_copy_diag = gtk::Button::with_label("Copy CPU details");
+    style_apply_button(&cpu_copy_diag);
     {
         let shared = shared.clone();
         cpu_copy_diag.connect_clicked(move |_| {
@@ -1135,7 +1176,9 @@ fn build_ui(app: &adw::Application) {
 
     let gpu_state_group = adw::PreferencesGroup::builder()
         .title("Current State")
-        .description("Read from daemon-backed asusd/supergfx providers when available.")
+        .description(
+            "Current values come from asusd and supergfxd when those backends are available.",
+        )
         .build();
     let gpu_page_current_profile = pref_value_row(&gpu_state_group, "Profile", false);
     let gpu_page_current_mode = pref_value_row(&gpu_state_group, "GPU Mode", false);
@@ -1147,18 +1190,23 @@ fn build_ui(app: &adw::Application) {
 
     let gpu_controls_group = adw::PreferencesGroup::builder()
         .title("Controls")
-        .description("Changes are applied through rog-helperd session DBus API.")
+        .description(
+            "Selectors stay visible when support is missing so the reason is easy to inspect.",
+        )
         .build();
 
     let gpu_page_profile_combo = gtk::ComboBoxText::new();
+    style_combo_control(&gpu_page_profile_combo);
     for label in ["Silent", "Balanced", "Turbo"] {
         gpu_page_profile_combo.append(Some(label), label);
     }
     gpu_page_profile_combo.set_active_id(Some("Balanced"));
     gpu_page_profile_combo.set_sensitive(false);
     let gpu_page_profile_apply = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_page_profile_apply);
     gpu_page_profile_apply.set_sensitive(false);
     let gpu_page_profile_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    style_inline_control_box(&gpu_page_profile_box);
     gpu_page_profile_box.append(&gpu_page_profile_combo);
     gpu_page_profile_box.append(&gpu_page_profile_apply);
     let gpu_page_profile_row = adw::ActionRow::builder()
@@ -1184,14 +1232,17 @@ fn build_ui(app: &adw::Application) {
     }
 
     let gpu_page_mode_combo = gtk::ComboBoxText::new();
+    style_combo_control(&gpu_page_mode_combo);
     for label in ["Integrated", "Hybrid", "Dedicated"] {
         gpu_page_mode_combo.append(Some(label), label);
     }
     gpu_page_mode_combo.set_active_id(Some("Hybrid"));
     gpu_page_mode_combo.set_sensitive(false);
     let gpu_page_mode_apply = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_page_mode_apply);
     gpu_page_mode_apply.set_sensitive(false);
     let gpu_page_mode_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    style_inline_control_box(&gpu_page_mode_box);
     gpu_page_mode_box.append(&gpu_page_mode_combo);
     gpu_page_mode_box.append(&gpu_page_mode_apply);
     let gpu_page_mode_row = adw::ActionRow::builder()
@@ -1218,8 +1269,11 @@ fn build_ui(app: &adw::Application) {
 
     gpu_page.add(&gpu_controls_group);
 
-    let gpu_status_group = adw::PreferencesGroup::builder().title("Status").build();
-    let gpu_page_last_action = pref_value_row(&gpu_status_group, "Status", false);
+    let gpu_status_group = adw::PreferencesGroup::builder()
+        .title("Status")
+        .description("Support and recent action feedback.")
+        .build();
+    let gpu_page_last_action = pref_value_row(&gpu_status_group, "Summary", false);
     gpu_page_last_action.set_text("Checking support...");
     gpu_page.add(&gpu_status_group);
 
@@ -1417,8 +1471,8 @@ fn build_ui(app: &adw::Application) {
     let win = adw::ApplicationWindow::builder()
         .application(app)
         .title("rog-helper")
-        .default_width(560)
-        .default_height(380)
+        .default_width(920)
+        .default_height(760)
         .build();
     win.set_content(Some(&toast_overlay));
     win.present();
@@ -1794,12 +1848,8 @@ fn build_ui(app: &adw::Application) {
             }
             cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
 
-            cpu_scaling_driver.set_text(
-                &cpu_caps
-                    .scaling_driver
-                    .clone()
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
+            cpu_scaling_driver
+                .set_text(cpu_caps.scaling_driver.as_deref().unwrap_or("Not detected"));
             cpu_cpu_count.set_text(&cpu_caps.cpu_count.to_string());
             cpu_thread_count.set_text(&cpu_caps.thread_count.to_string());
 
@@ -1810,6 +1860,30 @@ fn build_ui(app: &adw::Application) {
             let freq_limits_writable = cpu_caps.control_writable(CpuControlKind::FreqLimits);
             let core_online_writable = cpu_caps.control_writable(CpuControlKind::CoreOnline);
             let quick_sensitive = turbo_writable || power_mode_writable || freq_limits_writable;
+            let turbo_available_text = match cpu_data.turbo_boost_enabled {
+                Some(true) => "Currently enabled. Toggle to stage a change.".to_string(),
+                Some(false) => "Currently disabled. Toggle to stage a change.".to_string(),
+                None => "Toggle turbo boost and apply when ready.".to_string(),
+            };
+            let power_preset_subtitle = cpu_power_preset_summary(cpu_data);
+            let min_limit_subtitle = format!(
+                "Current minimum: {}. Drag to stage a new limit.",
+                format_cpu_freq_value(cpu_data.min_freq_mhz)
+            );
+            let max_limit_subtitle = format!(
+                "Current maximum: {}. Drag to stage a new limit.",
+                format_cpu_freq_value(cpu_data.max_freq_mhz)
+            );
+            let governor_subtitle = if let Some(governor) = cpu_data.governor.as_deref() {
+                format!("Current: {governor}. Choose a governor to apply.")
+            } else {
+                "Choose the active CPU governor.".to_string()
+            };
+            let epp_subtitle = if let Some(epp) = cpu_data.epp.as_deref() {
+                format!("Current: {epp}. Choose an EPP value to apply.")
+            } else {
+                "Choose the energy performance preference.".to_string()
+            };
 
             cpu_turbo_switch.set_sensitive(turbo_writable);
             if let Some(v) = cpu_data.turbo_boost_enabled {
@@ -1817,37 +1891,38 @@ fn build_ui(app: &adw::Application) {
                     cpu_turbo_switch.set_active(v);
                 }
             }
-            cpu_turbo_row.set_subtitle(cpu_control_subtitle(
+            cpu_turbo_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Boost,
-                "Enable/disable CPU turbo boost",
+                &turbo_available_text,
                 "Turbo boost control is not supported on this system.",
             ));
 
-            cpu_power_quiet.set_sensitive(quick_sensitive);
-            cpu_power_balanced.set_sensitive(quick_sensitive);
-            cpu_power_perf.set_sensitive(quick_sensitive);
+            cpu_power_quiet.set_sensitive(power_mode_writable);
+            cpu_power_balanced.set_sensitive(power_mode_writable);
+            cpu_power_perf.set_sensitive(power_mode_writable);
             cpu_apply_quick.set_sensitive(quick_sensitive);
-            cpu_power_row.set_subtitle(cpu_control_subtitle(
+            cpu_power_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::PowerMode,
-                "Apply a high-level CPU power preset through governor/EPP controls.",
+                &power_preset_subtitle,
                 "Power mode presets are not supported on this system.",
             ));
             cpu_min_scale.set_sensitive(freq_limits_writable && cpu_caps.has_min_freq_limit);
             cpu_max_scale.set_sensitive(freq_limits_writable && cpu_caps.has_max_freq_limit);
-            cpu_min_row.set_subtitle(cpu_control_subtitle(
+            cpu_min_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::FreqLimits,
-                "Adjust the minimum CPU frequency limit.",
+                &min_limit_subtitle,
                 "Minimum frequency limits are not supported on this system.",
             ));
-            cpu_max_row.set_subtitle(cpu_control_subtitle(
+            cpu_max_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::FreqLimits,
-                "Adjust the maximum CPU frequency limit.",
+                &max_limit_subtitle,
                 "Maximum frequency limits are not supported on this system.",
             ));
+            cpu_apply_row.set_subtitle(&cpu_quick_apply_subtitle(&cpu_caps));
             if let Some(v) = cpu_data.min_freq_mhz {
                 if !cpu_min_scale.has_focus() {
                     cpu_min_scale.set_value(v as f64);
@@ -1874,19 +1949,20 @@ fn build_ui(app: &adw::Application) {
 
             cpu_governor_combo.set_sensitive(governor_writable && cpu_caps.has_governor);
             cpu_epp_combo.set_sensitive(epp_writable && cpu_caps.has_epp);
-            cpu_governor_row.set_subtitle(cpu_control_subtitle(
+            cpu_governor_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Governor,
-                "Select the active CPU governor.",
+                &governor_subtitle,
                 "Governor control is not supported on this system.",
             ));
-            cpu_epp_row.set_subtitle(cpu_control_subtitle(
+            cpu_epp_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Epp,
-                "Select the energy performance preference.",
+                &epp_subtitle,
                 "Energy Performance Preference is not supported on this system.",
             ));
             cpu_apply_policy.set_sensitive(governor_writable || epp_writable);
+            cpu_apply_policy_row.set_subtitle(&cpu_policy_apply_subtitle(&cpu_caps));
 
             {
                 let mut last = last_cpu_governors.borrow_mut();
@@ -1961,28 +2037,51 @@ fn build_ui(app: &adw::Application) {
                 cpu_core_toggle_box.remove(&child);
             }
             for core in &cpu_data.per_core {
-                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                let label = gtk::Label::new(Some(&format!(
-                    "CPU {} ({})",
-                    core.logical_cpu_id,
-                    format_cpu_toggle_summary(
-                        core.physical_core_index,
-                        core.thread_index,
-                        core.thread_count
-                    )
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                row.add_css_class("cpu-toggle-row");
+                let label_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                label_box.set_hexpand(true);
+
+                let title = gtk::Label::new(Some(&format!("Logical CPU {}", core.logical_cpu_id)));
+                title.set_xalign(0.0);
+                title.add_css_class("cpu-toggle-title");
+
+                let subtitle = gtk::Label::new(Some(&cpu_toggle_row_subtitle(
+                    core,
+                    &cpu_caps,
+                    core_online_writable,
                 )));
-                label.set_xalign(0.0);
-                label.set_wrap(true);
-                label.set_hexpand(true);
+                subtitle.set_xalign(0.0);
+                subtitle.set_wrap(true);
+                subtitle.add_css_class("dim-label");
+                subtitle.add_css_class("cpu-toggle-subtitle");
+                subtitle.set_hexpand(true);
+
+                label_box.append(&title);
+                label_box.append(&subtitle);
+
                 let switch = gtk::Switch::new();
                 switch.set_active(core.online);
+                switch.set_valign(gtk::Align::Center);
                 let allow_toggle =
                     cpu_caps.has_core_online && core_online_writable && core.logical_cpu_id != 0;
                 switch.set_sensitive(allow_toggle);
+                switch.set_tooltip_text(Some(if core.logical_cpu_id == 0 {
+                    "CPU 0 stays online."
+                } else if !cpu_caps.has_core_online {
+                    "This platform does not expose logical CPU online/offline control."
+                } else if !core_online_writable {
+                    "Readable, but not writable by the current user."
+                } else if core.online {
+                    "Turn this logical CPU off after confirmation."
+                } else {
+                    "Bring this logical CPU back online after confirmation."
+                }));
                 if allow_toggle {
                     let shared = shared_clone.clone();
                     let win = win_clone.clone();
                     let core_id = core.logical_cpu_id;
+                    let core_for_dialog = core.clone();
                     let original_online = core.online;
                     switch.connect_active_notify(move |sw| {
                         let desired_online = sw.is_active();
@@ -1991,12 +2090,13 @@ fn build_ui(app: &adw::Application) {
                         }
                         let dialog = adw::MessageDialog::new(
                             Some(&win),
-                            Some("Confirm Logical CPU Toggle"),
-                            Some(
-                                "Changing a logical CPU online/offline state can impact stability and thermals. Continue?",
-                            ),
+                            Some(cpu_toggle_dialog_title(desired_online)),
+                            Some(&cpu_toggle_dialog_body(&core_for_dialog, desired_online)),
                         );
-                        dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
+                        dialog.add_responses(&[
+                            ("cancel", "Keep Current State"),
+                            ("apply", "Apply Change"),
+                        ]);
                         dialog.set_close_response("cancel");
                         dialog.set_default_response(Some("cancel"));
 
@@ -2022,7 +2122,7 @@ fn build_ui(app: &adw::Application) {
                         dialog.present();
                     });
                 }
-                row.append(&label);
+                row.append(&label_box);
                 row.append(&switch);
                 cpu_core_toggle_box.append(&row);
             }
@@ -2044,10 +2144,10 @@ fn build_ui(app: &adw::Application) {
             &caps_text
         });
 
-        if let Some(ref e) = daemon_error {
-            status_label.set_text(&format!(
-                "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
-            ));
+        if daemon_error.is_some() {
+            status_label.set_text(
+                "rog-helperd is not reachable on the current session. Open Diagnostics for DBus endpoint details.",
+            );
         } else if let Some(ref e) = action_error_txt {
             status_label.set_text(&friendly_action_error(e));
         } else {
@@ -2068,7 +2168,7 @@ fn build_ui(app: &adw::Application) {
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
         } else if !warnings.is_empty() {
-            warning_banner.set_title("Hardware warnings detected");
+            warning_banner.set_title("Some readings need attention");
             warning_banner.set_button_label(Some("Open Diagnostics"));
             warning_subtitle.set_text(&warnings.join("\n"));
             warning_subtitle.set_visible(true);
@@ -3513,15 +3613,15 @@ fn support_banner_title(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> String {
     .count();
 
     if category_count > 1 {
-        "Some controls need attention".to_string()
+        "Some controls need setup or permissions".to_string()
     } else if has_missing_backend {
         "Some controls need system services".to_string()
     } else if has_permission_denied {
-        "Some controls are read-only".to_string()
+        "Some controls are visible but read-only".to_string()
     } else if has_temporarily_unavailable {
-        "Some controls are temporarily unavailable".to_string()
+        "Some controls could not be confirmed right now".to_string()
     } else {
-        "Some controls are unsupported on this machine".to_string()
+        "Some controls are not supported on this machine".to_string()
     }
 }
 
@@ -3661,21 +3761,6 @@ fn friendly_action_error(error: &str) -> String {
     }
 }
 
-fn cpu_control_subtitle<'a>(
-    caps: &'a CpuCaps,
-    kind: CpuControlKind,
-    available_text: &'a str,
-    unsupported_text: &'a str,
-) -> &'a str {
-    match caps.control_state(kind) {
-        CpuAccessState::Available => available_text,
-        CpuAccessState::PermissionDenied => "Readable, but not writable by the current user",
-        CpuAccessState::MissingBackend => "Required CPU policy backend is not available",
-        CpuAccessState::TemporarilyUnavailable => "Temporarily unavailable; inspect diagnostics",
-        CpuAccessState::Unsupported | CpuAccessState::Unknown => unsupported_text,
-    }
-}
-
 fn cpu_has_access_issue(caps: &CpuCaps) -> bool {
     caps.control_access.iter().any(|control| {
         matches!(
@@ -3693,21 +3778,21 @@ fn cpu_banner_title(caps: &CpuCaps) -> String {
         .iter()
         .any(|control| control.status == CpuAccessState::PermissionDenied)
     {
-        "CPU writes are blocked by sysfs permissions".to_string()
+        "CPU controls are visible, but writes are blocked".to_string()
     } else if caps
         .control_access
         .iter()
         .any(|control| control.status == CpuAccessState::MissingBackend)
     {
-        "Some CPU controls are unavailable".to_string()
+        "Some CPU controls need backend support".to_string()
     } else if caps
         .control_access
         .iter()
         .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
     {
-        "Some CPU controls are temporarily unavailable".to_string()
+        "Some CPU controls could not be confirmed right now".to_string()
     } else {
-        "Some CPU controls are unavailable".to_string()
+        "Some CPU controls are not supported here".to_string()
     }
 }
 
@@ -3885,6 +3970,10 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     let value = gtk::Label::new(Some("(n/a)"));
     value.set_xalign(1.0);
     value.set_halign(gtk::Align::End);
+    value.set_wrap(true);
+    value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_justify(gtk::Justification::Right);
+    value.set_max_width_chars(32);
     if monospace {
         value.add_css_class("monospace");
     }
@@ -3892,6 +3981,188 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     row.set_activatable(false);
     group.add(&row);
     value
+}
+
+fn style_linked_toggle_row(row: &gtk::Box) {
+    row.add_css_class("linked");
+    row.set_spacing(0);
+    row.set_halign(gtk::Align::End);
+    row.set_valign(gtk::Align::Center);
+}
+
+fn style_dropdown_control(dropdown: &gtk::DropDown) {
+    dropdown.set_halign(gtk::Align::End);
+    dropdown.set_valign(gtk::Align::Center);
+    dropdown.set_size_request(190, -1);
+}
+
+fn style_apply_button(button: &gtk::Button) {
+    button.set_halign(gtk::Align::End);
+    button.set_valign(gtk::Align::Center);
+    button.set_size_request(96, -1);
+}
+
+fn style_inline_control_box(control_box: &gtk::Box) {
+    control_box.set_spacing(10);
+    control_box.set_halign(gtk::Align::End);
+    control_box.set_valign(gtk::Align::Center);
+}
+
+fn style_spin_control(spin: &gtk::SpinButton, width_chars: i32) {
+    spin.set_width_chars(width_chars);
+    spin.set_alignment(1.0);
+    spin.set_halign(gtk::Align::End);
+    spin.set_valign(gtk::Align::Center);
+}
+
+fn style_scale_control(scale: &gtk::Scale) {
+    scale.set_digits(0);
+    scale.set_size_request(260, -1);
+    scale.set_valign(gtk::Align::Center);
+}
+
+fn style_combo_control(combo: &gtk::ComboBoxText) {
+    combo.set_halign(gtk::Align::End);
+    combo.set_valign(gtk::Align::Center);
+    combo.set_size_request(190, -1);
+}
+
+fn format_cpu_freq_value(mhz: Option<u32>) -> String {
+    mhz.map(|value| format!("{value} MHz"))
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
+    let mut parts = Vec::new();
+    if let Some(governor) = cpu.governor.as_deref() {
+        parts.push(format!("governor {governor}"));
+    }
+    if let Some(epp) = cpu.epp.as_deref() {
+        parts.push(format!("EPP {epp}"));
+    }
+
+    if parts.is_empty() {
+        "Choose Quiet, Balanced, or Performance, then apply.".to_string()
+    } else {
+        format!(
+            "Current hint: {}. Choose a preset, then apply.",
+            parts.join(" / ")
+        )
+    }
+}
+
+fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
+    let writable_controls = [
+        CpuControlKind::Boost,
+        CpuControlKind::PowerMode,
+        CpuControlKind::FreqLimits,
+    ]
+    .into_iter()
+    .filter(|kind| caps.control_writable(*kind))
+    .count();
+
+    match writable_controls {
+        0 => "Quick controls stay visible for diagnostics, but no quick CPU writes are available right now.".to_string(),
+        1 => "Apply the writable quick-control change from this section.".to_string(),
+        _ => "Apply staged turbo, preset, and frequency changes together.".to_string(),
+    }
+}
+
+fn cpu_policy_apply_subtitle(caps: &CpuCaps) -> String {
+    let governor_writable = caps.control_writable(CpuControlKind::Governor);
+    let epp_writable = caps.control_writable(CpuControlKind::Epp);
+
+    match (governor_writable, epp_writable) {
+        (true, true) => "Apply governor and EPP together.".to_string(),
+        (true, false) => "Apply the selected governor.".to_string(),
+        (false, true) => "Apply the selected EPP.".to_string(),
+        (false, false) => {
+            "Policy controls stay visible for diagnostics, but writes are not available right now."
+                .to_string()
+        }
+    }
+}
+
+fn cpu_control_subtitle(
+    caps: &CpuCaps,
+    kind: CpuControlKind,
+    available_text: &str,
+    unsupported_text: &str,
+) -> String {
+    let access_reason = caps
+        .control_access(kind)
+        .map(|entry| entry.reason.trim())
+        .filter(|reason| !reason.is_empty());
+
+    match caps.control_state(kind) {
+        CpuAccessState::Available => available_text.to_string(),
+        CpuAccessState::PermissionDenied => access_reason
+            .unwrap_or("Readable, but not writable by the current user.")
+            .to_string(),
+        CpuAccessState::MissingBackend => access_reason
+            .unwrap_or("Required CPU policy backend is not available.")
+            .to_string(),
+        CpuAccessState::TemporarilyUnavailable => access_reason
+            .unwrap_or("Temporarily unavailable; inspect diagnostics.")
+            .to_string(),
+        CpuAccessState::Unsupported | CpuAccessState::Unknown => unsupported_text.to_string(),
+    }
+}
+
+fn cpu_toggle_row_subtitle(
+    core: &CpuCoreTelemetry,
+    caps: &CpuCaps,
+    core_online_writable: bool,
+) -> String {
+    let mut parts = vec![
+        format_cpu_toggle_summary(
+            core.physical_core_index,
+            core.thread_index,
+            core.thread_count,
+        ),
+        if core.online {
+            "currently online".to_string()
+        } else {
+            "currently offline".to_string()
+        },
+    ];
+
+    if core.logical_cpu_id == 0 {
+        parts.push("CPU 0 stays online".to_string());
+    } else if !caps.has_core_online {
+        parts.push("Online/offline control is not supported".to_string());
+    } else if !core_online_writable {
+        parts.push("Read-only for the current user".to_string());
+    } else {
+        parts.push("Use the switch to stage a change".to_string());
+    }
+
+    parts.join("  |  ")
+}
+
+fn cpu_toggle_dialog_title(desired_online: bool) -> &'static str {
+    if desired_online {
+        "Bring Logical CPU Online?"
+    } else {
+        "Take Logical CPU Offline?"
+    }
+}
+
+fn cpu_toggle_dialog_body(core: &CpuCoreTelemetry, desired_online: bool) -> String {
+    let action = if desired_online {
+        "bring it back online"
+    } else {
+        "take it offline"
+    };
+    format!(
+        "Logical CPU {} maps to {}. Changing its online state can affect responsiveness, thermals, and scheduler behavior. Continue and {action}?",
+        core.logical_cpu_id,
+        format_cpu_toggle_summary(
+            core.physical_core_index,
+            core.thread_index,
+            core.thread_count,
+        ),
+    )
 }
 
 fn build_detail_rows(group: &adw::PreferencesGroup, count: usize) -> Vec<DetailRow> {
@@ -4019,6 +4290,12 @@ fn install_css() {
   border-radius: 999px;
   background-color: alpha(currentColor, 0.12);
 }
+.cpu-toggle-row {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.cpu-toggle-title { font-weight: 600; }
+.cpu-toggle-subtitle { opacity: 0.85; }
 "#;
 
     let provider = gtk::CssProvider::new();

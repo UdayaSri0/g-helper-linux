@@ -40,6 +40,7 @@ For each page, it lists:
 Current behavior:
 
 - disabled quick actions explain whether the block is caused by a missing backend, unsupported hardware, temporary backend unavailability, or permissions
+- quick-action controls use consistent inline spacing and compact apply buttons so enabled and disabled states read cleanly on first launch
 
 ### Missing or planned
 
@@ -59,6 +60,7 @@ Current behavior:
 - scaling driver
 - physical core count
 - logical thread count
+- quick-control row subtitles that show current turbo, preset, and frequency-limit context when readable
 - logical CPU / thread state table
 - detected CPU sysfs access report with readable/writable paths
 - CPU diagnostics copy action
@@ -72,6 +74,12 @@ Current behavior:
 - governor apply
 - EPP apply
 - per-logical-CPU online/offline toggle
+
+Current behavior:
+
+- quick CPU controls are staged in grouped apply rows so the scope of each Apply button is clear
+- disabled or read-only controls stay visible with short reason text instead of looking broken
+- logical CPU toggle rows show the logical CPU id plus topology context, and the confirmation dialog spells out that the change can affect responsiveness and thermals
 
 ### Capability dependencies
 
@@ -109,6 +117,7 @@ Current behavior:
 Current behavior:
 
 - current-state rows and control subtitles now replace vague `(n/a)` or `Unavailable` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
+- current-state value labels wrap longer reason strings instead of clipping, and the control rows use consistent aligned selector/apply layouts
 
 ### Missing or planned
 

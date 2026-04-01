@@ -73,6 +73,7 @@ Current behavior:
 - controls are enabled or disabled based on daemon-reported capabilities
 - warning area shows concise reason text for missing services, unsupported features, and permission-blocked controls
 - Dashboard quick-action rows stay visible when relevant support is missing and explain why the control is disabled
+- quick-action controls use aligned inline control clusters with compact apply buttons so disabled/read-only states still look intentional
 - fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
 - when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
 
@@ -108,7 +109,8 @@ Current behavior:
 - CPU controls can be visible but read-only
 - write access is gated per control from daemon-reported CPU access status
 - blocked write paths are surfaced in diagnostics instead of a fake repair action
-- logical CPU toggles require user confirmation in the current UI
+- quick-control and policy rows show current-value or read-only subtitles so the user can tell what is actionable at a glance
+- logical CPU toggles use two-line rows with topology context and require explicit confirmation in the current UI
 - the main CPU row table is ordered by logical CPU id and distinguishes physical-core count from logical-thread rows
 
 ### GPU
@@ -133,6 +135,7 @@ Current behavior:
 - controls are gated by daemon capabilities
 - reboot or logout requirement is shown through a capability hint from the daemon
 - the current-state values and control subtitles distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- current-state value rows wrap long reason text instead of clipping, and apply rows use the same aligned control/button treatment as the Dashboard
 
 ### Battery
 
