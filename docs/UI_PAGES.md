@@ -37,6 +37,10 @@ For each page, it lists:
 - keyboard backlight depends on `has_kbd_backlight` and backend writability
 - fan telemetry depends on the dynamic `fan_rows` set from daemon telemetry; the UI does not assume a fixed fan count
 
+Current behavior:
+
+- disabled quick actions explain whether the block is caused by a missing backend, unsupported hardware, temporary backend unavailability, or permissions
+
 ### Missing or planned
 
 - no fan-curve controls yet
@@ -89,7 +93,7 @@ For each page, it lists:
 - current ASUS performance profile
 - current GPU mode
 - GPU switch hint
-- last action status
+- support/status summary
 
 ### What it supports
 
@@ -101,6 +105,10 @@ For each page, it lists:
 - profile controls depend on `has_profiles`
 - GPU mode controls depend on `has_gpu_modes`
 - reboot/logout hint depends on `requires_reboot_for_gpu_switch`
+
+Current behavior:
+
+- current-state rows and control subtitles now replace vague `(n/a)` or `Unavailable` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
 
 ### Missing or planned
 
@@ -196,8 +204,10 @@ Important note:
 
 ### What it shows
 
+- troubleshooting summary for current support and permission blockers
 - daemon endpoint summary
 - capability matrix
+- structured feature-access status and reason fields
 - endpoint list
 - notes
 - fan telemetry diagnostics, including detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM or unavailable state

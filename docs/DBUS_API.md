@@ -62,6 +62,14 @@ This is the current design, not a placeholder.
 - `has_aura` -> `bool`
 - `has_kbd_backlight` -> `bool`
 - `requires_reboot_for_gpu_switch` -> `bool`
+- `profile_access_status` -> `s`
+- `profile_access_reason` -> `s`
+- `charge_limit_access_status` -> `s`
+- `charge_limit_access_reason` -> `s`
+- `gpu_mode_access_status` -> `s`
+- `gpu_mode_access_reason` -> `s`
+- `kbd_backlight_access_status` -> `s`
+- `kbd_backlight_access_reason` -> `s`
 - `endpoints` -> `as`
 - `notes` -> `as`
 
@@ -69,6 +77,8 @@ Important note:
 
 - `has_aura` and `has_fan_curves` exist in the payload shape but are not currently probed to true by the daemon.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
+- The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
+- The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
 
 ## `GetState` Response
 

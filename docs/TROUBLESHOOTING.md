@@ -96,6 +96,11 @@ cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
 
 If the relevant service is missing from the system bus or not running, those controls will be unavailable in the daemon and UI.
 
+Current UI behavior:
+
+- the Dashboard and GPU page distinguish `missing_backend`, `unsupported`, and `temporarily_unavailable` instead of only showing `Unavailable`
+- Diagnostics includes a troubleshooting summary that can be copied along with the full diagnostic dump
+
 ## Battery, Profile, or GPU Controls Unavailable
 
 Possible causes:
@@ -113,6 +118,13 @@ cargo run -p rog-cli -- caps
 ```
 
 If `caps` does not report the feature as available, the UI should disable or hide the corresponding controls.
+
+The current UI should now explain the common cases like this:
+
+- missing `asusd` -> performance profiles and charge-limit control explain that `asusd` must be installed and running
+- missing `supergfxd` -> GPU mode switching explains that `supergfxd` must be installed and running
+- backend present but unsupported -> the UI explains that the current machine does not expose that feature
+- backend present but temporarily unavailable -> the UI explains that support exists but the backend could not be read right now
 
 ## CPU Controls Read-Only
 
@@ -144,6 +156,7 @@ In the UI:
 - only the affected CPU controls will be disabled
 - Diagnostics will show whether each control is `unsupported`, `missing_backend`, `permission_denied`, or `temporarily_unavailable`
 - the advanced CPU section and Diagnostics page will list the relevant readable/writable sysfs paths
+- the Dashboard warning area will summarize CPU write-permission problems without pretending the feature is unsupported
 
 Important note:
 

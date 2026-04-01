@@ -20,7 +20,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU temperature fallback | `nvidia-smi` | Read | Implemented | Used only when primary GPU temperature is unavailable from `hwmon` |
-| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with capability and warning information, including raw fan hwmon mapping and CPU access diagnostics |
+| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with a troubleshooting summary, structured feature-access reasons, raw fan hwmon mapping, and CPU access diagnostics |
 | About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |

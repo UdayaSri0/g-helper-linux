@@ -71,7 +71,8 @@ Current content:
 Current behavior:
 
 - controls are enabled or disabled based on daemon-reported capabilities
-- warning area shows read-only or missing-backend states
+- warning area shows concise reason text for missing services, unsupported features, and permission-blocked controls
+- Dashboard quick-action rows stay visible when relevant support is missing and explain why the control is disabled
 - fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
 - when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
 
@@ -131,6 +132,7 @@ Current behavior:
 
 - controls are gated by daemon capabilities
 - reboot or logout requirement is shown through a capability hint from the daemon
+- the current-state values and control subtitles distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
 
 ### Battery
 
@@ -202,8 +204,10 @@ Purpose:
 
 Current content:
 
+- troubleshooting summary for the current machine state
 - session daemon endpoint summary
 - capability flags
+- structured feature-access status and reason fields from daemon capabilities
 - raw endpoint strings
 - notes
 - fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
