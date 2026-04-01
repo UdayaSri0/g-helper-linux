@@ -67,7 +67,9 @@ systemctl --user status rog-helperd --no-pager
 
 Important note:
 
-- the packaged user service expects `rog-helperd` to be available on `PATH`
+- source-tree and portable-prefix service installs resolve `rog-helperd` from `PATH`
+- `.deb` installs render an absolute `ExecStart=/usr/bin/rog-helperd`
+- packaged desktop installs also ship session DBus activation metadata, so launching the UI can start the daemon even before the user service is enabled
 
 ## Tray Not Visible
 

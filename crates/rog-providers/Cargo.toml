@@ -1,6 +1,6 @@
 [package]
 name = "rog-providers"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "Provider layer for DBus, sysfs, and procfs integration in rog-helper"

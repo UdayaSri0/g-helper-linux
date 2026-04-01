@@ -57,9 +57,14 @@ Basic packaging assets are also included under `packaging/`:
 
 - `packaging/systemd-user/rog-helperd.service`
 - `packaging/desktop/rog-helper.desktop`
-- generated hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
+- `packaging/dbus-session/io.github.roghelper.Daemon.service`
+- `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
+- generated-on-demand hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
 - `packaging/scripts/build-deb.sh`
+- `packaging/scripts/stage-apt-repo.sh`
+- `packaging/scripts/build-tarball.sh`
 - `packaging/scripts/build-appimage.sh`
+- `packaging/scripts/build-release-assets.sh`
 - `packaging/scripts/generate_icons.py`
 
 Branding source of truth:
@@ -111,7 +116,7 @@ Important gaps in the current implementation:
 - Persistent user configuration
 - Typed DBus payloads shared between daemon and UI
 - Complete tested hardware support matrix
-- End-to-end distro packaging and install validation
+- Broader cross-distro install validation and fully self-contained AppImage runtime bundling
 
 Some related domain types and traits already exist in `rog-core` and `rog-providers`, but they are not fully wired into runtime behavior yet.
 
@@ -163,6 +168,64 @@ cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
 cargo run -p rog-cli -- caps
 ```
 
+## Release Installs
+
+Tagged releases now ship Linux release assets instead of source-only tags:
+
+- `.deb` packages for Debian/Ubuntu-style installs
+- prefix-friendly Linux tarballs for `/usr/local`
+- direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries for advanced user-local installs and the UI updater
+- SHA256 checksum files for every published asset
+
+See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging commands.
+
+## Debian / Ubuntu / Mint Installation
+
+Direct `.deb` install:
+
+```bash
+sha256sum -c rog-helper-0.2.0-SHA256SUMS.txt --ignore-missing
+sudo apt install ./rog-helper_0.2.0_amd64.deb
+```
+
+Optional user-session daemon enablement:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now rog-helperd.service
+```
+
+The Debian-family package installs:
+
+- `rog-helper-ui`, `rog-helperd`, and `rog-helper` under `/usr/bin`
+- the desktop launcher under `/usr/share/applications`
+- hicolor icons under `/usr/share/icons/hicolor`
+- AppStream metadata under `/usr/share/metainfo`
+- session D-Bus activation under `/usr/share/dbus-1/services`
+- the user service under `/usr/lib/systemd/user`
+
+Remove cleanly with:
+
+```bash
+sudo apt remove rog-helper
+systemctl --user daemon-reload
+```
+
+### Future APT Repository
+
+A signed APT repository is not live yet.
+
+The repository is now future-ready for static hosting through the staging helper at `packaging/scripts/stage-apt-repo.sh`, which generates `pool/`, `Packages`, `Packages.gz`, and `Release` metadata for a preview repository.
+
+When a signed repository is published later, the install flow will look like this:
+
+```text
+# placeholder only: do not use until a real repository URL and signing key are published
+deb [signed-by=/usr/share/keyrings/rog-helper-archive-keyring.gpg] https://<future-host>/ stable main
+sudo apt update
+sudo apt install rog-helper
+```
+
 ## Build and Run Basics
 
 Useful commands for local development:
@@ -174,7 +237,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Important note: the repository CI expects `fmt`, `clippy`, and tests to pass. If local results differ, compare against `.github/workflows/ci.yml`.
+Important note: the repository CI expects `fmt`, `build`, `clippy`, tests, and packaging smoke tests to pass. If local results differ, compare against `.github/workflows/ci.yml`.
+Tagged release packaging is driven by `.github/workflows/release.yml`.
 
 ## Runtime Dependency Notes
 

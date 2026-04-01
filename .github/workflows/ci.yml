@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -19,14 +22,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
-            libgtk-4-dev libadwaita-1-dev
+            libgtk-4-dev libadwaita-1-dev \
+            appstream desktop-file-utils dpkg-dev python3-pil
 
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Build
+        run: cargo build --workspace --locked
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
+      - name: Package Foundations
+        run: |
+          packaging/scripts/build-deb.sh dist/ci
+          packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
+          packaging/scripts/build-tarball.sh dist/ci

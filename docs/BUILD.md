@@ -83,6 +83,7 @@ The repository CI currently runs:
 
 ```bash
 cargo fmt --all -- --check
+cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
@@ -91,7 +92,7 @@ These commands are defined in `.github/workflows/ci.yml`.
 
 Important note:
 
-- `fmt` and tests are currently expected and useful for everyday work.
+- `fmt`, `build`, tests, and packaging scripts are all part of current release readiness.
 - The CI configuration expects clippy-clean builds as well.
 - If clippy fails locally, compare against the current source and CI state rather than assuming the docs are wrong.
 
@@ -125,9 +126,41 @@ cargo install --path crates/rog-ui --bin rog-helper-ui --locked
 cargo install --path crates/rog-cli --bin rog-helper --locked
 ```
 
+## Install From Release Artifacts
+
+Tagged releases publish:
+
+- `rog-helper_<version>_<arch>.deb`
+- `rog-helper-<version>-linux-<arch>.tar.xz`
+- direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries
+- `rog-helper-<version>-SHA256SUMS.txt`
+
+Debian or Ubuntu install:
+
+```bash
+sudo apt-get install ./rog-helper_<version>_<arch>.deb
+```
+
+Portable prefix install under `/usr/local`:
+
+```bash
+sudo tar --strip-components=1 -xf rog-helper-<version>-linux-<arch>.tar.xz -C /usr/local
+sudo update-desktop-database /usr/local/share/applications || true
+sudo gtk-update-icon-cache -q /usr/local/share/icons/hicolor || true
+systemctl --user daemon-reload
+systemctl --user enable --now rog-helperd
+```
+
+Notes:
+
+- the tarball contains `bin/`, `share/`, and `lib/systemd/user/` content laid out for a prefix such as `/usr/local`
+- direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
+- verify release assets with the published SHA256 file before installing them
+- a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
+
 ## Optional Desktop Launcher Install
 
-The repository ships a desktop entry plus a generated hicolor PNG icon set.
+The repository ships a desktop entry, AppStream metadata, session DBus activation metadata, and a generated hicolor PNG icon set.
 
 Source of truth:
 
@@ -136,6 +169,8 @@ Source of truth:
 Desktop assets:
 
 - `packaging/desktop/rog-helper.desktop`
+- `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
+- `packaging/dbus-session/io.github.roghelper.Daemon.service`
 - `packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png`
 - `packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png`
 - `packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png`
@@ -154,6 +189,7 @@ python3 packaging/scripts/generate_icons.py
 Notes:
 
 - the icon generator uses Python + Pillow (`PIL`)
+- the generated PNG set is created on demand by the packaging scripts and CI
 - packaging builds reuse the generated PNG set instead of the old placeholder SVG
 
 Install them locally with:
@@ -183,12 +219,55 @@ Build a `.deb` staging package:
 packaging/scripts/build-deb.sh
 ```
 
-This builds release binaries, installs the desktop entry, hicolor icons, all three binaries, and the systemd user service into a Debian package under `dist/`.
+This builds release binaries, installs the desktop entry, AppStream metadata, session DBus activation, hicolor icons, all three binaries, license files, and the systemd user service into a Debian package under `dist/`.
 
 Requirements:
 
 - `dpkg-deb`
 - `dpkg-shlibdeps`
+- `desktop-file-validate` if desktop validation is desired
+- `appstreamcli` if AppStream validation is desired
+- `python3-pil` for generated icons
+
+Build a prefix-friendly Linux tarball:
+
+```bash
+packaging/scripts/build-tarball.sh
+```
+
+This emits a `rog-helper-<version>-linux-<arch>.tar.xz` bundle in `dist/` with:
+
+- `bin/rog-helper-ui`
+- `bin/rog-helperd`
+- `bin/rog-helper`
+- `share/applications/rog-helper.desktop`
+- `share/dbus-1/services/io.github.roghelper.Daemon.service`
+- `share/metainfo/io.github.roghelper.UI.metainfo.xml`
+- `share/icons/hicolor/...`
+- `lib/systemd/user/rog-helperd.service`
+
+Build the full tagged-release asset set:
+
+```bash
+packaging/scripts/build-release-assets.sh
+```
+
+This emits direct binaries, the `.deb`, the Linux tarball, and `SHA256` checksums under `dist/`.
+
+Stage a future APT repository preview from built `.deb` files:
+
+```bash
+packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview
+```
+
+This creates an unsigned Debian-family repository layout with:
+
+- `pool/`
+- `dists/stable/main/binary-amd64/Packages`
+- `dists/stable/main/binary-amd64/Packages.gz`
+- `dists/stable/Release`
+
+It is a staging helper only; publishing a real repository still requires hosting and GPG signing.
 
 Stage an AppDir / AppImage bundle:
 
@@ -197,6 +276,8 @@ packaging/scripts/build-appimage.sh
 ```
 
 If `appimagetool` is installed, the script also emits an AppImage in `dist/`. Otherwise it leaves a ready-to-inspect `dist/AppDir/` with the desktop file and icon assets in the expected locations.
+If `appimagetool` is not installed, the script also emits a versioned `AppDir.tar.xz` fallback next to the staged `dist/AppDir/` tree.
+The current AppDir flow now stages the UI, daemon, CLI, session DBus activation, AppStream metadata, icons, and user service, but it is still not treated as the primary public release artifact until self-contained runtime bundling is validated across more distros.
 
 ## systemd --user
 
@@ -216,6 +297,8 @@ Important note:
 
 - The unit uses `ExecStart=rog-helperd`, so it expects the binary to already be installed on `PATH`.
 - The unit also sets a custom `PATH` that includes `%h/.cargo/bin` and `%h/.local/bin`.
+- Debian packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
+- Release packages also install `io.github.roghelper.Daemon.service`, so opening the desktop app can activate the daemon on the session bus even when the user service is not yet enabled.
 
 ## Runtime Dependency Notes
 

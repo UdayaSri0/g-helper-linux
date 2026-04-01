@@ -135,12 +135,13 @@ Still evolving:
 Current status:
 
 - major docs now describe the real implementation
+- the release flow now has shared package metadata, `.deb` packaging, a prefix-friendly tarball, desktop metadata, session DBus activation, and checksum generation
 
 Still evolving:
 
 - hardware support tracking
-- release process polish
-- packaging completeness
+- broader install validation
+- fully self-contained AppImage runtime bundling
 
 ## Planned or Missing
 
@@ -197,14 +198,6 @@ Planned but missing:
 Current state:
 
 - the daemon uses string-keyed `a{sv}` payloads
-
-### Release packaging completeness
-
-Still missing or incomplete:
-
-- polished release metadata and packaging workflow
-- end-to-end desktop entry and icon install validation
-- broader install and release validation guidance
 
 ## Priorities
 

@@ -16,7 +16,8 @@ default-members = [
 
 [workspace.package]
 edition = "2021"
-authors = ["rog-helper contributors"]
+version = "0.2.0"
+authors = ["UdayaSri0", "rog-helper contributors"]
 homepage = "https://github.com/UdayaSri0/g-helper-linux"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/UdayaSri0/g-helper-linux"
