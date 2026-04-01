@@ -106,8 +106,9 @@ Examples:
 Current effect of failure:
 
 - CPU telemetry can still work
-- `policy_writable` becomes false
-- the UI shows controls as read-only
+- `policy_writable` may become false as a coarse summary
+- daemon diagnostics report per-control `available` / `unsupported` / `missing_backend` / `permission_denied` / `temporarily_unavailable` state
+- the UI disables only the affected CPU controls and exposes copyable diagnostics for the blocked sysfs paths
 
 ### Keyboard backlight brightness
 
@@ -134,6 +135,7 @@ That means:
 - keyboard brightness may be readable but not writable
 - CPU controls may be visible but not writable
 - behavior depends on the current distro, kernel, udev rules, and file ownership
+- the app does not attempt an automatic CPU permission repair path
 
 This is expected behavior in the current design.
 
@@ -159,7 +161,7 @@ The current implementation prefers graceful degradation over hidden failure.
 Current examples:
 
 - feature capability is false -> UI disables or hides the control
-- telemetry available but writes not allowed -> UI shows read-only state
+- telemetry available but writes not allowed -> UI shows per-control read-only state plus diagnostics and suggested checks
 - backend missing -> warnings and diagnostics expose the condition
 - session daemon missing -> UI surfaces daemon connectivity problems
 

@@ -110,7 +110,9 @@ File: `crates/rog-providers/src/cpu.rs`
 - Current limitations
   - generic Linux backend, not ASUS-specific
   - write support depends on sysfs permissions
-  - some actions may partially apply depending on available files
+  - probes and reports per-control readable/writable sysfs paths instead of exposing only a coarse write boolean
+  - the repository still does not bundle a privileged helper, polkit flow, or udev rule for CPU writes
+  - power-mode application may intentionally use only governor or only EPP when that is all the platform exposes
   - current code still needs maintenance cleanup
 
 ## `kbd_backlight`

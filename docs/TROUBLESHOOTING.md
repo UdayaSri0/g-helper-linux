@@ -130,12 +130,25 @@ What to check:
 
 ```bash
 cargo run -p rog-cli -- caps
+busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetCpuDiagnostics
+ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
+ls -l /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference
+ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_{min,max}_freq
+ls -l /sys/devices/system/cpu/intel_pstate/no_turbo
+ls -l /sys/devices/system/cpu/cpu*/online
 ```
 
 In the UI:
 
 - the CPU page will still show telemetry
-- controls may appear disabled or marked read-only
+- only the affected CPU controls will be disabled
+- Diagnostics will show whether each control is `unsupported`, `missing_backend`, `permission_denied`, or `temporarily_unavailable`
+- the advanced CPU section and Diagnostics page will list the relevant readable/writable sysfs paths
+
+Important note:
+
+- the repository does not currently ship an automatic privilege escalation or permission-repair path for CPU sysfs writes
+- if you want the UI controls to become writable, create a local admin-managed policy that grants `rog-helperd` write access only to the specific CPU sysfs files reported by diagnostics, then restart the user daemon
 
 ## Keyboard Backlight Read-Only
 

@@ -70,12 +70,14 @@ Important note:
 - [ ] graceful behavior verified when `asusd` is missing
 - [ ] graceful behavior verified when `supergfxd` is missing
 - [ ] read-only behavior verified for missing sysfs write access
+- [ ] CPU diagnostics verified for blocked sysfs paths and suggested checks
 
 ## Feature Verification
 
 - [ ] telemetry dashboard verified
 - [ ] CPU page telemetry verified
 - [ ] CPU write controls verified where supported
+- [ ] CPU page verified to avoid fake permission-repair actions when writes are blocked
 - [ ] GPU mode read/write verified where supported
 - [ ] ASUS profile read/write verified where supported
 - [ ] battery charge-limit read/write verified where supported

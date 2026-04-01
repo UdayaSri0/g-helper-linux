@@ -50,11 +50,12 @@ For each page, it lists:
 - CPU usage
 - CPU package power when available
 - average clock
+- CPU access-status banner when writes are blocked or partially unavailable
 - scaling driver
 - CPU core count
 - thread count
 - per-core state table
-- detected CPU sysfs paths
+- detected CPU sysfs access report with readable/writable paths
 - CPU diagnostics copy action
 
 ### What it supports
@@ -70,8 +71,9 @@ For each page, it lists:
 ### Capability dependencies
 
 - control availability depends on `cpu_caps`
-- write controls depend on `policy_writable`
-- per-core toggle support depends on `has_core_online`
+- write controls depend on per-control entries in `cpu_caps.control_access`
+- `policy_writable` remains a coarse any-writable summary
+- per-core toggle support depends on `has_core_online` plus `core_online` access state
 
 ### Missing or planned
 
@@ -198,6 +200,7 @@ Important note:
 - endpoint list
 - notes
 - warnings
+- CPU write-access report, including blocked sysfs paths and suggested checks
 
 ### What it supports
 

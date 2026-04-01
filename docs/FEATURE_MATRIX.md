@@ -16,7 +16,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort; depends on what the platform exposes |
 | Fan curves | None in current runtime | Read + Write | Missing | Domain model and traits exist, but there is no provider, daemon API, or UI flow yet |
 | CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, and per-core state |
-| CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support |
+| CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support; daemon reports per-control access state, blocked paths, and suggested checks |
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU temperature fallback | `nvidia-smi` | Read | Implemented | Used only when primary GPU temperature is unavailable from `hwmon` |

@@ -189,6 +189,22 @@ Current telemetry keys are grouped below.
 - `governor_choices`
 - `epp_choices`
 - `sysfs_paths`
+- `control_access`
+
+`policy_writable` is a coarse any-writable summary. The release-grade source of truth for CPU write availability is `control_access`.
+
+`control_access` is currently a list of row maps with:
+
+- `kind` -> `boost` | `power_mode` | `governor` | `epp` | `freq_limits` | `core_online`
+- `status` -> `available` | `unsupported` | `missing_backend` | `permission_denied` | `temporarily_unavailable`
+- `reason` -> string
+- `paths` -> list of row maps
+
+Each `paths` row currently includes:
+
+- `path`
+- `readable`
+- `writable`
 
 ## `GetCpuTelemetry` Response
 
@@ -223,9 +239,11 @@ Current keys:
 `GetCpuDiagnostics` returns a plain string containing:
 
 - CPU capability summary
+- CPU write-access summary by control
+- readable/writable sysfs paths involved in each control
+- suggested shell checks and restart guidance
 - current CPU telemetry summary
 - per-core table
-- detected sysfs paths
 
 This is intended for diagnostics and copy-to-clipboard workflows rather than as a machine-friendly API.
 

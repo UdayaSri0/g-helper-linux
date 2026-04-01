@@ -442,6 +442,105 @@ impl CpuTelemetry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CpuAccessState {
+    Unknown,
+    Available,
+    Unsupported,
+    MissingBackend,
+    PermissionDenied,
+    TemporarilyUnavailable,
+}
+
+impl CpuAccessState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Available => "available",
+            Self::Unsupported => "unsupported",
+            Self::MissingBackend => "missing_backend",
+            Self::PermissionDenied => "permission_denied",
+            Self::TemporarilyUnavailable => "temporarily_unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "available" => Self::Available,
+            "unsupported" => Self::Unsupported,
+            "missing_backend" => Self::MissingBackend,
+            "permission_denied" => Self::PermissionDenied,
+            "temporarily_unavailable" => Self::TemporarilyUnavailable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_writable(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CpuControlKind {
+    Boost,
+    PowerMode,
+    Governor,
+    Epp,
+    FreqLimits,
+    CoreOnline,
+}
+
+impl CpuControlKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Boost => "boost",
+            Self::PowerMode => "power_mode",
+            Self::Governor => "governor",
+            Self::Epp => "epp",
+            Self::FreqLimits => "freq_limits",
+            Self::CoreOnline => "core_online",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "boost" => Some(Self::Boost),
+            "power_mode" => Some(Self::PowerMode),
+            "governor" => Some(Self::Governor),
+            "epp" => Some(Self::Epp),
+            "freq_limits" => Some(Self::FreqLimits),
+            "core_online" => Some(Self::CoreOnline),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Boost => "Turbo Boost",
+            Self::PowerMode => "Power Mode",
+            Self::Governor => "Governor",
+            Self::Epp => "Energy Performance Preference",
+            Self::FreqLimits => "Frequency Limits",
+            Self::CoreOnline => "Core Online/Offline",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuPathAccess {
+    pub path: String,
+    pub readable: bool,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuControlAccess {
+    pub kind: CpuControlKind,
+    pub status: CpuAccessState,
+    pub reason: String,
+    pub paths: Vec<CpuPathAccess>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuCaps {
     pub has_cpufreq: bool,
@@ -459,6 +558,7 @@ pub struct CpuCaps {
     pub governor_choices: Vec<String>,
     pub epp_choices: Vec<String>,
     pub sysfs_paths: Vec<String>,
+    pub control_access: Vec<CpuControlAccess>,
 }
 
 impl CpuCaps {
@@ -479,7 +579,22 @@ impl CpuCaps {
             governor_choices: Vec::new(),
             epp_choices: Vec::new(),
             sysfs_paths: Vec::new(),
+            control_access: Vec::new(),
         }
+    }
+
+    pub fn control_access(&self, kind: CpuControlKind) -> Option<&CpuControlAccess> {
+        self.control_access.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn control_state(&self, kind: CpuControlKind) -> CpuAccessState {
+        self.control_access(kind)
+            .map(|entry| entry.status)
+            .unwrap_or(CpuAccessState::Unknown)
+    }
+
+    pub fn control_writable(&self, kind: CpuControlKind) -> bool {
+        self.control_state(kind).is_writable()
     }
 }
 
