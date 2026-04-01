@@ -5,8 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use regex::Regex;
 use rog_core::{
-    AppState, BatteryLimitPercent, BatteryState, CpuCaps, CpuTelemetry, DeviceCaps, GpuMode,
-    PerformanceProfile, PowerSource, TelemetrySnapshot,
+    AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess,
+    CpuPathAccess, CpuTelemetry, DeviceCaps, GpuMode, PerformanceProfile, PowerSource,
+    TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::cpu::CpuTelemetryProvider;
@@ -487,8 +488,6 @@ async fn main() -> anyhow::Result<()> {
     let has_profiles = caps.has_profiles;
     let has_charge_limit = caps.has_charge_limit;
     let has_gpu_modes = caps.has_gpu_modes;
-    let cpu_policy_writable = cpu_caps.policy_writable;
-
     let mut init_state = AppState::new(caps, hw_snapshot);
     init_state.cpu_caps = cpu_caps.clone();
     init_state.cpu = initial_cpu;
@@ -526,6 +525,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             _ = ticker.tick() => {
                 let mut warnings = Vec::new();
+                let cpu_caps = cpu.probe_caps();
+                daemon.set_cpu_caps(cpu_caps.clone());
 
                 let mut telemetry = hwmon.read_snapshot().unwrap_or_else(|e| {
                     warnings.push(format!("hwmon unavailable: {e}"));
@@ -674,11 +675,8 @@ async fn main() -> anyhow::Result<()> {
                         ));
                     }
                 }
-                if !cpu_policy_writable {
-                    warnings.push(
-                        "CPU controls are read-only for this user (check daemon permissions)."
-                            .to_string(),
-                    );
+                if let Some(cpu_warning) = cpu_access_warning(&cpu_caps) {
+                    warnings.push(cpu_warning);
                 }
 
                 match cpu.read_snapshot(now_ms(), telemetry.cpu_temp_c) {
@@ -843,6 +841,40 @@ fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
     );
     m.insert("epp_choices".to_string(), ov(c.epp_choices.clone()));
     m.insert("sysfs_paths".to_string(), ov(c.sysfs_paths.clone()));
+    m.insert(
+        "control_access".to_string(),
+        ov(c.control_access
+            .iter()
+            .map(cpu_control_access_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    m
+}
+
+fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("kind".to_string(), ov(control.kind.as_str().to_string()));
+    m.insert(
+        "status".to_string(),
+        ov(control.status.as_str().to_string()),
+    );
+    m.insert("reason".to_string(), ov(control.reason.clone()));
+    m.insert(
+        "paths".to_string(),
+        ov(control
+            .paths
+            .iter()
+            .map(cpu_path_access_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    m
+}
+
+fn cpu_path_access_to_dbus(path: &CpuPathAccess) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("path".to_string(), ov(path.path.clone()));
+    m.insert("readable".to_string(), OwnedValue::from(path.readable));
+    m.insert("writable".to_string(), OwnedValue::from(path.writable));
     m
 }
 
@@ -1177,6 +1209,57 @@ fn parse_gpu_mode_request(v: &str) -> Result<GpuMode, String> {
     }
 }
 
+fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
+    let blocked = caps
+        .control_access
+        .iter()
+        .filter(|control| {
+            matches!(
+                control.status,
+                CpuAccessState::PermissionDenied
+                    | CpuAccessState::MissingBackend
+                    | CpuAccessState::TemporarilyUnavailable
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if blocked.is_empty() {
+        return None;
+    }
+
+    if blocked
+        .iter()
+        .all(|control| control.status == CpuAccessState::PermissionDenied)
+    {
+        return Some(
+            "CPU write access is blocked: detected CPU sysfs control paths are readable but not writable by the current user."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::MissingBackend)
+    {
+        return Some(
+            "Some CPU controls are unavailable because the required sysfs backend was not detected."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
+    {
+        return Some(
+            "Some CPU controls are temporarily unavailable; inspect CPU diagnostics for the affected sysfs paths."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
 fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     let mut out = String::new();
     out.push_str("CPU Diagnostics\n");
@@ -1200,6 +1283,39 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     }
     if !caps.epp_choices.is_empty() {
         out.push_str(&format!("epp_choices: {}\n", caps.epp_choices.join(", ")));
+    }
+    if !caps.control_access.is_empty() {
+        out.push_str("\nWrite Access\n");
+        out.push_str("------------\n");
+        for control in &caps.control_access {
+            out.push_str(&format!(
+                "{}: {}",
+                control.kind.label(),
+                control.status.as_str()
+            ));
+            if !control.reason.is_empty() {
+                out.push_str(&format!(" ({})", control.reason));
+            }
+            out.push('\n');
+            for path in &control.paths {
+                out.push_str(&format!(
+                    "  [{}{}] {}\n",
+                    if path.readable { "r" } else { "-" },
+                    if path.writable { "w" } else { "-" },
+                    path.path
+                ));
+            }
+        }
+        out.push_str("\nSuggested checks\n");
+        out.push_str("----------------\n");
+        out.push_str("  ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_governor\n");
+        out.push_str(
+            "  ls -l /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference\n",
+        );
+        out.push_str("  ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_{min,max}_freq\n");
+        out.push_str("  ls -l /sys/devices/system/cpu/intel_pstate/no_turbo\n");
+        out.push_str("  ls -l /sys/devices/system/cpu/cpu*/online\n");
+        out.push_str("  systemctl --user restart rog-helperd\n");
     }
 
     out.push_str("\nCurrent\n");

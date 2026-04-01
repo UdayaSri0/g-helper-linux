@@ -182,7 +182,7 @@ That means:
 Common examples:
 
 - keyboard backlight brightness is visible but read-only
-- CPU controls are visible but read-only
+- CPU controls are visible but read-only, with per-control diagnostics showing the blocked sysfs paths
 - `asusd` or `supergfxd` controls are missing because the service is not installed or not reachable
 
 See [PERMISSIONS.md](PERMISSIONS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more detail.

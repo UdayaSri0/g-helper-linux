@@ -4,7 +4,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rog_core::{CpuCaps, CpuCoreTelemetry, CpuTelemetry, RogError, RogResult};
+use rog_core::{
+    CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
+    CpuTelemetry, RogError, RogResult,
+};
 
 const CPU_SYSFS_ROOT: &str = "/sys/devices/system/cpu";
 const CPUFREQ_ROOT: &str = "/sys/devices/system/cpu/cpufreq";
@@ -94,13 +97,17 @@ impl CpuTelemetryProvider {
         let mut has_epp = false;
         let mut has_min_freq = false;
         let mut has_max_freq = false;
-        let mut any_policy_writable = false;
 
         for p in &policies {
-            has_governor |= p.governor.is_some();
-            has_epp |= p.epp.is_some();
-            has_min_freq |= p.path.join("scaling_min_freq").exists();
-            has_max_freq |= p.path.join("scaling_max_freq").exists();
+            let governor_path = p.path.join("scaling_governor");
+            let epp_path = p.path.join("energy_performance_preference");
+            let min_path = p.path.join("scaling_min_freq");
+            let max_path = p.path.join("scaling_max_freq");
+
+            has_governor |= governor_path.exists();
+            has_epp |= epp_path.exists();
+            has_min_freq |= min_path.exists();
+            has_max_freq |= max_path.exists();
             if scaling_driver.is_none() {
                 scaling_driver = p.scaling_driver.clone();
             }
@@ -111,19 +118,105 @@ impl CpuTelemetryProvider {
             for e in &p.epp_available {
                 epp_choices.insert(e.clone());
             }
-
-            any_policy_writable |= is_writable(&p.path.join("scaling_governor"))
-                || is_writable(&p.path.join("scaling_min_freq"))
-                || is_writable(&p.path.join("scaling_max_freq"))
-                || is_writable(&p.path.join("energy_performance_preference"));
         }
 
         let has_core_online = cores
             .iter()
             .any(|id| PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{id}/online")).exists());
-        let core_online_writable = cores
+        let governor_access = control_access_from_paths(
+            CpuControlKind::Governor,
+            policies
+                .iter()
+                .map(|p| p.path.join("scaling_governor"))
+                .filter(|path| path.exists())
+                .collect(),
+            if policies.is_empty() {
+                CpuAccessState::MissingBackend
+            } else {
+                CpuAccessState::Unsupported
+            },
+            if policies.is_empty() {
+                format!("No cpufreq policies were detected under {CPUFREQ_ROOT}.")
+            } else {
+                "This system does not expose scaling_governor controls.".to_string()
+            },
+        );
+        let epp_access = control_access_from_paths(
+            CpuControlKind::Epp,
+            policies
+                .iter()
+                .map(|p| p.path.join("energy_performance_preference"))
+                .filter(|path| path.exists())
+                .collect(),
+            if policies.is_empty() {
+                CpuAccessState::MissingBackend
+            } else {
+                CpuAccessState::Unsupported
+            },
+            if policies.is_empty() {
+                format!("No cpufreq policies were detected under {CPUFREQ_ROOT}.")
+            } else {
+                "This system does not expose energy_performance_preference controls.".to_string()
+            },
+        );
+        let freq_limit_paths = policies
             .iter()
-            .any(|id| is_writable(&PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{id}/online"))));
+            .filter_map(|p| {
+                let min_path = p.path.join("scaling_min_freq");
+                let max_path = p.path.join("scaling_max_freq");
+                if min_path.exists() && max_path.exists() {
+                    Some([min_path, max_path])
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let freq_limits_access = control_access_from_paths(
+            CpuControlKind::FreqLimits,
+            freq_limit_paths,
+            if policies.is_empty() {
+                CpuAccessState::MissingBackend
+            } else {
+                CpuAccessState::Unsupported
+            },
+            if policies.is_empty() {
+                format!("No cpufreq policies were detected under {CPUFREQ_ROOT}.")
+            } else {
+                "This system does not expose writable min/max frequency policy files together."
+                    .to_string()
+            },
+        );
+        let boost_access = control_access_from_paths(
+            CpuControlKind::Boost,
+            boost
+                .as_ref()
+                .map(|path| path.path.clone())
+                .into_iter()
+                .collect(),
+            CpuAccessState::Unsupported,
+            "Turbo boost control files were not detected on this system.".to_string(),
+        );
+        let core_online_access = control_access_from_paths(
+            CpuControlKind::CoreOnline,
+            cores
+                .iter()
+                .map(|id| PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{id}/online")))
+                .filter(|path| path.exists())
+                .collect(),
+            CpuAccessState::Unsupported,
+            "This system does not expose per-core online/offline control files.".to_string(),
+        );
+        let power_mode_access =
+            power_mode_access(&governor_access, &epp_access, policies.is_empty());
+        let control_access = vec![
+            boost_access.clone(),
+            power_mode_access,
+            governor_access.clone(),
+            epp_access.clone(),
+            freq_limits_access.clone(),
+            core_online_access.clone(),
+        ];
 
         let mut sysfs_paths = Vec::new();
         if !policies.is_empty() {
@@ -144,9 +237,9 @@ impl CpuTelemetryProvider {
             has_epp,
             has_boost_toggle: boost.is_some(),
             has_package_power: rapl.is_some(),
-            policy_writable: any_policy_writable
-                || boost.as_ref().is_some_and(|b| is_writable(&b.path))
-                || core_online_writable,
+            policy_writable: control_access
+                .iter()
+                .any(|entry| entry.status.is_writable()),
             has_min_freq_limit: has_min_freq,
             has_max_freq_limit: has_max_freq,
             has_governor,
@@ -157,6 +250,7 @@ impl CpuTelemetryProvider {
             governor_choices: governor_choices.into_iter().collect(),
             epp_choices: epp_choices.into_iter().collect(),
             sysfs_paths,
+            control_access,
         }
     }
 
@@ -349,14 +443,55 @@ impl CpuTelemetryProvider {
             }
         };
 
+        let mut attempted = 0usize;
+        let mut succeeded = 0usize;
+        let mut errors = Vec::new();
+
         if let Some(gov) = choose_best_token(governor_pref, &all_governors) {
-            let _ = self.set_governor(&gov);
+            attempted += 1;
+            match self.set_governor(&gov) {
+                Ok(()) => succeeded += 1,
+                Err(err) => errors.push(err),
+            }
         }
         if let Some(epp) = choose_best_token(epp_pref, &all_epp) {
-            let _ = self.set_epp(&epp);
+            attempted += 1;
+            match self.set_epp(&epp) {
+                Ok(()) => succeeded += 1,
+                Err(err) => errors.push(err),
+            }
         }
 
-        Ok(())
+        if succeeded > 0 {
+            return Ok(());
+        }
+        if attempted == 0 {
+            return Err(RogError::NotSupported(
+                "CPU power mode requires governor and/or EPP support".to_string(),
+            ));
+        }
+
+        if errors
+            .iter()
+            .all(|err| matches!(err, RogError::PermissionDenied(_)))
+        {
+            let details = errors
+                .into_iter()
+                .map(|err| err.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(RogError::PermissionDenied(format!(
+                "CPU power mode could not be applied: {details}"
+            )));
+        }
+
+        if let Some(err) = errors.into_iter().next() {
+            return Err(err);
+        }
+
+        Err(RogError::Unexpected(
+            "CPU power mode could not be applied".to_string(),
+        ))
     }
 
     pub fn set_governor(&self, governor: &str) -> RogResult<()> {
@@ -870,6 +1005,133 @@ fn read_u64(path: &Path) -> RogResult<u64> {
 
 fn khz_to_mhz_u32(v: u64) -> Option<u32> {
     u32::try_from(v / 1000).ok()
+}
+
+fn power_mode_access(
+    governor: &CpuControlAccess,
+    epp: &CpuControlAccess,
+    missing_backend: bool,
+) -> CpuControlAccess {
+    let mut paths = governor.paths.clone();
+    for path in &epp.paths {
+        if !paths.iter().any(|existing| existing.path == path.path) {
+            paths.push(path.clone());
+        }
+    }
+
+    let status = if governor.status.is_writable() || epp.status.is_writable() {
+        CpuAccessState::Available
+    } else if missing_backend {
+        CpuAccessState::MissingBackend
+    } else if matches!(governor.status, CpuAccessState::PermissionDenied)
+        || matches!(epp.status, CpuAccessState::PermissionDenied)
+    {
+        CpuAccessState::PermissionDenied
+    } else if matches!(governor.status, CpuAccessState::TemporarilyUnavailable)
+        || matches!(epp.status, CpuAccessState::TemporarilyUnavailable)
+    {
+        CpuAccessState::TemporarilyUnavailable
+    } else {
+        CpuAccessState::Unsupported
+    };
+
+    let reason = match status {
+        CpuAccessState::Available if governor.status.is_writable() && epp.status.is_writable() => {
+            "Power mode can update both governor and EPP settings.".to_string()
+        }
+        CpuAccessState::Available if governor.status.is_writable() => {
+            "Power mode can update governor settings; EPP will remain unchanged.".to_string()
+        }
+        CpuAccessState::Available => {
+            "Power mode can update EPP settings; governor will remain unchanged.".to_string()
+        }
+        CpuAccessState::MissingBackend => {
+            format!("No cpufreq policies were detected under {CPUFREQ_ROOT}.")
+        }
+        CpuAccessState::PermissionDenied => {
+            "Power mode depends on governor and/or EPP sysfs files, but the detected paths are not writable by the current user."
+                .to_string()
+        }
+        CpuAccessState::TemporarilyUnavailable => {
+            "Power mode paths were detected, but they could not be opened reliably right now."
+                .to_string()
+        }
+        CpuAccessState::Unsupported | CpuAccessState::Unknown => {
+            "Power mode requires governor and/or EPP support, but this system does not expose those CPU policy controls."
+                .to_string()
+        }
+    };
+
+    CpuControlAccess {
+        kind: CpuControlKind::PowerMode,
+        status,
+        reason,
+        paths,
+    }
+}
+
+fn control_access_from_paths(
+    kind: CpuControlKind,
+    paths: Vec<PathBuf>,
+    missing_status: CpuAccessState,
+    missing_reason: String,
+) -> CpuControlAccess {
+    let paths = probe_path_accesses(paths);
+    let (status, reason) = if paths.is_empty() {
+        (missing_status, missing_reason)
+    } else if paths.iter().any(|path| path.writable) {
+        (
+            CpuAccessState::Available,
+            format!(
+                "{} can write at least one detected sysfs control path.",
+                kind.label()
+            ),
+        )
+    } else if paths.iter().any(|path| path.readable) {
+        (
+            CpuAccessState::PermissionDenied,
+            format!(
+                "{} paths are readable but not writable by the current user.",
+                kind.label()
+            ),
+        )
+    } else {
+        (
+            CpuAccessState::TemporarilyUnavailable,
+            format!(
+                "{} paths were detected, but they could not be opened for read or write.",
+                kind.label()
+            ),
+        )
+    };
+
+    CpuControlAccess {
+        kind,
+        status,
+        reason,
+        paths,
+    }
+}
+
+fn probe_path_accesses(paths: Vec<PathBuf>) -> Vec<CpuPathAccess> {
+    let mut deduped = BTreeSet::new();
+    let mut out = Vec::new();
+    for path in paths {
+        let path_str = path.display().to_string();
+        if !deduped.insert(path_str.clone()) {
+            continue;
+        }
+        out.push(CpuPathAccess {
+            path: path_str,
+            readable: can_read(&path),
+            writable: is_writable(&path),
+        });
+    }
+    out
+}
+
+fn can_read(path: &Path) -> bool {
+    OpenOptions::new().read(true).open(path).is_ok()
 }
 
 fn is_writable(path: &Path) -> bool {

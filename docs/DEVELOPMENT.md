@@ -180,6 +180,7 @@ This often means:
 
 - the feature is detected
 - the current user cannot perform the write
+- for CPU controls specifically, inspect the structured `control_access` data instead of relying only on `policy_writable`
 
 Relevant areas:
 

@@ -82,6 +82,7 @@ Purpose:
 Current content:
 
 - overview cards for temperature, usage, package power, and average clock
+- CPU access-status banner when writes are blocked or partially unavailable
 - quick controls for:
   - turbo boost
   - power mode
@@ -96,13 +97,14 @@ Current content:
 - per-core table
 - advanced section for:
   - core online/offline toggles
-  - detected CPU sysfs paths
+  - CPU sysfs access report with readable/writable paths
   - copy CPU diagnostics
 
 Current behavior:
 
 - CPU controls can be visible but read-only
-- write access depends on daemon permissions and sysfs writability
+- write access is gated per control from daemon-reported CPU access status
+- blocked write paths are surfaced in diagnostics instead of a fake repair action
 - core toggles require user confirmation in the current UI
 
 ### GPU
@@ -235,7 +237,7 @@ Examples:
 - GPU controls depend on `has_gpu_modes`
 - battery charge-limit controls depend on `has_charge_limit`
 - keyboard backlight controls depend on `has_kbd_backlight` and backend writability
-- CPU controls depend on `cpu_caps` and `policy_writable`
+- CPU controls depend on `cpu_caps`, with per-control write gating from `control_access`
 
 This is the expected current behavior and is preferable to guessing based on hardware model names.
 
@@ -252,7 +254,7 @@ Current examples in the implementation include:
 
 - daemon unavailable messaging
 - keyboard backlight read-only banner
-- CPU controls read-only banner
+- CPU write-access banner with diagnostics handoff
 - last-action status for lighting and GPU/profile actions
 
 ## Planned or Missing UI Features

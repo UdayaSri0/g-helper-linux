@@ -8,7 +8,8 @@ use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
-    BatteryState, CpuCaps, CpuTelemetry, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem,
+    BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuPathAccess,
+    CpuTelemetry, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem,
 };
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
@@ -501,7 +502,7 @@ fn build_ui(app: &adw::Application) {
     metrics_grid.insert(nvme_card.widget(), -1);
 
     let warning_banner = adw::Banner::new("Keyboard backlight is read-only");
-    warning_banner.set_button_label(Some("Fix permissions"));
+    warning_banner.set_button_label(Some("Show access help"));
     warning_banner.set_revealed(false);
 
     let warning_subtitle = gtk::Label::new(Some(""));
@@ -740,28 +741,41 @@ fn build_ui(app: &adw::Application) {
     cpu_page.add(&cpu_overview_group);
 
     let cpu_banner_group = adw::PreferencesGroup::new();
-    let cpu_read_only_banner = adw::Banner::new("CPU controls are read-only");
-    cpu_read_only_banner.set_button_label(Some("Fix permissions"));
+    let cpu_read_only_banner = adw::Banner::new("Some CPU controls are unavailable");
+    cpu_read_only_banner.set_button_label(Some("Open Diagnostics"));
     cpu_read_only_banner.set_revealed(false);
     cpu_banner_group.add(&cpu_read_only_banner);
     cpu_page.add(&cpu_banner_group);
 
-    cpu_read_only_banner.connect_button_clicked(move |banner| {
-        let parent = banner
-            .root()
-            .and_then(|root| root.downcast::<adw::ApplicationWindow>().ok());
-        let dialog = adw::MessageDialog::new(
-            parent.as_ref(),
-            Some("CPU controls require write permissions"),
-            Some(
-                "Run rog-helperd with required permissions (or configure polkit/system service) so CPU sysfs writes are allowed.",
-            ),
-        );
-        dialog.add_response("close", "Close");
-        dialog.set_close_response("close");
-        dialog.set_default_response(Some("close"));
-        dialog.present();
-    });
+    {
+        let stack = stack.clone();
+        cpu_read_only_banner.connect_button_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+
+    let cpu_access_title = gtk::Label::new(Some("CPU Sysfs Access"));
+    cpu_access_title.set_xalign(0.0);
+    cpu_access_title.add_css_class("heading");
+
+    let cpu_access_report = gtk::TextBuffer::new(None);
+    cpu_access_report.set_text("Loading CPU access diagnostics...");
+    let cpu_access_report_view = gtk::TextView::with_buffer(&cpu_access_report);
+    cpu_access_report_view.set_editable(false);
+    cpu_access_report_view.set_cursor_visible(false);
+    cpu_access_report_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    cpu_access_report_view.add_css_class("monospace");
+    let cpu_access_report_scroll = gtk::ScrolledWindow::new();
+    cpu_access_report_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    cpu_access_report_scroll.set_min_content_height(160);
+    cpu_access_report_scroll.set_child(Some(&cpu_access_report_view));
+
+    let cpu_access_hint = gtk::Label::new(Some(
+        "rog-helper does not bundle an automatic privilege escalation path for CPU sysfs writes. Inspect the report below before changing local system policy.",
+    ));
+    cpu_access_hint.set_xalign(0.0);
+    cpu_access_hint.set_wrap(true);
+    cpu_access_hint.add_css_class("dim-label");
 
     let cpu_quick_group = adw::PreferencesGroup::builder()
         .title("Quick Controls")
@@ -830,7 +844,7 @@ fn build_ui(app: &adw::Application) {
                 .map(|st| st.cpu_caps.clone())
                 .unwrap_or_else(CpuCaps::unknown);
 
-            if caps.has_boost_toggle && caps.policy_writable {
+            if caps.control_writable(CpuControlKind::Boost) {
                 actions.push(PendingCpuAction::Turbo(cpu_turbo_switch.is_active()));
             }
 
@@ -841,12 +855,11 @@ fn build_ui(app: &adw::Application) {
             } else {
                 "Performance"
             };
-            if caps.has_cpufreq && caps.policy_writable {
+            if caps.control_writable(CpuControlKind::PowerMode) {
                 actions.push(PendingCpuAction::PowerMode(mode.to_string()));
             }
 
-            if caps.has_cpufreq
-                && caps.policy_writable
+            if caps.control_writable(CpuControlKind::FreqLimits)
                 && (caps.has_min_freq_limit || caps.has_max_freq_limit)
             {
                 let min_mhz = if caps.has_min_freq_limit {
@@ -914,14 +927,23 @@ fn build_ui(app: &adw::Application) {
         let cpu_governor_combo = cpu_governor_combo.clone();
         let cpu_epp_combo = cpu_epp_combo.clone();
         cpu_apply_policy.connect_clicked(move |_| {
+            let caps = shared
+                .lock()
+                .ok()
+                .map(|st| st.cpu_caps.clone())
+                .unwrap_or_else(CpuCaps::unknown);
             if let Ok(mut st) = shared.lock() {
-                if let Some(gov) = cpu_governor_combo.active_id() {
-                    st.pending_cpu_actions
-                        .push(PendingCpuAction::Governor(gov.to_string()));
+                if caps.control_writable(CpuControlKind::Governor) {
+                    if let Some(gov) = cpu_governor_combo.active_id() {
+                        st.pending_cpu_actions
+                            .push(PendingCpuAction::Governor(gov.to_string()));
+                    }
                 }
-                if let Some(epp) = cpu_epp_combo.active_id() {
-                    st.pending_cpu_actions
-                        .push(PendingCpuAction::Epp(epp.to_string()));
+                if caps.control_writable(CpuControlKind::Epp) {
+                    if let Some(epp) = cpu_epp_combo.active_id() {
+                        st.pending_cpu_actions
+                            .push(PendingCpuAction::Epp(epp.to_string()));
+                    }
                 }
                 st.action_error = None;
             }
@@ -960,18 +982,9 @@ fn build_ui(app: &adw::Application) {
     cpu_adv_box.append(&cpu_core_toggle_title);
     cpu_adv_box.append(&cpu_core_toggle_box);
 
-    let cpu_raw_paths = gtk::TextBuffer::new(None);
-    cpu_raw_paths.set_text("");
-    let cpu_raw_paths_view = gtk::TextView::with_buffer(&cpu_raw_paths);
-    cpu_raw_paths_view.set_editable(false);
-    cpu_raw_paths_view.set_cursor_visible(false);
-    cpu_raw_paths_view.set_wrap_mode(gtk::WrapMode::WordChar);
-    cpu_raw_paths_view.add_css_class("monospace");
-    let cpu_raw_paths_scroll = gtk::ScrolledWindow::new();
-    cpu_raw_paths_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    cpu_raw_paths_scroll.set_min_content_height(120);
-    cpu_raw_paths_scroll.set_child(Some(&cpu_raw_paths_view));
-    cpu_adv_box.append(&cpu_raw_paths_scroll);
+    cpu_adv_box.append(&cpu_access_title);
+    cpu_adv_box.append(&cpu_access_hint);
+    cpu_adv_box.append(&cpu_access_report_scroll);
 
     let cpu_copy_diag = gtk::Button::with_label("Copy CPU diagnostics");
     {
@@ -1405,7 +1418,7 @@ fn build_ui(app: &adw::Application) {
         warning_banner.connect_button_clicked(move |_| {
             let dialog = adw::MessageDialog::new(
                 Some(&win),
-                Some("Fix keyboard backlight permissions"),
+                Some("Keyboard backlight access help"),
                 Some(
                     "1. Install and start asusd/asusctl.\n2. Restart the user daemon.\n3. Or add a udev rule to grant write access to /sys/class/leds/asus::kbd_backlight/brightness.",
                 ),
@@ -1760,29 +1773,51 @@ fn build_ui(app: &adw::Application) {
             cpu_cpu_count.set_text(&cpu_caps.cpu_count.to_string());
             cpu_thread_count.set_text(&cpu_caps.thread_count.to_string());
 
-            cpu_turbo_switch.set_sensitive(cpu_caps.has_boost_toggle && cpu_caps.policy_writable);
+            let turbo_writable = cpu_caps.control_writable(CpuControlKind::Boost);
+            let power_mode_writable = cpu_caps.control_writable(CpuControlKind::PowerMode);
+            let governor_writable = cpu_caps.control_writable(CpuControlKind::Governor);
+            let epp_writable = cpu_caps.control_writable(CpuControlKind::Epp);
+            let freq_limits_writable = cpu_caps.control_writable(CpuControlKind::FreqLimits);
+            let core_online_writable = cpu_caps.control_writable(CpuControlKind::CoreOnline);
+            let quick_sensitive = turbo_writable || power_mode_writable || freq_limits_writable;
+
+            cpu_turbo_switch.set_sensitive(turbo_writable);
             if let Some(v) = cpu_data.turbo_boost_enabled {
                 if !cpu_turbo_switch.has_focus() {
                     cpu_turbo_switch.set_active(v);
                 }
             }
-            cpu_turbo_row.set_subtitle(if cpu_caps.has_boost_toggle {
-                if cpu_caps.policy_writable {
-                    "Enable/disable CPU turbo boost"
-                } else {
-                    "Read-only for this user"
-                }
-            } else {
-                "Not supported on this system"
-            });
+            cpu_turbo_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::Boost,
+                "Enable/disable CPU turbo boost",
+                "Turbo boost control is not supported on this system.",
+            ));
 
-            let quick_sensitive = cpu_caps.policy_writable && cpu_caps.has_cpufreq;
             cpu_power_quiet.set_sensitive(quick_sensitive);
             cpu_power_balanced.set_sensitive(quick_sensitive);
             cpu_power_perf.set_sensitive(quick_sensitive);
             cpu_apply_quick.set_sensitive(quick_sensitive);
-            cpu_min_scale.set_sensitive(quick_sensitive && cpu_caps.has_min_freq_limit);
-            cpu_max_scale.set_sensitive(quick_sensitive && cpu_caps.has_max_freq_limit);
+            cpu_power_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::PowerMode,
+                "Apply a high-level CPU power preset through governor/EPP controls.",
+                "Power mode presets are not supported on this system.",
+            ));
+            cpu_min_scale.set_sensitive(freq_limits_writable && cpu_caps.has_min_freq_limit);
+            cpu_max_scale.set_sensitive(freq_limits_writable && cpu_caps.has_max_freq_limit);
+            cpu_min_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::FreqLimits,
+                "Adjust the minimum CPU frequency limit.",
+                "Minimum frequency limits are not supported on this system.",
+            ));
+            cpu_max_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::FreqLimits,
+                "Adjust the maximum CPU frequency limit.",
+                "Maximum frequency limits are not supported on this system.",
+            ));
             if let Some(v) = cpu_data.min_freq_mhz {
                 if !cpu_min_scale.has_focus() {
                     cpu_min_scale.set_value(v as f64);
@@ -1807,11 +1842,21 @@ fn build_ui(app: &adw::Application) {
                 cpu_power_balanced.set_active(true);
             }
 
-            cpu_governor_combo.set_sensitive(cpu_caps.policy_writable && cpu_caps.has_governor);
-            cpu_epp_combo.set_sensitive(cpu_caps.policy_writable && cpu_caps.has_epp);
-            cpu_apply_policy.set_sensitive(
-                cpu_caps.policy_writable && (cpu_caps.has_governor || cpu_caps.has_epp),
-            );
+            cpu_governor_combo.set_sensitive(governor_writable && cpu_caps.has_governor);
+            cpu_epp_combo.set_sensitive(epp_writable && cpu_caps.has_epp);
+            cpu_governor_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::Governor,
+                "Select the active CPU governor.",
+                "Governor control is not supported on this system.",
+            ));
+            cpu_epp_row.set_subtitle(cpu_control_subtitle(
+                &cpu_caps,
+                CpuControlKind::Epp,
+                "Select the energy performance preference.",
+                "Energy Performance Preference is not supported on this system.",
+            ));
+            cpu_apply_policy.set_sensitive(governor_writable || epp_writable);
 
             {
                 let mut last = last_cpu_governors.borrow_mut();
@@ -1844,12 +1889,8 @@ fn build_ui(app: &adw::Application) {
                 }
             }
 
-            cpu_read_only_banner.set_revealed(cpu_caps.has_cpufreq && !cpu_caps.policy_writable);
-            cpu_read_only_banner.set_title(if cpu_caps.policy_writable {
-                "CPU controls are writable"
-            } else {
-                "CPU controls are read-only"
-            });
+            cpu_read_only_banner.set_revealed(cpu_has_access_issue(&cpu_caps));
+            cpu_read_only_banner.set_title(&cpu_banner_title(&cpu_caps));
 
             let mut table = String::new();
             table.push_str("CORE  ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
@@ -1886,7 +1927,7 @@ fn build_ui(app: &adw::Application) {
                 let switch = gtk::Switch::new();
                 switch.set_active(core.online);
                 let allow_toggle =
-                    cpu_caps.has_core_online && cpu_caps.policy_writable && core.core_id != 0;
+                    cpu_caps.has_core_online && core_online_writable && core.core_id != 0;
                 switch.set_sensitive(allow_toggle);
                 if allow_toggle {
                     let shared = shared_clone.clone();
@@ -1936,12 +1977,7 @@ fn build_ui(app: &adw::Application) {
                 cpu_core_toggle_box.append(&row);
             }
 
-            let raw_paths_text = if cpu_caps.sysfs_paths.is_empty() {
-                "No CPU sysfs paths detected.".to_string()
-            } else {
-                cpu_caps.sysfs_paths.join("\n")
-            };
-            cpu_raw_paths.set_text(&raw_paths_text);
+            cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         } else {
             cpu_card_temp.set_value("--");
             cpu_card_usage.set_value("--");
@@ -1949,7 +1985,7 @@ fn build_ui(app: &adw::Application) {
             cpu_card_clock.set_value("--");
             cpu_read_only_banner.set_revealed(false);
             cpu_per_core_buffer.set_text("CPU telemetry unavailable.");
-            cpu_raw_paths.set_text("");
+            cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
         diag_buffer.set_text(if caps_text.is_empty() {
@@ -1975,7 +2011,7 @@ fn build_ui(app: &adw::Application) {
 
         if read_only_kbd {
             warning_banner.set_title("Keyboard backlight is read-only");
-            warning_banner.set_button_label(Some("Fix permissions"));
+            warning_banner.set_button_label(Some("Show access help"));
             warning_subtitle
                 .set_text("Install asusd/asusctl or add a udev rule to allow write access.");
             warning_subtitle.set_visible(true);
@@ -2441,6 +2477,11 @@ async fn fetch_state() -> Result<
         Some(cpu_telemetry_from_dbus(cpu_map))
     };
     let mut caps_text = caps_text_from_dbus(caps_map);
+    let cpu_access_text = cpu_access_report_text(&cpu_caps);
+    if !cpu_access_text.is_empty() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(&cpu_access_text);
+    }
     if !warnings.is_empty() {
         caps_text.push_str("\n\nWarnings:");
         for w in &warnings {
@@ -3110,6 +3151,104 @@ fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
     out
 }
 
+fn cpu_control_subtitle<'a>(
+    caps: &'a CpuCaps,
+    kind: CpuControlKind,
+    available_text: &'a str,
+    unsupported_text: &'a str,
+) -> &'a str {
+    match caps.control_state(kind) {
+        CpuAccessState::Available => available_text,
+        CpuAccessState::PermissionDenied => "Readable, but not writable by the current user",
+        CpuAccessState::MissingBackend => "Required CPU policy backend is not available",
+        CpuAccessState::TemporarilyUnavailable => "Temporarily unavailable; inspect diagnostics",
+        CpuAccessState::Unsupported | CpuAccessState::Unknown => unsupported_text,
+    }
+}
+
+fn cpu_has_access_issue(caps: &CpuCaps) -> bool {
+    caps.control_access.iter().any(|control| {
+        matches!(
+            control.status,
+            CpuAccessState::PermissionDenied
+                | CpuAccessState::MissingBackend
+                | CpuAccessState::TemporarilyUnavailable
+        )
+    })
+}
+
+fn cpu_banner_title(caps: &CpuCaps) -> String {
+    if caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::PermissionDenied)
+    {
+        "CPU writes are blocked by sysfs permissions".to_string()
+    } else if caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::MissingBackend)
+    {
+        "Some CPU controls are unavailable".to_string()
+    } else if caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
+    {
+        "Some CPU controls are temporarily unavailable".to_string()
+    } else {
+        "Some CPU controls are unavailable".to_string()
+    }
+}
+
+fn cpu_access_report_text(caps: &CpuCaps) -> String {
+    let mut out = String::new();
+    out.push_str("CPU Write Access\n");
+    out.push_str("----------------\n");
+    if caps.control_access.is_empty() {
+        out.push_str("No CPU write access data available.\n");
+        return out;
+    }
+
+    for control in &caps.control_access {
+        out.push_str(&format!(
+            "{}: {}",
+            control.kind.label(),
+            control.status.as_str()
+        ));
+        if !control.reason.is_empty() {
+            out.push_str(&format!(" ({})", control.reason));
+        }
+        out.push('\n');
+        if control.paths.is_empty() {
+            out.push_str("  (no paths detected)\n");
+            continue;
+        }
+        for path in &control.paths {
+            out.push_str(&format!(
+                "  [{}{}] {}\n",
+                if path.readable { "r" } else { "-" },
+                if path.writable { "w" } else { "-" },
+                path.path
+            ));
+        }
+    }
+
+    out.push_str("\nSuggested checks\n");
+    out.push_str("----------------\n");
+    out.push_str("  ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_governor\n");
+    out.push_str("  ls -l /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference\n");
+    out.push_str("  ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_{min,max}_freq\n");
+    out.push_str("  ls -l /sys/devices/system/cpu/intel_pstate/no_turbo\n");
+    out.push_str("  ls -l /sys/devices/system/cpu/cpu*/online\n");
+    out.push_str("  systemctl --user restart rog-helperd\n");
+    out.push_str(
+        "\nrog-helper does not bundle an automatic privilege escalation path for CPU sysfs writes. To make these controls writable in the app, grant the daemon write access only to the specific CPU sysfs files above, then restart the user daemon.\n",
+    );
+
+    out
+}
+
 fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
     let mut out = String::new();
     out.push_str("CPU Diagnostics\n");
@@ -3140,6 +3279,8 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
             out.push_str(&format!("  {path}\n"));
         }
     }
+    out.push('\n');
+    out.push_str(&cpu_access_report_text(caps));
 
     out.push_str("\nCurrent\n");
     out.push_str("-------\n");
@@ -3352,6 +3493,59 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
 }
 
+fn cpu_path_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuPathAccess> {
+    let path = map
+        .get("path")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let readable = map
+        .get("readable")
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    let writable = map
+        .get("writable")
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+
+    Some(CpuPathAccess {
+        path,
+        readable,
+        writable,
+    })
+}
+
+fn cpu_control_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuControlAccess> {
+    let kind = map
+        .get("kind")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .and_then(CpuControlKind::parse)?;
+    let status = map
+        .get("status")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(CpuAccessState::parse)
+        .unwrap_or(CpuAccessState::Unknown);
+    let reason = map
+        .get("reason")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .unwrap_or_default()
+        .to_string();
+    let paths = map
+        .get("paths")
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| cpu_path_access_from_dbus(&entry))
+        .collect();
+
+    Some(CpuControlAccess {
+        kind,
+        status,
+        reason,
+        paths,
+    })
+}
+
 fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
     fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
         map.get(key)
@@ -3391,6 +3585,14 @@ fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
         governor_choices: vec_string(map, "governor_choices"),
         epp_choices: vec_string(map, "epp_choices"),
         sysfs_paths: vec_string(map, "sysfs_paths"),
+        control_access: map
+            .get("control_access")
+            .cloned()
+            .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| cpu_control_access_from_dbus(&entry))
+            .collect(),
     }
 }
 
