@@ -6,8 +6,8 @@ use anyhow::Context;
 use regex::Regex;
 use rog_core::{
     AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess,
-    CpuPathAccess, CpuTelemetry, DeviceCaps, GpuMode, PerformanceProfile, PowerSource,
-    TelemetrySnapshot,
+    CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, GpuMode, PerformanceProfile,
+    PowerSource, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::cpu::CpuTelemetryProvider;
@@ -375,6 +375,16 @@ async fn main() -> anyhow::Result<()> {
             CpuTelemetry::empty_now(now_ms())
         });
     caps.has_fan_reading = !hw_snapshot.fans_rpm.is_empty();
+    if hw_snapshot.fan_rows.is_empty() {
+        caps.notes
+            .push("Fan telemetry via hwmon: no fan inputs detected.".to_string());
+    } else {
+        caps.notes.push(format!(
+            "Fan telemetry via hwmon: {} input(s) detected, {} currently reporting RPM.",
+            hw_snapshot.fan_rows.len(),
+            hw_snapshot.fans_rpm.len()
+        ));
+    }
     caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
     let mut control_state = ControlState::default();
 
@@ -982,6 +992,12 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
         let fans: HashMap<String, u32> = t.fans_rpm.iter().map(|(k, v)| (k.clone(), *v)).collect();
         m.insert("fans_rpm".to_string(), OwnedValue::from(fans));
     }
+    if !t.fan_rows.is_empty() {
+        m.insert(
+            "fan_rows".to_string(),
+            ov(t.fan_rows.iter().map(fan_row_to_dbus).collect::<Vec<_>>()),
+        );
+    }
     if let Some(ps) = t.power_source {
         m.insert("power_source".to_string(), ov(power_source_to_str(ps)));
     }
@@ -1153,6 +1169,21 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
             out_rows.push(r);
         }
         m.insert("mem_top_processes_rows".to_string(), ov(out_rows));
+    }
+    m
+}
+
+fn fan_row_to_dbus(fan: &FanTelemetry) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("hwmon_device".to_string(), ov(fan.hwmon_device.clone()));
+    m.insert("hwmon_path".to_string(), ov(fan.hwmon_path.clone()));
+    m.insert("input_path".to_string(), ov(fan.input_path.clone()));
+    if let Some(raw_label) = &fan.raw_label {
+        m.insert("raw_label".to_string(), ov(raw_label.clone()));
+    }
+    m.insert("display_label".to_string(), ov(fan.display_label.clone()));
+    if let Some(rpm) = fan.rpm {
+        m.insert("rpm".to_string(), OwnedValue::from(rpm));
     }
     m
 }

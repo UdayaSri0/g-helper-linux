@@ -88,6 +88,9 @@ File: `crates/rog-providers/src/hwmon.rs`
   - sensor mapping is heuristic
   - CPU/GPU identification depends on hwmon names and labels
   - some hardware exposes only partial data
+  - fan discovery is dynamic over `fan*_input` files and may yield zero, one, or many rows depending on the platform
+  - raw `fan*_label` files are optional; when missing, the daemon/UI fall back to `Fan 1`, `Fan 2`, and so on
+  - a detected fan input may still have no current RPM value, which is surfaced as unavailable rather than dropped from diagnostics
 
 ## `cpu`
 

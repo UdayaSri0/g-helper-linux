@@ -72,6 +72,8 @@ Current behavior:
 
 - controls are enabled or disabled based on daemon-reported capabilities
 - warning area shows read-only or missing-backend states
+- fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
+- when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
 
 ### CPU
 
@@ -204,6 +206,7 @@ Current content:
 - capability flags
 - raw endpoint strings
 - notes
+- fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
 - warnings
 - copy diagnostics button
 

@@ -198,6 +198,21 @@ The current telemetry implementation is best-effort:
 
 If a metric is not exposed by your system, the UI will show it as unavailable rather than inventing a value.
 
+Fan telemetry specifics:
+
+- fan detection is dynamic over the available `fan*_input` files and may report 0, 1, 2, 3, or more fan rows depending on the machine
+- hwmon labels are used when available; otherwise the UI falls back to `Fan 1`, `Fan 2`, and so on
+- a detected fan row can still show as unavailable if the platform exposes the input but not a usable current RPM value
+- the Diagnostics page now lists the detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM state for each fan row
+
+Useful fan checks:
+
+```bash
+ls -l /sys/class/hwmon/hwmon*/fan*_input
+ls -l /sys/class/hwmon/hwmon*/fan*_label
+cargo run -p rog-cli -- sensors
+```
+
 ## Diagnostics Commands
 
 These commands are useful for most current troubleshooting:

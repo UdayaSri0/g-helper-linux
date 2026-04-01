@@ -68,6 +68,7 @@ This is the current design, not a placeholder.
 Important note:
 
 - `has_aura` and `has_fan_curves` exist in the payload shape but are not currently probed to true by the daemon.
+- `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 
 ## `GetState` Response
 
@@ -101,6 +102,18 @@ Current telemetry keys are grouped below.
 - `gpu_temp_c`
 - `temps_c`
 - `fans_rpm`
+- `fan_rows`
+
+`fans_rpm` is a flattened convenience map keyed by chosen display label and only includes rows that currently report an RPM value.
+
+`fan_rows` is the authoritative dynamic fan-telemetry list. It may contain zero, one, or many rows depending on the platform. Rows are emitted in a deterministic order based on detected hwmon device and sysfs input path. Each row map currently includes:
+
+- `hwmon_device`
+- `hwmon_path`
+- `input_path`
+- optional `raw_label`
+- `display_label`
+- optional `rpm`
 
 ### Power and battery keys
 

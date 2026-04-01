@@ -9,7 +9,7 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuPathAccess,
-    CpuTelemetry, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem,
+    CpuTelemetry, DeviceCaps, FanTelemetry, PowerSource, TelemetrySnapshot, TopProcessMem,
 };
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
@@ -689,7 +689,10 @@ fn build_ui(app: &adw::Application) {
     let details_fan_group = adw::PreferencesGroup::builder().title("Fans").build();
     let details_endpoints_group = adw::PreferencesGroup::builder().title("Endpoints").build();
     let detail_temp_rows = build_detail_rows(&details_temp_group, 8);
-    let detail_fan_rows = build_detail_rows(&details_fan_group, 6);
+    let detail_fan_rows = std::rc::Rc::new(std::cell::RefCell::new(build_detail_rows(
+        &details_fan_group,
+        0,
+    )));
     let detail_endpoint_rows = build_detail_rows(&details_endpoints_group, 6);
 
     let details_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1447,6 +1450,8 @@ fn build_ui(app: &adw::Application) {
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let detail_fan_rows_ref = detail_fan_rows.clone();
+    let details_fan_group_ref = details_fan_group.clone();
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
@@ -1566,17 +1571,29 @@ fn build_ui(app: &adw::Application) {
             });
             power_card.set_unit(None);
 
-            if t.fans_rpm.is_empty() {
+            if t.fan_rows.is_empty() {
                 fans_card.set_value("--");
                 fans_card.set_unit(None);
-                fans_card.set_subtitle(None);
+                fans_card.set_subtitle(Some("No fan RPM sensors exposed"));
             } else {
-                let max_rpm = t.fans_rpm.values().copied().max().unwrap_or(0);
-                fans_card.set_value(max_rpm.to_string());
-                fans_card.set_unit(Some("rpm"));
-                let count = t.fans_rpm.len();
+                let reporting_count = t.fan_rows.iter().filter(|fan| fan.rpm.is_some()).count();
+                let max_rpm = t.fan_rows.iter().filter_map(|fan| fan.rpm).max();
+                if let Some(max_rpm) = max_rpm {
+                    fans_card.set_value(max_rpm.to_string());
+                    fans_card.set_unit(Some("rpm"));
+                } else {
+                    fans_card.set_value("--");
+                    fans_card.set_unit(None);
+                }
+                let count = t.fan_rows.len();
                 let fan_word = if count == 1 { "fan" } else { "fans" };
-                fans_card.set_subtitle(Some(&format!("{count} {fan_word} detected")));
+                if reporting_count == count {
+                    fans_card.set_subtitle(Some(&format!("{count} {fan_word} reporting")));
+                } else {
+                    fans_card.set_subtitle(Some(&format!(
+                        "{reporting_count} of {count} {fan_word} reporting"
+                    )));
+                }
             }
 
             let nvme_temp = t
@@ -1720,14 +1737,30 @@ fn build_ui(app: &adw::Application) {
             update_detail_rows(&detail_temp_rows, &temp_entries);
             details_temp_group.set_visible(!temp_entries.is_empty());
 
-            let mut fan_entries: Vec<(String, String)> = t
-                .fans_rpm
-                .iter()
-                .map(|(k, v)| (k.clone(), format!("{v} rpm")))
-                .collect();
-            fan_entries.sort_by(|a, b| a.0.cmp(&b.0));
-            update_detail_rows(&detail_fan_rows, &fan_entries);
-            details_fan_group.set_visible(!fan_entries.is_empty());
+            let fan_entries: Vec<(String, String)> = if t.fan_rows.is_empty() {
+                vec![(
+                    "Fan telemetry".to_string(),
+                    "Unavailable on this platform".to_string(),
+                )]
+            } else {
+                t.fan_rows
+                    .iter()
+                    .map(|fan| {
+                        (
+                            fan.display_label.clone(),
+                            fan.rpm
+                                .map(|rpm| format!("{rpm} rpm"))
+                                .unwrap_or_else(|| "(unavailable)".to_string()),
+                        )
+                    })
+                    .collect()
+            };
+            update_detail_rows_dynamic(
+                &details_fan_group_ref,
+                &mut detail_fan_rows_ref.borrow_mut(),
+                &fan_entries,
+            );
+            details_fan_group_ref.set_visible(true);
         }
 
         // CPU page + cards.
@@ -2498,7 +2531,13 @@ async fn fetch_state() -> Result<
     } else {
         Some(cpu_telemetry_from_dbus(cpu_map))
     };
+    let telemetry = telemetry_from_dbus(telemetry_map);
     let mut caps_text = caps_text_from_dbus(caps_map);
+    let fan_text = fan_diagnostics_text(&telemetry);
+    if !fan_text.is_empty() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(&fan_text);
+    }
     let cpu_access_text = cpu_access_report_text(&cpu_caps);
     if !cpu_access_text.is_empty() {
         caps_text.push_str("\n\n");
@@ -2512,7 +2551,7 @@ async fn fetch_state() -> Result<
     }
 
     Ok((
-        telemetry_from_dbus(telemetry_map),
+        telemetry,
         cpu,
         cpu_caps,
         caps,
@@ -2724,6 +2763,32 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         for (k, v) in fans {
             t.fans_rpm.insert(k, v);
         }
+    }
+    if let Some(rows) = map
+        .get("fan_rows")
+        .cloned()
+        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
+    {
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let Some(fan) = fan_row_from_dbus(&row) {
+                out.push(fan);
+            }
+        }
+        t.fan_rows = out;
+    } else if !t.fans_rpm.is_empty() {
+        t.fan_rows = t
+            .fans_rpm
+            .iter()
+            .map(|(label, rpm)| FanTelemetry {
+                hwmon_device: String::new(),
+                hwmon_path: String::new(),
+                input_path: String::new(),
+                raw_label: None,
+                display_label: label.clone(),
+                rpm: Some(*rpm),
+            })
+            .collect();
     }
     if let Some(v) = map
         .get("battery_percent")
@@ -3453,19 +3518,7 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
 fn build_detail_rows(group: &adw::PreferencesGroup, count: usize) -> Vec<DetailRow> {
     let mut rows = Vec::with_capacity(count);
     for _ in 0..count {
-        let row = adw::ActionRow::builder().title("").build();
-        let value = gtk::Label::new(Some(""));
-        value.set_xalign(1.0);
-        value.set_halign(gtk::Align::End);
-        value.add_css_class("monospace");
-        row.add_suffix(&value);
-        row.set_activatable(false);
-        row.set_visible(false);
-        group.add(&row);
-        rows.push(DetailRow {
-            row,
-            value_label: value,
-        });
+        rows.push(append_detail_row(group));
     }
     rows
 }
@@ -3482,6 +3535,33 @@ fn update_detail_rows(rows: &[DetailRow], entries: &[(String, String)]) {
             detail_row.row.set_visible(false);
         }
     }
+}
+
+fn append_detail_row(group: &adw::PreferencesGroup) -> DetailRow {
+    let row = adw::ActionRow::builder().title("").build();
+    let value = gtk::Label::new(Some(""));
+    value.set_xalign(1.0);
+    value.set_halign(gtk::Align::End);
+    value.add_css_class("monospace");
+    row.add_suffix(&value);
+    row.set_activatable(false);
+    row.set_visible(false);
+    group.add(&row);
+    DetailRow {
+        row,
+        value_label: value,
+    }
+}
+
+fn update_detail_rows_dynamic(
+    group: &adw::PreferencesGroup,
+    rows: &mut Vec<DetailRow>,
+    entries: &[(String, String)],
+) {
+    while rows.len() < entries.len() {
+        rows.push(append_detail_row(group));
+    }
+    update_detail_rows(rows, entries);
 }
 
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
@@ -3515,6 +3595,40 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         mode: s(&map, "mode").unwrap_or_else(|| "(n/a)".to_string()),
         supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
         supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
+    })
+}
+
+fn fan_row_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<FanTelemetry> {
+    let hwmon_device = map
+        .get("hwmon_device")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let hwmon_path = map
+        .get("hwmon_path")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let input_path = map
+        .get("input_path")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let display_label = map
+        .get("display_label")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+
+    Some(FanTelemetry {
+        hwmon_device,
+        hwmon_path,
+        input_path,
+        raw_label: map
+            .get("raw_label")
+            .and_then(|value| <&str>::try_from(value).ok())
+            .map(|value| value.to_string()),
+        display_label,
+        rpm: map
+            .get("rpm")
+            .and_then(u64_from_value)
+            .and_then(|value| u32::try_from(value).ok()),
     })
 }
 
@@ -3754,4 +3868,64 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
     }
 
     lines.join("\n")
+}
+
+fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
+    let mut lines = Vec::new();
+    lines.push("Fan Diagnostics".to_string());
+    lines.push("===============".to_string());
+
+    let detected = telemetry.fan_rows.len();
+    let reporting = telemetry
+        .fan_rows
+        .iter()
+        .filter(|fan| fan.rpm.is_some())
+        .count();
+    lines.push(format!("fan_inputs_detected: {detected}"));
+    lines.push(format!("fan_inputs_reporting_rpm: {reporting}"));
+
+    if telemetry.fan_rows.is_empty() {
+        lines.push("".to_string());
+        lines.push("No hwmon fan inputs are currently exposed on this platform.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push("".to_string());
+    lines.push("Detected fan mappings".to_string());
+    lines.push("---------------------".to_string());
+    for fan in &telemetry.fan_rows {
+        lines.push(format!(
+            "{}: {}",
+            fan.display_label,
+            fan.rpm
+                .map(|rpm| format!("{rpm} rpm"))
+                .unwrap_or_else(|| "(unavailable)".to_string())
+        ));
+        lines.push(format!(
+            "  hwmon_device: {}",
+            text_or_unknown(&fan.hwmon_device)
+        ));
+        lines.push(format!(
+            "  hwmon_path: {}",
+            text_or_unknown(&fan.hwmon_path)
+        ));
+        lines.push(format!(
+            "  input_path: {}",
+            text_or_unknown(&fan.input_path)
+        ));
+        lines.push(format!(
+            "  raw_label: {}",
+            fan.raw_label.as_deref().unwrap_or("(none)")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn text_or_unknown(value: &str) -> &str {
+    if value.is_empty() {
+        "(not provided by daemon)"
+    } else {
+        value
+    }
 }

@@ -35,6 +35,7 @@ For each page, it lists:
 - GPU mode depends on `has_gpu_modes`
 - charge limit depends on `has_charge_limit`
 - keyboard backlight depends on `has_kbd_backlight` and backend writability
+- fan telemetry depends on the dynamic `fan_rows` set from daemon telemetry; the UI does not assume a fixed fan count
 
 ### Missing or planned
 
@@ -199,6 +200,7 @@ Important note:
 - capability matrix
 - endpoint list
 - notes
+- fan telemetry diagnostics, including detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM or unavailable state
 - warnings
 - CPU write-access report, including blocked sysfs paths and suggested checks
 

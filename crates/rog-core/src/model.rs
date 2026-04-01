@@ -31,6 +31,16 @@ pub struct TopProcessMem {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanTelemetry {
+    pub hwmon_device: String,
+    pub hwmon_path: String,
+    pub input_path: String,
+    pub raw_label: Option<String>,
+    pub display_label: String,
+    pub rpm: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PerformanceProfile {
     Silent,
@@ -279,6 +289,7 @@ pub struct TelemetrySnapshot {
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
+    pub fan_rows: Vec<FanTelemetry>,
 
     pub power_source: Option<PowerSource>,
     pub battery_percent: Option<f32>,
@@ -343,6 +354,7 @@ impl TelemetrySnapshot {
             gpu_temp_c: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
+            fan_rows: Vec::new(),
             power_source: None,
             battery_percent: None,
             ac_online: None,
