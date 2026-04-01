@@ -187,6 +187,7 @@ Current content:
 - backend and device name
 - current brightness
 - current mode
+- availability status
 - mode combo box
 - brightness slider
 - RGB color control placeholder
@@ -198,6 +199,7 @@ Current implementation note:
 - the active daemon backend is currently keyboard backlight via sysfs
 - current daemon-reported supported modes are `Off` and `Static`
 - `supports_rgb` is currently false for the implemented backend
+- unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
 ### Diagnostics
 

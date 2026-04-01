@@ -188,6 +188,7 @@ Important note:
 - current lighting backend
 - current brightness
 - current mode
+- availability status
 - last action status
 
 ### What it supports
@@ -195,13 +196,14 @@ Important note:
 - mode selection
 - brightness change
 - apply action
-- RGB picker placeholder
+- RGB picker with capability-aware disabled-state messaging
 
 ### Capability dependencies
 
 - depends on the daemon exposing a lighting backend
 - write support depends on backend writability
 - RGB support depends on `supports_rgb`
+- unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
 ### Missing or planned
 
