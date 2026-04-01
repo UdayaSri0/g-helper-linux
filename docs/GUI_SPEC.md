@@ -230,13 +230,13 @@ Current content:
 - version
 - license
 - session DBus API endpoint
-- maintainer/contributor field
-- source URL
+- authors field
+- repository URL
 
 Current implementation note:
 
-- some of this metadata comes from Cargo manifest fields
-- when metadata is blank, the UI currently uses fallback values
+- version, license, authors, and repository URL come from Cargo manifest fields
+- the UI still falls back to project defaults if those fields are blank
 
 ## Current Capability Behavior
 

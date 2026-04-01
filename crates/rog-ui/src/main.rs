@@ -20,8 +20,8 @@ const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 const APP_DISPLAY_NAME: &str = "rog-helper";
 const APP_BINARY_NAME: &str = "rog-helper-ui";
-const APP_DEVELOPER_FALLBACK: &str = "rog-helper contributors";
-const APP_SOURCE_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
+const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
+const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -1330,18 +1330,18 @@ fn build_ui(app: &adw::Application) {
     let about_dbus = pref_value_row(&about_app_group, "Session DBus API", true);
     about_page.add(&about_app_group);
 
-    let about_dev_group = adw::PreferencesGroup::builder().title("Developer").build();
-    let about_developer = pref_value_row(&about_dev_group, "Maintainer", false);
-    let about_source = pref_value_row(&about_dev_group, "Source", false);
-    about_page.add(&about_dev_group);
+    let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
+    let about_authors = pref_value_row(&about_project_group, "Authors", false);
+    let about_repository = pref_value_row(&about_project_group, "Repository", false);
+    about_page.add(&about_project_group);
 
     let source_url = if env!("CARGO_PKG_REPOSITORY").trim().is_empty() {
-        APP_SOURCE_FALLBACK_URL
+        APP_REPOSITORY_FALLBACK_URL
     } else {
         env!("CARGO_PKG_REPOSITORY")
     };
-    let developers = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
-        APP_DEVELOPER_FALLBACK.to_string()
+    let authors = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
+        APP_AUTHORS_FALLBACK.to_string()
     } else {
         env!("CARGO_PKG_AUTHORS").replace(':', ", ")
     };
@@ -1353,8 +1353,8 @@ fn build_ui(app: &adw::Application) {
     about_dbus.set_text(&format!(
         "{DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} ({DAEMON_DBUS_IFACE})"
     ));
-    about_developer.set_text(&developers);
-    about_source.set_text(source_url);
+    about_authors.set_text(&authors);
+    about_repository.set_text(source_url);
 
     let about = clamped_scroller(&about_page);
 

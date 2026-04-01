@@ -247,8 +247,8 @@ Important note:
 - version
 - license
 - session DBus API endpoint
-- maintainer / contributor text
-- source URL
+- authors
+- repository URL
 
 ### What it supports
 
@@ -261,7 +261,7 @@ Important note:
 ### Missing or planned
 
 - no packaged icon asset display
-- current metadata still depends partly on Cargo fallback values
+- metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
 ## Current Planned-But-Not-Implemented Pages
 

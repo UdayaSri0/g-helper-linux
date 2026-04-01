@@ -2,7 +2,11 @@
 name = "rog-core"
 version = "0.1.0"
 edition.workspace = true
+authors.workspace = true
+description = "Shared types and policy model for rog-helper"
+homepage.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde.workspace = true

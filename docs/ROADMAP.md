@@ -202,8 +202,8 @@ Current state:
 
 Still missing or incomplete:
 
-- icon assets referenced by the desktop entry
 - polished release metadata and packaging workflow
+- end-to-end desktop entry and icon install validation
 - broader install and release validation guidance
 
 ## Priorities

@@ -27,7 +27,7 @@ Use this checklist before calling the repository release-ready.
 
 Current repository note:
 
-- the UI currently falls back to hardcoded values when some Cargo metadata is missing, so release review should explicitly check manifest metadata before publishing
+- the About page now reads version, license, authors, and repository URL from Cargo metadata, so manifest drift will show up directly in the UI
 
 ## Icons and Assets
 
@@ -38,7 +38,7 @@ Current repository note:
 
 Current repository note:
 
-- the desktop entry references `Icon=rog-helper`, but the repository does not currently include packaged icon assets under `packaging/desktop/`
+- the desktop entry and scalable SVG icon now live under `packaging/desktop/`, and release review should verify that they are installed together and resolve correctly on the target desktop environment
 
 ## Service and Packaging Files
 

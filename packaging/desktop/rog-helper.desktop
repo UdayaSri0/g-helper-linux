@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=rog-helper
-Comment=ASUS ROG control app (Linux)
+Comment=Linux-native ASUS ROG control app
+TryExec=rog-helper-ui
 Exec=rog-helper-ui
 Icon=rog-helper
 Terminal=false
-Categories=System;Settings;
-
+StartupNotify=true
+Categories=System;Settings;Utility;
+Keywords=ASUS;ROG;Laptop;CPU;GPU;Battery;

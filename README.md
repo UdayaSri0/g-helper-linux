@@ -1,4 +1,3 @@
-v0.16
 # rog-helper
 
 Linux-native control app for ASUS ROG laptops, built as a Rust workspace with a GTK/libadwaita UI, a user-session daemon, a provider layer for DBus/sysfs/procfs integration, and a diagnostics CLI.
@@ -54,6 +53,12 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime archite
 - `crates/rog-cli`
   - `rog-helper` diagnostics CLI
 
+Basic packaging assets are also included under `packaging/`:
+
+- `packaging/systemd-user/rog-helperd.service`
+- `packaging/desktop/rog-helper.desktop`
+- `packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg`
+
 ## Currently Implemented Features
 
 Current source-backed features include:
@@ -97,7 +102,7 @@ Important gaps in the current implementation:
 - Persistent user configuration
 - Typed DBus payloads shared between daemon and UI
 - Complete tested hardware support matrix
-- Polished release packaging assets such as icons and release metadata cleanup
+- End-to-end distro packaging and install validation
 
 Some related domain types and traits already exist in `rog-core` and `rog-providers`, but they are not fully wired into runtime behavior yet.
 

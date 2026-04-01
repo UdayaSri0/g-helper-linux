@@ -2,7 +2,11 @@
 name = "rog-cli"
 version = "0.1.0"
 edition.workspace = true
+authors.workspace = true
+description = "Diagnostics CLI for rog-helper"
+homepage.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
