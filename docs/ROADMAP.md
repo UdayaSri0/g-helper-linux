@@ -1,86 +1,222 @@
-# Roadmap and Labels
+# Roadmap
 
-This is the working roadmap for `rog-helper` (tray + window + user daemon) with suggested GitHub
-issue labels so work stays organized.
+This roadmap reflects the current repository state as implemented today. It is intentionally organized around what already exists, what is actively evolving, and what is still missing.
 
-## Current State
+Older milestone-era roadmap text described several features as future work even after they had been implemented. This file is meant to correct that drift.
 
-- Milestone 1 (read-only foundation): implemented.
-  - `UPower` (system DBus): power source + battery percent (best-effort).
-  - `hwmon` (sysfs): CPU temps and fan RPMs when exposed.
-  - NVIDIA GPU temp fallback (read-only): `nvidia-smi` query when `hwmon` lacks dGPU temps.
-  - Session DBus daemon: `GetCaps`, `GetState`, `GetTelemetry` (`a{sv}`).
-  - UI: Dashboard + Lighting (kbd brightness) + Diagnostics + tray (SNI).
+## Already Implemented
 
-## Milestones (Engineering Goals)
+The following features are present in the current codebase.
 
-### Milestone 2: `asusd` Integration (Profiles/Battery/Lighting)
+### Core architecture
 
-Goal: implement the ASUS provider layer against real introspection output.
+- Rust workspace with dedicated crates for:
+  - shared domain model
+  - providers
+  - daemon
+  - UI
+  - CLI
+- Session-DBus daemon for UI communication
+- Capability-driven UI behavior
+- Diagnostics CLI for service and DBus inspection
 
-Tasks:
+### Providers and integrations
 
-- Run Phase 0 discovery commands and commit the output to `docs/DBUS_NOTES.md` (or a new
-  `docs/INTROSPECTION/<hostname>-<date>.md` file).
-- Implement `AsusctlProvider` in `rog-providers`:
-  - probe caps and endpoints
-  - profile get/set (capability gated)
-  - battery charge limit get/set (capability gated)
-  - lighting get/set (capability gated)
-- Extend daemon session API:
-  - `SetProfile`, `SetBatteryLimit`, `SetLighting`
-- UI:
-  - Profiles page (switch + auto rules editor skeleton)
-  - Battery page (limit presets + slider)
-  - Lighting page (brightness + mode selector)
+- `UPower` integration for power source and battery telemetry
+- `hwmon` integration for temperatures and fan RPMs
+- `nvidia-smi` fallback for GPU temperature
+- `asusd` integration for:
+  - ASUS platform profile read/write
+  - battery charge-limit read/write
+- `supergfxd` integration for:
+  - GPU mode read/write
+  - reboot/logout hints
+- keyboard backlight brightness via sysfs
+- CPU telemetry and generic Linux CPU controls
+- memory, swap, PSI, zram, and top-process telemetry
 
-### Milestone 3: `supergfxd` Integration (GPU Mode Switching)
+### Current daemon API surface
 
-Goal: safe GPU mode switching with clear UX for "requires logout/reboot".
+The daemon already exposes:
 
-Tasks:
+- `GetCaps`
+- `GetState`
+- `GetTelemetry`
+- `GetCpuCaps`
+- `GetCpuTelemetry`
+- `GetCpuDiagnostics`
+- `SetLighting`
+- `SetProfile`
+- `SetGpuMode`
+- `SetBatteryLimit`
+- CPU control setters
 
-- Add `SupergfxProvider` in `rog-providers`:
-  - get current mode
-  - set mode
-  - "requires logout/reboot" hint if the API provides it (or heuristic)
-  - `can_switch_now()` best-effort (busy/unsafe hint)
-- Extend daemon session API:
-  - `SetGpuMode`
-- UI:
-  - GPU page + tray GPU mode submenu
-  - Safe confirmation UX when switch is risky
+See [DBUS_API.md](DBUS_API.md) for the current details.
 
-### Milestone 4: Fan Curves + Automation Polish
+### Current UI surface
 
-Goal: fan curve editor (only when supported) + robust Auto Mode policy engine.
+The UI currently ships these pages:
 
-Tasks:
+- Dashboard
+- CPU
+- GPU
+- Battery
+- RAM
+- Lighting
+- Diagnostics
+- About
 
-- Implement `FanProvider` curve support (only if exposed by `asusd`/model).
-- Add curve presets + validation and "Reset/Revert" in UI.
-- Implement daemon Auto Mode state machine:
-  - debounce
-  - manual override pause
-  - AC/Battery rules applying profile/gpu/lighting/limit
-- UI:
-  - Auto Mode toggle + rules editor
-  - Notifications on auto apply or delayed GPU switching
+The tray currently supports:
 
-## Cross-Cutting Improvements (High Value)
+- open main window
+- open GPU page
+- profile selection
+- GPU mode selection
+- About
+- Quit
 
-- Telemetry:
-  - add more sensor mapping heuristics (CPU package, GPU hot spot if available)
-  - show per-fan RPM on Dashboard
-  - consider NVML crate integration (read-only) behind a feature flag
-- Diagnostics:
-  - export "diagnostics bundle" (caps + warnings + recent events) to clipboard and file
-  - include systemd service status checks for `asusd`/`supergfxd`
-- Packaging:
-  - systemd user unit + desktop entry install docs
-  - optional: Flatpak after DBus permissions model is validated
+## In Progress or Still Evolving
 
-## Suggested GitHub Labels (Tags)
+These areas are real and useful today, but they are not yet fully mature.
+
+### `asusd` coverage
+
+Current status:
+
+- profile and battery-limit support are implemented
+
+Still evolving:
+
+- richer capability probing
+- Aura/RGB coverage
+- full alignment between daemon capability flags and underlying ASUS interfaces
+
+### `supergfxd` coverage
+
+Current status:
+
+- current mode read/write works
+- supported mode probing works
+- pending-action hinting exists
+
+Still evolving:
+
+- clearer UX around risky transitions
+- better busy or unsafe switching detection
+
+### CPU controls
+
+Current status:
+
+- generic Linux CPU telemetry and several control actions are implemented
+
+Still evolving:
+
+- permissions model for write access
+- UX around partial or read-only control availability
+- cleanup and maintainability of current single-file UI and daemon handling
+
+### Diagnostics
+
+Current status:
+
+- diagnostics page exists
+- CLI diagnostics exist
+- daemon exposes capability and CPU diagnostics data
+
+Still evolving:
+
+- richer exported diagnostics
+- clearer operator-facing docs
+- better hardware coverage reporting
+
+### Documentation and release polish
+
+Current status:
+
+- major docs now describe the real implementation
+
+Still evolving:
+
+- hardware support tracking
+- release process polish
+- packaging completeness
+
+## Planned or Missing
+
+These are not implemented end-to-end in the current repository.
+
+### Fan curves
+
+Planned but missing:
+
+- provider-backed fan curve read/write
+- daemon fan-curve API
+- fan-curve UI
+- device-level fan-curve capability detection
+
+Note:
+
+- the domain model for fan curves and validation already exists in `rog-core`
+
+### Auto mode and policy automation
+
+Planned but missing at runtime:
+
+- daemon-side use of the `rog-core` policy model
+- AC/Battery rule application
+- manual override pause/resume flow
+- UI for auto rules
+
+Note:
+
+- the policy model exists in `rog-core`, but it is not wired into `rog-helperd`
+
+### Aura / RGB lighting
+
+Planned but missing:
+
+- provider-backed Aura lighting support
+- daemon support for RGB/effects
+- UI support beyond current keyboard brightness and mode placeholders
+
+### Persistent configuration
+
+Planned but missing:
+
+- persistent user settings
+- saved automation rules
+- durable control preferences
+
+### Typed daemon API payloads
+
+Planned but missing:
+
+- a more strongly typed contract between daemon and UI
+
+Current state:
+
+- the daemon uses string-keyed `a{sv}` payloads
+
+### Release packaging completeness
+
+Still missing or incomplete:
+
+- icon assets referenced by the desktop entry
+- polished release metadata and packaging workflow
+- broader install and release validation guidance
+
+## Priorities
+
+The most useful next technical priorities, based on current implementation status, are:
+
+1. Fan curves
+2. Auto mode / policy integration
+3. Aura / RGB lighting
+4. Stronger typed daemon/UI contract
+5. Packaging and release readiness
+
+## Suggested Labels
 
 Type:
 
@@ -108,12 +244,14 @@ Feature:
 - `feature:lighting`
 - `feature:automation`
 - `feature:diagnostics`
+- `feature:cpu`
+- `feature:memory`
 
 Priority:
 
-- `prio:P0` (blocker for next milestone)
-- `prio:P1` (important)
-- `prio:P2` (nice-to-have)
+- `prio:P0`
+- `prio:P1`
+- `prio:P2`
 
 State:
 

@@ -1,21 +1,27 @@
 # Build
 
-## Prereqs
+This document covers the current build, run, and validation workflow for the repository as implemented today.
 
-- Rust toolchain via `rustup` (`cargo` 1.83+; this repo uses lockfile v4)
-- System deps (names vary by distro):
-  - GTK4 development packages
-  - libadwaita development packages
-  - pkg-config
+## Prerequisites
 
-Ubuntu/Debian example:
+- Rust stable via `rustup`
+- A Cargo version new enough to read lockfile v4
+- GTK4 development packages
+- libadwaita development packages
+- `pkg-config`
+
+The workspace does not currently pin a `rust-toolchain.toml`, and CI uses stable Rust.
+
+## Ubuntu/Debian Dependencies
+
+Example package install:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev
 ```
 
-Install/refresh Rust toolchain (recommended on Ubuntu/Debian where `apt` Rust is often behind):
+Recommended Rust install or refresh:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -26,39 +32,74 @@ cargo --version
 rustc --version
 ```
 
-## Build
+## Build Commands
+
+Build the full workspace:
 
 ```bash
 cargo build --workspace
 ```
 
-## Run (dev)
+Build a specific binary crate:
 
-Terminal 1:
+```bash
+cargo build -p rog-daemon
+cargo build -p rog-ui
+cargo build -p rog-cli
+```
+
+## Run Commands
+
+### Daemon
+
+Start the session daemon:
 
 ```bash
 cargo run -p rog-daemon
 ```
 
-Terminal 2:
+### UI
+
+Start the GTK/libadwaita UI:
 
 ```bash
 cargo run -p rog-ui
 ```
 
-## About Page
+### CLI
 
-`rog-helper-ui` now includes an **About** page (in the top view switcher) and a tray **About** menu
-action. It shows:
+Run the diagnostics CLI:
 
-- App details: name, binary, version, license, and session DBus API endpoint.
-- Developer details: maintainer/contributors and source repository URL.
+```bash
+cargo run -p rog-cli -- services
+cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- sensors
+cargo run -p rog-cli -- caps
+```
 
-## Verify Daemon DBus API
+## Validation Commands
+
+The repository CI currently runs:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+These commands are defined in `.github/workflows/ci.yml`.
+
+Important note:
+
+- `fmt` and tests are currently expected and useful for everyday work.
+- The CI configuration expects clippy-clean builds as well.
+- If clippy fails locally, compare against the current source and CI state rather than assuming the docs are wrong.
+
+## Verify the Session DBus API
 
 With `rog-helperd` running:
 
-If `rg` is not installed, either install `ripgrep` or replace `rg` with `grep -E`.
+If `rg` is not installed, replace it with `grep -E`.
 
 ```bash
 busctl --user list | rg -n "io\\.github\\.roghelper\\.Daemon"
@@ -66,7 +107,15 @@ busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon
 busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetTelemetry
 ```
 
-## Install (Local)
+The current daemon DBus identity is:
+
+- bus name: `io.github.roghelper.Daemon`
+- object path: `/io/github/roghelper/Daemon`
+- interface: `io.github.roghelper.Daemon1`
+
+See [DBUS_API.md](DBUS_API.md) for the current API surface.
+
+## Install Locally
 
 Install binaries into `~/.cargo/bin`:
 
@@ -78,7 +127,9 @@ cargo install --path crates/rog-cli --bin rog-helper --locked
 
 ## systemd --user
 
-Install the user service unit and start the daemon:
+The repository includes a user service file at `packaging/systemd-user/rog-helperd.service`.
+
+Install and enable it with:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -88,9 +139,50 @@ systemctl --user enable --now rog-helperd
 systemctl --user status rog-helperd --no-pager
 ```
 
-CLI diagnostics:
+Important note:
 
-```bash
-cargo run -p rog-cli -- services
-cargo run -p rog-cli -- sensors
-```
+- The unit uses `ExecStart=rog-helperd`, so it expects the binary to already be installed on `PATH`.
+- The unit also sets a custom `PATH` that includes `%h/.cargo/bin` and `%h/.local/bin`.
+
+## Runtime Dependency Notes
+
+The project can be built without ASUS-specific services, but real runtime behavior depends on them:
+
+- `UPower`
+  - Expected for battery and power-source telemetry
+- `asusd`
+  - Required for ASUS platform profile control
+  - Required for ASUS battery charge-limit control
+- `supergfxd`
+  - Required for GPU mode control
+- writable sysfs
+  - Required for some CPU writes
+  - Required for keyboard backlight brightness writes when using the sysfs backend
+
+If these are missing or inaccessible, the application should still run, but affected features will be unavailable or read-only.
+
+## Tray Support Notes
+
+The tray implementation uses StatusNotifierItem through `ksni`.
+
+On desktop environments that do not expose tray icons by default, especially GNOME, the tray may not be visible unless an AppIndicator/SNI extension is enabled.
+
+The UI is designed to continue without a tray if SNI support is unavailable.
+
+## Permission Notes
+
+The UI and daemon are unprivileged by design.
+
+That means:
+
+- system DBus writes can still fail if the relevant service rejects them
+- sysfs writes can still fail if the current user lacks write access
+- the application may expose a feature as readable but not writable
+
+Common examples:
+
+- keyboard backlight brightness is visible but read-only
+- CPU controls are visible but read-only
+- `asusd` or `supergfxd` controls are missing because the service is not installed or not reachable
+
+See [PERMISSIONS.md](PERMISSIONS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more detail.
