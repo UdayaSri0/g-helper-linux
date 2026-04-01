@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+APPDIR="${APPDIR:-$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)}"
+exec "$APPDIR/usr/bin/rog-helper-ui" "$@"

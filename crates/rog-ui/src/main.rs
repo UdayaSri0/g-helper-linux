@@ -24,6 +24,7 @@ const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 const APP_DISPLAY_NAME: &str = "rog-helper";
 const APP_BINARY_NAME: &str = "rog-helper-ui";
+const APP_ICON_NAME: &str = "rog-helper";
 const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
 const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
 
@@ -378,7 +379,7 @@ impl Tray for RogTray {
     }
 
     fn icon_name(&self) -> String {
-        "computer".to_string()
+        APP_ICON_NAME.to_string()
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -1815,6 +1816,7 @@ fn build_ui(app: &adw::Application) {
         .default_width(920)
         .default_height(760)
         .build();
+    win.set_icon_name(Some(APP_ICON_NAME));
     win.set_content(Some(&toast_overlay));
     win.present();
 

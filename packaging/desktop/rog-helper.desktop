@@ -7,5 +7,6 @@ Exec=rog-helper-ui
 Icon=rog-helper
 Terminal=false
 StartupNotify=true
-Categories=System;Settings;Utility;
+StartupWMClass=io.github.roghelper.UI
+Categories=Settings;HardwareSettings;
 Keywords=ASUS;ROG;Laptop;CPU;GPU;Battery;

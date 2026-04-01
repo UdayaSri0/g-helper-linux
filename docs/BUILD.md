@@ -127,25 +127,76 @@ cargo install --path crates/rog-cli --bin rog-helper --locked
 
 ## Optional Desktop Launcher Install
 
-The repository includes a desktop entry and a scalable SVG icon:
+The repository ships a desktop entry plus a generated hicolor PNG icon set.
+
+Source of truth:
+
+- `assets/logo.png`
+
+Desktop assets:
 
 - `packaging/desktop/rog-helper.desktop`
-- `packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg`
+- `packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/48x48/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/64x64/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/128x128/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png`
+- `packaging/desktop/icons/hicolor/512x512/apps/rog-helper.png`
+
+Refresh the generated icon set after changing `assets/logo.png`:
+
+```bash
+python3 packaging/scripts/generate_icons.py
+```
+
+Notes:
+
+- the icon generator uses Python + Pillow (`PIL`)
+- packaging builds reuse the generated PNG set instead of the old placeholder SVG
 
 Install them locally with:
 
 ```bash
 mkdir -p ~/.local/share/applications
-mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 cp packaging/desktop/rog-helper.desktop ~/.local/share/applications/
-cp packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg ~/.local/share/icons/hicolor/scalable/apps/
+for size in 16 24 32 48 64 128 256 512; do
+  mkdir -p "$HOME/.local/share/icons/hicolor/${size}x${size}/apps"
+  cp "packaging/desktop/icons/hicolor/${size}x${size}/apps/rog-helper.png" \
+    "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/"
+done
 ```
 
 Notes:
 
 - the desktop entry uses `Exec=rog-helper-ui`, so the UI binary still needs to be installed on `PATH`
-- the desktop entry uses `Icon=rog-helper`, so the icon file should be installed together with the `.desktop` file
+- the desktop entry uses `Icon=rog-helper`, so the icon theme files should be installed together with the `.desktop` file
+- `StartupWMClass=io.github.roghelper.UI` matches the current GTK application ID used by the UI
 - some desktop environments may require an icon cache refresh before the launcher icon appears
+
+## Packaging Helpers
+
+Build a `.deb` staging package:
+
+```bash
+packaging/scripts/build-deb.sh
+```
+
+This builds release binaries, installs the desktop entry, hicolor icons, all three binaries, and the systemd user service into a Debian package under `dist/`.
+
+Requirements:
+
+- `dpkg-deb`
+- `dpkg-shlibdeps`
+
+Stage an AppDir / AppImage bundle:
+
+```bash
+packaging/scripts/build-appimage.sh
+```
+
+If `appimagetool` is installed, the script also emits an AppImage in `dist/`. Otherwise it leaves a ready-to-inspect `dist/AppDir/` with the desktop file and icon assets in the expected locations.
 
 ## systemd --user
 
