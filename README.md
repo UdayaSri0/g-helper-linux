@@ -57,7 +57,14 @@ Basic packaging assets are also included under `packaging/`:
 
 - `packaging/systemd-user/rog-helperd.service`
 - `packaging/desktop/rog-helper.desktop`
-- `packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg`
+- generated hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
+- `packaging/scripts/build-deb.sh`
+- `packaging/scripts/build-appimage.sh`
+- `packaging/scripts/generate_icons.py`
+
+Branding source of truth:
+
+- `assets/logo.png`
 
 ## Currently Implemented Features
 
@@ -84,6 +91,7 @@ Current source-backed features include:
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
 - About page update/support section with manual GitHub release checks, release-note preview, source/support links, and issue-reporting action
+- Official `rog-helper` logo wired into desktop packaging, launcher metadata, tray/window icon naming, and packaging scripts
 - Session DBus API for the UI and other local clients
 
 See:

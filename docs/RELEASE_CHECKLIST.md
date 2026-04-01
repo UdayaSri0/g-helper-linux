@@ -38,12 +38,14 @@ Current repository note:
 
 Current repository note:
 
-- the desktop entry and scalable SVG icon now live under `packaging/desktop/`, and release review should verify that they are installed together and resolve correctly on the target desktop environment
+- `assets/logo.png` is the master logo source, and the generated hicolor icon set now lives under `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the `.deb`, and the AppDir/AppImage flow all agree on the `rog-helper` icon name
 
 ## Service and Packaging Files
 
 - [ ] `packaging/systemd-user/rog-helperd.service` reviewed
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
+- [ ] `packaging/scripts/build-deb.sh` reviewed
+- [ ] `packaging/scripts/build-appimage.sh` reviewed
 - [ ] user-service install flow tested
 - [ ] `ExecStart` / `Exec` paths are valid for the release target
 
@@ -69,6 +71,7 @@ Important note:
 - [ ] session DBus service is visible
 - [ ] diagnostics CLI runs successfully
 - [ ] tray behavior verified on the target desktop environment
+- [ ] launcher icon resolves correctly after install
 - [ ] warning banner wording and Diagnostics page feel intentional rather than broken
 - [ ] disabled quick controls still show a clear human-readable reason
 - [ ] About page update/support actions verified with a working browser
@@ -121,6 +124,7 @@ Every row below should be marked either:
 - [ ] dynamic fan telemetry verified against detected `fan_rows`
 - [ ] Diagnostics page copy flow verified
 - [ ] About page metadata verified
+- [ ] packaged window / tray icon naming verified
 - [ ] About page support links verified
 - [ ] manual update check verified
 - [ ] safe update fallback verified for unsupported install methods
