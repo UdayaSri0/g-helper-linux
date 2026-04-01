@@ -110,15 +110,15 @@ impl Default for SharedUiState {
 
 #[derive(Debug, Clone)]
 enum PendingCpuAction {
-    SetTurbo(bool),
-    SetPowerMode(String),
-    SetGovernor(String),
-    SetEpp(String),
-    SetFreqLimits {
+    Turbo(bool),
+    PowerMode(String),
+    Governor(String),
+    Epp(String),
+    FreqLimits {
         min_mhz: Option<u32>,
         max_mhz: Option<u32>,
     },
-    SetCoreOnline {
+    CoreOnline {
         core_id: u32,
         online: bool,
     },
@@ -371,7 +371,6 @@ impl Tray for RogTray {
                             ..Default::default()
                         },
                     ],
-                    ..Default::default()
                 }
                 .into()],
                 ..Default::default()
@@ -408,7 +407,6 @@ impl Tray for RogTray {
                                 ..Default::default()
                             },
                         ],
-                        ..Default::default()
                     }
                     .into(),
                     StandardItem {
@@ -833,7 +831,7 @@ fn build_ui(app: &adw::Application) {
                 .unwrap_or_else(CpuCaps::unknown);
 
             if caps.has_boost_toggle && caps.policy_writable {
-                actions.push(PendingCpuAction::SetTurbo(cpu_turbo_switch.is_active()));
+                actions.push(PendingCpuAction::Turbo(cpu_turbo_switch.is_active()));
             }
 
             let mode = if cpu_power_quiet.is_active() {
@@ -844,7 +842,7 @@ fn build_ui(app: &adw::Application) {
                 "Performance"
             };
             if caps.has_cpufreq && caps.policy_writable {
-                actions.push(PendingCpuAction::SetPowerMode(mode.to_string()));
+                actions.push(PendingCpuAction::PowerMode(mode.to_string()));
             }
 
             if caps.has_cpufreq
@@ -861,7 +859,7 @@ fn build_ui(app: &adw::Application) {
                 } else {
                     None
                 };
-                actions.push(PendingCpuAction::SetFreqLimits { min_mhz, max_mhz });
+                actions.push(PendingCpuAction::FreqLimits { min_mhz, max_mhz });
             }
 
             if let Ok(mut st) = shared.lock() {
@@ -919,11 +917,11 @@ fn build_ui(app: &adw::Application) {
             if let Ok(mut st) = shared.lock() {
                 if let Some(gov) = cpu_governor_combo.active_id() {
                     st.pending_cpu_actions
-                        .push(PendingCpuAction::SetGovernor(gov.to_string()));
+                        .push(PendingCpuAction::Governor(gov.to_string()));
                 }
                 if let Some(epp) = cpu_epp_combo.active_id() {
                     st.pending_cpu_actions
-                        .push(PendingCpuAction::SetEpp(epp.to_string()));
+                        .push(PendingCpuAction::Epp(epp.to_string()));
                 }
                 st.action_error = None;
             }
@@ -1799,7 +1797,7 @@ fn build_ui(app: &adw::Application) {
             let power_mode_hint = cpu_data
                 .epp
                 .as_deref()
-                .map(|v| normalize_label(v))
+                .map(normalize_label)
                 .unwrap_or_default();
             if power_mode_hint.contains("power") {
                 cpu_power_quiet.set_active(true);
@@ -1915,7 +1913,7 @@ fn build_ui(app: &adw::Application) {
                         let sw_apply = sw.clone();
                         dialog.connect_response(Some("apply"), move |d, _| {
                             if let Ok(mut st) = shared_apply.lock() {
-                                st.pending_cpu_actions.push(PendingCpuAction::SetCoreOnline {
+                                st.pending_cpu_actions.push(PendingCpuAction::CoreOnline {
                                     core_id,
                                     online: desired_online,
                                 });
@@ -1965,7 +1963,7 @@ fn build_ui(app: &adw::Application) {
                 "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
             ));
         } else if let Some(ref e) = action_error_txt {
-            status_label.set_text(&e);
+            status_label.set_text(e);
         } else {
             status_label.set_text("");
         }
@@ -2541,31 +2539,31 @@ async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String>
 
     for action in actions {
         match action {
-            PendingCpuAction::SetTurbo(enabled) => {
+            PendingCpuAction::Turbo(enabled) => {
                 proxy
                     .set_cpu_turbo(enabled)
                     .await
                     .map_err(|e| format!("daemon SetCpuTurbo failed: {e}"))?;
             }
-            PendingCpuAction::SetPowerMode(mode) => {
+            PendingCpuAction::PowerMode(mode) => {
                 proxy
                     .set_cpu_power_mode(&mode)
                     .await
                     .map_err(|e| format!("daemon SetCpuPowerMode failed: {e}"))?;
             }
-            PendingCpuAction::SetGovernor(governor) => {
+            PendingCpuAction::Governor(governor) => {
                 proxy
                     .set_cpu_governor(&governor)
                     .await
                     .map_err(|e| format!("daemon SetCpuGovernor failed: {e}"))?;
             }
-            PendingCpuAction::SetEpp(epp) => {
+            PendingCpuAction::Epp(epp) => {
                 proxy
                     .set_cpu_epp(&epp)
                     .await
                     .map_err(|e| format!("daemon SetCpuEpp failed: {e}"))?;
             }
-            PendingCpuAction::SetFreqLimits { min_mhz, max_mhz } => {
+            PendingCpuAction::FreqLimits { min_mhz, max_mhz } => {
                 let min_mhz = min_mhz.unwrap_or(0) as u64;
                 let max_mhz = max_mhz.unwrap_or(0) as u64;
                 if min_mhz > 0 && max_mhz > 0 && min_mhz > max_mhz {
@@ -2578,7 +2576,7 @@ async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String>
                     .await
                     .map_err(|e| format!("daemon SetCpuFreqLimits failed: {e}"))?;
             }
-            PendingCpuAction::SetCoreOnline { core_id, online } => {
+            PendingCpuAction::CoreOnline { core_id, online } => {
                 proxy
                     .set_cpu_core_online(core_id as u64, online)
                     .await

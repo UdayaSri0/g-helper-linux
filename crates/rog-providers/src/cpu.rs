@@ -66,6 +66,8 @@ struct PackageEnergySample {
     max_energy_range_uj: Option<u64>,
 }
 
+type CoreFreqMhz = (Option<u32>, Option<u32>, Option<u32>);
+
 impl Default for CpuTelemetryProvider {
     fn default() -> Self {
         Self {
@@ -188,8 +190,7 @@ impl CpuTelemetryProvider {
             }
         }
 
-        let mut freq_by_core: HashMap<u32, (Option<u32>, Option<u32>, Option<u32>)> =
-            HashMap::new();
+        let mut freq_by_core: HashMap<u32, CoreFreqMhz> = HashMap::new();
         let mut avg_freq_sum = 0.0f64;
         let mut avg_freq_count = 0usize;
         let mut governors = BTreeSet::new();
