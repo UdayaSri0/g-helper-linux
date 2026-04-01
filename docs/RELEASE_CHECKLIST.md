@@ -27,7 +27,7 @@ Use this checklist before calling the repository release-ready.
 
 Current repository note:
 
-- the About page now reads version, license, authors, and repository URL from Cargo metadata, so manifest drift will show up directly in the UI
+- the About page now reads version, license, authors, and repository URL from Cargo metadata, and derives maintainer/source metadata from the repository URL when possible, so manifest drift will show up directly in the UI
 
 ## Icons and Assets
 
@@ -71,6 +71,7 @@ Important note:
 - [ ] tray behavior verified on the target desktop environment
 - [ ] warning banner wording and Diagnostics page feel intentional rather than broken
 - [ ] disabled quick controls still show a clear human-readable reason
+- [ ] About page update/support actions verified with a working browser
 
 ## Hardware Validation Evidence
 
@@ -120,6 +121,9 @@ Every row below should be marked either:
 - [ ] dynamic fan telemetry verified against detected `fan_rows`
 - [ ] Diagnostics page copy flow verified
 - [ ] About page metadata verified
+- [ ] About page support links verified
+- [ ] manual update check verified
+- [ ] safe update fallback verified for unsupported install methods
 
 ## Release Readiness Notes
 

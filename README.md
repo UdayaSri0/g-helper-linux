@@ -83,6 +83,7 @@ Current source-backed features include:
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
+- About page update/support section with manual GitHub release checks, release-note preview, source/support links, and issue-reporting action
 - Session DBus API for the UI and other local clients
 
 See:
@@ -186,6 +187,7 @@ Current first-release behavior to expect:
 - readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
 - readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable
 - dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
+- update checks are manual and UI-side; in-place replacement is attempted only for safe user-local direct-binary installs and otherwise falls back to the latest release page
 
 ## Documentation Index
 
