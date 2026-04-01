@@ -77,68 +77,98 @@ Some desktop environments, especially GNOME, do not show tray icons by default u
 
 The UI is expected to continue running even if tray support is unavailable.
 
-## `asusd` or `supergfxd` Unavailable
+## Missing `asusd`
 
-Profile, battery-limit, and GPU-mode features depend on external system services:
+Symptoms:
 
-- `asusd`
-  - ASUS platform profile
-  - battery charge-limit control
-- `supergfxd`
-  - GPU mode control
+- performance profile controls are disabled
+- battery charge-limit controls are disabled
+- Dashboard or GPU page explains that `asusd` is required
+- Diagnostics or `caps` reports `missing_backend` for profile and charge-limit access
 
-Use the CLI to inspect the environment:
+Check:
 
 ```bash
 cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog"
+cargo run -p rog-cli -- caps
 ```
 
-If the relevant service is missing from the system bus or not running, those controls will be unavailable in the daemon and UI.
+Expected current behavior:
 
-Current UI behavior:
+- the UI keeps the profile and charge-limit rows visible
+- the reason text explicitly mentions `asusd`
+- Diagnostics includes the missing-backend state in the troubleshooting summary
 
-- the Dashboard and GPU page distinguish `missing_backend`, `unsupported`, and `temporarily_unavailable` instead of only showing `Unavailable`
-- Diagnostics includes a troubleshooting summary that can be copied along with the full diagnostic dump
+What to do:
 
-## Battery, Profile, or GPU Controls Unavailable
+- install and start `asusd`
+- restart `rog-helperd`
+- recheck `caps` and the Dashboard
 
-Possible causes:
+## Missing `supergfxd`
 
-- `asusd` is not installed or not reachable
-- `supergfxd` is not installed or not reachable
-- the backend is present but does not expose the expected capability
-- the daemon is running, but the feature is not supported on the current machine
+Symptoms:
 
-What to check:
+- GPU mode controls are disabled
+- the GPU page explains that `supergfxd` is required
+- Diagnostics or `caps` reports `missing_backend` for GPU mode access
+
+Check:
+
+```bash
+cargo run -p rog-cli -- services
+cargo run -p rog-cli -- dbus --filter "supergfx"
+cargo run -p rog-cli -- caps
+```
+
+Expected current behavior:
+
+- the GPU page keeps the GPU mode selector visible
+- the reason text explicitly mentions `supergfxd`
+- Diagnostics includes the missing-backend state in the troubleshooting summary
+
+What to do:
+
+- install and start `supergfxd`
+- restart `rog-helperd`
+- recheck the GPU page and Diagnostics
+
+## Battery, Profile, or GPU Controls Still Unavailable
+
+If `asusd` or `supergfxd` is present but the control is still unavailable, the current code distinguishes four common cases:
+
+- `unsupported`
+  - the backend is reachable, but the current machine does not expose that feature
+- `missing_backend`
+  - the required system service is not installed or not reachable
+- `permission_denied`
+  - the backend or sysfs path is visible but not writable by the current user
+- `temporarily_unavailable`
+  - the feature is expected to exist, but the current value could not be confirmed right now
+
+Use:
 
 ```bash
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- caps
 ```
 
-If `caps` does not report the feature as available, the UI should disable or hide the corresponding controls.
+Then compare the `*_access_status` and `*_access_reason` fields with what the Dashboard, GPU page, and Diagnostics show.
 
-The current UI should now explain the common cases like this:
+## CPU Telemetry Works, But CPU Controls Are Read-Only
 
-- missing `asusd` -> performance profiles and charge-limit control explain that `asusd` must be installed and running
-- missing `supergfxd` -> GPU mode switching explains that `supergfxd` must be installed and running
-- backend present but unsupported -> the UI explains that the current machine does not expose that feature
-- backend present but temporarily unavailable -> the UI explains that support exists but the backend could not be read right now
+This is the expected first-release behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
 
-## CPU Controls Read-Only
+Typical signs:
 
-The current CPU controls use generic Linux sysfs interfaces.
+- CPU telemetry is visible
+- the CPU page keeps the control rows visible
+- affected controls are disabled
+- the CPU banner says writes are blocked or backend support is missing
+- Diagnostics reports `permission_denied` for one or more CPU control groups
 
-This means the UI can show CPU telemetry even when writes are not allowed.
-
-Read-only CPU controls typically mean:
-
-- the current user cannot write the relevant sysfs files
-- the daemon is running unprivileged, which is expected
-- the current platform exposes telemetry but not writable control paths
-
-What to check:
+Check:
 
 ```bash
 cargo run -p rog-cli -- caps
@@ -150,42 +180,89 @@ ls -l /sys/devices/system/cpu/intel_pstate/no_turbo
 ls -l /sys/devices/system/cpu/cpu*/online
 ```
 
-In the UI:
+Expected current behavior:
 
-- the CPU page will still show telemetry
-- only the affected CPU controls will be disabled
-- Diagnostics will show whether each control is `unsupported`, `missing_backend`, `permission_denied`, or `temporarily_unavailable`
-- the advanced CPU section and Diagnostics page will list the relevant readable/writable sysfs paths
-- the Dashboard warning area will summarize CPU write-permission problems without pretending the feature is unsupported
+- telemetry remains visible
+- only the affected controls are disabled
+- Diagnostics lists the real sysfs paths and whether each one is readable or writable
+- there is no fake `Fix permissions` action
+
+What to do:
+
+- inspect the exact blocked paths in Diagnostics
+- grant `rog-helperd` write access only to the specific files you actually want writable
+- restart the user daemon after changing local policy:
+
+```bash
+systemctl --user restart rog-helperd
+```
 
 Important note:
 
-- the repository does not currently ship an automatic privilege escalation or permission-repair path for CPU sysfs writes
-- if you want the UI controls to become writable, create a local admin-managed policy that grants `rog-helperd` write access only to the specific CPU sysfs files reported by diagnostics, then restart the user daemon
+- the repository does not ship an automatic privilege escalation or permission-repair path for CPU sysfs writes
 
-## Keyboard Backlight Read-Only
+## CPU Counts Look Wrong On A Hybrid CPU
 
-The current implemented lighting backend is keyboard backlight brightness via sysfs.
+The current CPU UI distinguishes:
 
-Common reasons it is read-only:
+- physical core count
+- logical thread count
+- per-logical-CPU rows
+- cpufreq policy ids
 
-- `/sys/class/leds/.../brightness` is readable but not writable by the current user
-- `asusd` is not available as an alternative backend
+These are not the same number on many hybrid CPUs.
 
-Current behavior:
+Common example:
 
-- the UI can still report brightness
-- the daemon can still expose the backend
-- writes may fail or controls may become read-only
+- physical cores: `16`
+- logical threads: `24`
+- cpufreq policies: `24`
 
-Recommended checks:
+Expected current behavior:
+
+- `cpu_count` is shown as physical cores
+- `thread_count` is shown as logical threads
+- the per-row table lists every logical CPU / thread in deterministic logical CPU order
+- policy ids are shown as backend detail, not as the physical core count
+
+If you suspect a mismatch, capture:
 
 ```bash
-cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog"
+cargo run -p rog-cli -- caps
+busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetCpuDiagnostics
 ```
 
-If you want sysfs write access specifically, you may need a udev rule or another system-level permission change. The repository does not currently ship that policy for you.
+Then compare those values with the CPU page and Diagnostics text.
+
+## Keyboard Backlight Is Visible, But Read-Only
+
+The current runtime lighting backend is keyboard backlight brightness via sysfs.
+
+Typical signs:
+
+- the Dashboard or Lighting page shows the current brightness
+- the brightness control is disabled or writes fail cleanly
+- Diagnostics or `caps` shows that the feature is present but not writable
+
+Check:
+
+```bash
+cargo run -p rog-cli -- caps
+ls -l /sys/class/leds/*/brightness
+```
+
+Expected current behavior:
+
+- current brightness can still be shown
+- the control stays visible
+- the UI does not pretend Aura / RGB support exists
+
+What to do:
+
+- if you want sysfs writes, create a local admin-managed permission change for the relevant LED `brightness` file
+- restart `rog-helperd` after changing local policy
+
+The repository does not currently ship a bundled udev rule or privileged helper for this path.
 
 ## Missing Telemetry or Limited `hwmon` Coverage
 
@@ -216,7 +293,8 @@ Fan telemetry specifics:
 - fan detection is dynamic over the available `fan*_input` files and may report 0, 1, 2, 3, or more fan rows depending on the machine
 - hwmon labels are used when available; otherwise the UI falls back to `Fan 1`, `Fan 2`, and so on
 - a detected fan row can still show as unavailable if the platform exposes the input but not a usable current RPM value
-- the Diagnostics page now lists the detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM state for each fan row
+- the Dashboard, details, and Diagnostics views all use the same detected fan set
+- the Diagnostics page lists the detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM state for each fan row
 
 Useful fan checks:
 

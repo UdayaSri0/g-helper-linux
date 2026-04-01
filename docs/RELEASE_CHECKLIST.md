@@ -4,15 +4,16 @@ Use this checklist before calling the repository release-ready.
 
 ## Documentation
 
-- [ ] `README.md` reflects the current implementation
+- [ ] `README.md` reflects the current implementation and degraded-state behavior
 - [ ] `docs/ARCHITECTURE.md` matches the real runtime architecture
 - [ ] `docs/BUILD.md` matches the current build and run flow
 - [ ] `docs/ROADMAP.md` does not describe already implemented features as future work
 - [ ] `docs/GUI_SPEC.md` and `docs/UI_PAGES.md` match the real UI
 - [ ] `docs/DBUS_API.md` matches the current daemon API
 - [ ] `docs/PROVIDER_MATRIX.md` matches the current provider layer
-- [ ] `docs/TROUBLESHOOTING.md` covers the current failure modes
-- [ ] hardware support notes have been updated in `docs/HARDWARE_SUPPORT.md`
+- [ ] `docs/PERMISSIONS.md` matches the current trust and write-access boundaries
+- [ ] `docs/TROUBLESHOOTING.md` covers the current failure modes with practical steps
+- [ ] `docs/HARDWARE_SUPPORT.md` contains current real-machine validation notes, not placeholders only
 
 ## Cargo Metadata
 
@@ -67,23 +68,50 @@ Important note:
 - [ ] session DBus service is visible
 - [ ] diagnostics CLI runs successfully
 - [ ] tray behavior verified on the target desktop environment
-- [ ] graceful behavior verified when `asusd` is missing
-- [ ] graceful behavior verified when `supergfxd` is missing
-- [ ] read-only behavior verified for missing sysfs write access
-- [ ] CPU diagnostics verified for blocked sysfs paths and suggested checks
+- [ ] warning banner wording and Diagnostics page feel intentional rather than broken
+- [ ] disabled quick controls still show a clear human-readable reason
+
+## Hardware Validation Matrix
+
+Every row below should be covered by at least one real machine or explicitly marked `untested` in `docs/HARDWARE_SUPPORT.md`.
+
+- [ ] `asusd` missing flow verified
+- [ ] `supergfxd` missing flow verified
+- [ ] CPU readable-but-not-writable flow verified
+- [ ] CPU writable flow verified
+- [ ] keyboard backlight readable-but-not-writable flow verified when hardware exposes the backend
+- [ ] fan count `0` behavior verified on a machine without usable fan RPM exposure
+- [ ] fan count `1` behavior verified or explicitly not represented in the test fleet
+- [ ] fan count `2` behavior verified or explicitly not represented in the test fleet
+- [ ] fan count `3+` behavior verified or explicitly not represented in the test fleet
+- [ ] hybrid CPU topology with physical cores != logical threads verified or explicitly not represented in the test fleet
 
 ## Feature Verification
 
 - [ ] telemetry dashboard verified
 - [ ] CPU page telemetry verified
+- [ ] CPU page shows physical-core count separately from logical-thread rows
+- [ ] CPU page shows all logical CPUs in deterministic order
 - [ ] CPU write controls verified where supported
 - [ ] CPU page verified to avoid fake permission-repair actions when writes are blocked
+- [ ] CPU Diagnostics verified for structured access states, sysfs paths, and suggested checks
 - [ ] GPU mode read/write verified where supported
 - [ ] ASUS profile read/write verified where supported
 - [ ] battery charge-limit read/write verified where supported
 - [ ] keyboard backlight brightness verified where supported
-- [ ] diagnostics page copy flow verified
+- [ ] dynamic fan telemetry verified against detected `fan_rows`
+- [ ] Diagnostics page copy flow verified
 - [ ] About page metadata verified
+
+## Evidence Collection
+
+- [ ] `cargo run -p rog-cli -- services` captured on each validation machine
+- [ ] `cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"` captured on each validation machine
+- [ ] `cargo run -p rog-cli -- sensors` captured on each validation machine
+- [ ] `cargo run -p rog-cli -- caps` captured on each validation machine
+- [ ] CPU and Diagnostics screenshots captured for machines with CPU permission issues
+- [ ] Dashboard, GPU, and Diagnostics screenshots captured for missing-backend scenarios
+- [ ] fan telemetry screenshots captured for each distinct fan-count scenario in the test fleet
 
 ## Release Readiness Notes
 

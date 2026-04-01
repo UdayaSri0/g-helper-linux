@@ -60,16 +60,21 @@ Current source-backed features include:
 
 - Telemetry dashboard with CPU temperature, GPU temperature, battery, power source, fans, and warnings
 - CPU telemetry and generic Linux CPU controls
+  - physical-core count and logical-thread count
+  - per-logical-CPU / thread usage, frequency, policy, and online/offline state
   - turbo boost
   - power mode
   - governor
   - energy performance preference
   - min/max frequency limits
-  - per-core online/offline toggles
+  - per-logical-CPU online/offline toggles
+  - structured diagnostics for `available`, `unsupported`, `missing_backend`, `permission_denied`, and `temporarily_unavailable` write states
 - GPU mode read/write through `supergfxd`
 - ASUS performance profile read/write through `asusd`
 - ASUS battery charge limit read/write through `asusd`
 - Keyboard backlight brightness read/write through sysfs when permissions allow
+- Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
+- Best-effort dynamic fan telemetry for 0..N fans, with friendly labels when hwmon exposes them
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
@@ -164,6 +169,14 @@ The application can launch without all external services, but feature availabili
 - Tray support: depends on desktop support for StatusNotifierItem / AppIndicator integration
 
 When these dependencies are missing or read-only, the UI is expected to degrade gracefully instead of crashing.
+
+Current first-release behavior to expect:
+
+- missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
+- missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
+- readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
+- readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable
+- dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
 
 ## Documentation Index
 
