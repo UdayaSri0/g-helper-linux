@@ -13,14 +13,14 @@ This matrix reflects the current implementation in the repository today. It is b
 | Keyboard backlight brightness | sysfs LED backend (`kbd_backlight`) | Read + Write | Implemented | Writable only if the current user can write the LED `brightness` file |
 | Lighting mode | sysfs LED backend | Read + Write | Partial | Current daemon backend supports `Off` and `Static` only |
 | Aura / RGB lighting | None in current runtime | Read + Write | Missing | Model and UI placeholders exist, but no runtime backend is wired in |
-| Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort; depends on what the platform exposes |
+| Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; friendly labels come from hwmon when available, otherwise the UI falls back to `Fan N`; rows remain visible even when an individual input is currently unavailable |
 | Fan curves | None in current runtime | Read + Write | Missing | Domain model and traits exist, but there is no provider, daemon API, or UI flow yet |
-| CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, and per-core state |
+| CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, physical-core/logical-thread counts, and per-logical-CPU state |
 | CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support; daemon reports per-control access state, blocked paths, and suggested checks |
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU temperature fallback | `nvidia-smi` | Read | Implemented | Used only when primary GPU temperature is unavailable from `hwmon` |
-| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with capability and warning information |
+| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with a troubleshooting summary, structured feature-access reasons, raw fan hwmon mapping, and CPU access diagnostics |
 | About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |

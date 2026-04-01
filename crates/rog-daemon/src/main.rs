@@ -5,9 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use regex::Regex;
 use rog_core::{
-    AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess,
-    CpuPathAccess, CpuTelemetry, DeviceCaps, GpuMode, PerformanceProfile, PowerSource,
-    TelemetrySnapshot,
+    dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
+    CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
+    FeatureAvailability, GpuMode, PerformanceProfile, PowerSource, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::cpu::CpuTelemetryProvider;
@@ -309,8 +309,9 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
-        let core_id = u32::try_from(core_id)
-            .map_err(|_| fdo::Error::InvalidArgs("core_id does not fit into u32".to_string()))?;
+        let core_id = u32::try_from(core_id).map_err(|_| {
+            fdo::Error::InvalidArgs("logical CPU id does not fit into u32".to_string())
+        })?;
         self.cpu
             .set_core_online(core_id, online)
             .map_err(map_rog_error_to_fdo)?;
@@ -339,25 +340,25 @@ async fn main() -> anyhow::Result<()> {
     let nvidia = NvidiaSmiTelemetryProvider::default();
     let memory = MemoryTelemetryProvider::default();
     let power_supply = PowerSupplySysfsProvider::default();
-    let kbd_backlight = match KbdBacklightSysfs::probe() {
-        Ok(v) => v,
+    let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
+        Ok(v) => (v, None),
         Err(e) => {
             warn!("kbd backlight probe failed: {e}");
-            None
+            (None, Some(e.to_string()))
         }
     };
-    let asusd = match AsusdPlatformProvider::connect_system().await {
-        Ok(v) => v,
+    let (asusd, asusd_connect_error) = match AsusdPlatformProvider::connect_system().await {
+        Ok(v) => (v, None),
         Err(e) => {
             warn!("asusd platform provider probe failed: {e}");
-            None
+            (None, Some(e.to_string()))
         }
     };
-    let supergfx = match SupergfxProvider::connect_system().await {
-        Ok(v) => v,
+    let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
+        Ok(v) => (v, None),
         Err(e) => {
             warn!("supergfx provider probe failed: {e}");
-            None
+            (None, Some(e.to_string()))
         }
     };
 
@@ -374,7 +375,48 @@ async fn main() -> anyhow::Result<()> {
             CpuTelemetry::empty_now(now_ms())
         });
     caps.has_fan_reading = !hw_snapshot.fans_rpm.is_empty();
-    caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
+    if hw_snapshot.fan_rows.is_empty() {
+        caps.notes
+            .push("Fan telemetry via hwmon: no fan inputs detected.".to_string());
+    } else {
+        caps.notes.push(format!(
+            "Fan telemetry via hwmon: {} input(s) detected, {} currently reporting RPM.",
+            hw_snapshot.fan_rows.len(),
+            hw_snapshot.fans_rpm.len()
+        ));
+    }
+    let kbd_backlight_detected = kbd_backlight.is_some() || detect_kbd_backlight();
+    caps.has_kbd_backlight = kbd_backlight_detected;
+    caps.kbd_backlight_access = if let Some(kbd) = &kbd_backlight {
+        if kbd.can_set_brightness() {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Keyboard backlight is available through the sysfs LED backend.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            )
+        }
+    } else if let Some(err) = &kbd_backlight_probe_error {
+        caps.notes
+            .push(format!("keyboard backlight probing failed: {err}"));
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
+        )
+    } else if kbd_backlight_detected {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the current backend is not ready yet.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard backlight control was detected on this machine.",
+        )
+    };
     let mut control_state = ControlState::default();
 
     if let Some(kbd) = &kbd_backlight {
@@ -407,6 +449,28 @@ async fn main() -> anyhow::Result<()> {
                 Ok(pcaps) => {
                     caps.has_profiles = pcaps.has_profiles;
                     caps.has_charge_limit = pcaps.has_charge_limit;
+                    caps.profile_access = if pcaps.has_profiles {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Available,
+                            "Performance profiles are available through asusd.",
+                        )
+                    } else {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Unsupported,
+                            "asusd is available, but this machine does not expose ASUS performance profiles.",
+                        )
+                    };
+                    caps.charge_limit_access = if pcaps.has_charge_limit {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Available,
+                            "Battery charge-limit control is available through asusd.",
+                        )
+                    } else {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Unsupported,
+                            "asusd is available, but this machine does not expose battery charge-limit control.",
+                        )
+                    };
                     if !pcaps.profile_choices.is_empty() {
                         let choices = pcaps
                             .profile_choices
@@ -418,9 +482,18 @@ async fn main() -> anyhow::Result<()> {
                             .push(format!("asusd profiles available: {choices}"));
                     }
                 }
-                Err(e) => caps
-                    .notes
-                    .push(format!("asusd platform probing failed: {e}")),
+                Err(e) => {
+                    caps.profile_access = FeatureAvailability::new(
+                        FeatureAccessState::TemporarilyUnavailable,
+                        "asusd is present, but profile support could not be confirmed right now.",
+                    );
+                    caps.charge_limit_access = FeatureAvailability::new(
+                        FeatureAccessState::TemporarilyUnavailable,
+                        "asusd is present, but charge-limit support could not be confirmed right now.",
+                    );
+                    caps.notes
+                        .push(format!("asusd platform probing failed: {e}"));
+                }
             }
 
             if caps.has_profiles {
@@ -440,9 +513,30 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        None => caps
-            .notes
-            .push("asusd not detected; profile/charge controls disabled.".to_string()),
+        None => {
+            if let Some(err) = &asusd_connect_error {
+                caps.profile_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "Performance profiles need asusd, but the system backend could not be reached right now.",
+                );
+                caps.charge_limit_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+                );
+                caps.notes.push(format!("asusd connect failed: {err}"));
+            } else {
+                caps.profile_access = FeatureAvailability::new(
+                    FeatureAccessState::MissingBackend,
+                    "Install and start asusd to enable performance profiles.",
+                );
+                caps.charge_limit_access = FeatureAvailability::new(
+                    FeatureAccessState::MissingBackend,
+                    "Install and start asusd to enable charge-limit control.",
+                );
+                caps.notes
+                    .push("asusd not detected; profile/charge controls disabled.".to_string());
+            }
+        }
     }
 
     match &supergfx {
@@ -453,6 +547,17 @@ async fn main() -> anyhow::Result<()> {
                 Ok(gcaps) => {
                     caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
                     caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
+                    caps.gpu_mode_access = if caps.has_gpu_modes {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Available,
+                            "GPU mode switching is available through supergfxd.",
+                        )
+                    } else {
+                        FeatureAvailability::new(
+                            FeatureAccessState::Unsupported,
+                            "supergfxd is available, but this machine does not expose switchable GPU modes.",
+                        )
+                    };
                     if !gcaps.raw_supported_modes.is_empty() {
                         caps.notes.push(format!(
                             "supergfxd supported modes: {}",
@@ -460,7 +565,13 @@ async fn main() -> anyhow::Result<()> {
                         ));
                     }
                 }
-                Err(e) => caps.notes.push(format!("supergfxd probing failed: {e}")),
+                Err(e) => {
+                    caps.gpu_mode_access = FeatureAvailability::new(
+                        FeatureAccessState::TemporarilyUnavailable,
+                        "supergfxd is present, but GPU mode support could not be confirmed right now.",
+                    );
+                    caps.notes.push(format!("supergfxd probing failed: {e}"));
+                }
             }
 
             if caps.has_gpu_modes {
@@ -472,9 +583,22 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        None => caps
-            .notes
-            .push("supergfxd not detected; GPU mode controls disabled.".to_string()),
+        None => {
+            if let Some(err) = &supergfx_connect_error {
+                caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+                );
+                caps.notes.push(format!("supergfxd connect failed: {err}"));
+            } else {
+                caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::MissingBackend,
+                    "Install and start supergfxd to enable GPU mode switching.",
+                );
+                caps.notes
+                    .push("supergfxd not detected; GPU mode controls disabled.".to_string());
+            }
+        }
     }
 
     // Diagnostics: include relevant system bus names (no asusd/supergfxd hardcoding).
@@ -792,7 +916,38 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     );
     m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
     m.insert("notes".to_string(), ov(c.notes.clone()));
+    insert_feature_access_to_dbus(&mut m, dbus_keys::PROFILE_ACCESS_PREFIX, &c.profile_access);
+    insert_feature_access_to_dbus(
+        &mut m,
+        dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX,
+        &c.charge_limit_access,
+    );
+    insert_feature_access_to_dbus(
+        &mut m,
+        dbus_keys::GPU_MODE_ACCESS_PREFIX,
+        &c.gpu_mode_access,
+    );
+    insert_feature_access_to_dbus(
+        &mut m,
+        dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX,
+        &c.kbd_backlight_access,
+    );
     m
+}
+
+fn insert_feature_access_to_dbus(
+    map: &mut HashMap<String, OwnedValue>,
+    prefix: &str,
+    access: &FeatureAvailability,
+) {
+    map.insert(
+        dbus_keys::feature_access_status_key(prefix),
+        ov(access.status.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::feature_access_reason_key(prefix),
+        ov(access.reason.clone()),
+    );
 }
 
 fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
@@ -842,7 +997,7 @@ fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
     m.insert("epp_choices".to_string(), ov(c.epp_choices.clone()));
     m.insert("sysfs_paths".to_string(), ov(c.sysfs_paths.clone()));
     m.insert(
-        "control_access".to_string(),
+        dbus_keys::CPU_CONTROL_ACCESS_KEY.to_string(),
         ov(c.control_access
             .iter()
             .map(cpu_control_access_to_dbus)
@@ -853,14 +1008,20 @@ fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
 
 fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("kind".to_string(), ov(control.kind.as_str().to_string()));
     m.insert(
-        "status".to_string(),
+        dbus_keys::CPU_CONTROL_KIND_KEY.to_string(),
+        ov(control.kind.as_str().to_string()),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_STATUS_KEY.to_string(),
         ov(control.status.as_str().to_string()),
     );
-    m.insert("reason".to_string(), ov(control.reason.clone()));
     m.insert(
-        "paths".to_string(),
+        dbus_keys::CPU_CONTROL_REASON_KEY.to_string(),
+        ov(control.reason.clone()),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_PATHS_KEY.to_string(),
         ov(control
             .paths
             .iter()
@@ -872,9 +1033,18 @@ fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, Own
 
 fn cpu_path_access_to_dbus(path: &CpuPathAccess) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("path".to_string(), ov(path.path.clone()));
-    m.insert("readable".to_string(), OwnedValue::from(path.readable));
-    m.insert("writable".to_string(), OwnedValue::from(path.writable));
+    m.insert(
+        dbus_keys::CPU_PATH_PATH_KEY.to_string(),
+        ov(path.path.clone()),
+    );
+    m.insert(
+        dbus_keys::CPU_PATH_READABLE_KEY.to_string(),
+        OwnedValue::from(path.readable),
+    );
+    m.insert(
+        dbus_keys::CPU_PATH_WRITABLE_KEY.to_string(),
+        OwnedValue::from(path.writable),
+    );
     m
 }
 
@@ -915,7 +1085,39 @@ fn cpu_to_dbus(c: &CpuTelemetry) -> HashMap<String, OwnedValue> {
         let mut rows: Vec<HashMap<String, OwnedValue>> = Vec::with_capacity(c.per_core.len());
         for core in &c.per_core {
             let mut row = HashMap::new();
-            row.insert("core_id".to_string(), OwnedValue::from(core.core_id as u64));
+            row.insert(
+                dbus_keys::CPU_LOGICAL_CPU_ID_KEY.to_string(),
+                OwnedValue::from(core.logical_cpu_id as u64),
+            );
+            // Compatibility alias for older clients that still expect "core_id".
+            row.insert(
+                dbus_keys::CPU_CORE_ID_COMPAT_KEY.to_string(),
+                OwnedValue::from(core.logical_cpu_id as u64),
+            );
+            if let Some(v) = core.physical_core_index {
+                row.insert(
+                    dbus_keys::CPU_PHYSICAL_CORE_INDEX_KEY.to_string(),
+                    OwnedValue::from(v as u64),
+                );
+            }
+            if let Some(v) = core.policy_id {
+                row.insert(
+                    dbus_keys::CPU_POLICY_ID_KEY.to_string(),
+                    OwnedValue::from(v as u64),
+                );
+            }
+            if let Some(v) = core.thread_index {
+                row.insert(
+                    dbus_keys::CPU_THREAD_INDEX_KEY.to_string(),
+                    OwnedValue::from(v as u64),
+                );
+            }
+            if let Some(v) = core.thread_count {
+                row.insert(
+                    dbus_keys::CPU_THREAD_COUNT_KEY.to_string(),
+                    OwnedValue::from(v as u64),
+                );
+            }
             if let Some(v) = core.usage_percent {
                 row.insert("usage_percent".to_string(), OwnedValue::from(v as f64));
             }
@@ -931,7 +1133,7 @@ fn cpu_to_dbus(c: &CpuTelemetry) -> HashMap<String, OwnedValue> {
             row.insert("online".to_string(), OwnedValue::from(core.online));
             rows.push(row);
         }
-        m.insert("per_core".to_string(), ov(rows));
+        m.insert(dbus_keys::CPU_TELEMETRY_PER_CORE_KEY.to_string(), ov(rows));
     }
     m
 }
@@ -957,6 +1159,12 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     if !t.fans_rpm.is_empty() {
         let fans: HashMap<String, u32> = t.fans_rpm.iter().map(|(k, v)| (k.clone(), *v)).collect();
         m.insert("fans_rpm".to_string(), OwnedValue::from(fans));
+    }
+    if !t.fan_rows.is_empty() {
+        m.insert(
+            dbus_keys::TELEMETRY_FAN_ROWS_KEY.to_string(),
+            ov(t.fan_rows.iter().map(fan_row_to_dbus).collect::<Vec<_>>()),
+        );
     }
     if let Some(ps) = t.power_source {
         m.insert("power_source".to_string(), ov(power_source_to_str(ps)));
@@ -1133,6 +1341,39 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     m
 }
 
+fn fan_row_to_dbus(fan: &FanTelemetry) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert(
+        dbus_keys::FAN_ROW_HWMON_DEVICE_KEY.to_string(),
+        ov(fan.hwmon_device.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_ROW_HWMON_PATH_KEY.to_string(),
+        ov(fan.hwmon_path.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_ROW_INPUT_PATH_KEY.to_string(),
+        ov(fan.input_path.clone()),
+    );
+    if let Some(raw_label) = &fan.raw_label {
+        m.insert(
+            dbus_keys::FAN_ROW_RAW_LABEL_KEY.to_string(),
+            ov(raw_label.clone()),
+        );
+    }
+    m.insert(
+        dbus_keys::FAN_ROW_DISPLAY_LABEL_KEY.to_string(),
+        ov(fan.display_label.clone()),
+    );
+    if let Some(rpm) = fan.rpm {
+        m.insert(
+            dbus_keys::FAN_ROW_RPM_KEY.to_string(),
+            OwnedValue::from(rpm),
+        );
+    }
+    m
+}
+
 fn power_source_to_str(p: PowerSource) -> &'static str {
     match p {
         PowerSource::Ac => "Ac",
@@ -1270,8 +1511,11 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
     out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
     out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
-    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
-    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    out.push_str(&format!("cpu_count (physical cores): {}\n", caps.cpu_count));
+    out.push_str(&format!(
+        "thread_count (logical threads): {}\n",
+        caps.thread_count
+    ));
     if let Some(driver) = &caps.scaling_driver {
         out.push_str(&format!("scaling_driver: {driver}\n"));
     }
@@ -1334,13 +1578,24 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
     out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
 
-    out.push_str("\nPer-core\n");
-    out.push_str("--------\n");
-    out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+    out.push_str("\nLogical CPUs / Threads\n");
+    out.push_str("----------------------\n");
+    out.push_str("cpu  pcore  thr   pol   online  usage%  cur_mhz  min_mhz  max_mhz\n");
     for core in &cpu.per_core {
+        let thread_label = match (core.thread_index, core.thread_count) {
+            (Some(index), Some(count)) => format!("{index}/{count}"),
+            _ => "-".to_string(),
+        };
         out.push_str(&format!(
-            "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
-            core.core_id,
+            "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+            core.logical_cpu_id,
+            core.physical_core_index
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            thread_label,
+            core.policy_id
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             if core.online { "yes" } else { "no" },
             core.usage_percent
                 .map(|v| format!("{v:.1}"))
@@ -1457,5 +1712,215 @@ impl RogHelperDaemon {
             ov(vec!["Off".to_string(), "Static".to_string()]),
         );
         Some(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_as_str(map: &HashMap<String, OwnedValue>, key: &str) -> String {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn rows_from_value(value: &OwnedValue) -> Vec<HashMap<String, OwnedValue>> {
+        Vec::<HashMap<String, OwnedValue>>::try_from(value.clone()).expect("rows should decode")
+    }
+
+    #[test]
+    fn caps_to_dbus_emits_feature_access_status_and_reason_keys() {
+        let mut caps = DeviceCaps::unknown();
+        caps.profile_access = FeatureAvailability::new(
+            FeatureAccessState::MissingBackend,
+            "Install and start asusd to enable performance profiles.",
+        );
+        caps.charge_limit_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+        );
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "supergfxd is available, but this machine does not expose switchable GPU modes.",
+        );
+        caps.kbd_backlight_access = FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard backlight is detected, but writes are blocked for the current user.",
+        );
+
+        let map = caps_to_dbus(&caps);
+
+        for (prefix, status, reason) in [
+            (
+                dbus_keys::PROFILE_ACCESS_PREFIX,
+                "missing_backend",
+                "Install and start asusd to enable performance profiles.",
+            ),
+            (
+                dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX,
+                "temporarily_unavailable",
+                "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+            ),
+            (
+                dbus_keys::GPU_MODE_ACCESS_PREFIX,
+                "unsupported",
+                "supergfxd is available, but this machine does not expose switchable GPU modes.",
+            ),
+            (
+                dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX,
+                "permission_denied",
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            ),
+        ] {
+            assert_eq!(
+                value_as_str(&map, &dbus_keys::feature_access_status_key(prefix)),
+                status
+            );
+            assert_eq!(
+                value_as_str(&map, &dbus_keys::feature_access_reason_key(prefix)),
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_to_dbus_emits_structured_fan_rows() {
+        let mut telemetry = TelemetrySnapshot::empty_now(42);
+        telemetry.fan_rows.push(FanTelemetry {
+            hwmon_device: "hwmon3".to_string(),
+            hwmon_path: "/sys/class/hwmon/hwmon3".to_string(),
+            input_path: "/sys/class/hwmon/hwmon3/fan1_input".to_string(),
+            raw_label: Some("cpu".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(3210),
+        });
+
+        let map = telemetry_to_dbus(&telemetry);
+        let rows = rows_from_value(
+            map.get(dbus_keys::TELEMETRY_FAN_ROWS_KEY)
+                .expect("fan_rows key should exist"),
+        );
+        let row = rows.first().expect("fan row should exist");
+
+        assert_eq!(
+            value_as_str(row, dbus_keys::FAN_ROW_HWMON_DEVICE_KEY),
+            "hwmon3"
+        );
+        assert_eq!(
+            value_as_str(row, dbus_keys::FAN_ROW_HWMON_PATH_KEY),
+            "/sys/class/hwmon/hwmon3"
+        );
+        assert_eq!(
+            value_as_str(row, dbus_keys::FAN_ROW_INPUT_PATH_KEY),
+            "/sys/class/hwmon/hwmon3/fan1_input"
+        );
+        assert_eq!(value_as_str(row, dbus_keys::FAN_ROW_RAW_LABEL_KEY), "cpu");
+        assert_eq!(
+            value_as_str(row, dbus_keys::FAN_ROW_DISPLAY_LABEL_KEY),
+            "CPU Fan"
+        );
+        assert_eq!(u64_from_map(row, dbus_keys::FAN_ROW_RPM_KEY), Some(3210));
+    }
+
+    #[test]
+    fn cpu_caps_to_dbus_emits_structured_control_access_rows() {
+        let mut caps = CpuCaps::unknown();
+        caps.control_access.push(CpuControlAccess {
+            kind: rog_core::CpuControlKind::Governor,
+            status: CpuAccessState::PermissionDenied,
+            reason: "Governor paths are readable but not writable by the current user.".to_string(),
+            paths: vec![CpuPathAccess {
+                path: "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor".to_string(),
+                readable: true,
+                writable: false,
+            }],
+        });
+
+        let map = cpu_caps_to_dbus(&caps);
+        let rows = rows_from_value(
+            map.get(dbus_keys::CPU_CONTROL_ACCESS_KEY)
+                .expect("control_access key should exist"),
+        );
+        let row = rows.first().expect("control access row should exist");
+
+        assert_eq!(
+            value_as_str(row, dbus_keys::CPU_CONTROL_KIND_KEY),
+            rog_core::CpuControlKind::Governor.as_str()
+        );
+        assert_eq!(
+            value_as_str(row, dbus_keys::CPU_CONTROL_STATUS_KEY),
+            CpuAccessState::PermissionDenied.as_str()
+        );
+        assert_eq!(
+            value_as_str(row, dbus_keys::CPU_CONTROL_REASON_KEY),
+            "Governor paths are readable but not writable by the current user."
+        );
+
+        let paths = rows_from_value(
+            row.get(dbus_keys::CPU_CONTROL_PATHS_KEY)
+                .expect("paths key should exist"),
+        );
+        let path = paths.first().expect("path row should exist");
+        assert_eq!(
+            value_as_str(path, dbus_keys::CPU_PATH_PATH_KEY),
+            "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
+        );
+        assert_eq!(
+            path.get(dbus_keys::CPU_PATH_READABLE_KEY)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            path.get(dbus_keys::CPU_PATH_WRITABLE_KEY)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn cpu_to_dbus_includes_logical_cpu_id_and_core_id_alias() {
+        let mut cpu = CpuTelemetry::empty_now(7);
+        cpu.per_core.push(rog_core::CpuCoreTelemetry {
+            logical_cpu_id: 11,
+            physical_core_index: Some(5),
+            policy_id: Some(11),
+            thread_index: Some(1),
+            thread_count: Some(2),
+            usage_percent: Some(43.5),
+            current_freq_mhz: Some(4200),
+            min_freq_mhz: Some(800),
+            max_freq_mhz: Some(5200),
+            online: true,
+        });
+
+        let map = cpu_to_dbus(&cpu);
+        let rows = rows_from_value(
+            map.get(dbus_keys::CPU_TELEMETRY_PER_CORE_KEY)
+                .expect("per_core key should exist"),
+        );
+        let row = rows.first().expect("per_core row should exist");
+
+        assert_eq!(
+            row.get(dbus_keys::CPU_LOGICAL_CPU_ID_KEY)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(11)
+        );
+        assert_eq!(
+            row.get(dbus_keys::CPU_CORE_ID_COMPAT_KEY)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(11)
+        );
+        assert_eq!(
+            row.get(dbus_keys::CPU_PHYSICAL_CORE_INDEX_KEY)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(5)
+        );
+        assert_eq!(
+            row.get(dbus_keys::CPU_POLICY_ID_KEY)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(11)
+        );
     }
 }

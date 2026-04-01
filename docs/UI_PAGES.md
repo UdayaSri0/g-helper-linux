@@ -35,6 +35,12 @@ For each page, it lists:
 - GPU mode depends on `has_gpu_modes`
 - charge limit depends on `has_charge_limit`
 - keyboard backlight depends on `has_kbd_backlight` and backend writability
+- fan telemetry depends on the dynamic `fan_rows` set from daemon telemetry; the UI does not assume a fixed fan count
+
+Current behavior:
+
+- disabled quick actions explain whether the block is caused by a missing backend, unsupported hardware, temporary backend unavailability, or permissions
+- quick-action controls use consistent inline spacing and compact apply buttons so enabled and disabled states read cleanly on first launch
 
 ### Missing or planned
 
@@ -52,9 +58,10 @@ For each page, it lists:
 - average clock
 - CPU access-status banner when writes are blocked or partially unavailable
 - scaling driver
-- CPU core count
-- thread count
-- per-core state table
+- physical core count
+- logical thread count
+- quick-control row subtitles that show current turbo, preset, and frequency-limit context when readable
+- logical CPU / thread state table
 - detected CPU sysfs access report with readable/writable paths
 - CPU diagnostics copy action
 
@@ -66,14 +73,20 @@ For each page, it lists:
 - max frequency control
 - governor apply
 - EPP apply
-- per-core online/offline toggle
+- per-logical-CPU online/offline toggle
+
+Current behavior:
+
+- quick CPU controls are staged in grouped apply rows so the scope of each Apply button is clear
+- disabled or read-only controls stay visible with short reason text instead of looking broken
+- logical CPU toggle rows show the logical CPU id plus topology context, and the confirmation dialog spells out that the change can affect responsiveness and thermals
 
 ### Capability dependencies
 
 - control availability depends on `cpu_caps`
 - write controls depend on per-control entries in `cpu_caps.control_access`
 - `policy_writable` remains a coarse any-writable summary
-- per-core toggle support depends on `has_core_online` plus `core_online` access state
+- logical CPU toggle support depends on `has_core_online` plus `core_online` access state
 
 ### Missing or planned
 
@@ -88,7 +101,7 @@ For each page, it lists:
 - current ASUS performance profile
 - current GPU mode
 - GPU switch hint
-- last action status
+- support/status summary
 
 ### What it supports
 
@@ -100,6 +113,11 @@ For each page, it lists:
 - profile controls depend on `has_profiles`
 - GPU mode controls depend on `has_gpu_modes`
 - reboot/logout hint depends on `requires_reboot_for_gpu_switch`
+
+Current behavior:
+
+- current-state rows and control subtitles now replace vague `(n/a)` or `Unavailable` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
+- current-state value labels wrap longer reason strings instead of clipping, and the control rows use consistent aligned selector/apply layouts
 
 ### Missing or planned
 
@@ -170,6 +188,7 @@ Important note:
 - current lighting backend
 - current brightness
 - current mode
+- availability status
 - last action status
 
 ### What it supports
@@ -177,13 +196,14 @@ Important note:
 - mode selection
 - brightness change
 - apply action
-- RGB picker placeholder
+- RGB picker with capability-aware disabled-state messaging
 
 ### Capability dependencies
 
 - depends on the daemon exposing a lighting backend
 - write support depends on backend writability
 - RGB support depends on `supports_rgb`
+- unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
 ### Missing or planned
 
@@ -195,10 +215,13 @@ Important note:
 
 ### What it shows
 
+- troubleshooting summary for current support and permission blockers
 - daemon endpoint summary
 - capability matrix
+- structured feature-access status and reason fields
 - endpoint list
 - notes
+- fan telemetry diagnostics, including detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM or unavailable state
 - warnings
 - CPU write-access report, including blocked sysfs paths and suggested checks
 
@@ -226,8 +249,8 @@ Important note:
 - version
 - license
 - session DBus API endpoint
-- maintainer / contributor text
-- source URL
+- authors
+- repository URL
 
 ### What it supports
 
@@ -240,7 +263,7 @@ Important note:
 ### Missing or planned
 
 - no packaged icon asset display
-- current metadata still depends partly on Cargo fallback values
+- metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
 ## Current Planned-But-Not-Implemented Pages
 

@@ -1,4 +1,3 @@
-v0.16
 # rog-helper
 
 Linux-native control app for ASUS ROG laptops, built as a Rust workspace with a GTK/libadwaita UI, a user-session daemon, a provider layer for DBus/sysfs/procfs integration, and a diagnostics CLI.
@@ -54,22 +53,33 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime archite
 - `crates/rog-cli`
   - `rog-helper` diagnostics CLI
 
+Basic packaging assets are also included under `packaging/`:
+
+- `packaging/systemd-user/rog-helperd.service`
+- `packaging/desktop/rog-helper.desktop`
+- `packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg`
+
 ## Currently Implemented Features
 
 Current source-backed features include:
 
 - Telemetry dashboard with CPU temperature, GPU temperature, battery, power source, fans, and warnings
 - CPU telemetry and generic Linux CPU controls
+  - physical-core count and logical-thread count
+  - per-logical-CPU / thread usage, frequency, policy, and online/offline state
   - turbo boost
   - power mode
   - governor
   - energy performance preference
   - min/max frequency limits
-  - per-core online/offline toggles
+  - per-logical-CPU online/offline toggles
+  - structured diagnostics for `available`, `unsupported`, `missing_backend`, `permission_denied`, and `temporarily_unavailable` write states
 - GPU mode read/write through `supergfxd`
 - ASUS performance profile read/write through `asusd`
 - ASUS battery charge limit read/write through `asusd`
 - Keyboard backlight brightness read/write through sysfs when permissions allow
+- Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
+- Best-effort dynamic fan telemetry for 0..N fans, with friendly labels when hwmon exposes them
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
@@ -92,9 +102,13 @@ Important gaps in the current implementation:
 - Persistent user configuration
 - Typed DBus payloads shared between daemon and UI
 - Complete tested hardware support matrix
-- Polished release packaging assets such as icons and release metadata cleanup
+- End-to-end distro packaging and install validation
 
 Some related domain types and traits already exist in `rog-core` and `rog-providers`, but they are not fully wired into runtime behavior yet.
+
+Hardware support note:
+
+- unless a real machine record has been added under the hardware-validation docs, treat support for that machine or scenario as untested rather than validated
 
 ## Quick Start
 
@@ -165,6 +179,14 @@ The application can launch without all external services, but feature availabili
 
 When these dependencies are missing or read-only, the UI is expected to degrade gracefully instead of crashing.
 
+Current first-release behavior to expect:
+
+- missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
+- missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
+- readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
+- readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable
+- dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
+
 ## Documentation Index
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -179,4 +201,5 @@ When these dependencies are missing or read-only, the UI is expected to degrade 
 - [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
 - [docs/UI_PAGES.md](docs/UI_PAGES.md)
 - [docs/HARDWARE_SUPPORT.md](docs/HARDWARE_SUPPORT.md)
+- [docs/HARDWARE_VALIDATION_TEMPLATE.md](docs/HARDWARE_VALIDATION_TEMPLATE.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

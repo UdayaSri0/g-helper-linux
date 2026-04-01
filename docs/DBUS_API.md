@@ -62,12 +62,23 @@ This is the current design, not a placeholder.
 - `has_aura` -> `bool`
 - `has_kbd_backlight` -> `bool`
 - `requires_reboot_for_gpu_switch` -> `bool`
+- `profile_access_status` -> `s`
+- `profile_access_reason` -> `s`
+- `charge_limit_access_status` -> `s`
+- `charge_limit_access_reason` -> `s`
+- `gpu_mode_access_status` -> `s`
+- `gpu_mode_access_reason` -> `s`
+- `kbd_backlight_access_status` -> `s`
+- `kbd_backlight_access_reason` -> `s`
 - `endpoints` -> `as`
 - `notes` -> `as`
 
 Important note:
 
 - `has_aura` and `has_fan_curves` exist in the payload shape but are not currently probed to true by the daemon.
+- `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
+- The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
+- The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
 
 ## `GetState` Response
 
@@ -101,6 +112,18 @@ Current telemetry keys are grouped below.
 - `gpu_temp_c`
 - `temps_c`
 - `fans_rpm`
+- `fan_rows`
+
+`fans_rpm` is a flattened convenience map keyed by chosen display label and only includes rows that currently report an RPM value.
+
+`fan_rows` is the authoritative dynamic fan-telemetry list. It may contain zero, one, or many rows depending on the platform. Rows are emitted in a deterministic order based on detected hwmon device and sysfs input path. Each row map currently includes:
+
+- `hwmon_device`
+- `hwmon_path`
+- `input_path`
+- optional `raw_label`
+- `display_label`
+- optional `rpm`
 
 ### Power and battery keys
 
@@ -193,6 +216,11 @@ Current telemetry keys are grouped below.
 
 `policy_writable` is a coarse any-writable summary. The release-grade source of truth for CPU write availability is `control_access`.
 
+Count semantics:
+
+- `cpu_count` is the detected physical-core count
+- `thread_count` is the detected logical CPU / thread count
+
 `control_access` is currently a list of row maps with:
 
 - `kind` -> `boost` | `power_mode` | `governor` | `epp` | `freq_limits` | `core_online`
@@ -227,12 +255,20 @@ Current keys:
 
 `per_core` is currently a list of row maps with:
 
-- `core_id`
+- `logical_cpu_id`
+- `physical_core_index`
+- `policy_id`
+- `thread_index`
+- `thread_count`
 - `usage_percent`
 - `current_freq_mhz`
 - `min_freq_mhz`
 - `max_freq_mhz`
 - `online`
+
+Compatibility note:
+
+- the daemon still includes `core_id` as a compatibility alias for `logical_cpu_id`
 
 ## `GetCpuDiagnostics` Response
 
@@ -243,7 +279,7 @@ Current keys:
 - readable/writable sysfs paths involved in each control
 - suggested shell checks and restart guidance
 - current CPU telemetry summary
-- per-core table
+- logical CPU / thread table
 
 This is intended for diagnostics and copy-to-clipboard workflows rather than as a machine-friendly API.
 
@@ -340,7 +376,7 @@ Important note:
 ### `SetCpuCoreOnline`
 
 - arguments:
-  - `core_id` as `u64`
+  - `core_id` as `u64` logical CPU / thread id
   - `online` as `bool`
 
 ## Errors

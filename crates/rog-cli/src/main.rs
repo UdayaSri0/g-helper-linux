@@ -4,10 +4,11 @@ use std::process::Command;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
-use rog_core::DeviceCaps;
+use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability};
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
+use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
@@ -223,60 +224,199 @@ async fn cmd_caps() -> anyhow::Result<()> {
         warn!("hwmon failed: {e}");
         rog_core::TelemetrySnapshot::empty_now(0)
     });
+    let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("kbd backlight probe failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
 
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
-    caps.has_kbd_backlight = detect_kbd_backlight();
+    caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
+    caps.kbd_backlight_access = if let Some(kbd) = &kbd_backlight {
+        if kbd.can_set_brightness() {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Keyboard backlight is available through the sysfs LED backend.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            )
+        }
+    } else if kbd_backlight_probe_error.is_some() || caps.has_kbd_backlight {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard backlight control was detected on this machine.",
+        )
+    };
 
-    if let Ok(Some(asusd)) = AsusdPlatformProvider::connect_system().await {
+    let (asusd, asusd_connect_error) = match AsusdPlatformProvider::connect_system().await {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("asusd connect failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+
+    if let Some(asusd) = asusd {
         caps.endpoints
             .push(format!("asusd-platform:{}", asusd.endpoint_tag()));
         match asusd.probe_caps().await {
             Ok(pcaps) => {
                 caps.has_profiles = pcaps.has_profiles;
                 caps.has_charge_limit = pcaps.has_charge_limit;
+                caps.profile_access = if pcaps.has_profiles {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "Performance profiles are available through asusd.",
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Unsupported,
+                        "asusd is available, but this machine does not expose ASUS performance profiles.",
+                    )
+                };
+                caps.charge_limit_access = if pcaps.has_charge_limit {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "Battery charge-limit control is available through asusd.",
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Unsupported,
+                        "asusd is available, but this machine does not expose battery charge-limit control.",
+                    )
+                };
             }
-            Err(e) => caps.notes.push(format!("asusd probing failed: {e}")),
+            Err(e) => {
+                caps.profile_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "asusd is present, but profile support could not be confirmed right now.",
+                );
+                caps.charge_limit_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "asusd is present, but charge-limit support could not be confirmed right now.",
+                );
+                caps.notes
+                    .push(format!("asusd platform probing failed: {e}"));
+            }
         }
         if caps.has_profiles {
-            if let Ok(p) = asusd.get_profile().await {
-                caps.notes.push(format!("Current profile: {p:?}"));
+            match asusd.get_profile().await {
+                Ok(p) => caps.notes.push(format!("Current profile: {p:?}")),
+                Err(e) => caps
+                    .notes
+                    .push(format!("could not read current profile from asusd: {e}")),
             }
         }
         if caps.has_charge_limit {
-            if let Ok(l) = asusd.get_limit().await {
-                caps.notes.push(format!("Current charge limit: {}%", l.0));
+            match asusd.get_limit().await {
+                Ok(l) => caps.notes.push(format!("Current charge limit: {}%", l.0)),
+                Err(e) => caps
+                    .notes
+                    .push(format!("could not read charge limit from asusd: {e}")),
             }
         }
+    } else if let Some(err) = &asusd_connect_error {
+        caps.profile_access = backend_access_from_connect_error(
+            Some(err.as_str()),
+            "Install and start asusd to enable performance profiles.",
+            "Performance profiles need asusd, but the system backend could not be reached right now.",
+        );
+        caps.charge_limit_access = backend_access_from_connect_error(
+            Some(err.as_str()),
+            "Install and start asusd to enable charge-limit control.",
+            "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+        );
+        caps.notes.push(format!("asusd connect failed: {err}"));
     } else {
+        caps.profile_access = backend_access_from_connect_error(
+            None,
+            "Install and start asusd to enable performance profiles.",
+            "Performance profiles need asusd, but the system backend could not be reached right now.",
+        );
+        caps.charge_limit_access = backend_access_from_connect_error(
+            None,
+            "Install and start asusd to enable charge-limit control.",
+            "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+        );
         caps.notes
-            .push("asusd not detected; profile/charge controls unavailable.".to_string());
+            .push("asusd not detected; profile/charge controls disabled.".to_string());
     }
 
-    if let Ok(Some(supergfx)) = SupergfxProvider::connect_system().await {
+    let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("supergfxd connect failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+
+    if let Some(supergfx) = supergfx {
         caps.endpoints
             .push(format!("supergfxd:{}", supergfx.endpoint_tag()));
         match supergfx.probe_caps().await {
             Ok(gcaps) => {
                 caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
                 caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
+                caps.gpu_mode_access = if caps.has_gpu_modes {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "GPU mode switching is available through supergfxd.",
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Unsupported,
+                        "supergfxd is available, but this machine does not expose switchable GPU modes.",
+                    )
+                };
                 if !gcaps.raw_supported_modes.is_empty() {
                     caps.notes.push(format!(
-                        "supergfx supported modes: {}",
+                        "supergfxd supported modes: {}",
                         gcaps.raw_supported_modes.join(", ")
                     ));
                 }
             }
-            Err(e) => caps.notes.push(format!("supergfx probing failed: {e}")),
-        }
-        if caps.has_gpu_modes {
-            if let Ok(m) = supergfx.get_mode().await {
-                caps.notes.push(format!("Current GPU mode: {m:?}"));
+            Err(e) => {
+                caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "supergfxd is present, but GPU mode support could not be confirmed right now.",
+                );
+                caps.notes.push(format!("supergfxd probing failed: {e}"));
             }
         }
+        if caps.has_gpu_modes {
+            match supergfx.get_mode().await {
+                Ok(m) => caps.notes.push(format!("Current GPU mode: {m:?}")),
+                Err(e) => caps.notes.push(format!(
+                    "could not read current GPU mode from supergfxd: {e}"
+                )),
+            }
+        }
+    } else if let Some(err) = &supergfx_connect_error {
+        caps.gpu_mode_access = backend_access_from_connect_error(
+            Some(err.as_str()),
+            "Install and start supergfxd to enable GPU mode switching.",
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+        );
+        caps.notes.push(format!("supergfxd connect failed: {err}"));
     } else {
+        caps.gpu_mode_access = backend_access_from_connect_error(
+            None,
+            "Install and start supergfxd to enable GPU mode switching.",
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+        );
         caps.notes
-            .push("supergfxd not detected; GPU mode controls unavailable.".to_string());
+            .push("supergfxd not detected; GPU mode controls disabled.".to_string());
     }
 
     // Include filtered DBus names as endpoints for diagnostics.
@@ -345,4 +485,51 @@ fn detect_kbd_backlight() -> bool {
         }
     }
     false
+}
+
+fn backend_access_from_connect_error(
+    connect_error: Option<&str>,
+    missing_backend_reason: &'static str,
+    temporarily_unavailable_reason: &'static str,
+) -> FeatureAvailability {
+    if connect_error.is_some() {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            temporarily_unavailable_reason,
+        )
+    } else {
+        FeatureAvailability::new(FeatureAccessState::MissingBackend, missing_backend_reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_connect_status_maps_missing_backend_without_error() {
+        let availability = backend_access_from_connect_error(
+            None,
+            "missing backend reason",
+            "temporarily unavailable reason",
+        );
+
+        assert_eq!(availability.status, FeatureAccessState::MissingBackend);
+        assert_eq!(availability.reason, "missing backend reason");
+    }
+
+    #[test]
+    fn backend_connect_status_maps_error_to_temporarily_unavailable() {
+        let availability = backend_access_from_connect_error(
+            Some("dbus timeout"),
+            "missing backend reason",
+            "temporarily unavailable reason",
+        );
+
+        assert_eq!(
+            availability.status,
+            FeatureAccessState::TemporarilyUnavailable
+        );
+        assert_eq!(availability.reason, "temporarily unavailable reason");
+    }
 }

@@ -31,6 +31,16 @@ pub struct TopProcessMem {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanTelemetry {
+    pub hwmon_device: String,
+    pub hwmon_path: String,
+    pub input_path: String,
+    pub raw_label: Option<String>,
+    pub display_label: String,
+    pub rpm: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PerformanceProfile {
     Silent,
@@ -247,6 +257,10 @@ pub struct DeviceCaps {
     pub has_aura: bool,
     pub has_kbd_backlight: bool,
     pub requires_reboot_for_gpu_switch: bool,
+    pub profile_access: FeatureAvailability,
+    pub charge_limit_access: FeatureAvailability,
+    pub gpu_mode_access: FeatureAvailability,
+    pub kbd_backlight_access: FeatureAvailability,
 
     /// Raw discovery info for diagnostics (bus names, interfaces, sysfs hints, etc.).
     pub endpoints: Vec<String>,
@@ -264,9 +278,73 @@ impl DeviceCaps {
             has_aura: false,
             has_kbd_backlight: false,
             requires_reboot_for_gpu_switch: false,
+            profile_access: FeatureAvailability::unknown(),
+            charge_limit_access: FeatureAvailability::unknown(),
+            gpu_mode_access: FeatureAvailability::unknown(),
+            kbd_backlight_access: FeatureAvailability::unknown(),
             endpoints: Vec::new(),
             notes: vec!["Capabilities not probed yet.".to_string()],
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeatureAccessState {
+    Unknown,
+    Available,
+    Unsupported,
+    MissingBackend,
+    PermissionDenied,
+    TemporarilyUnavailable,
+}
+
+impl FeatureAccessState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Available => "available",
+            Self::Unsupported => "unsupported",
+            Self::MissingBackend => "missing_backend",
+            Self::PermissionDenied => "permission_denied",
+            Self::TemporarilyUnavailable => "temporarily_unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "available" => Self::Available,
+            "unsupported" => Self::Unsupported,
+            "missing_backend" => Self::MissingBackend,
+            "permission_denied" => Self::PermissionDenied,
+            "temporarily_unavailable" => Self::TemporarilyUnavailable,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureAvailability {
+    pub status: FeatureAccessState,
+    pub reason: String,
+}
+
+impl FeatureAvailability {
+    pub fn new(status: FeatureAccessState, reason: impl Into<String>) -> Self {
+        Self {
+            status,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self::new(
+            FeatureAccessState::Unknown,
+            "Capability support has not been probed yet.",
+        )
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.status == FeatureAccessState::Available
     }
 }
 
@@ -279,6 +357,7 @@ pub struct TelemetrySnapshot {
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
+    pub fan_rows: Vec<FanTelemetry>,
 
     pub power_source: Option<PowerSource>,
     pub battery_percent: Option<f32>,
@@ -343,6 +422,7 @@ impl TelemetrySnapshot {
             gpu_temp_c: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
+            fan_rows: Vec::new(),
             power_source: None,
             battery_percent: None,
             ac_online: None,
@@ -399,7 +479,11 @@ impl TelemetrySnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuCoreTelemetry {
-    pub core_id: u32,
+    pub logical_cpu_id: u32,
+    pub physical_core_index: Option<u32>,
+    pub policy_id: Option<u32>,
+    pub thread_index: Option<u32>,
+    pub thread_count: Option<u32>,
     pub usage_percent: Option<f32>,
     pub current_freq_mhz: Option<u32>,
     pub min_freq_mhz: Option<u32>,

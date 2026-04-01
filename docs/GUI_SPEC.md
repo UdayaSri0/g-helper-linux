@@ -71,7 +71,11 @@ Current content:
 Current behavior:
 
 - controls are enabled or disabled based on daemon-reported capabilities
-- warning area shows read-only or missing-backend states
+- warning area shows concise reason text for missing services, unsupported features, and permission-blocked controls
+- Dashboard quick-action rows stay visible when relevant support is missing and explain why the control is disabled
+- quick-action controls use aligned inline control clusters with compact apply buttons so disabled/read-only states still look intentional
+- fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
+- when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
 
 ### CPU
 
@@ -90,13 +94,13 @@ Current content:
   - max frequency
 - policy section for:
   - scaling driver
-  - core count
-  - thread count
+  - physical core count
+  - logical thread count
   - governor
   - energy performance preference
-- per-core table
+- logical CPU / thread table
 - advanced section for:
-  - core online/offline toggles
+  - logical CPU online/offline toggles
   - CPU sysfs access report with readable/writable paths
   - copy CPU diagnostics
 
@@ -105,7 +109,9 @@ Current behavior:
 - CPU controls can be visible but read-only
 - write access is gated per control from daemon-reported CPU access status
 - blocked write paths are surfaced in diagnostics instead of a fake repair action
-- core toggles require user confirmation in the current UI
+- quick-control and policy rows show current-value or read-only subtitles so the user can tell what is actionable at a glance
+- logical CPU toggles use two-line rows with topology context and require explicit confirmation in the current UI
+- the main CPU row table is ordered by logical CPU id and distinguishes physical-core count from logical-thread rows
 
 ### GPU
 
@@ -128,6 +134,8 @@ Current behavior:
 
 - controls are gated by daemon capabilities
 - reboot or logout requirement is shown through a capability hint from the daemon
+- the current-state values and control subtitles distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- current-state value rows wrap long reason text instead of clipping, and apply rows use the same aligned control/button treatment as the Dashboard
 
 ### Battery
 
@@ -179,6 +187,7 @@ Current content:
 - backend and device name
 - current brightness
 - current mode
+- availability status
 - mode combo box
 - brightness slider
 - RGB color control placeholder
@@ -190,6 +199,7 @@ Current implementation note:
 - the active daemon backend is currently keyboard backlight via sysfs
 - current daemon-reported supported modes are `Off` and `Static`
 - `supports_rgb` is currently false for the implemented backend
+- unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
 ### Diagnostics
 
@@ -199,10 +209,13 @@ Purpose:
 
 Current content:
 
+- troubleshooting summary for the current machine state
 - session daemon endpoint summary
 - capability flags
+- structured feature-access status and reason fields from daemon capabilities
 - raw endpoint strings
 - notes
+- fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
 - warnings
 - copy diagnostics button
 
@@ -219,13 +232,13 @@ Current content:
 - version
 - license
 - session DBus API endpoint
-- maintainer/contributor field
-- source URL
+- authors field
+- repository URL
 
 Current implementation note:
 
-- some of this metadata comes from Cargo manifest fields
-- when metadata is blank, the UI currently uses fallback values
+- version, license, authors, and repository URL come from Cargo manifest fields
+- the UI still falls back to project defaults if those fields are blank
 
 ## Current Capability Behavior
 

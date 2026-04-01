@@ -125,6 +125,28 @@ cargo install --path crates/rog-ui --bin rog-helper-ui --locked
 cargo install --path crates/rog-cli --bin rog-helper --locked
 ```
 
+## Optional Desktop Launcher Install
+
+The repository includes a desktop entry and a scalable SVG icon:
+
+- `packaging/desktop/rog-helper.desktop`
+- `packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg`
+
+Install them locally with:
+
+```bash
+mkdir -p ~/.local/share/applications
+mkdir -p ~/.local/share/icons/hicolor/scalable/apps
+cp packaging/desktop/rog-helper.desktop ~/.local/share/applications/
+cp packaging/desktop/icons/hicolor/scalable/apps/rog-helper.svg ~/.local/share/icons/hicolor/scalable/apps/
+```
+
+Notes:
+
+- the desktop entry uses `Exec=rog-helper-ui`, so the UI binary still needs to be installed on `PATH`
+- the desktop entry uses `Icon=rog-helper`, so the icon file should be installed together with the `.desktop` file
+- some desktop environments may require an icon cache refresh before the launcher icon appears
+
 ## systemd --user
 
 The repository includes a user service file at `packaging/systemd-user/rog-helperd.service`.

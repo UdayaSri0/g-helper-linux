@@ -8,8 +8,9 @@ use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
-    BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuPathAccess,
-    CpuTelemetry, DeviceCaps, PowerSource, TelemetrySnapshot, TopProcessMem,
+    dbus_keys, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind,
+    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
+    FeatureAvailability, PowerSource, TelemetrySnapshot, TopProcessMem,
 };
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
@@ -19,8 +20,8 @@ const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 const APP_DISPLAY_NAME: &str = "rog-helper";
 const APP_BINARY_NAME: &str = "rog-helper-ui";
-const APP_DEVELOPER_FALLBACK: &str = "rog-helper contributors";
-const APP_SOURCE_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
+const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
+const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -501,8 +502,8 @@ fn build_ui(app: &adw::Application) {
     metrics_grid.insert(fans_card.widget(), -1);
     metrics_grid.insert(nvme_card.widget(), -1);
 
-    let warning_banner = adw::Banner::new("Keyboard backlight is read-only");
-    warning_banner.set_button_label(Some("Show access help"));
+    let warning_banner = adw::Banner::new("Some controls need attention");
+    warning_banner.set_button_label(Some("Open Diagnostics"));
     warning_banner.set_revealed(false);
 
     let warning_subtitle = gtk::Label::new(Some(""));
@@ -527,11 +528,11 @@ fn build_ui(app: &adw::Application) {
     quick_actions_title.add_css_class("title-3");
 
     let quick_actions_group = adw::PreferencesGroup::builder()
-        .description("Controls are shown or disabled based on discovered device capabilities.")
+        .description("Controls stay visible when unavailable so the reason is easy to inspect.")
         .build();
 
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    profile_buttons.add_css_class("linked");
+    style_linked_toggle_row(&profile_buttons);
     let profile_quiet = gtk::ToggleButton::with_label("Quiet");
     let profile_balanced = gtk::ToggleButton::with_label("Balanced");
     let profile_turbo = gtk::ToggleButton::with_label("Turbo");
@@ -544,7 +545,7 @@ fn build_ui(app: &adw::Application) {
 
     let profile_row = adw::ActionRow::builder()
         .title("Performance Profile")
-        .subtitle("Not supported")
+        .subtitle("Checking support...")
         .build();
     profile_row.add_suffix(&profile_buttons);
     profile_row.set_activatable(false);
@@ -589,14 +590,17 @@ fn build_ui(app: &adw::Application) {
 
     let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
+    style_dropdown_control(&gpu_mode_dropdown);
     gpu_mode_dropdown.set_sensitive(false);
     let gpu_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_apply_button);
     gpu_apply_button.set_sensitive(false);
+    style_inline_control_box(&gpu_control_box);
     gpu_control_box.append(&gpu_mode_dropdown);
     gpu_control_box.append(&gpu_apply_button);
     let gpu_mode_row = adw::ActionRow::builder()
         .title("GPU Mode")
-        .subtitle("Unavailable")
+        .subtitle("Checking support...")
         .build();
     gpu_mode_row.add_suffix(&gpu_control_box);
     gpu_mode_row.set_activatable(false);
@@ -619,16 +623,19 @@ fn build_ui(app: &adw::Application) {
 
     let charge_limit_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
+    style_spin_control(&charge_limit_spin, 5);
     charge_limit_spin.set_value(80.0);
     charge_limit_spin.set_sensitive(false);
     charge_limit_spin.set_numeric(true);
     let charge_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&charge_apply_button);
     charge_apply_button.set_sensitive(false);
+    style_inline_control_box(&charge_limit_box);
     charge_limit_box.append(&charge_limit_spin);
     charge_limit_box.append(&charge_apply_button);
     let charge_limit_row = adw::ActionRow::builder()
         .title("Charge Limit")
-        .subtitle("Unavailable")
+        .subtitle("Checking support...")
         .build();
     charge_limit_row.add_suffix(&charge_limit_box);
     charge_limit_row.set_activatable(false);
@@ -647,16 +654,19 @@ fn build_ui(app: &adw::Application) {
 
     let kbd_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let kbd_brightness_spin = gtk::SpinButton::with_range(0.0, 3.0, 1.0);
+    style_spin_control(&kbd_brightness_spin, 4);
     kbd_brightness_spin.set_sensitive(false);
     kbd_brightness_spin.set_numeric(true);
     let kbd_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&kbd_apply_button);
     kbd_apply_button.set_sensitive(false);
+    style_inline_control_box(&kbd_control_box);
     kbd_control_box.append(&kbd_brightness_spin);
     kbd_control_box.append(&kbd_apply_button);
 
     let kbd_backlight_row = adw::ActionRow::builder()
         .title("Keyboard Backlight")
-        .subtitle("Unavailable")
+        .subtitle("Checking support...")
         .build();
     kbd_backlight_row.add_suffix(&kbd_control_box);
     kbd_backlight_row.set_activatable(false);
@@ -689,7 +699,10 @@ fn build_ui(app: &adw::Application) {
     let details_fan_group = adw::PreferencesGroup::builder().title("Fans").build();
     let details_endpoints_group = adw::PreferencesGroup::builder().title("Endpoints").build();
     let detail_temp_rows = build_detail_rows(&details_temp_group, 8);
-    let detail_fan_rows = build_detail_rows(&details_fan_group, 6);
+    let detail_fan_rows = std::rc::Rc::new(std::cell::RefCell::new(build_detail_rows(
+        &details_fan_group,
+        0,
+    )));
     let detail_endpoint_rows = build_detail_rows(&details_endpoints_group, 6);
 
     let details_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -742,7 +755,7 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_banner_group = adw::PreferencesGroup::new();
     let cpu_read_only_banner = adw::Banner::new("Some CPU controls are unavailable");
-    cpu_read_only_banner.set_button_label(Some("Open Diagnostics"));
+    cpu_read_only_banner.set_button_label(Some("Review Access"));
     cpu_read_only_banner.set_revealed(false);
     cpu_banner_group.add(&cpu_read_only_banner);
     cpu_page.add(&cpu_banner_group);
@@ -779,17 +792,21 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_quick_group = adw::PreferencesGroup::builder()
         .title("Quick Controls")
-        .description("Safe controls applied through daemon policy endpoints.")
+        .description("Stage common CPU changes here, then apply them together.")
         .build();
 
     let cpu_turbo_switch = gtk::Switch::new();
-    let cpu_turbo_row = adw::ActionRow::builder().title("Turbo Boost").build();
+    cpu_turbo_switch.set_valign(gtk::Align::Center);
+    let cpu_turbo_row = adw::ActionRow::builder()
+        .title("Turbo Boost")
+        .subtitle("Checking support...")
+        .build();
     cpu_turbo_row.add_suffix(&cpu_turbo_switch);
     cpu_turbo_row.set_activatable(false);
     cpu_quick_group.add(&cpu_turbo_row);
 
     let cpu_power_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    cpu_power_buttons.add_css_class("linked");
+    style_linked_toggle_row(&cpu_power_buttons);
     let cpu_power_quiet = gtk::ToggleButton::with_label("Quiet");
     let cpu_power_balanced = gtk::ToggleButton::with_label("Balanced");
     let cpu_power_perf = gtk::ToggleButton::with_label("Performance");
@@ -799,32 +816,47 @@ fn build_ui(app: &adw::Application) {
     cpu_power_buttons.append(&cpu_power_quiet);
     cpu_power_buttons.append(&cpu_power_balanced);
     cpu_power_buttons.append(&cpu_power_perf);
-    let cpu_power_row = adw::ActionRow::builder().title("Power Mode").build();
+    let cpu_power_row = adw::ActionRow::builder()
+        .title("Power Preset")
+        .subtitle("Checking support...")
+        .build();
     cpu_power_row.add_suffix(&cpu_power_buttons);
     cpu_power_row.set_activatable(false);
     cpu_quick_group.add(&cpu_power_row);
 
     let cpu_min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    style_scale_control(&cpu_min_scale);
     cpu_min_scale.set_draw_value(true);
     cpu_min_scale.set_value_pos(gtk::PositionType::Right);
     cpu_min_scale.set_hexpand(true);
-    let cpu_min_row = adw::ActionRow::builder().title("Min Frequency").build();
+    let cpu_min_row = adw::ActionRow::builder()
+        .title("Min Frequency Limit")
+        .subtitle("Checking support...")
+        .build();
     cpu_min_row.add_suffix(&cpu_min_scale);
     cpu_min_row.set_activatable(false);
     cpu_quick_group.add(&cpu_min_row);
 
     let cpu_max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 400.0, 6000.0, 50.0);
+    style_scale_control(&cpu_max_scale);
     cpu_max_scale.set_draw_value(true);
     cpu_max_scale.set_value_pos(gtk::PositionType::Right);
     cpu_max_scale.set_hexpand(true);
-    let cpu_max_row = adw::ActionRow::builder().title("Max Frequency").build();
+    let cpu_max_row = adw::ActionRow::builder()
+        .title("Max Frequency Limit")
+        .subtitle("Checking support...")
+        .build();
     cpu_max_row.add_suffix(&cpu_max_scale);
     cpu_max_row.set_activatable(false);
     cpu_quick_group.add(&cpu_max_row);
 
-    let cpu_apply_quick = gtk::Button::with_label("Apply CPU Quick Controls");
+    let cpu_apply_quick = gtk::Button::with_label("Apply");
+    style_apply_button(&cpu_apply_quick);
     cpu_apply_quick.add_css_class("suggested-action");
-    let cpu_apply_row = adw::ActionRow::builder().title("Apply").build();
+    let cpu_apply_row = adw::ActionRow::builder()
+        .title("Apply Quick Controls")
+        .subtitle("Turbo, preset, and frequency changes are sent together.")
+        .build();
     cpu_apply_row.add_suffix(&cpu_apply_quick);
     cpu_apply_row.set_activatable(false);
     cpu_quick_group.add(&cpu_apply_row);
@@ -886,23 +918,29 @@ fn build_ui(app: &adw::Application) {
 
     let cpu_policy_group = adw::PreferencesGroup::builder()
         .title("Policy")
-        .description("EPP controls how aggressively CPU frequency/power is tuned.")
+        .description("Direct Linux governor and EPP controls for finer tuning.")
         .build();
     let cpu_scaling_driver = pref_value_row(&cpu_policy_group, "Scaling driver", false);
-    let cpu_cpu_count = pref_value_row(&cpu_policy_group, "CPU cores", false);
-    let cpu_thread_count = pref_value_row(&cpu_policy_group, "Threads", false);
+    let cpu_cpu_count = pref_value_row(&cpu_policy_group, "Physical cores", false);
+    let cpu_thread_count = pref_value_row(&cpu_policy_group, "Logical threads", false);
 
     let cpu_governor_combo = gtk::ComboBoxText::new();
+    style_combo_control(&cpu_governor_combo);
     cpu_governor_combo.set_sensitive(false);
-    let cpu_governor_row = adw::ActionRow::builder().title("Governor").build();
+    let cpu_governor_row = adw::ActionRow::builder()
+        .title("Governor")
+        .subtitle("Checking support...")
+        .build();
     cpu_governor_row.add_suffix(&cpu_governor_combo);
     cpu_governor_row.set_activatable(false);
     cpu_policy_group.add(&cpu_governor_row);
 
     let cpu_epp_combo = gtk::ComboBoxText::new();
+    style_combo_control(&cpu_epp_combo);
     cpu_epp_combo.set_sensitive(false);
     let cpu_epp_row = adw::ActionRow::builder()
         .title("Energy Performance Preference")
+        .subtitle("Checking support...")
         .build();
     cpu_epp_row.add_suffix(&cpu_epp_combo);
     cpu_epp_row.set_activatable(false);
@@ -916,8 +954,12 @@ fn build_ui(app: &adw::Application) {
     cpu_policy_hint.add_css_class("dim-label");
     cpu_policy_group.add(&cpu_policy_hint);
 
-    let cpu_apply_policy = gtk::Button::with_label("Apply Policy");
-    let cpu_apply_policy_row = adw::ActionRow::builder().title("Apply").build();
+    let cpu_apply_policy = gtk::Button::with_label("Apply");
+    style_apply_button(&cpu_apply_policy);
+    let cpu_apply_policy_row = adw::ActionRow::builder()
+        .title("Apply Governor / EPP")
+        .subtitle("Governor and EPP changes are sent together.")
+        .build();
     cpu_apply_policy_row.add_suffix(&cpu_apply_policy);
     cpu_apply_policy_row.set_activatable(false);
     cpu_policy_group.add(&cpu_apply_policy_row);
@@ -953,11 +995,13 @@ fn build_ui(app: &adw::Application) {
     cpu_page.add(&cpu_policy_group);
 
     let cpu_per_core_group = adw::PreferencesGroup::builder()
-        .title("Per-Core")
-        .description("Core id, usage, current/min/max frequency.")
+        .title("Logical CPUs / Threads")
+        .description(
+            "Scrollable table of logical CPUs showing topology, policy id, online state, usage, and current frequency limits.",
+        )
         .build();
     let cpu_per_core_buffer = gtk::TextBuffer::new(None);
-    cpu_per_core_buffer.set_text("Loading CPU cores...");
+    cpu_per_core_buffer.set_text("Loading logical CPUs / threads...");
     let cpu_per_core_view = gtk::TextView::with_buffer(&cpu_per_core_buffer);
     cpu_per_core_view.set_editable(false);
     cpu_per_core_view.set_cursor_visible(false);
@@ -965,20 +1009,22 @@ fn build_ui(app: &adw::Application) {
     cpu_per_core_view.add_css_class("monospace");
     let cpu_per_core_scroll = gtk::ScrolledWindow::new();
     cpu_per_core_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    cpu_per_core_scroll.set_min_content_height(220);
+    cpu_per_core_scroll.set_min_content_height(320);
     cpu_per_core_scroll.set_child(Some(&cpu_per_core_view));
     cpu_per_core_group.add(&cpu_per_core_scroll);
     cpu_page.add(&cpu_per_core_group);
 
-    let cpu_adv_group = adw::PreferencesGroup::builder().title("Advanced").build();
-    let cpu_advanced_expander = gtk::Expander::new(Some("Advanced CPU Controls"));
+    let cpu_adv_group = adw::PreferencesGroup::builder()
+        .title("Advanced & Access")
+        .build();
+    let cpu_advanced_expander = gtk::Expander::new(Some("Logical CPU Toggles and Access Details"));
     cpu_advanced_expander.set_expanded(false);
     let cpu_adv_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let cpu_core_toggle_title = gtk::Label::new(Some("Core Online/Offline"));
+    let cpu_core_toggle_title = gtk::Label::new(Some("Logical CPU Online / Offline"));
     cpu_core_toggle_title.set_xalign(0.0);
     cpu_core_toggle_title.add_css_class("heading");
-    let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let cpu_core_toggle_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
     cpu_adv_box.append(&cpu_core_toggle_title);
     cpu_adv_box.append(&cpu_core_toggle_box);
 
@@ -986,7 +1032,8 @@ fn build_ui(app: &adw::Application) {
     cpu_adv_box.append(&cpu_access_hint);
     cpu_adv_box.append(&cpu_access_report_scroll);
 
-    let cpu_copy_diag = gtk::Button::with_label("Copy CPU diagnostics");
+    let cpu_copy_diag = gtk::Button::with_label("Copy CPU details");
+    style_apply_button(&cpu_copy_diag);
     {
         let shared = shared.clone();
         cpu_copy_diag.connect_clicked(move |_| {
@@ -1129,32 +1176,42 @@ fn build_ui(app: &adw::Application) {
 
     let gpu_state_group = adw::PreferencesGroup::builder()
         .title("Current State")
-        .description("Read from daemon-backed asusd/supergfx providers when available.")
+        .description(
+            "Current values come from asusd and supergfxd when those backends are available.",
+        )
         .build();
     let gpu_page_current_profile = pref_value_row(&gpu_state_group, "Profile", false);
     let gpu_page_current_mode = pref_value_row(&gpu_state_group, "GPU Mode", false);
     let gpu_page_switch_hint = pref_value_row(&gpu_state_group, "Switch Hint", false);
+    gpu_page_current_profile.set_text("Checking support...");
+    gpu_page_current_mode.set_text("Checking support...");
+    gpu_page_switch_hint.set_text("Checking support...");
     gpu_page.add(&gpu_state_group);
 
     let gpu_controls_group = adw::PreferencesGroup::builder()
         .title("Controls")
-        .description("Changes are applied through rog-helperd session DBus API.")
+        .description(
+            "Selectors stay visible when support is missing so the reason is easy to inspect.",
+        )
         .build();
 
     let gpu_page_profile_combo = gtk::ComboBoxText::new();
+    style_combo_control(&gpu_page_profile_combo);
     for label in ["Silent", "Balanced", "Turbo"] {
         gpu_page_profile_combo.append(Some(label), label);
     }
     gpu_page_profile_combo.set_active_id(Some("Balanced"));
     gpu_page_profile_combo.set_sensitive(false);
     let gpu_page_profile_apply = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_page_profile_apply);
     gpu_page_profile_apply.set_sensitive(false);
     let gpu_page_profile_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    style_inline_control_box(&gpu_page_profile_box);
     gpu_page_profile_box.append(&gpu_page_profile_combo);
     gpu_page_profile_box.append(&gpu_page_profile_apply);
     let gpu_page_profile_row = adw::ActionRow::builder()
         .title("Performance Profile")
-        .subtitle("Unavailable")
+        .subtitle("Checking support...")
         .build();
     gpu_page_profile_row.add_suffix(&gpu_page_profile_box);
     gpu_page_profile_row.set_activatable(false);
@@ -1175,19 +1232,22 @@ fn build_ui(app: &adw::Application) {
     }
 
     let gpu_page_mode_combo = gtk::ComboBoxText::new();
+    style_combo_control(&gpu_page_mode_combo);
     for label in ["Integrated", "Hybrid", "Dedicated"] {
         gpu_page_mode_combo.append(Some(label), label);
     }
     gpu_page_mode_combo.set_active_id(Some("Hybrid"));
     gpu_page_mode_combo.set_sensitive(false);
     let gpu_page_mode_apply = gtk::Button::with_label("Apply");
+    style_apply_button(&gpu_page_mode_apply);
     gpu_page_mode_apply.set_sensitive(false);
     let gpu_page_mode_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    style_inline_control_box(&gpu_page_mode_box);
     gpu_page_mode_box.append(&gpu_page_mode_combo);
     gpu_page_mode_box.append(&gpu_page_mode_apply);
     let gpu_page_mode_row = adw::ActionRow::builder()
         .title("GPU Mode")
-        .subtitle("Unavailable")
+        .subtitle("Checking support...")
         .build();
     gpu_page_mode_row.add_suffix(&gpu_page_mode_box);
     gpu_page_mode_row.set_activatable(false);
@@ -1209,8 +1269,12 @@ fn build_ui(app: &adw::Application) {
 
     gpu_page.add(&gpu_controls_group);
 
-    let gpu_status_group = adw::PreferencesGroup::builder().title("Status").build();
-    let gpu_page_last_action = pref_value_row(&gpu_status_group, "Last action", false);
+    let gpu_status_group = adw::PreferencesGroup::builder()
+        .title("Status")
+        .description("Support and recent action feedback.")
+        .build();
+    let gpu_page_last_action = pref_value_row(&gpu_status_group, "Summary", false);
+    gpu_page_last_action.set_text("Checking support...");
     gpu_page.add(&gpu_status_group);
 
     let gpu = clamped_scroller(&gpu_page);
@@ -1266,18 +1330,18 @@ fn build_ui(app: &adw::Application) {
     let about_dbus = pref_value_row(&about_app_group, "Session DBus API", true);
     about_page.add(&about_app_group);
 
-    let about_dev_group = adw::PreferencesGroup::builder().title("Developer").build();
-    let about_developer = pref_value_row(&about_dev_group, "Maintainer", false);
-    let about_source = pref_value_row(&about_dev_group, "Source", false);
-    about_page.add(&about_dev_group);
+    let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
+    let about_authors = pref_value_row(&about_project_group, "Authors", false);
+    let about_repository = pref_value_row(&about_project_group, "Repository", false);
+    about_page.add(&about_project_group);
 
     let source_url = if env!("CARGO_PKG_REPOSITORY").trim().is_empty() {
-        APP_SOURCE_FALLBACK_URL
+        APP_REPOSITORY_FALLBACK_URL
     } else {
         env!("CARGO_PKG_REPOSITORY")
     };
-    let developers = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
-        APP_DEVELOPER_FALLBACK.to_string()
+    let authors = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
+        APP_AUTHORS_FALLBACK.to_string()
     } else {
         env!("CARGO_PKG_AUTHORS").replace(':', ", ")
     };
@@ -1289,15 +1353,15 @@ fn build_ui(app: &adw::Application) {
     about_dbus.set_text(&format!(
         "{DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} ({DAEMON_DBUS_IFACE})"
     ));
-    about_developer.set_text(&developers);
-    about_source.set_text(source_url);
+    about_authors.set_text(&authors);
+    about_repository.set_text(source_url);
 
     let about = clamped_scroller(&about_page);
 
     let lighting_page = adw::PreferencesPage::new();
     let lighting_overview_group = adw::PreferencesGroup::builder()
         .title("Keyboard Lighting")
-        .description("Controls are capability-driven and depend on writable backends.")
+        .description("Current lighting support depends on the detected backend and write access.")
         .build();
     let lighting_backend = pref_value_row(&lighting_overview_group, "Backend", false);
     let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
@@ -1327,7 +1391,7 @@ fn build_ui(app: &adw::Application) {
     rgb_button.set_sensitive(false);
     let rgb_row = adw::ActionRow::builder()
         .title("RGB Color")
-        .subtitle("Requires Aura/asusd support")
+        .subtitle("Checking whether RGB color control is available.")
         .build();
     rgb_row.add_suffix(&rgb_button);
     rgb_row.set_activatable(false);
@@ -1342,8 +1406,20 @@ fn build_ui(app: &adw::Application) {
     lighting_page.add(&lighting_controls_group);
 
     let lighting_status_group = adw::PreferencesGroup::builder().title("Status").build();
-    let lighting_error = pref_value_row(&lighting_status_group, "Last action", false);
+    let lighting_availability = pref_value_row(&lighting_status_group, "Availability", false);
+    let lighting_last_action = pref_value_row(&lighting_status_group, "Last action", false);
     lighting_page.add(&lighting_status_group);
+
+    let lighting_unknown = FeatureAvailability::unknown();
+    lighting_backend.set_text(&feature_value_label(&lighting_unknown));
+    lighting_current.set_text(&lighting_placeholder_value(&lighting_unknown));
+    lighting_mode.set_text(&lighting_placeholder_value(&lighting_unknown));
+    lighting_availability.set_text(&feature_value_label(&lighting_unknown));
+    lighting_last_action.set_text(&lighting_last_action_text(None, &lighting_unknown));
+    brightness_row.set_subtitle(&lighting_brightness_subtitle(None, &lighting_unknown));
+    mode_row.set_subtitle(&lighting_mode_subtitle(None, &lighting_unknown));
+    apply_row.set_subtitle(&lighting_apply_subtitle(None, &lighting_unknown));
+    rgb_row.set_subtitle(&lighting_rgb_subtitle(None, &lighting_unknown));
 
     {
         let shared = shared.clone();
@@ -1407,26 +1483,16 @@ fn build_ui(app: &adw::Application) {
     let win = adw::ApplicationWindow::builder()
         .application(app)
         .title("rog-helper")
-        .default_width(560)
-        .default_height(380)
+        .default_width(920)
+        .default_height(760)
         .build();
     win.set_content(Some(&toast_overlay));
     win.present();
 
     {
-        let win = win.clone();
+        let stack = stack.clone();
         warning_banner.connect_button_clicked(move |_| {
-            let dialog = adw::MessageDialog::new(
-                Some(&win),
-                Some("Keyboard backlight access help"),
-                Some(
-                    "1. Install and start asusd/asusctl.\n2. Restart the user daemon.\n3. Or add a udev rule to grant write access to /sys/class/leds/asus::kbd_backlight/brightness.",
-                ),
-            );
-            dialog.add_response("close", "Close");
-            dialog.set_close_response("close");
-            dialog.set_default_response(Some("close"));
-            dialog.present();
+            stack.set_visible_child_name("diagnostics");
         });
     }
     {
@@ -1445,6 +1511,8 @@ fn build_ui(app: &adw::Application) {
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let detail_fan_rows_ref = detail_fan_rows.clone();
+    let details_fan_group_ref = details_fan_group.clone();
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
@@ -1564,17 +1632,29 @@ fn build_ui(app: &adw::Application) {
             });
             power_card.set_unit(None);
 
-            if t.fans_rpm.is_empty() {
+            if t.fan_rows.is_empty() {
                 fans_card.set_value("--");
                 fans_card.set_unit(None);
-                fans_card.set_subtitle(None);
+                fans_card.set_subtitle(Some("No fan RPM sensors exposed"));
             } else {
-                let max_rpm = t.fans_rpm.values().copied().max().unwrap_or(0);
-                fans_card.set_value(max_rpm.to_string());
-                fans_card.set_unit(Some("rpm"));
-                let count = t.fans_rpm.len();
+                let reporting_count = t.fan_rows.iter().filter(|fan| fan.rpm.is_some()).count();
+                let max_rpm = t.fan_rows.iter().filter_map(|fan| fan.rpm).max();
+                if let Some(max_rpm) = max_rpm {
+                    fans_card.set_value(max_rpm.to_string());
+                    fans_card.set_unit(Some("rpm"));
+                } else {
+                    fans_card.set_value("--");
+                    fans_card.set_unit(None);
+                }
+                let count = t.fan_rows.len();
                 let fan_word = if count == 1 { "fan" } else { "fans" };
-                fans_card.set_subtitle(Some(&format!("{count} {fan_word} detected")));
+                if reporting_count == count {
+                    fans_card.set_subtitle(Some(&format!("{count} {fan_word} reporting")));
+                } else {
+                    fans_card.set_subtitle(Some(&format!(
+                        "{reporting_count} of {count} {fan_word} reporting"
+                    )));
+                }
             }
 
             let nvme_temp = t
@@ -1718,14 +1798,30 @@ fn build_ui(app: &adw::Application) {
             update_detail_rows(&detail_temp_rows, &temp_entries);
             details_temp_group.set_visible(!temp_entries.is_empty());
 
-            let mut fan_entries: Vec<(String, String)> = t
-                .fans_rpm
-                .iter()
-                .map(|(k, v)| (k.clone(), format!("{v} rpm")))
-                .collect();
-            fan_entries.sort_by(|a, b| a.0.cmp(&b.0));
-            update_detail_rows(&detail_fan_rows, &fan_entries);
-            details_fan_group.set_visible(!fan_entries.is_empty());
+            let fan_entries: Vec<(String, String)> = if t.fan_rows.is_empty() {
+                vec![(
+                    "Fan telemetry".to_string(),
+                    "Unavailable on this platform".to_string(),
+                )]
+            } else {
+                t.fan_rows
+                    .iter()
+                    .map(|fan| {
+                        (
+                            fan.display_label.clone(),
+                            fan.rpm
+                                .map(|rpm| format!("{rpm} rpm"))
+                                .unwrap_or_else(|| "(unavailable)".to_string()),
+                        )
+                    })
+                    .collect()
+            };
+            update_detail_rows_dynamic(
+                &details_fan_group_ref,
+                &mut detail_fan_rows_ref.borrow_mut(),
+                &fan_entries,
+            );
+            details_fan_group_ref.set_visible(true);
         }
 
         // CPU page + cards.
@@ -1764,12 +1860,8 @@ fn build_ui(app: &adw::Application) {
             }
             cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
 
-            cpu_scaling_driver.set_text(
-                &cpu_caps
-                    .scaling_driver
-                    .clone()
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
+            cpu_scaling_driver
+                .set_text(cpu_caps.scaling_driver.as_deref().unwrap_or("Not detected"));
             cpu_cpu_count.set_text(&cpu_caps.cpu_count.to_string());
             cpu_thread_count.set_text(&cpu_caps.thread_count.to_string());
 
@@ -1780,6 +1872,30 @@ fn build_ui(app: &adw::Application) {
             let freq_limits_writable = cpu_caps.control_writable(CpuControlKind::FreqLimits);
             let core_online_writable = cpu_caps.control_writable(CpuControlKind::CoreOnline);
             let quick_sensitive = turbo_writable || power_mode_writable || freq_limits_writable;
+            let turbo_available_text = match cpu_data.turbo_boost_enabled {
+                Some(true) => "Currently enabled. Toggle to stage a change.".to_string(),
+                Some(false) => "Currently disabled. Toggle to stage a change.".to_string(),
+                None => "Toggle turbo boost and apply when ready.".to_string(),
+            };
+            let power_preset_subtitle = cpu_power_preset_summary(cpu_data);
+            let min_limit_subtitle = format!(
+                "Current minimum: {}. Drag to stage a new limit.",
+                format_cpu_freq_value(cpu_data.min_freq_mhz)
+            );
+            let max_limit_subtitle = format!(
+                "Current maximum: {}. Drag to stage a new limit.",
+                format_cpu_freq_value(cpu_data.max_freq_mhz)
+            );
+            let governor_subtitle = if let Some(governor) = cpu_data.governor.as_deref() {
+                format!("Current: {governor}. Choose a governor to apply.")
+            } else {
+                "Choose the active CPU governor.".to_string()
+            };
+            let epp_subtitle = if let Some(epp) = cpu_data.epp.as_deref() {
+                format!("Current: {epp}. Choose an EPP value to apply.")
+            } else {
+                "Choose the energy performance preference.".to_string()
+            };
 
             cpu_turbo_switch.set_sensitive(turbo_writable);
             if let Some(v) = cpu_data.turbo_boost_enabled {
@@ -1787,37 +1903,38 @@ fn build_ui(app: &adw::Application) {
                     cpu_turbo_switch.set_active(v);
                 }
             }
-            cpu_turbo_row.set_subtitle(cpu_control_subtitle(
+            cpu_turbo_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Boost,
-                "Enable/disable CPU turbo boost",
+                &turbo_available_text,
                 "Turbo boost control is not supported on this system.",
             ));
 
-            cpu_power_quiet.set_sensitive(quick_sensitive);
-            cpu_power_balanced.set_sensitive(quick_sensitive);
-            cpu_power_perf.set_sensitive(quick_sensitive);
+            cpu_power_quiet.set_sensitive(power_mode_writable);
+            cpu_power_balanced.set_sensitive(power_mode_writable);
+            cpu_power_perf.set_sensitive(power_mode_writable);
             cpu_apply_quick.set_sensitive(quick_sensitive);
-            cpu_power_row.set_subtitle(cpu_control_subtitle(
+            cpu_power_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::PowerMode,
-                "Apply a high-level CPU power preset through governor/EPP controls.",
+                &power_preset_subtitle,
                 "Power mode presets are not supported on this system.",
             ));
             cpu_min_scale.set_sensitive(freq_limits_writable && cpu_caps.has_min_freq_limit);
             cpu_max_scale.set_sensitive(freq_limits_writable && cpu_caps.has_max_freq_limit);
-            cpu_min_row.set_subtitle(cpu_control_subtitle(
+            cpu_min_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::FreqLimits,
-                "Adjust the minimum CPU frequency limit.",
+                &min_limit_subtitle,
                 "Minimum frequency limits are not supported on this system.",
             ));
-            cpu_max_row.set_subtitle(cpu_control_subtitle(
+            cpu_max_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::FreqLimits,
-                "Adjust the maximum CPU frequency limit.",
+                &max_limit_subtitle,
                 "Maximum frequency limits are not supported on this system.",
             ));
+            cpu_apply_row.set_subtitle(&cpu_quick_apply_subtitle(&cpu_caps));
             if let Some(v) = cpu_data.min_freq_mhz {
                 if !cpu_min_scale.has_focus() {
                     cpu_min_scale.set_value(v as f64);
@@ -1844,19 +1961,20 @@ fn build_ui(app: &adw::Application) {
 
             cpu_governor_combo.set_sensitive(governor_writable && cpu_caps.has_governor);
             cpu_epp_combo.set_sensitive(epp_writable && cpu_caps.has_epp);
-            cpu_governor_row.set_subtitle(cpu_control_subtitle(
+            cpu_governor_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Governor,
-                "Select the active CPU governor.",
+                &governor_subtitle,
                 "Governor control is not supported on this system.",
             ));
-            cpu_epp_row.set_subtitle(cpu_control_subtitle(
+            cpu_epp_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::Epp,
-                "Select the energy performance preference.",
+                &epp_subtitle,
                 "Energy Performance Preference is not supported on this system.",
             ));
             cpu_apply_policy.set_sensitive(governor_writable || epp_writable);
+            cpu_apply_policy_row.set_subtitle(&cpu_policy_apply_subtitle(&cpu_caps));
 
             {
                 let mut last = last_cpu_governors.borrow_mut();
@@ -1893,12 +2011,23 @@ fn build_ui(app: &adw::Application) {
             cpu_read_only_banner.set_title(&cpu_banner_title(&cpu_caps));
 
             let mut table = String::new();
-            table.push_str("CORE  ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
-            table.push_str("---------------------------------------------------\n");
+            table
+                .push_str("CPU  PCORE  THR   POL   ONLINE  USAGE%  CUR(GHz)  MIN(GHz)  MAX(GHz)\n");
+            table.push_str(
+                "------------------------------------------------------------------------\n",
+            );
             for core in &cpu_data.per_core {
+                let thread_label = format_cpu_thread_position(core.thread_index, core.thread_count);
                 table.push_str(&format!(
-                    "{:<4}  {:<6}  {:>6}  {:>8}  {:>8}  {:>8}\n",
-                    core.core_id,
+                    "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:>6}  {:>8}  {:>8}  {:>8}\n",
+                    core.logical_cpu_id,
+                    core.physical_core_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    thread_label,
+                    core.policy_id
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
                     if core.online { "yes" } else { "no" },
                     core.usage_percent
                         .map(|v| format!("{v:.1}"))
@@ -1920,19 +2049,51 @@ fn build_ui(app: &adw::Application) {
                 cpu_core_toggle_box.remove(&child);
             }
             for core in &cpu_data.per_core {
-                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                let label = gtk::Label::new(Some(&format!("Core {}", core.core_id)));
-                label.set_xalign(0.0);
-                label.set_hexpand(true);
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                row.add_css_class("cpu-toggle-row");
+                let label_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                label_box.set_hexpand(true);
+
+                let title = gtk::Label::new(Some(&format!("Logical CPU {}", core.logical_cpu_id)));
+                title.set_xalign(0.0);
+                title.add_css_class("cpu-toggle-title");
+
+                let subtitle = gtk::Label::new(Some(&cpu_toggle_row_subtitle(
+                    core,
+                    &cpu_caps,
+                    core_online_writable,
+                )));
+                subtitle.set_xalign(0.0);
+                subtitle.set_wrap(true);
+                subtitle.add_css_class("dim-label");
+                subtitle.add_css_class("cpu-toggle-subtitle");
+                subtitle.set_hexpand(true);
+
+                label_box.append(&title);
+                label_box.append(&subtitle);
+
                 let switch = gtk::Switch::new();
                 switch.set_active(core.online);
+                switch.set_valign(gtk::Align::Center);
                 let allow_toggle =
-                    cpu_caps.has_core_online && core_online_writable && core.core_id != 0;
+                    cpu_caps.has_core_online && core_online_writable && core.logical_cpu_id != 0;
                 switch.set_sensitive(allow_toggle);
+                switch.set_tooltip_text(Some(if core.logical_cpu_id == 0 {
+                    "CPU 0 stays online."
+                } else if !cpu_caps.has_core_online {
+                    "This platform does not expose logical CPU online/offline control."
+                } else if !core_online_writable {
+                    "Readable, but not writable by the current user."
+                } else if core.online {
+                    "Turn this logical CPU off after confirmation."
+                } else {
+                    "Bring this logical CPU back online after confirmation."
+                }));
                 if allow_toggle {
                     let shared = shared_clone.clone();
                     let win = win_clone.clone();
-                    let core_id = core.core_id;
+                    let core_id = core.logical_cpu_id;
+                    let core_for_dialog = core.clone();
                     let original_online = core.online;
                     switch.connect_active_notify(move |sw| {
                         let desired_online = sw.is_active();
@@ -1941,12 +2102,13 @@ fn build_ui(app: &adw::Application) {
                         }
                         let dialog = adw::MessageDialog::new(
                             Some(&win),
-                            Some("Confirm Core Toggle"),
-                            Some(
-                                "Changing core online/offline state can impact stability and thermals. Continue?",
-                            ),
+                            Some(cpu_toggle_dialog_title(desired_online)),
+                            Some(&cpu_toggle_dialog_body(&core_for_dialog, desired_online)),
                         );
-                        dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
+                        dialog.add_responses(&[
+                            ("cancel", "Keep Current State"),
+                            ("apply", "Apply Change"),
+                        ]);
                         dialog.set_close_response("cancel");
                         dialog.set_default_response(Some("cancel"));
 
@@ -1972,7 +2134,7 @@ fn build_ui(app: &adw::Application) {
                         dialog.present();
                     });
                 }
-                row.append(&label);
+                row.append(&label_box);
                 row.append(&switch);
                 cpu_core_toggle_box.append(&row);
             }
@@ -1984,7 +2146,7 @@ fn build_ui(app: &adw::Application) {
             cpu_card_power.set_value("--");
             cpu_card_clock.set_value("--");
             cpu_read_only_banner.set_revealed(false);
-            cpu_per_core_buffer.set_text("CPU telemetry unavailable.");
+            cpu_per_core_buffer.set_text("Logical CPU / thread telemetry unavailable.");
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
@@ -1994,38 +2156,37 @@ fn build_ui(app: &adw::Application) {
             &caps_text
         });
 
-        if let Some(ref e) = daemon_error {
-            status_label.set_text(&format!(
-                "Daemon not reachable on session DBus ({DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} {DAEMON_DBUS_IFACE}). {e}"
-            ));
+        if daemon_error.is_some() {
+            status_label.set_text(
+                "rog-helperd is not reachable on the current session. Open Diagnostics for DBus endpoint details.",
+            );
         } else if let Some(ref e) = action_error_txt {
-            status_label.set_text(e);
+            status_label.set_text(&friendly_action_error(e));
         } else {
             status_label.set_text("");
         }
 
-        let read_only_kbd = lighting.as_ref().map(|l| !l.can_set).unwrap_or(false)
-            || warnings
-                .iter()
-                .any(|w| is_kbd_backlight_read_only_warning(w));
+        let support_messages = support_messages(&caps, &cpu_caps);
+        let profile_read_failed = warning_detail(&warnings, "profile read failed: ");
+        let gpu_mode_read_failed = warning_detail(&warnings, "GPU mode read failed: ");
+        let charge_limit_read_failed = warning_detail(&warnings, "charge limit read failed: ");
 
-        if read_only_kbd {
-            warning_banner.set_title("Keyboard backlight is read-only");
-            warning_banner.set_button_label(Some("Show access help"));
-            warning_subtitle
-                .set_text("Install asusd/asusctl or add a udev rule to allow write access.");
+        if !support_messages.is_empty() {
+            warning_banner.set_title(&support_banner_title(&caps, &cpu_caps));
+            warning_banner.set_button_label(Some("Open Diagnostics"));
+            warning_subtitle.set_text(&support_messages.join("\n"));
             warning_subtitle.set_visible(true);
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
-            open_diagnostics_button.set_visible(true);
+            open_diagnostics_button.set_visible(false);
         } else if !warnings.is_empty() {
-            warning_banner.set_title("Hardware warnings detected");
-            warning_banner.set_button_label(None);
+            warning_banner.set_title("Some readings need attention");
+            warning_banner.set_button_label(Some("Open Diagnostics"));
             warning_subtitle.set_text(&warnings.join("\n"));
             warning_subtitle.set_visible(true);
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
-            open_diagnostics_button.set_visible(true);
+            open_diagnostics_button.set_visible(false);
         } else {
             warning_banner.set_revealed(false);
             warning_subtitle.set_visible(false);
@@ -2034,13 +2195,12 @@ fn build_ui(app: &adw::Application) {
             open_diagnostics_button.set_visible(false);
         }
 
-        profile_quiet.set_sensitive(caps.has_profiles);
-        profile_balanced.set_sensitive(caps.has_profiles);
-        profile_turbo.set_sensitive(caps.has_profiles);
-        gpu_page_profile_combo.set_sensitive(caps.has_profiles);
-        gpu_page_profile_apply.set_sensitive(caps.has_profiles);
-        if caps.has_profiles {
-            profile_row.set_subtitle("Quiet / Balanced / Turbo");
+        profile_quiet.set_sensitive(caps.profile_access.is_available());
+        profile_balanced.set_sensitive(caps.profile_access.is_available());
+        profile_turbo.set_sensitive(caps.profile_access.is_available());
+        gpu_page_profile_combo.set_sensitive(caps.profile_access.is_available());
+        gpu_page_profile_apply.set_sensitive(caps.profile_access.is_available());
+        if caps.profile_access.is_available() {
             if let Some(current) = profile.as_deref() {
                 if profile_name_is(current, "silent") {
                     profile_quiet.set_active(true);
@@ -2064,24 +2224,44 @@ fn build_ui(app: &adw::Application) {
                         gpu_page_profile_combo.set_active_id(Some("Turbo"));
                     }
                 }
+                profile_row.set_subtitle(&format!("Current: {current}"));
+            } else if profile_read_failed.is_some() {
+                profile_row
+                    .set_subtitle("Profile detected, but the current value could not be read.");
+            } else {
+                profile_row.set_subtitle("Quiet / Balanced / Turbo");
             }
+            gpu_page_current_profile.set_text(&feature_state_value(
+                profile.as_deref(),
+                &caps.profile_access,
+                profile_read_failed,
+            ));
             gpu_page_profile_row.set_subtitle("Apply profile through daemon");
         } else {
-            profile_row.set_subtitle("Not supported");
-            gpu_page_current_profile.set_text("(n/a)");
-            gpu_page_profile_row.set_subtitle("Unavailable");
+            profile_row.set_subtitle(&feature_control_subtitle(
+                &caps.profile_access,
+                "Quiet / Balanced / Turbo",
+            ));
+            gpu_page_current_profile.set_text(&feature_state_value(
+                None,
+                &caps.profile_access,
+                profile_read_failed,
+            ));
+            gpu_page_profile_row.set_subtitle(&feature_control_subtitle(
+                &caps.profile_access,
+                "Apply profile through daemon",
+            ));
         }
 
-        gpu_mode_row.set_visible(caps.has_gpu_modes);
-        gpu_page_mode_combo.set_sensitive(caps.has_gpu_modes);
-        gpu_page_mode_apply.set_sensitive(caps.has_gpu_modes);
-        if caps.has_gpu_modes {
+        gpu_mode_row.set_visible(true);
+        gpu_page_mode_combo.set_sensitive(caps.gpu_mode_access.is_available());
+        gpu_page_mode_apply.set_sensitive(caps.gpu_mode_access.is_available());
+        if caps.gpu_mode_access.is_available() {
             gpu_mode_dropdown.set_sensitive(true);
             gpu_apply_button.set_sensitive(true);
             if let Some(current) = gpu_mode.as_deref() {
                 gpu_mode_dropdown.set_selected(gpu_mode_to_dropdown_index(current));
                 gpu_mode_row.set_subtitle(&format!("Current: {current}"));
-                gpu_page_current_mode.set_text(current);
                 if !gpu_page_mode_combo.has_focus() {
                     match gpu_mode_to_dropdown_index(current) {
                         0 => gpu_page_mode_combo.set_active_id(Some("Integrated")),
@@ -2089,27 +2269,40 @@ fn build_ui(app: &adw::Application) {
                         _ => gpu_page_mode_combo.set_active_id(Some("Dedicated")),
                     };
                 }
+            } else if gpu_mode_read_failed.is_some() {
+                gpu_mode_row
+                    .set_subtitle("GPU mode is detected, but the current value could not be read.");
             } else {
                 gpu_mode_row.set_subtitle("Select mode and apply");
-                gpu_page_current_mode.set_text("(n/a)");
             }
-            if caps.requires_reboot_for_gpu_switch {
-                gpu_mode_row.set_subtitle("Switch may require reboot/logout");
-                gpu_page_switch_hint.set_text("Switch may require reboot/logout.");
-            } else {
-                gpu_page_switch_hint.set_text("Switch applies immediately or after logout.");
-            }
+            gpu_page_current_mode.set_text(&feature_state_value(
+                gpu_mode.as_deref(),
+                &caps.gpu_mode_access,
+                gpu_mode_read_failed,
+            ));
+            gpu_page_switch_hint.set_text(&gpu_switch_hint_text(&caps, &warnings));
             gpu_page_mode_row.set_subtitle("Apply GPU mode through daemon");
         } else {
             gpu_mode_dropdown.set_sensitive(false);
             gpu_apply_button.set_sensitive(false);
-            gpu_page_current_mode.set_text("(n/a)");
-            gpu_page_switch_hint.set_text("(n/a)");
-            gpu_page_mode_row.set_subtitle("Unavailable");
+            gpu_mode_row.set_subtitle(&feature_control_subtitle(
+                &caps.gpu_mode_access,
+                "Select mode and apply",
+            ));
+            gpu_page_current_mode.set_text(&feature_state_value(
+                None,
+                &caps.gpu_mode_access,
+                gpu_mode_read_failed,
+            ));
+            gpu_page_switch_hint.set_text(&gpu_switch_hint_text(&caps, &warnings));
+            gpu_page_mode_row.set_subtitle(&feature_control_subtitle(
+                &caps.gpu_mode_access,
+                "Apply GPU mode through daemon",
+            ));
         }
 
-        charge_limit_row.set_visible(caps.has_charge_limit);
-        if caps.has_charge_limit {
+        charge_limit_row.set_visible(true);
+        if caps.charge_limit_access.is_available() {
             charge_limit_spin.set_sensitive(true);
             charge_apply_button.set_sensitive(true);
             if let Some(limit) = battery_limit {
@@ -2117,20 +2310,28 @@ fn build_ui(app: &adw::Application) {
                     charge_limit_spin.set_value(limit as f64);
                 }
                 charge_limit_row.set_subtitle(&format!("Current: {limit}%"));
+            } else if charge_limit_read_failed.is_some() {
+                charge_limit_row.set_subtitle(
+                    "Charge limit is detected, but the current value could not be read.",
+                );
             } else {
                 charge_limit_row.set_subtitle("Set desired limit and apply");
             }
         } else {
             charge_limit_spin.set_sensitive(false);
             charge_apply_button.set_sensitive(false);
+            charge_limit_row.set_subtitle(&feature_control_subtitle(
+                &caps.charge_limit_access,
+                "Set desired limit and apply",
+            ));
         }
 
         if let Some(ref msg) = action_error_txt {
-            gpu_page_last_action.set_text(msg);
+            gpu_page_last_action.set_text(&friendly_action_error(msg));
         } else if daemon_error.is_some() {
             gpu_page_last_action.set_text("Daemon unavailable.");
         } else {
-            gpu_page_last_action.set_text("OK");
+            gpu_page_last_action.set_text(&gpu_status_summary(&caps, &warnings));
         }
 
         let has_kbd_backlight = caps.has_kbd_backlight || lighting.is_some();
@@ -2146,12 +2347,14 @@ fn build_ui(app: &adw::Application) {
                 if l.can_set {
                     kbd_backlight_row.set_subtitle("Adjust brightness");
                 } else {
-                    kbd_backlight_row.set_subtitle("Read-only for this user");
+                    kbd_backlight_row
+                        .set_subtitle(&feature_control_subtitle(&caps.kbd_backlight_access, ""));
                 }
             } else {
                 kbd_brightness_spin.set_sensitive(false);
                 kbd_apply_button.set_sensitive(false);
-                kbd_backlight_row.set_subtitle("Unavailable");
+                kbd_backlight_row
+                    .set_subtitle(&feature_control_subtitle(&caps.kbd_backlight_access, ""));
             }
         }
 
@@ -2166,10 +2369,11 @@ fn build_ui(app: &adw::Application) {
         details_endpoints_group.set_visible(!endpoint_entries.is_empty());
 
         // Lighting page (capability-driven).
+        lighting_availability.set_text(&feature_value_label(&caps.kbd_backlight_access));
         if let Some(ref l) = lighting {
-            lighting_backend.set_text(&format!("{} ({})", l.backend, l.device));
-            lighting_current.set_text(&format!("{}/{}", l.brightness, l.max_brightness));
-            lighting_mode.set_text(&l.mode);
+            lighting_backend.set_text(&lighting_backend_label(l));
+            lighting_current.set_text(&lighting_current_label(l));
+            lighting_mode.set_text(&lighting_mode_label(l));
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
             if !brightness_scale.is_focus() {
@@ -2179,6 +2383,15 @@ fn build_ui(app: &adw::Application) {
             brightness_scale.set_sensitive(can_set);
             mode_combo.set_sensitive(can_set);
             apply_lighting.set_sensitive(can_set);
+            brightness_row.set_subtitle(&lighting_brightness_subtitle(
+                Some(l),
+                &caps.kbd_backlight_access,
+            ));
+            mode_row.set_subtitle(&lighting_mode_subtitle(Some(l), &caps.kbd_backlight_access));
+            apply_row.set_subtitle(&lighting_apply_subtitle(
+                Some(l),
+                &caps.kbd_backlight_access,
+            ));
 
             let mut modes = l.supported_modes.clone();
             if modes.is_empty() {
@@ -2204,28 +2417,39 @@ fn build_ui(app: &adw::Application) {
             }
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
-            rgb_row.set_subtitle(if l.supports_rgb {
-                "Supported by backend"
-            } else {
-                "Requires Aura/asusd support"
-            });
+            rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
         } else {
-            lighting_backend.set_text("(n/a)");
-            lighting_current.set_text("(n/a)");
-            lighting_mode.set_text("(n/a)");
+            lighting_backend.set_text(&feature_value_label(&caps.kbd_backlight_access));
+            lighting_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
+            lighting_mode.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
+            brightness_scale.set_range(0.0, 3.0);
+            if !brightness_scale.is_focus() {
+                brightness_scale.set_value(0.0);
+            }
             brightness_scale.set_sensitive(false);
             mode_combo.set_sensitive(false);
             apply_lighting.set_sensitive(false);
             rgb_button.set_sensitive(false);
-            rgb_row.set_subtitle("Requires Aura/asusd support");
+            brightness_row.set_subtitle(&lighting_brightness_subtitle(
+                None,
+                &caps.kbd_backlight_access,
+            ));
+            mode_row.set_subtitle(&lighting_mode_subtitle(None, &caps.kbd_backlight_access));
+            apply_row.set_subtitle(&lighting_apply_subtitle(None, &caps.kbd_backlight_access));
+            rgb_row.set_subtitle(&lighting_rgb_subtitle(None, &caps.kbd_backlight_access));
+            if !mode_combo.is_focus() {
+                mode_combo.remove_all();
+                last_supported_modes.borrow_mut().clear();
+            }
         }
 
         if let Some(msg) = lighting_error_txt {
-            lighting_error.set_text(&msg);
-        } else if lighting.is_some() {
-            lighting_error.set_text("");
+            lighting_last_action.set_text(&friendly_action_error(&msg));
         } else {
-            lighting_error.set_text("(n/a)");
+            lighting_last_action.set_text(&lighting_last_action_text(
+                lighting.as_ref(),
+                &caps.kbd_backlight_access,
+            ));
         }
 
         glib::ControlFlow::Continue
@@ -2476,7 +2700,15 @@ async fn fetch_state() -> Result<
     } else {
         Some(cpu_telemetry_from_dbus(cpu_map))
     };
-    let mut caps_text = caps_text_from_dbus(caps_map);
+    let telemetry = telemetry_from_dbus(telemetry_map);
+    let mut caps_text = troubleshooting_summary_text(&caps, &cpu_caps, &warnings);
+    caps_text.push_str("\n\n");
+    caps_text.push_str(&caps_text_from_dbus(caps_map));
+    let fan_text = fan_diagnostics_text(&telemetry);
+    if !fan_text.is_empty() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(&fan_text);
+    }
     let cpu_access_text = cpu_access_report_text(&cpu_caps);
     if !cpu_access_text.is_empty() {
         caps_text.push_str("\n\n");
@@ -2490,7 +2722,7 @@ async fn fetch_state() -> Result<
     }
 
     Ok((
-        telemetry_from_dbus(telemetry_map),
+        telemetry,
         cpu,
         cpu_caps,
         caps,
@@ -2702,6 +2934,32 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         for (k, v) in fans {
             t.fans_rpm.insert(k, v);
         }
+    }
+    if let Some(rows) = map
+        .get(dbus_keys::TELEMETRY_FAN_ROWS_KEY)
+        .cloned()
+        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
+    {
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let Some(fan) = fan_row_from_dbus(&row) {
+                out.push(fan);
+            }
+        }
+        t.fan_rows = out;
+    } else if !t.fans_rpm.is_empty() {
+        t.fan_rows = t
+            .fans_rpm
+            .iter()
+            .map(|(label, rpm)| FanTelemetry {
+                hwmon_device: String::new(),
+                hwmon_path: String::new(),
+                input_path: String::new(),
+                raw_label: None,
+                display_label: label.clone(),
+                rpm: Some(*rpm),
+            })
+            .collect();
     }
     if let Some(v) = map
         .get("battery_percent")
@@ -2954,19 +3212,36 @@ fn cpu_telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> CpuTelemetry {
         .and_then(|v| u32::try_from(v).ok());
 
     if let Some(rows) = map
-        .get("per_core")
+        .get(dbus_keys::CPU_TELEMETRY_PER_CORE_KEY)
         .cloned()
         .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
     {
         let mut per_core = Vec::with_capacity(rows.len());
         for row in rows {
-            let core_id = row
-                .get("core_id")
+            let logical_cpu_id = row
+                .get(dbus_keys::CPU_LOGICAL_CPU_ID_KEY)
+                .or_else(|| row.get(dbus_keys::CPU_CORE_ID_COMPAT_KEY))
                 .and_then(u64_from_value)
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or_default();
             per_core.push(rog_core::CpuCoreTelemetry {
-                core_id,
+                logical_cpu_id,
+                physical_core_index: row
+                    .get(dbus_keys::CPU_PHYSICAL_CORE_INDEX_KEY)
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                policy_id: row
+                    .get(dbus_keys::CPU_POLICY_ID_KEY)
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                thread_index: row
+                    .get(dbus_keys::CPU_THREAD_INDEX_KEY)
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
+                thread_count: row
+                    .get(dbus_keys::CPU_THREAD_COUNT_KEY)
+                    .and_then(u64_from_value)
+                    .and_then(|v| u32::try_from(v).ok()),
                 usage_percent: row
                     .get("usage_percent")
                     .and_then(|v| f64::try_from(v).ok())
@@ -3151,18 +3426,525 @@ fn format_top_processes_text(rows: &[TopProcessMem]) -> String {
     out
 }
 
-fn cpu_control_subtitle<'a>(
-    caps: &'a CpuCaps,
-    kind: CpuControlKind,
-    available_text: &'a str,
-    unsupported_text: &'a str,
-) -> &'a str {
-    match caps.control_state(kind) {
-        CpuAccessState::Available => available_text,
-        CpuAccessState::PermissionDenied => "Readable, but not writable by the current user",
-        CpuAccessState::MissingBackend => "Required CPU policy backend is not available",
-        CpuAccessState::TemporarilyUnavailable => "Temporarily unavailable; inspect diagnostics",
-        CpuAccessState::Unsupported | CpuAccessState::Unknown => unsupported_text,
+fn format_cpu_thread_position(thread_index: Option<u32>, thread_count: Option<u32>) -> String {
+    match (thread_index, thread_count) {
+        (Some(index), Some(count)) if count > 0 => format!("{index}/{count}"),
+        _ => "-".to_string(),
+    }
+}
+
+fn format_cpu_toggle_summary(
+    physical_core_index: Option<u32>,
+    thread_index: Option<u32>,
+    thread_count: Option<u32>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(physical_core_index) = physical_core_index {
+        parts.push(format!("physical core {physical_core_index}"));
+    }
+    let thread_label = format_cpu_thread_position(thread_index, thread_count);
+    if thread_label != "-" {
+        parts.push(format!("thread {thread_label}"));
+    }
+    if parts.is_empty() {
+        "topology unavailable".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn warning_detail<'a>(warnings: &'a [String], prefix: &str) -> Option<&'a str> {
+    warnings
+        .iter()
+        .find_map(|warning| warning.strip_prefix(prefix).map(str::trim))
+}
+
+fn feature_status_label(status: FeatureAccessState) -> &'static str {
+    match status {
+        FeatureAccessState::Available => "Available",
+        FeatureAccessState::Unsupported => "Not supported on this machine",
+        FeatureAccessState::MissingBackend => "Missing required service",
+        FeatureAccessState::PermissionDenied => "Permission denied",
+        FeatureAccessState::TemporarilyUnavailable => "Temporarily unavailable",
+        FeatureAccessState::Unknown => "Checking support",
+    }
+}
+
+fn feature_control_subtitle(access: &FeatureAvailability, available_text: &str) -> String {
+    if access.is_available() {
+        available_text.to_string()
+    } else if access.reason.is_empty() {
+        feature_status_label(access.status).to_string()
+    } else {
+        access.reason.clone()
+    }
+}
+
+fn feature_value_label(access: &FeatureAvailability) -> String {
+    match access.status {
+        FeatureAccessState::Available => "Available".to_string(),
+        FeatureAccessState::Unsupported => "Not supported".to_string(),
+        FeatureAccessState::MissingBackend => {
+            let reason = access.reason.to_ascii_lowercase();
+            if reason.contains("asusd") {
+                "Missing asusd".to_string()
+            } else if reason.contains("supergfxd") {
+                "Missing supergfxd".to_string()
+            } else {
+                "Missing backend".to_string()
+            }
+        }
+        FeatureAccessState::PermissionDenied => "Read-only".to_string(),
+        FeatureAccessState::TemporarilyUnavailable => "Temporarily unavailable".to_string(),
+        FeatureAccessState::Unknown => "Checking support".to_string(),
+    }
+}
+
+fn feature_state_value(
+    current: Option<&str>,
+    access: &FeatureAvailability,
+    read_warning: Option<&str>,
+) -> String {
+    if let Some(current) = current {
+        current.to_string()
+    } else if read_warning.is_some() {
+        "Temporarily unavailable".to_string()
+    } else if access.is_available() {
+        "Waiting for current value".to_string()
+    } else {
+        feature_value_label(access)
+    }
+}
+
+fn lighting_placeholder_value(access: &FeatureAvailability) -> String {
+    feature_state_value(None, access, None)
+}
+
+fn lighting_backend_label(lighting: &LightingInfo) -> String {
+    let backend = if is_placeholder_text(&lighting.backend) {
+        "Detected lighting backend".to_string()
+    } else {
+        match normalize_label(&lighting.backend).as_str() {
+            "sysfsled" => "Sysfs LED backend".to_string(),
+            _ => lighting.backend.clone(),
+        }
+    };
+
+    if is_placeholder_text(&lighting.device) {
+        backend
+    } else {
+        format!("{backend} ({})", lighting.device)
+    }
+}
+
+fn lighting_current_label(lighting: &LightingInfo) -> String {
+    format!("{}/{}", lighting.brightness, lighting.max_brightness)
+}
+
+fn lighting_mode_label(lighting: &LightingInfo) -> String {
+    if is_placeholder_text(&lighting.mode) {
+        "Current mode not reported".to_string()
+    } else {
+        lighting.mode.clone()
+    }
+}
+
+fn lighting_brightness_subtitle(
+    lighting: Option<&LightingInfo>,
+    access: &FeatureAvailability,
+) -> String {
+    if let Some(lighting) = lighting {
+        if lighting.can_set {
+            format!(
+                "Current: {}. Drag to stage a change.",
+                lighting_current_label(lighting)
+            )
+        } else {
+            feature_control_subtitle(access, "Adjust brightness")
+        }
+    } else {
+        feature_control_subtitle(access, "Adjust brightness")
+    }
+}
+
+fn lighting_mode_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvailability) -> String {
+    if let Some(lighting) = lighting {
+        if lighting.can_set {
+            let supported_modes = if lighting.supported_modes.is_empty() {
+                "Off, Static".to_string()
+            } else {
+                lighting.supported_modes.join(", ")
+            };
+            format!(
+                "Current: {}. Supported by this backend: {}.",
+                lighting_mode_label(lighting),
+                supported_modes
+            )
+        } else {
+            feature_control_subtitle(access, "Choose a lighting mode and apply")
+        }
+    } else {
+        feature_control_subtitle(access, "Choose a lighting mode and apply")
+    }
+}
+
+fn lighting_apply_subtitle(
+    lighting: Option<&LightingInfo>,
+    access: &FeatureAvailability,
+) -> String {
+    if matches!(lighting, Some(lighting) if lighting.can_set) {
+        "Apply the staged lighting change.".to_string()
+    } else {
+        feature_control_subtitle(access, "Apply the staged lighting change.")
+    }
+}
+
+fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvailability) -> String {
+    if let Some(lighting) = lighting {
+        if lighting.supports_rgb {
+            if lighting.can_set {
+                "Choose an RGB color to stage and apply.".to_string()
+            } else if access.reason.is_empty() {
+                "RGB color is available, but writes are blocked for the current user.".to_string()
+            } else {
+                access.reason.clone()
+            }
+        } else {
+            "RGB color is not supported by the current lighting backend.".to_string()
+        }
+    } else {
+        match access.status {
+            FeatureAccessState::MissingBackend => {
+                "No lighting backend is available right now.".to_string()
+            }
+            FeatureAccessState::PermissionDenied => {
+                if access.reason.is_empty() {
+                    "Lighting is detected, but writes are blocked for the current user."
+                        .to_string()
+                } else {
+                    access.reason.clone()
+                }
+            }
+            FeatureAccessState::TemporarilyUnavailable => {
+                "Lighting backend is temporarily unavailable. RGB color cannot be changed right now."
+                    .to_string()
+            }
+            FeatureAccessState::Unsupported => {
+                "Keyboard lighting is not supported on this machine.".to_string()
+            }
+            FeatureAccessState::Available => {
+                "Waiting for lighting backend details before enabling RGB color."
+                    .to_string()
+            }
+            FeatureAccessState::Unknown => {
+                "Checking whether RGB color control is available.".to_string()
+            }
+        }
+    }
+}
+
+fn lighting_last_action_text(
+    lighting: Option<&LightingInfo>,
+    access: &FeatureAvailability,
+) -> String {
+    if let Some(lighting) = lighting {
+        if lighting.can_set {
+            "No lighting change applied yet.".to_string()
+        } else if access.reason.is_empty() {
+            "Lighting is detected, but writes are blocked for the current user.".to_string()
+        } else {
+            access.reason.clone()
+        }
+    } else if access.reason.is_empty() {
+        feature_status_label(access.status).to_string()
+    } else {
+        access.reason.clone()
+    }
+}
+
+fn combined_asusd_issue(caps: &DeviceCaps) -> Option<String> {
+    let profile = &caps.profile_access;
+    let charge = &caps.charge_limit_access;
+    if profile.status != charge.status || profile.is_available() || charge.is_available() {
+        return None;
+    }
+
+    match profile.status {
+        FeatureAccessState::MissingBackend => Some(
+            "Install and start asusd to enable performance profiles and charge-limit control."
+                .to_string(),
+        ),
+        FeatureAccessState::Unsupported => Some(
+            "This machine does not expose ASUS performance profiles or charge-limit control."
+                .to_string(),
+        ),
+        FeatureAccessState::TemporarilyUnavailable => Some(
+            "asusd is present, but profile and charge-limit support are temporarily unavailable."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn support_messages(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> Vec<String> {
+    let mut messages = Vec::new();
+
+    if let Some(message) = combined_asusd_issue(caps) {
+        messages.push(message);
+    } else {
+        if !caps.profile_access.is_available() {
+            messages.push(caps.profile_access.reason.clone());
+        }
+        if !caps.charge_limit_access.is_available() {
+            messages.push(caps.charge_limit_access.reason.clone());
+        }
+    }
+
+    if !caps.gpu_mode_access.is_available() {
+        messages.push(caps.gpu_mode_access.reason.clone());
+    }
+
+    if caps.kbd_backlight_access.status == FeatureAccessState::PermissionDenied {
+        messages.push(caps.kbd_backlight_access.reason.clone());
+    }
+
+    if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::PermissionDenied)
+    {
+        messages.push(
+            "CPU telemetry is available, but CPU writes are blocked by sysfs permissions."
+                .to_string(),
+        );
+    } else if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::MissingBackend)
+    {
+        messages.push("Some CPU controls are unsupported by the current backend.".to_string());
+    } else if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
+    {
+        messages.push("Some CPU controls are temporarily unavailable right now.".to_string());
+    }
+
+    messages.retain(|message| !message.trim().is_empty());
+    messages
+}
+
+fn support_banner_title(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> String {
+    let has_missing_backend = [
+        caps.profile_access.status,
+        caps.charge_limit_access.status,
+        caps.gpu_mode_access.status,
+        caps.kbd_backlight_access.status,
+    ]
+    .into_iter()
+    .any(|status| status == FeatureAccessState::MissingBackend);
+    let has_permission_denied = [
+        caps.profile_access.status,
+        caps.charge_limit_access.status,
+        caps.gpu_mode_access.status,
+        caps.kbd_backlight_access.status,
+    ]
+    .into_iter()
+    .any(|status| status == FeatureAccessState::PermissionDenied)
+        || cpu_caps
+            .control_access
+            .iter()
+            .any(|control| control.status == CpuAccessState::PermissionDenied);
+    let has_temporarily_unavailable = [
+        caps.profile_access.status,
+        caps.charge_limit_access.status,
+        caps.gpu_mode_access.status,
+        caps.kbd_backlight_access.status,
+    ]
+    .into_iter()
+    .any(|status| status == FeatureAccessState::TemporarilyUnavailable)
+        || cpu_caps
+            .control_access
+            .iter()
+            .any(|control| control.status == CpuAccessState::TemporarilyUnavailable);
+    let has_unsupported = [
+        caps.profile_access.status,
+        caps.charge_limit_access.status,
+        caps.gpu_mode_access.status,
+        caps.kbd_backlight_access.status,
+    ]
+    .into_iter()
+    .any(|status| status == FeatureAccessState::Unsupported)
+        || cpu_caps
+            .control_access
+            .iter()
+            .any(|control| control.status == CpuAccessState::MissingBackend);
+
+    let category_count = [
+        has_missing_backend,
+        has_permission_denied,
+        has_temporarily_unavailable,
+        has_unsupported,
+    ]
+    .into_iter()
+    .filter(|value| *value)
+    .count();
+
+    if category_count > 1 {
+        "Some controls need setup or permissions".to_string()
+    } else if has_missing_backend {
+        "Some controls need system services".to_string()
+    } else if has_permission_denied {
+        "Some controls are visible but read-only".to_string()
+    } else if has_temporarily_unavailable {
+        "Some controls could not be confirmed right now".to_string()
+    } else {
+        "Some controls are not supported on this machine".to_string()
+    }
+}
+
+fn gpu_status_summary(caps: &DeviceCaps, warnings: &[String]) -> String {
+    if let Some(detail) = warning_detail(warnings, "GPU switch hint: ") {
+        return detail.to_string();
+    }
+    if let Some(_detail) = warning_detail(warnings, "GPU mode read failed: ") {
+        return "GPU mode is detected, but the current value could not be read right now."
+            .to_string();
+    }
+    if let Some(_detail) = warning_detail(warnings, "profile read failed: ") {
+        return "Performance profile support is detected, but the current value could not be read right now."
+            .to_string();
+    }
+    if !caps.profile_access.is_available() {
+        return caps.profile_access.reason.clone();
+    }
+    if !caps.gpu_mode_access.is_available() {
+        return caps.gpu_mode_access.reason.clone();
+    }
+    "Ready".to_string()
+}
+
+fn gpu_switch_hint_text(caps: &DeviceCaps, warnings: &[String]) -> String {
+    if let Some(detail) = warning_detail(warnings, "GPU switch hint: ") {
+        detail.to_string()
+    } else if !caps.gpu_mode_access.is_available() {
+        caps.gpu_mode_access.reason.clone()
+    } else if caps.requires_reboot_for_gpu_switch {
+        "Switch may require reboot or logout.".to_string()
+    } else {
+        "Switch applies immediately or after logout.".to_string()
+    }
+}
+
+fn troubleshooting_summary_text(
+    caps: &DeviceCaps,
+    cpu_caps: &CpuCaps,
+    warnings: &[String],
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("Troubleshooting Summary".to_string());
+    lines.push("=======================".to_string());
+
+    let mut issues = Vec::new();
+    for (label, access) in [
+        ("Performance Profile", &caps.profile_access),
+        ("Charge Limit", &caps.charge_limit_access),
+        ("GPU Mode", &caps.gpu_mode_access),
+        ("Keyboard Backlight", &caps.kbd_backlight_access),
+    ] {
+        if !access.is_available() && access.status != FeatureAccessState::Unknown {
+            issues.push(format!(
+                "{label}: {} ({})",
+                access.status.as_str(),
+                access.reason
+            ));
+        }
+    }
+
+    if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::PermissionDenied)
+    {
+        issues.push(
+            "CPU Writes: permission_denied (CPU telemetry works, but sysfs control files are not writable by the current user.)"
+                .to_string(),
+        );
+    } else if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::MissingBackend)
+    {
+        issues.push(
+            "CPU Writes: missing_backend (Some CPU controls are not available through the current backend.)"
+                .to_string(),
+        );
+    } else if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
+    {
+        issues.push(
+            "CPU Writes: temporarily_unavailable (Some CPU controls could not be confirmed right now.)"
+                .to_string(),
+        );
+    }
+
+    if let Some(_detail) = warning_detail(warnings, "profile read failed: ") {
+        issues.push(
+            "Profile state: temporarily_unavailable (The current ASUS profile could not be read right now.)"
+                .to_string(),
+        );
+    }
+    if let Some(_detail) = warning_detail(warnings, "GPU mode read failed: ") {
+        issues.push(
+            "GPU mode state: temporarily_unavailable (The current GPU mode could not be read right now.)"
+                .to_string(),
+        );
+    }
+    if let Some(detail) = warning_detail(warnings, "GPU switch hint: ") {
+        issues.push(format!("GPU switch status: {detail}"));
+    }
+
+    if issues.is_empty() {
+        lines.push("No blocking service or permission issues detected.".to_string());
+    } else {
+        for issue in issues {
+            lines.push(format!("- {issue}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn friendly_action_error(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("profile control requires asusd") {
+        "Performance profiles require asusd. Install or start asusd, then retry.".to_string()
+    } else if lower.contains("battery limit control requires asusd") {
+        "Charge-limit control requires asusd. Install or start asusd, then retry.".to_string()
+    } else if lower.contains("gpu mode control requires supergfxd") {
+        "GPU mode switching requires supergfxd. Install or start supergfxd, then retry.".to_string()
+    } else if lower.contains("lighting not supported on this system") {
+        "No lighting backend is available on this machine.".to_string()
+    } else if lower.contains("rgb color is not supported by the sysfs led backend") {
+        "RGB color is not supported by the current lighting backend.".to_string()
+    } else if lower.contains("lighting mode")
+        && lower.contains("not supported by the sysfs led backend")
+    {
+        "The current lighting backend supports only Off and Static.".to_string()
+    } else if lower.contains("permission denied") {
+        "Permission denied. Open Diagnostics for the affected paths and backend details."
+            .to_string()
+    } else if lower.contains("session dbus unavailable")
+        || lower.contains("failed to connect to daemon proxy")
+    {
+        "rog-helperd is not reachable on the session bus.".to_string()
+    } else if let Some((_, suffix)) = error.split_once(": ") {
+        suffix.to_string()
+    } else {
+        error.to_string()
     }
 }
 
@@ -3183,21 +3965,21 @@ fn cpu_banner_title(caps: &CpuCaps) -> String {
         .iter()
         .any(|control| control.status == CpuAccessState::PermissionDenied)
     {
-        "CPU writes are blocked by sysfs permissions".to_string()
+        "CPU controls are visible, but writes are blocked".to_string()
     } else if caps
         .control_access
         .iter()
         .any(|control| control.status == CpuAccessState::MissingBackend)
     {
-        "Some CPU controls are unavailable".to_string()
+        "Some CPU controls need backend support".to_string()
     } else if caps
         .control_access
         .iter()
         .any(|control| control.status == CpuAccessState::TemporarilyUnavailable)
     {
-        "Some CPU controls are temporarily unavailable".to_string()
+        "Some CPU controls could not be confirmed right now".to_string()
     } else {
-        "Some CPU controls are unavailable".to_string()
+        "Some CPU controls are not supported here".to_string()
     }
 }
 
@@ -3259,8 +4041,11 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
     out.push_str(&format!("has_boost_toggle: {}\n", caps.has_boost_toggle));
     out.push_str(&format!("has_package_power: {}\n", caps.has_package_power));
     out.push_str(&format!("policy_writable: {}\n", caps.policy_writable));
-    out.push_str(&format!("cpu_count: {}\n", caps.cpu_count));
-    out.push_str(&format!("thread_count: {}\n", caps.thread_count));
+    out.push_str(&format!("cpu_count (physical cores): {}\n", caps.cpu_count));
+    out.push_str(&format!(
+        "thread_count (logical threads): {}\n",
+        caps.thread_count
+    ));
     if let Some(driver) = &caps.scaling_driver {
         out.push_str(&format!("scaling_driver: {driver}\n"));
     }
@@ -3299,13 +4084,21 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: Option<&CpuTelemetry>) -> String {
         out.push_str(&format!("min_freq_mhz: {:?}\n", cpu.min_freq_mhz));
         out.push_str(&format!("max_freq_mhz: {:?}\n", cpu.max_freq_mhz));
 
-        out.push_str("\nPer-core\n");
-        out.push_str("--------\n");
-        out.push_str("core  online  usage%  cur_mhz  min_mhz  max_mhz\n");
+        out.push_str("\nLogical CPUs / Threads\n");
+        out.push_str("----------------------\n");
+        out.push_str("cpu  pcore  thr   pol   online  usage%  cur_mhz  min_mhz  max_mhz\n");
         for core in &cpu.per_core {
+            let thread_label = format_cpu_thread_position(core.thread_index, core.thread_count);
             out.push_str(&format!(
-                "{:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
-                core.core_id,
+                "{:<3}  {:<5}  {:<4}  {:<4}  {:<6}  {:<6}  {:<7}  {:<7}  {:<7}\n",
+                core.logical_cpu_id,
+                core.physical_core_index
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                thread_label,
+                core.policy_id
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
                 if core.online { "yes" } else { "no" },
                 core.usage_percent
                     .map(|v| format!("{v:.1}"))
@@ -3333,6 +4126,11 @@ fn normalize_label(v: &str) -> String {
         .chars()
         .filter(|c| c.is_ascii_alphabetic())
         .collect()
+}
+
+fn is_placeholder_text(v: &str) -> bool {
+    let trimmed = v.trim();
+    trimmed.is_empty() || trimmed == "(n/a)"
 }
 
 fn profile_name_is(v: &str, expected: &str) -> bool {
@@ -3364,6 +4162,10 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     let value = gtk::Label::new(Some("(n/a)"));
     value.set_xalign(1.0);
     value.set_halign(gtk::Align::End);
+    value.set_wrap(true);
+    value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_justify(gtk::Justification::Right);
+    value.set_max_width_chars(32);
     if monospace {
         value.add_css_class("monospace");
     }
@@ -3373,22 +4175,192 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     value
 }
 
+fn style_linked_toggle_row(row: &gtk::Box) {
+    row.add_css_class("linked");
+    row.set_spacing(0);
+    row.set_halign(gtk::Align::End);
+    row.set_valign(gtk::Align::Center);
+}
+
+fn style_dropdown_control(dropdown: &gtk::DropDown) {
+    dropdown.set_halign(gtk::Align::End);
+    dropdown.set_valign(gtk::Align::Center);
+    dropdown.set_size_request(190, -1);
+}
+
+fn style_apply_button(button: &gtk::Button) {
+    button.set_halign(gtk::Align::End);
+    button.set_valign(gtk::Align::Center);
+    button.set_size_request(96, -1);
+}
+
+fn style_inline_control_box(control_box: &gtk::Box) {
+    control_box.set_spacing(10);
+    control_box.set_halign(gtk::Align::End);
+    control_box.set_valign(gtk::Align::Center);
+}
+
+fn style_spin_control(spin: &gtk::SpinButton, width_chars: i32) {
+    spin.set_width_chars(width_chars);
+    spin.set_alignment(1.0);
+    spin.set_halign(gtk::Align::End);
+    spin.set_valign(gtk::Align::Center);
+}
+
+fn style_scale_control(scale: &gtk::Scale) {
+    scale.set_digits(0);
+    scale.set_size_request(260, -1);
+    scale.set_valign(gtk::Align::Center);
+}
+
+fn style_combo_control(combo: &gtk::ComboBoxText) {
+    combo.set_halign(gtk::Align::End);
+    combo.set_valign(gtk::Align::Center);
+    combo.set_size_request(190, -1);
+}
+
+fn format_cpu_freq_value(mhz: Option<u32>) -> String {
+    mhz.map(|value| format!("{value} MHz"))
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
+    let mut parts = Vec::new();
+    if let Some(governor) = cpu.governor.as_deref() {
+        parts.push(format!("governor {governor}"));
+    }
+    if let Some(epp) = cpu.epp.as_deref() {
+        parts.push(format!("EPP {epp}"));
+    }
+
+    if parts.is_empty() {
+        "Choose Quiet, Balanced, or Performance, then apply.".to_string()
+    } else {
+        format!(
+            "Current hint: {}. Choose a preset, then apply.",
+            parts.join(" / ")
+        )
+    }
+}
+
+fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
+    let writable_controls = [
+        CpuControlKind::Boost,
+        CpuControlKind::PowerMode,
+        CpuControlKind::FreqLimits,
+    ]
+    .into_iter()
+    .filter(|kind| caps.control_writable(*kind))
+    .count();
+
+    match writable_controls {
+        0 => "Quick controls stay visible for diagnostics, but no quick CPU writes are available right now.".to_string(),
+        1 => "Apply the writable quick-control change from this section.".to_string(),
+        _ => "Apply staged turbo, preset, and frequency changes together.".to_string(),
+    }
+}
+
+fn cpu_policy_apply_subtitle(caps: &CpuCaps) -> String {
+    let governor_writable = caps.control_writable(CpuControlKind::Governor);
+    let epp_writable = caps.control_writable(CpuControlKind::Epp);
+
+    match (governor_writable, epp_writable) {
+        (true, true) => "Apply governor and EPP together.".to_string(),
+        (true, false) => "Apply the selected governor.".to_string(),
+        (false, true) => "Apply the selected EPP.".to_string(),
+        (false, false) => {
+            "Policy controls stay visible for diagnostics, but writes are not available right now."
+                .to_string()
+        }
+    }
+}
+
+fn cpu_control_subtitle(
+    caps: &CpuCaps,
+    kind: CpuControlKind,
+    available_text: &str,
+    unsupported_text: &str,
+) -> String {
+    let access_reason = caps
+        .control_access(kind)
+        .map(|entry| entry.reason.trim())
+        .filter(|reason| !reason.is_empty());
+
+    match caps.control_state(kind) {
+        CpuAccessState::Available => available_text.to_string(),
+        CpuAccessState::PermissionDenied => access_reason
+            .unwrap_or("Readable, but not writable by the current user.")
+            .to_string(),
+        CpuAccessState::MissingBackend => access_reason
+            .unwrap_or("Required CPU policy backend is not available.")
+            .to_string(),
+        CpuAccessState::TemporarilyUnavailable => access_reason
+            .unwrap_or("Temporarily unavailable; inspect diagnostics.")
+            .to_string(),
+        CpuAccessState::Unsupported | CpuAccessState::Unknown => unsupported_text.to_string(),
+    }
+}
+
+fn cpu_toggle_row_subtitle(
+    core: &CpuCoreTelemetry,
+    caps: &CpuCaps,
+    core_online_writable: bool,
+) -> String {
+    let mut parts = vec![
+        format_cpu_toggle_summary(
+            core.physical_core_index,
+            core.thread_index,
+            core.thread_count,
+        ),
+        if core.online {
+            "currently online".to_string()
+        } else {
+            "currently offline".to_string()
+        },
+    ];
+
+    if core.logical_cpu_id == 0 {
+        parts.push("CPU 0 stays online".to_string());
+    } else if !caps.has_core_online {
+        parts.push("Online/offline control is not supported".to_string());
+    } else if !core_online_writable {
+        parts.push("Read-only for the current user".to_string());
+    } else {
+        parts.push("Use the switch to stage a change".to_string());
+    }
+
+    parts.join("  |  ")
+}
+
+fn cpu_toggle_dialog_title(desired_online: bool) -> &'static str {
+    if desired_online {
+        "Bring Logical CPU Online?"
+    } else {
+        "Take Logical CPU Offline?"
+    }
+}
+
+fn cpu_toggle_dialog_body(core: &CpuCoreTelemetry, desired_online: bool) -> String {
+    let action = if desired_online {
+        "bring it back online"
+    } else {
+        "take it offline"
+    };
+    format!(
+        "Logical CPU {} maps to {}. Changing its online state can affect responsiveness, thermals, and scheduler behavior. Continue and {action}?",
+        core.logical_cpu_id,
+        format_cpu_toggle_summary(
+            core.physical_core_index,
+            core.thread_index,
+            core.thread_count,
+        ),
+    )
+}
+
 fn build_detail_rows(group: &adw::PreferencesGroup, count: usize) -> Vec<DetailRow> {
     let mut rows = Vec::with_capacity(count);
     for _ in 0..count {
-        let row = adw::ActionRow::builder().title("").build();
-        let value = gtk::Label::new(Some(""));
-        value.set_xalign(1.0);
-        value.set_halign(gtk::Align::End);
-        value.add_css_class("monospace");
-        row.add_suffix(&value);
-        row.set_activatable(false);
-        row.set_visible(false);
-        group.add(&row);
-        rows.push(DetailRow {
-            row,
-            value_label: value,
-        });
+        rows.push(append_detail_row(group));
     }
     rows
 }
@@ -3405,6 +4377,33 @@ fn update_detail_rows(rows: &[DetailRow], entries: &[(String, String)]) {
             detail_row.row.set_visible(false);
         }
     }
+}
+
+fn append_detail_row(group: &adw::PreferencesGroup) -> DetailRow {
+    let row = adw::ActionRow::builder().title("").build();
+    let value = gtk::Label::new(Some(""));
+    value.set_xalign(1.0);
+    value.set_halign(gtk::Align::End);
+    value.add_css_class("monospace");
+    row.add_suffix(&value);
+    row.set_activatable(false);
+    row.set_visible(false);
+    group.add(&row);
+    DetailRow {
+        row,
+        value_label: value,
+    }
+}
+
+fn update_detail_rows_dynamic(
+    group: &adw::PreferencesGroup,
+    rows: &mut Vec<DetailRow>,
+    entries: &[(String, String)],
+) {
+    while rows.len() < entries.len() {
+        rows.push(append_detail_row(group));
+    }
+    update_detail_rows(rows, entries);
 }
 
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
@@ -3430,14 +4429,48 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
     }
 
     Some(LightingInfo {
-        backend: s(&map, "backend").unwrap_or_else(|| "(n/a)".to_string()),
-        device: s(&map, "device").unwrap_or_else(|| "(n/a)".to_string()),
+        backend: s(&map, "backend").unwrap_or_else(|| "Unknown backend".to_string()),
+        device: s(&map, "device").unwrap_or_else(|| "Unknown device".to_string()),
         brightness: u(&map, "brightness").unwrap_or(0),
         max_brightness: u(&map, "max_brightness").unwrap_or(3),
         can_set: b(&map, "can_set").unwrap_or(false),
-        mode: s(&map, "mode").unwrap_or_else(|| "(n/a)".to_string()),
+        mode: s(&map, "mode").unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
         supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
+    })
+}
+
+fn fan_row_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<FanTelemetry> {
+    let hwmon_device = map
+        .get(dbus_keys::FAN_ROW_HWMON_DEVICE_KEY)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let hwmon_path = map
+        .get(dbus_keys::FAN_ROW_HWMON_PATH_KEY)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let input_path = map
+        .get(dbus_keys::FAN_ROW_INPUT_PATH_KEY)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+    let display_label = map
+        .get(dbus_keys::FAN_ROW_DISPLAY_LABEL_KEY)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string())?;
+
+    Some(FanTelemetry {
+        hwmon_device,
+        hwmon_path,
+        input_path,
+        raw_label: map
+            .get(dbus_keys::FAN_ROW_RAW_LABEL_KEY)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .map(|value| value.to_string()),
+        display_label,
+        rpm: map
+            .get(dbus_keys::FAN_ROW_RPM_KEY)
+            .and_then(u64_from_value)
+            .and_then(|value| u32::try_from(value).ok()),
     })
 }
 
@@ -3449,6 +4482,12 @@ fn install_css() {
   border-radius: 999px;
   background-color: alpha(currentColor, 0.12);
 }
+.cpu-toggle-row {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.cpu-toggle-title { font-weight: 600; }
+.cpu-toggle-subtitle { opacity: 0.85; }
 "#;
 
     let provider = gtk::CssProvider::new();
@@ -3461,13 +4500,6 @@ fn install_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-}
-
-fn is_kbd_backlight_read_only_warning(warning: &str) -> bool {
-    let lower = warning.to_ascii_lowercase();
-    lower.contains("kbd_backlight")
-        || lower.contains("keyboard backlight")
-        || (lower.contains("read-only") && lower.contains("backlight"))
 }
 
 fn clamped_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
@@ -3495,15 +4527,15 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
 
 fn cpu_path_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuPathAccess> {
     let path = map
-        .get("path")
+        .get(dbus_keys::CPU_PATH_PATH_KEY)
         .and_then(|value| <&str>::try_from(value).ok())
         .map(|value| value.to_string())?;
     let readable = map
-        .get("readable")
+        .get(dbus_keys::CPU_PATH_READABLE_KEY)
         .and_then(|value| bool::try_from(value).ok())
         .unwrap_or(false);
     let writable = map
-        .get("writable")
+        .get(dbus_keys::CPU_PATH_WRITABLE_KEY)
         .and_then(|value| bool::try_from(value).ok())
         .unwrap_or(false);
 
@@ -3516,21 +4548,21 @@ fn cpu_path_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuPat
 
 fn cpu_control_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuControlAccess> {
     let kind = map
-        .get("kind")
+        .get(dbus_keys::CPU_CONTROL_KIND_KEY)
         .and_then(|value| <&str>::try_from(value).ok())
         .and_then(CpuControlKind::parse)?;
     let status = map
-        .get("status")
+        .get(dbus_keys::CPU_CONTROL_STATUS_KEY)
         .and_then(|value| <&str>::try_from(value).ok())
         .map(CpuAccessState::parse)
         .unwrap_or(CpuAccessState::Unknown);
     let reason = map
-        .get("reason")
+        .get(dbus_keys::CPU_CONTROL_REASON_KEY)
         .and_then(|value| <&str>::try_from(value).ok())
         .unwrap_or_default()
         .to_string();
     let paths = map
-        .get("paths")
+        .get(dbus_keys::CPU_CONTROL_PATHS_KEY)
         .cloned()
         .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
         .unwrap_or_default()
@@ -3586,7 +4618,7 @@ fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
         epp_choices: vec_string(map, "epp_choices"),
         sysfs_paths: vec_string(map, "sysfs_paths"),
         control_access: map
-            .get("control_access")
+            .get(dbus_keys::CPU_CONTROL_ACCESS_KEY)
             .cloned()
             .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
             .unwrap_or_default()
@@ -3618,14 +4650,44 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
         has_aura: b(map, "has_aura"),
         has_kbd_backlight: b(map, "has_kbd_backlight"),
         requires_reboot_for_gpu_switch: b(map, "requires_reboot_for_gpu_switch"),
+        profile_access: feature_access_from_dbus(map, dbus_keys::PROFILE_ACCESS_PREFIX),
+        charge_limit_access: feature_access_from_dbus(map, dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
+        gpu_mode_access: feature_access_from_dbus(map, dbus_keys::GPU_MODE_ACCESS_PREFIX),
+        kbd_backlight_access: feature_access_from_dbus(map, dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
         endpoints: vec_string(map, "endpoints"),
         notes: vec_string(map, "notes"),
+    }
+}
+
+fn feature_access_from_dbus(
+    map: &HashMap<String, OwnedValue>,
+    prefix: &str,
+) -> FeatureAvailability {
+    let status_key = dbus_keys::feature_access_status_key(prefix);
+    let reason_key = dbus_keys::feature_access_reason_key(prefix);
+
+    FeatureAvailability {
+        status: map
+            .get(&status_key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .map(FeatureAccessState::parse)
+            .unwrap_or(FeatureAccessState::Unknown),
+        reason: map
+            .get(&reason_key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
 fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
     fn b(map: &HashMap<String, OwnedValue>, k: &str) -> Option<bool> {
         map.get(k).and_then(|v| bool::try_from(v).ok())
+    }
+    fn s(map: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {
+        map.get(k)
+            .and_then(|v| <&str>::try_from(v).ok())
+            .map(|v| v.to_string())
     }
     fn vec_string(map: &HashMap<String, OwnedValue>, k: &str) -> Option<Vec<String>> {
         map.get(k)
@@ -3660,6 +4722,21 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
         lines.push(format!("  {k}: {s}"));
     }
 
+    lines.push("".to_string());
+    lines.push("Feature access:".to_string());
+    for (label, prefix) in [
+        ("profile", dbus_keys::PROFILE_ACCESS_PREFIX),
+        ("charge_limit", dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
+        ("gpu_mode", dbus_keys::GPU_MODE_ACCESS_PREFIX),
+        ("kbd_backlight", dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
+    ] {
+        let status = s(&map, &dbus_keys::feature_access_status_key(prefix))
+            .unwrap_or_else(|| "unknown".to_string());
+        let reason = s(&map, &dbus_keys::feature_access_reason_key(prefix))
+            .unwrap_or_else(|| "(n/a)".to_string());
+        lines.push(format!("  {label}: {status} ({reason})"));
+    }
+
     if let Some(endpoints) = vec_string(&map, "endpoints") {
         lines.push("".to_string());
         lines.push("Endpoints:".to_string());
@@ -3677,4 +4754,275 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
     }
 
     lines.join("\n")
+}
+
+fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
+    let mut lines = Vec::new();
+    lines.push("Fan Diagnostics".to_string());
+    lines.push("===============".to_string());
+
+    let detected = telemetry.fan_rows.len();
+    let reporting = telemetry
+        .fan_rows
+        .iter()
+        .filter(|fan| fan.rpm.is_some())
+        .count();
+    lines.push(format!("fan_inputs_detected: {detected}"));
+    lines.push(format!("fan_inputs_reporting_rpm: {reporting}"));
+
+    if telemetry.fan_rows.is_empty() {
+        lines.push("".to_string());
+        lines.push("No hwmon fan inputs are currently exposed on this platform.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push("".to_string());
+    lines.push("Detected fan mappings".to_string());
+    lines.push("---------------------".to_string());
+    for fan in &telemetry.fan_rows {
+        lines.push(format!(
+            "{}: {}",
+            fan.display_label,
+            fan.rpm
+                .map(|rpm| format!("{rpm} rpm"))
+                .unwrap_or_else(|| "(unavailable)".to_string())
+        ));
+        lines.push(format!(
+            "  hwmon_device: {}",
+            text_or_unknown(&fan.hwmon_device)
+        ));
+        lines.push(format!(
+            "  hwmon_path: {}",
+            text_or_unknown(&fan.hwmon_path)
+        ));
+        lines.push(format!(
+            "  input_path: {}",
+            text_or_unknown(&fan.input_path)
+        ));
+        lines.push(format!(
+            "  raw_label: {}",
+            fan.raw_label.as_deref().unwrap_or("(none)")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn text_or_unknown(value: &str) -> &str {
+    if value.is_empty() {
+        "(not provided by daemon)"
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ov<T>(value: T) -> OwnedValue
+    where
+        T: Into<Value<'static>>,
+    {
+        OwnedValue::try_from(value.into()).expect("OwnedValue conversion should succeed")
+    }
+
+    #[test]
+    fn caps_from_dbus_parses_feature_access_status_and_reason_keys() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::feature_access_status_key(dbus_keys::PROFILE_ACCESS_PREFIX),
+            ov("available".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_reason_key(dbus_keys::PROFILE_ACCESS_PREFIX),
+            ov("Performance profiles are available through asusd.".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_status_key(dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
+            ov("missing_backend".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_reason_key(dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
+            ov("Install and start asusd to enable charge-limit control.".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_status_key(dbus_keys::GPU_MODE_ACCESS_PREFIX),
+            ov("temporarily_unavailable".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_reason_key(dbus_keys::GPU_MODE_ACCESS_PREFIX),
+            ov("GPU mode switching needs supergfxd, but the system backend could not be reached right now.".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_status_key(dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
+            ov("permission_denied".to_string()),
+        );
+        map.insert(
+            dbus_keys::feature_access_reason_key(dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
+            ov(
+                "Keyboard backlight is detected, but writes are blocked for the current user."
+                    .to_string(),
+            ),
+        );
+
+        let caps = caps_from_dbus(&map);
+
+        assert_eq!(caps.profile_access.status, FeatureAccessState::Available);
+        assert_eq!(
+            caps.charge_limit_access.status,
+            FeatureAccessState::MissingBackend
+        );
+        assert_eq!(
+            caps.gpu_mode_access.status,
+            FeatureAccessState::TemporarilyUnavailable
+        );
+        assert_eq!(
+            caps.kbd_backlight_access.status,
+            FeatureAccessState::PermissionDenied
+        );
+        assert_eq!(
+            caps.gpu_mode_access.reason,
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now."
+        );
+    }
+
+    #[test]
+    fn telemetry_from_dbus_parses_structured_fan_rows() {
+        let mut fan_row = HashMap::new();
+        fan_row.insert(
+            dbus_keys::FAN_ROW_HWMON_DEVICE_KEY.to_string(),
+            ov("hwmon4".to_string()),
+        );
+        fan_row.insert(
+            dbus_keys::FAN_ROW_HWMON_PATH_KEY.to_string(),
+            ov("/sys/class/hwmon/hwmon4".to_string()),
+        );
+        fan_row.insert(
+            dbus_keys::FAN_ROW_INPUT_PATH_KEY.to_string(),
+            ov("/sys/class/hwmon/hwmon4/fan2_input".to_string()),
+        );
+        fan_row.insert(
+            dbus_keys::FAN_ROW_RAW_LABEL_KEY.to_string(),
+            ov("gpu".to_string()),
+        );
+        fan_row.insert(
+            dbus_keys::FAN_ROW_DISPLAY_LABEL_KEY.to_string(),
+            ov("GPU Fan".to_string()),
+        );
+        fan_row.insert(
+            dbus_keys::FAN_ROW_RPM_KEY.to_string(),
+            OwnedValue::from(2875_u32),
+        );
+
+        let mut map = HashMap::new();
+        map.insert("timestamp_ms".to_string(), OwnedValue::from(10_u64));
+        map.insert(
+            dbus_keys::TELEMETRY_FAN_ROWS_KEY.to_string(),
+            ov(vec![fan_row]),
+        );
+
+        let telemetry = telemetry_from_dbus(map);
+        let fan = telemetry.fan_rows.first().expect("fan row should parse");
+
+        assert_eq!(fan.hwmon_device, "hwmon4");
+        assert_eq!(fan.hwmon_path, "/sys/class/hwmon/hwmon4");
+        assert_eq!(fan.input_path, "/sys/class/hwmon/hwmon4/fan2_input");
+        assert_eq!(fan.raw_label.as_deref(), Some("gpu"));
+        assert_eq!(fan.display_label, "GPU Fan");
+        assert_eq!(fan.rpm, Some(2875));
+    }
+
+    #[test]
+    fn cpu_caps_from_dbus_parses_structured_control_access_rows() {
+        let mut path_row = HashMap::new();
+        path_row.insert(
+            dbus_keys::CPU_PATH_PATH_KEY.to_string(),
+            ov("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference".to_string()),
+        );
+        path_row.insert(
+            dbus_keys::CPU_PATH_READABLE_KEY.to_string(),
+            OwnedValue::from(true),
+        );
+        path_row.insert(
+            dbus_keys::CPU_PATH_WRITABLE_KEY.to_string(),
+            OwnedValue::from(false),
+        );
+
+        let mut control_row = HashMap::new();
+        control_row.insert(
+            dbus_keys::CPU_CONTROL_KIND_KEY.to_string(),
+            ov(rog_core::CpuControlKind::Epp.as_str().to_string()),
+        );
+        control_row.insert(
+            dbus_keys::CPU_CONTROL_STATUS_KEY.to_string(),
+            ov(CpuAccessState::PermissionDenied.as_str().to_string()),
+        );
+        control_row.insert(
+            dbus_keys::CPU_CONTROL_REASON_KEY.to_string(),
+            ov("Energy Performance Preference paths are readable but not writable by the current user.".to_string()),
+        );
+        control_row.insert(
+            dbus_keys::CPU_CONTROL_PATHS_KEY.to_string(),
+            ov(vec![path_row]),
+        );
+
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::CPU_CONTROL_ACCESS_KEY.to_string(),
+            ov(vec![control_row]),
+        );
+
+        let caps = cpu_caps_from_dbus(&map);
+        let control = caps
+            .control_access
+            .first()
+            .expect("control access row should parse");
+
+        assert_eq!(control.kind, rog_core::CpuControlKind::Epp);
+        assert_eq!(control.status, CpuAccessState::PermissionDenied);
+        assert_eq!(
+            control.reason,
+            "Energy Performance Preference paths are readable but not writable by the current user."
+        );
+        assert_eq!(control.paths.len(), 1);
+        assert_eq!(
+            control.paths[0].path,
+            "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"
+        );
+        assert!(control.paths[0].readable);
+        assert!(!control.paths[0].writable);
+    }
+
+    #[test]
+    fn cpu_telemetry_from_dbus_supports_logical_cpu_id_and_core_id_alias() {
+        let mut logical_row = HashMap::new();
+        logical_row.insert(
+            dbus_keys::CPU_LOGICAL_CPU_ID_KEY.to_string(),
+            OwnedValue::from(3_u64),
+        );
+        logical_row.insert("online".to_string(), OwnedValue::from(true));
+
+        let mut compat_row = HashMap::new();
+        compat_row.insert(
+            dbus_keys::CPU_CORE_ID_COMPAT_KEY.to_string(),
+            OwnedValue::from(7_u64),
+        );
+        compat_row.insert("online".to_string(), OwnedValue::from(false));
+
+        let mut map = HashMap::new();
+        map.insert("timestamp_ms".to_string(), OwnedValue::from(99_u64));
+        map.insert(
+            dbus_keys::CPU_TELEMETRY_PER_CORE_KEY.to_string(),
+            ov(vec![logical_row, compat_row]),
+        );
+
+        let cpu = cpu_telemetry_from_dbus(map);
+
+        assert_eq!(cpu.per_core.len(), 2);
+        assert_eq!(cpu.per_core[0].logical_cpu_id, 3);
+        assert!(cpu.per_core[0].online);
+        assert_eq!(cpu.per_core[1].logical_cpu_id, 7);
+        assert!(!cpu.per_core[1].online);
+    }
 }

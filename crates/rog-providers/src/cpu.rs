@@ -29,6 +29,7 @@ struct Inner {
 
 #[derive(Debug, Clone)]
 struct PolicyData {
+    id: Option<u32>,
     path: PathBuf,
     related_cpus: Vec<u32>,
     cur_freq_khz: Option<u64>,
@@ -71,6 +72,13 @@ struct PackageEnergySample {
 
 type CoreFreqMhz = (Option<u32>, Option<u32>, Option<u32>);
 
+#[derive(Debug, Clone)]
+struct CpuTopologyEntry {
+    package_id: Option<u32>,
+    raw_core_id: Option<u32>,
+    thread_siblings: Vec<u32>,
+}
+
 impl Default for CpuTelemetryProvider {
     fn default() -> Self {
         Self {
@@ -88,7 +96,8 @@ impl CpuTelemetryProvider {
         let boost = detect_boost_path();
         let rapl = detect_package_energy_path();
         let cores = read_core_ids();
-        let physical_cores = count_physical_cores(&cores).unwrap_or(cores.len() as u32);
+        let topology = read_cpu_topology(&cores);
+        let physical_cores = count_physical_cores(&topology).unwrap_or(cores.len() as u32);
 
         let mut governor_choices = BTreeSet::new();
         let mut epp_choices = BTreeSet::new();
@@ -256,6 +265,9 @@ impl CpuTelemetryProvider {
 
     pub fn read_snapshot(&self, timestamp_ms: u64, temp_c: Option<f32>) -> RogResult<CpuTelemetry> {
         let policies = read_policies();
+        let core_ids = read_core_ids();
+        let topology = read_cpu_topology(&core_ids);
+        let physical_core_indices = physical_core_indices(&topology);
         let usage_current = read_proc_stat()?;
         let usage_prev = self
             .inner
@@ -285,6 +297,7 @@ impl CpuTelemetryProvider {
         }
 
         let mut freq_by_core: HashMap<u32, CoreFreqMhz> = HashMap::new();
+        let mut policy_by_core: HashMap<u32, u32> = HashMap::new();
         let mut avg_freq_sum = 0.0f64;
         let mut avg_freq_count = 0usize;
         let mut governors = BTreeSet::new();
@@ -315,6 +328,9 @@ impl CpuTelemetryProvider {
 
             for core in &p.related_cpus {
                 freq_by_core.insert(*core, (cur_mhz, min_mhz, max_mhz));
+                if let Some(policy_id) = p.id {
+                    policy_by_core.insert(*core, policy_id);
+                }
             }
         }
 
@@ -349,21 +365,40 @@ impl CpuTelemetryProvider {
         for core in freq_by_core.keys() {
             cores.insert(*core);
         }
-        for core in read_core_ids() {
+        for core in core_ids {
             cores.insert(core);
         }
 
         let per_core = cores
             .into_iter()
-            .map(|core_id| {
-                let usage_percent = per_core_usage.get(&core_id).copied().flatten();
+            .map(|logical_cpu_id| {
+                let usage_percent = per_core_usage.get(&logical_cpu_id).copied().flatten();
                 let (current_freq_mhz, min_freq_mhz, max_freq_mhz) = freq_by_core
-                    .get(&core_id)
+                    .get(&logical_cpu_id)
                     .copied()
                     .unwrap_or((None, None, None));
-                let online = read_core_online(core_id).unwrap_or(true);
+                let online = read_core_online(logical_cpu_id).unwrap_or(true);
+                let topology_entry = topology.get(&logical_cpu_id);
+                let thread_index = topology_entry.and_then(|entry| {
+                    entry
+                        .thread_siblings
+                        .iter()
+                        .position(|cpu| *cpu == logical_cpu_id)
+                        .map(|idx| idx as u32 + 1)
+                });
+                let thread_count = topology_entry.and_then(|entry| {
+                    if entry.thread_siblings.is_empty() {
+                        None
+                    } else {
+                        Some(entry.thread_siblings.len() as u32)
+                    }
+                });
                 CpuCoreTelemetry {
-                    core_id,
+                    logical_cpu_id,
+                    physical_core_index: physical_core_indices.get(&logical_cpu_id).copied(),
+                    policy_id: policy_by_core.get(&logical_cpu_id).copied(),
+                    thread_index,
+                    thread_count,
                     usage_percent,
                     current_freq_mhz,
                     min_freq_mhz,
@@ -628,7 +663,7 @@ impl CpuTelemetryProvider {
         let path = PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{core_id}/online"));
         if !path.exists() {
             return Err(RogError::NotSupported(format!(
-                "core {core_id} online/offline control is not supported"
+                "logical CPU {core_id} online/offline control is not supported"
             )));
         }
         let raw = if online { "1" } else { "0" };
@@ -775,8 +810,12 @@ fn read_policies() -> Vec<PolicyData> {
             read_space_split(&path.join("energy_performance_available_preferences"))
                 .unwrap_or_default();
         let scaling_driver = read_trimmed(&path.join("scaling_driver")).ok();
+        let id = name
+            .strip_prefix("policy")
+            .and_then(|value| value.parse::<u32>().ok());
 
         out.push(PolicyData {
+            id,
             path,
             related_cpus,
             cur_freq_khz,
@@ -874,17 +913,65 @@ fn read_core_ids() -> Vec<u32> {
     out
 }
 
-fn count_physical_cores(core_ids: &[u32]) -> Option<u32> {
-    let mut unique = BTreeSet::new();
+fn read_cpu_topology(core_ids: &[u32]) -> BTreeMap<u32, CpuTopologyEntry> {
+    let mut out = BTreeMap::new();
     for id in core_ids {
-        let path = PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{id}/topology/core_id"));
-        let core = read_trimmed(&path).ok()?;
-        unique.insert(core);
+        let package_id = read_trimmed(&PathBuf::from(format!(
+            "{CPU_SYSFS_ROOT}/cpu{id}/topology/physical_package_id"
+        )))
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+        let raw_core_id = read_trimmed(&PathBuf::from(format!(
+            "{CPU_SYSFS_ROOT}/cpu{id}/topology/core_id"
+        )))
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+        let mut thread_siblings = read_cpu_list(&PathBuf::from(format!(
+            "{CPU_SYSFS_ROOT}/cpu{id}/topology/thread_siblings_list"
+        )))
+        .unwrap_or_default();
+        if thread_siblings.is_empty() {
+            thread_siblings.push(*id);
+        }
+        out.insert(
+            *id,
+            CpuTopologyEntry {
+                package_id,
+                raw_core_id,
+                thread_siblings,
+            },
+        );
     }
-    if unique.is_empty() {
+    out
+}
+
+fn physical_core_indices(topology: &BTreeMap<u32, CpuTopologyEntry>) -> BTreeMap<u32, u32> {
+    let mut key_to_index = BTreeMap::new();
+    let mut next_index = 0u32;
+    let mut out = BTreeMap::new();
+
+    for (logical_cpu_id, entry) in topology {
+        let Some(raw_core_id) = entry.raw_core_id else {
+            continue;
+        };
+        let key = (entry.package_id, raw_core_id);
+        let index = *key_to_index.entry(key).or_insert_with(|| {
+            let current = next_index;
+            next_index += 1;
+            current
+        });
+        out.insert(*logical_cpu_id, index);
+    }
+
+    out
+}
+
+fn count_physical_cores(topology: &BTreeMap<u32, CpuTopologyEntry>) -> Option<u32> {
+    let indices = physical_core_indices(topology);
+    if indices.is_empty() {
         None
     } else {
-        Some(unique.len() as u32)
+        Some(indices.values().copied().collect::<BTreeSet<_>>().len() as u32)
     }
 }
 
