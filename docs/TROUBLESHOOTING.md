@@ -84,7 +84,8 @@ Symptoms:
 - performance profile controls are disabled
 - battery charge-limit controls are disabled
 - Dashboard or GPU page explains that `asusd` is required
-- Diagnostics or `caps` reports `missing_backend` for profile and charge-limit access
+- Diagnostics or `caps` reports `missing_backend` for profile and charge-limit access when `asusd` is not installed or detected
+- Diagnostics or `caps` reports `temporarily_unavailable` for profile and charge-limit access when `asusd` exists but the backend cannot be reached right now
 
 Check:
 
@@ -98,7 +99,7 @@ Expected current behavior:
 
 - the UI keeps the profile and charge-limit rows visible
 - the reason text explicitly mentions `asusd`
-- Diagnostics includes the missing-backend state in the troubleshooting summary
+- Diagnostics includes either the missing-backend or temporarily-unavailable state in the troubleshooting summary
 
 What to do:
 
@@ -112,7 +113,8 @@ Symptoms:
 
 - GPU mode controls are disabled
 - the GPU page explains that `supergfxd` is required
-- Diagnostics or `caps` reports `missing_backend` for GPU mode access
+- Diagnostics or `caps` reports `missing_backend` for GPU mode access when `supergfxd` is not installed or detected
+- Diagnostics or `caps` reports `temporarily_unavailable` for GPU mode access when `supergfxd` exists but the backend cannot be reached right now
 
 Check:
 
@@ -126,7 +128,7 @@ Expected current behavior:
 
 - the GPU page keeps the GPU mode selector visible
 - the reason text explicitly mentions `supergfxd`
-- Diagnostics includes the missing-backend state in the troubleshooting summary
+- Diagnostics includes either the missing-backend or temporarily-unavailable state in the troubleshooting summary
 
 What to do:
 
@@ -141,11 +143,11 @@ If `asusd` or `supergfxd` is present but the control is still unavailable, the c
 - `unsupported`
   - the backend is reachable, but the current machine does not expose that feature
 - `missing_backend`
-  - the required system service is not installed or not reachable
+  - the required system service is not installed or was not detected on the system bus
 - `permission_denied`
   - the backend or sysfs path is visible but not writable by the current user
 - `temporarily_unavailable`
-  - the feature is expected to exist, but the current value could not be confirmed right now
+  - the feature is expected to exist, but the backend or current value could not be confirmed right now
 
 Use:
 
@@ -155,6 +157,11 @@ cargo run -p rog-cli -- caps
 ```
 
 Then compare the `*_access_status` and `*_access_reason` fields with what the Dashboard, GPU page, and Diagnostics show.
+
+`cargo run -p rog-cli -- caps` now uses the same backend-failure split as the daemon for `asusd` and `supergfxd`:
+
+- `missing_backend` means the service was not detected
+- `temporarily_unavailable` means the service or DBus backend could not be reached right now
 
 ## CPU Telemetry Works, But CPU Controls Are Read-Only
 

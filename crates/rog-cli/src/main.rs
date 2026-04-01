@@ -259,7 +259,15 @@ async fn cmd_caps() -> anyhow::Result<()> {
         )
     };
 
-    if let Ok(Some(asusd)) = AsusdPlatformProvider::connect_system().await {
+    let (asusd, asusd_connect_error) = match AsusdPlatformProvider::connect_system().await {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("asusd connect failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+
+    if let Some(asusd) = asusd {
         caps.endpoints
             .push(format!("asusd-platform:{}", asusd.endpoint_tag()));
         match asusd.probe_caps().await {
@@ -298,33 +306,62 @@ async fn cmd_caps() -> anyhow::Result<()> {
                     FeatureAccessState::TemporarilyUnavailable,
                     "asusd is present, but charge-limit support could not be confirmed right now.",
                 );
-                caps.notes.push(format!("asusd probing failed: {e}"));
+                caps.notes
+                    .push(format!("asusd platform probing failed: {e}"));
             }
         }
         if caps.has_profiles {
-            if let Ok(p) = asusd.get_profile().await {
-                caps.notes.push(format!("Current profile: {p:?}"));
+            match asusd.get_profile().await {
+                Ok(p) => caps.notes.push(format!("Current profile: {p:?}")),
+                Err(e) => caps
+                    .notes
+                    .push(format!("could not read current profile from asusd: {e}")),
             }
         }
         if caps.has_charge_limit {
-            if let Ok(l) = asusd.get_limit().await {
-                caps.notes.push(format!("Current charge limit: {}%", l.0));
+            match asusd.get_limit().await {
+                Ok(l) => caps.notes.push(format!("Current charge limit: {}%", l.0)),
+                Err(e) => caps
+                    .notes
+                    .push(format!("could not read charge limit from asusd: {e}")),
             }
         }
-    } else {
-        caps.profile_access = FeatureAvailability::new(
-            FeatureAccessState::MissingBackend,
+    } else if let Some(err) = &asusd_connect_error {
+        caps.profile_access = backend_access_from_connect_error(
+            Some(err.as_str()),
             "Install and start asusd to enable performance profiles.",
+            "Performance profiles need asusd, but the system backend could not be reached right now.",
         );
-        caps.charge_limit_access = FeatureAvailability::new(
-            FeatureAccessState::MissingBackend,
+        caps.charge_limit_access = backend_access_from_connect_error(
+            Some(err.as_str()),
             "Install and start asusd to enable charge-limit control.",
+            "Charge-limit control needs asusd, but the system backend could not be reached right now.",
+        );
+        caps.notes.push(format!("asusd connect failed: {err}"));
+    } else {
+        caps.profile_access = backend_access_from_connect_error(
+            None,
+            "Install and start asusd to enable performance profiles.",
+            "Performance profiles need asusd, but the system backend could not be reached right now.",
+        );
+        caps.charge_limit_access = backend_access_from_connect_error(
+            None,
+            "Install and start asusd to enable charge-limit control.",
+            "Charge-limit control needs asusd, but the system backend could not be reached right now.",
         );
         caps.notes
-            .push("asusd not detected; profile/charge controls unavailable.".to_string());
+            .push("asusd not detected; profile/charge controls disabled.".to_string());
     }
 
-    if let Ok(Some(supergfx)) = SupergfxProvider::connect_system().await {
+    let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("supergfxd connect failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+
+    if let Some(supergfx) = supergfx {
         caps.endpoints
             .push(format!("supergfxd:{}", supergfx.endpoint_tag()));
         match supergfx.probe_caps().await {
@@ -344,7 +381,7 @@ async fn cmd_caps() -> anyhow::Result<()> {
                 };
                 if !gcaps.raw_supported_modes.is_empty() {
                     caps.notes.push(format!(
-                        "supergfx supported modes: {}",
+                        "supergfxd supported modes: {}",
                         gcaps.raw_supported_modes.join(", ")
                     ));
                 }
@@ -354,21 +391,32 @@ async fn cmd_caps() -> anyhow::Result<()> {
                     FeatureAccessState::TemporarilyUnavailable,
                     "supergfxd is present, but GPU mode support could not be confirmed right now.",
                 );
-                caps.notes.push(format!("supergfx probing failed: {e}"));
+                caps.notes.push(format!("supergfxd probing failed: {e}"));
             }
         }
         if caps.has_gpu_modes {
-            if let Ok(m) = supergfx.get_mode().await {
-                caps.notes.push(format!("Current GPU mode: {m:?}"));
+            match supergfx.get_mode().await {
+                Ok(m) => caps.notes.push(format!("Current GPU mode: {m:?}")),
+                Err(e) => caps.notes.push(format!(
+                    "could not read current GPU mode from supergfxd: {e}"
+                )),
             }
         }
-    } else {
-        caps.gpu_mode_access = FeatureAvailability::new(
-            FeatureAccessState::MissingBackend,
+    } else if let Some(err) = &supergfx_connect_error {
+        caps.gpu_mode_access = backend_access_from_connect_error(
+            Some(err.as_str()),
             "Install and start supergfxd to enable GPU mode switching.",
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+        );
+        caps.notes.push(format!("supergfxd connect failed: {err}"));
+    } else {
+        caps.gpu_mode_access = backend_access_from_connect_error(
+            None,
+            "Install and start supergfxd to enable GPU mode switching.",
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
         );
         caps.notes
-            .push("supergfxd not detected; GPU mode controls unavailable.".to_string());
+            .push("supergfxd not detected; GPU mode controls disabled.".to_string());
     }
 
     // Include filtered DBus names as endpoints for diagnostics.
@@ -437,4 +485,51 @@ fn detect_kbd_backlight() -> bool {
         }
     }
     false
+}
+
+fn backend_access_from_connect_error(
+    connect_error: Option<&str>,
+    missing_backend_reason: &'static str,
+    temporarily_unavailable_reason: &'static str,
+) -> FeatureAvailability {
+    if connect_error.is_some() {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            temporarily_unavailable_reason,
+        )
+    } else {
+        FeatureAvailability::new(FeatureAccessState::MissingBackend, missing_backend_reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_connect_status_maps_missing_backend_without_error() {
+        let availability = backend_access_from_connect_error(
+            None,
+            "missing backend reason",
+            "temporarily unavailable reason",
+        );
+
+        assert_eq!(availability.status, FeatureAccessState::MissingBackend);
+        assert_eq!(availability.reason, "missing backend reason");
+    }
+
+    #[test]
+    fn backend_connect_status_maps_error_to_temporarily_unavailable() {
+        let availability = backend_access_from_connect_error(
+            Some("dbus timeout"),
+            "missing backend reason",
+            "temporarily unavailable reason",
+        );
+
+        assert_eq!(
+            availability.status,
+            FeatureAccessState::TemporarilyUnavailable
+        );
+        assert_eq!(availability.reason, "temporarily unavailable reason");
+    }
 }
