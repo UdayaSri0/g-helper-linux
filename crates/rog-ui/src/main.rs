@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adw::prelude::*;
 use gtk::glib;
@@ -12,6 +15,7 @@ use rog_core::{
     CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
     FeatureAvailability, PowerSource, TelemetrySnapshot, TopProcessMem,
 };
+use serde::Deserialize;
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -47,6 +51,100 @@ trait Daemon1 {
     fn set_cpu_core_online(&self, core_id: u64, online: bool) -> zbus::Result<()>;
 }
 
+#[derive(Debug, Clone)]
+struct AppMetadata {
+    app_name: String,
+    binary_name: String,
+    version: String,
+    license: String,
+    authors: String,
+    repository_url: Option<String>,
+    maintainer_name: String,
+    maintainer_url: Option<String>,
+    issues_url: Option<String>,
+    releases_url: Option<String>,
+}
+
+impl AppMetadata {
+    fn detect() -> Self {
+        let repository_url = detect_repository_url();
+        let authors = package_authors();
+        let maintainer_name = detect_maintainer_name(&authors, repository_url.as_deref());
+        let maintainer_url = repository_url
+            .as_deref()
+            .and_then(github_repo_from_url)
+            .map(|(owner, _)| format!("https://github.com/{owner}"));
+        let issues_url = repository_url
+            .as_deref()
+            .and_then(github_repo_from_url)
+            .map(|(owner, repo)| format!("https://github.com/{owner}/{repo}/issues"));
+        let releases_url = repository_url
+            .as_deref()
+            .and_then(github_repo_from_url)
+            .map(|(owner, repo)| format!("https://github.com/{owner}/{repo}/releases/latest"));
+
+        Self {
+            app_name: APP_DISPLAY_NAME.to_string(),
+            binary_name: APP_BINARY_NAME.to_string(),
+            version: package_value(env!("CARGO_PKG_VERSION"), "unknown"),
+            license: package_value(env!("CARGO_PKG_LICENSE"), "License not configured"),
+            authors,
+            repository_url,
+            maintainer_name,
+            maintainer_url,
+            issues_url,
+            releases_url,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseAsset {
+    name: String,
+    download_url: String,
+}
+
+#[derive(Debug, Clone)]
+struct UpdateState {
+    latest_version: Option<String>,
+    status_text: String,
+    last_result_text: String,
+    last_checked_unix: Option<i64>,
+    release_notes_preview: Option<String>,
+    release_notes_full: Option<String>,
+    release_page_url: Option<String>,
+    downloadable_asset: Option<ReleaseAsset>,
+    update_action_label: String,
+    update_action_subtitle: String,
+    supports_in_place_update: bool,
+}
+
+impl Default for UpdateState {
+    fn default() -> Self {
+        Self {
+            latest_version: None,
+            status_text: "No update check has been performed yet.".to_string(),
+            last_result_text:
+                "Manual checks use the GitHub Releases API when a repository URL is configured."
+                    .to_string(),
+            last_checked_unix: None,
+            release_notes_preview: None,
+            release_notes_full: None,
+            release_page_url: None,
+            downloadable_asset: None,
+            update_action_label: "Open Releases".to_string(),
+            update_action_subtitle: "Open the latest release page in your browser.".to_string(),
+            supports_in_place_update: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OpenLinkRequest {
+    url: String,
+    error_message: String,
+}
+
 #[derive(Debug)]
 struct SharedUiState {
     telemetry: Option<TelemetrySnapshot>,
@@ -69,6 +167,12 @@ struct SharedUiState {
     pending_lighting: Option<PendingLighting>,
     lighting_error: Option<String>,
     action_error: Option<String>,
+    update_state: UpdateState,
+    pending_update_check: bool,
+    update_check_in_progress: bool,
+    pending_update_action: bool,
+    update_action_in_progress: bool,
+    pending_open_link: Option<OpenLinkRequest>,
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
     show_window: bool,
@@ -100,6 +204,12 @@ impl Default for SharedUiState {
             pending_lighting: None,
             lighting_error: None,
             action_error: None,
+            update_state: UpdateState::default(),
+            pending_update_check: false,
+            update_check_in_progress: false,
+            pending_update_action: false,
+            update_action_in_progress: false,
+            pending_open_link: None,
             pending_toast: None,
             daemon_error: None,
             show_window: false,
@@ -474,8 +584,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn build_ui(app: &adw::Application) {
+    let app_metadata = AppMetadata::detect();
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
-    spawn_background(shared.clone());
+    if let Ok(mut st) = shared.lock() {
+        st.update_state = initial_update_state(&app_metadata);
+    }
+    spawn_background(shared.clone(), app_metadata.clone());
 
     install_css();
 
@@ -1333,28 +1447,243 @@ fn build_ui(app: &adw::Application) {
     let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
     let about_authors = pref_value_row(&about_project_group, "Authors", false);
     let about_repository = pref_value_row(&about_project_group, "Repository", false);
+    let about_maintainer = pref_value_row(&about_project_group, "Maintainer", false);
+    let about_maintainer_github = pref_value_row(&about_project_group, "Maintainer GitHub", false);
     about_page.add(&about_project_group);
 
-    let source_url = if env!("CARGO_PKG_REPOSITORY").trim().is_empty() {
-        APP_REPOSITORY_FALLBACK_URL
-    } else {
-        env!("CARGO_PKG_REPOSITORY")
-    };
-    let authors = if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
-        APP_AUTHORS_FALLBACK.to_string()
-    } else {
-        env!("CARGO_PKG_AUTHORS").replace(':', ", ")
-    };
+    let about_support_group = adw::PreferencesGroup::builder()
+        .title("Update & Support")
+        .description(format!(
+            "Installed version: {}. Manual checks use the GitHub Releases API and fall back to opening the latest release page when automatic replacement is not safe for the current installation.",
+            app_metadata.version
+        ))
+        .build();
+    let about_latest_release = pref_value_row(&about_support_group, "Latest Release", false);
+    let about_update_status = pref_value_row(&about_support_group, "Status", false);
+    let about_last_check = pref_value_row(&about_support_group, "Last Checked", false);
+    let about_last_result = pref_value_row(&about_support_group, "Last Result", false);
+    let about_release_notes = pref_value_row(&about_support_group, "Release Notes", false);
 
-    about_name.set_text(APP_DISPLAY_NAME);
-    about_binary.set_text(APP_BINARY_NAME);
-    about_version.set_text(env!("CARGO_PKG_VERSION"));
-    about_license.set_text(env!("CARGO_PKG_LICENSE"));
+    let release_notes_full = gtk::Label::new(None);
+    release_notes_full.set_xalign(0.0);
+    release_notes_full.set_wrap(true);
+    release_notes_full.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    release_notes_full.set_selectable(true);
+    release_notes_full.add_css_class("dim-label");
+    let release_notes_expander = gtk::Expander::new(Some("Show full release notes"));
+    release_notes_expander.set_child(Some(&release_notes_full));
+    release_notes_expander.set_visible(false);
+    about_support_group.add(&release_notes_expander);
+
+    let check_updates_button = gtk::Button::with_label("Check for Updates");
+    style_apply_button(&check_updates_button);
+    check_updates_button.set_size_request(156, -1);
+    let check_updates_row = adw::ActionRow::builder()
+        .title("Manual Check")
+        .subtitle("Query the latest GitHub release without blocking the UI.")
+        .build();
+    check_updates_row.add_suffix(&check_updates_button);
+    check_updates_row.set_activatable(false);
+    about_support_group.add(&check_updates_row);
+
+    let update_action_button = gtk::Button::with_label("Open Releases");
+    style_apply_button(&update_action_button);
+    update_action_button.set_size_request(132, -1);
+    let update_action_row = adw::ActionRow::builder()
+        .title("Update")
+        .subtitle("Open the latest release page in your browser.")
+        .build();
+    update_action_row.add_suffix(&update_action_button);
+    update_action_row.set_activatable(false);
+    about_support_group.add(&update_action_row);
+
+    let open_source_button = gtk::Button::with_label("Open GitHub");
+    style_apply_button(&open_source_button);
+    open_source_button.set_size_request(124, -1);
+    let open_source_row = adw::ActionRow::builder()
+        .title("Source")
+        .subtitle("Open the project repository in your browser.")
+        .build();
+    open_source_row.add_suffix(&open_source_button);
+    open_source_row.set_activatable(false);
+    about_support_group.add(&open_source_row);
+
+    let support_button = gtk::Button::with_label("Open Repository");
+    style_apply_button(&support_button);
+    support_button.set_size_request(140, -1);
+    let support_row = adw::ActionRow::builder()
+        .title("Support")
+        .subtitle("Repository home, README, and release downloads.")
+        .build();
+    support_row.add_suffix(&support_button);
+    support_row.set_activatable(false);
+    about_support_group.add(&support_row);
+
+    let report_issue_button = gtk::Button::with_label("Report Issue");
+    style_apply_button(&report_issue_button);
+    report_issue_button.set_size_request(126, -1);
+    let report_issue_row = adw::ActionRow::builder()
+        .title("Issue Reporting")
+        .subtitle("Open the GitHub issues page for this project.")
+        .build();
+    report_issue_row.add_suffix(&report_issue_button);
+    report_issue_row.set_activatable(false);
+    about_support_group.add(&report_issue_row);
+
+    about_page.add(&about_support_group);
+
+    about_name.set_text(&app_metadata.app_name);
+    about_binary.set_text(&app_metadata.binary_name);
+    about_version.set_text(&app_metadata.version);
+    about_license.set_text(&app_metadata.license);
     about_dbus.set_text(&format!(
         "{DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} ({DAEMON_DBUS_IFACE})"
     ));
-    about_authors.set_text(&authors);
-    about_repository.set_text(source_url);
+    about_authors.set_text(&app_metadata.authors);
+    about_repository.set_text(
+        app_metadata
+            .repository_url
+            .as_deref()
+            .unwrap_or("Repository URL is not configured."),
+    );
+    about_maintainer.set_text(&app_metadata.maintainer_name);
+    about_maintainer_github.set_text(
+        app_metadata
+            .maintainer_url
+            .as_deref()
+            .unwrap_or("Maintainer GitHub URL is not configured."),
+    );
+
+    let initial_update_state = shared
+        .lock()
+        .ok()
+        .map(|st| st.update_state.clone())
+        .unwrap_or_default();
+    about_latest_release.set_text(
+        initial_update_state
+            .latest_version
+            .as_deref()
+            .unwrap_or("Waiting for a manual check."),
+    );
+    about_update_status.set_text(&initial_update_state.status_text);
+    about_last_check.set_text(
+        &initial_update_state
+            .last_checked_unix
+            .map(format_timestamp_local)
+            .unwrap_or_else(|| "Not checked in this session.".to_string()),
+    );
+    about_last_result.set_text(&initial_update_state.last_result_text);
+    about_release_notes.set_text(
+        initial_update_state
+            .release_notes_preview
+            .as_deref()
+            .unwrap_or("Release notes from the latest checked release will appear here."),
+    );
+
+    if let Some(notes) = initial_update_state.release_notes_full.as_deref() {
+        release_notes_full.set_text(notes);
+        release_notes_expander.set_visible(true);
+    } else {
+        release_notes_full.set_text("");
+        release_notes_expander.set_visible(false);
+    }
+
+    open_source_button.set_sensitive(app_metadata.repository_url.is_some());
+    support_button.set_sensitive(app_metadata.repository_url.is_some());
+    report_issue_button.set_sensitive(app_metadata.issues_url.is_some());
+
+    {
+        let shared = shared.clone();
+        check_updates_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                if st.update_check_in_progress || st.update_action_in_progress {
+                    return;
+                }
+                st.pending_update_check = true;
+                st.update_check_in_progress = true;
+                st.update_state.status_text =
+                    "Checking GitHub for the latest release...".to_string();
+                st.update_state.last_result_text =
+                    "Waiting for the latest release information from GitHub.".to_string();
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let fallback_releases_url = app_metadata.releases_url.clone();
+        update_action_button.connect_clicked(move |_| {
+            let release_page_url = {
+                let mut st = match shared.lock() {
+                    Ok(st) => st,
+                    Err(_) => return,
+                };
+                if st.update_check_in_progress || st.update_action_in_progress {
+                    return;
+                }
+                if st.update_state.supports_in_place_update
+                    && st.update_state.downloadable_asset.is_some()
+                {
+                    st.pending_update_action = true;
+                    st.update_action_in_progress = true;
+                    st.update_state.status_text = "Preparing the update...".to_string();
+                    st.update_state.last_result_text =
+                        "Downloading the latest release asset.".to_string();
+                    None
+                } else {
+                    st.update_state.last_result_text =
+                        "Automatic in-place update is not supported for this installation. Opening the latest release page instead.".to_string();
+                    st.update_state
+                        .release_page_url
+                        .clone()
+                        .or_else(|| fallback_releases_url.clone())
+                }
+            };
+
+            if let Some(url) = release_page_url {
+                open_uri_with_feedback(
+                    &shared,
+                    &url,
+                    "Unable to open the latest release page right now.",
+                );
+            } else if let Ok(mut st) = shared.lock() {
+                st.pending_toast = Some(("Repository URL is not configured.".to_string(), true));
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let repository_url = app_metadata.repository_url.clone();
+        open_source_button.connect_clicked(move |_| {
+            if let Some(url) = repository_url.as_deref() {
+                open_uri_with_feedback(&shared, url, "Unable to open the project repository.");
+            } else if let Ok(mut st) = shared.lock() {
+                st.pending_toast = Some(("Repository URL is not configured.".to_string(), true));
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let repository_url = app_metadata.repository_url.clone();
+        support_button.connect_clicked(move |_| {
+            if let Some(url) = repository_url.as_deref() {
+                open_uri_with_feedback(&shared, url, "Unable to open the support repository page.");
+            } else if let Ok(mut st) = shared.lock() {
+                st.pending_toast = Some(("Repository URL is not configured.".to_string(), true));
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let issues_url = app_metadata.issues_url.clone();
+        report_issue_button.connect_clicked(move |_| {
+            if let Some(url) = issues_url.as_deref() {
+                open_uri_with_feedback(&shared, url, "Unable to open the issue tracker.");
+            } else if let Ok(mut st) = shared.lock() {
+                st.pending_toast =
+                    Some(("Issue reporting URL is not configured.".to_string(), true));
+            }
+        });
+    }
 
     let about = clamped_scroller(&about_page);
 
@@ -1508,6 +1837,8 @@ fn build_ui(app: &adw::Application) {
     let app_clone = app.clone();
     let stack_clone = stack.clone();
     let toast_overlay_clone = toast_overlay.clone();
+    let update_check_available = app_metadata.repository_url.is_some();
+    let update_action_available = app_metadata.releases_url.is_some();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
@@ -1527,6 +1858,10 @@ fn build_ui(app: &adw::Application) {
             lighting,
             lighting_error_txt,
             action_error_txt,
+            update_state,
+            update_check_in_progress,
+            update_action_in_progress,
+            pending_open_link,
             daemon_error,
             show_window,
             show_about,
@@ -1558,6 +1893,10 @@ fn build_ui(app: &adw::Application) {
                 st.lighting.clone(),
                 st.lighting_error.clone(),
                 st.action_error.clone(),
+                st.update_state.clone(),
+                st.update_check_in_progress,
+                st.update_action_in_progress,
+                st.pending_open_link.take(),
                 st.daemon_error.clone(),
                 show_window,
                 show_about,
@@ -1582,6 +1921,9 @@ fn build_ui(app: &adw::Application) {
             let toast = adw::Toast::new(&msg);
             toast.set_timeout(if is_error { 4 } else { 2 });
             toast_overlay_clone.add_toast(toast);
+        }
+        if let Some(open_link) = pending_open_link {
+            open_uri_with_feedback(&shared_clone, &open_link.url, &open_link.error_message);
         }
 
         if quit {
@@ -2452,11 +2794,63 @@ fn build_ui(app: &adw::Application) {
             ));
         }
 
+        about_latest_release.set_text(
+            update_state
+                .latest_version
+                .as_deref()
+                .unwrap_or("Waiting for a manual check."),
+        );
+        about_update_status.set_text(&update_state.status_text);
+        about_last_check.set_text(
+            &update_state
+                .last_checked_unix
+                .map(format_timestamp_local)
+                .unwrap_or_else(|| "Not checked in this session.".to_string()),
+        );
+        about_last_result.set_text(&update_state.last_result_text);
+        about_release_notes.set_text(
+            update_state
+                .release_notes_preview
+                .as_deref()
+                .unwrap_or("Release notes from the latest checked release will appear here."),
+        );
+        if let Some(full_notes) = update_state.release_notes_full.as_deref() {
+            release_notes_full.set_text(full_notes);
+            release_notes_expander.set_visible(true);
+        } else {
+            release_notes_full.set_text("");
+            release_notes_expander.set_visible(false);
+        }
+
+        let check_subtitle = if update_check_in_progress {
+            "Checking the latest GitHub release right now."
+        } else if update_action_in_progress {
+            "Wait for the current update action to finish before checking again."
+        } else {
+            "Query the latest GitHub release without blocking the UI."
+        };
+        check_updates_row.set_subtitle(check_subtitle);
+        check_updates_button.set_sensitive(
+            update_check_available && !update_check_in_progress && !update_action_in_progress,
+        );
+
+        update_action_button.set_label(&update_state.update_action_label);
+        if update_action_in_progress {
+            update_action_row.set_subtitle("Applying the latest release asset. Keep this window open until the action finishes.");
+        } else {
+            update_action_row.set_subtitle(&update_state.update_action_subtitle);
+        }
+        update_action_button.set_sensitive(
+            !update_check_in_progress
+                && !update_action_in_progress
+                && (update_state.release_page_url.is_some() || update_action_available),
+        );
+
         glib::ControlFlow::Continue
     });
 }
 
-fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
+fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -2556,6 +2950,98 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>) {
                     if let Err(e) = apply_lighting(p).await {
                         if let Ok(mut st) = shared.lock() {
                             st.lighting_error = Some(e);
+                        }
+                    }
+                }
+
+                let pending_update_check = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| std::mem::take(&mut st.pending_update_check))
+                    .unwrap_or(false);
+                if pending_update_check {
+                    match check_for_updates(&app_metadata).await {
+                        Ok(update_state) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.update_state = update_state;
+                                st.update_check_in_progress = false;
+                            }
+                        }
+                        Err(error) => {
+                            let previous_state = shared
+                                .lock()
+                                .ok()
+                                .map(|st| st.update_state.clone())
+                                .unwrap_or_default();
+                            if let Ok(mut st) = shared.lock() {
+                                st.update_state =
+                                    update_check_failed_state(&app_metadata, &error, &previous_state);
+                                st.update_check_in_progress = false;
+                                st.pending_toast =
+                                    Some(("Unable to check for updates right now.".to_string(), true));
+                            }
+                        }
+                    }
+                }
+
+                let pending_update_action = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| std::mem::take(&mut st.pending_update_action))
+                    .unwrap_or(false);
+                if pending_update_action {
+                    let update_state = shared
+                        .lock()
+                        .ok()
+                        .map(|st| st.update_state.clone())
+                        .unwrap_or_default();
+                    match apply_update_action(&app_metadata, &update_state).await {
+                        Ok(UpdateActionOutcome::Replaced { version }) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.update_action_in_progress = false;
+                                st.update_state.status_text = format!(
+                                    "Update downloaded. Restart required to switch to {version}."
+                                );
+                                st.update_state.last_result_text = format!(
+                                    "The binary on disk was replaced with {version}. Restart rog-helper to use the new version."
+                                );
+                                st.update_state.update_action_label = "Updated on Disk".to_string();
+                                st.update_state.update_action_subtitle =
+                                    "Restart rog-helper to finish switching to the downloaded binary."
+                                        .to_string();
+                                st.update_state.supports_in_place_update = false;
+                                st.pending_toast = Some((
+                                    format!(
+                                        "Update downloaded. Restart rog-helper to use {version}."
+                                    ),
+                                    false,
+                                ));
+                            }
+                        }
+                        Ok(UpdateActionOutcome::OpenReleasePage { url, message }) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.update_action_in_progress = false;
+                                st.update_state.status_text =
+                                    "Automatic in-place update is not supported here.".to_string();
+                                st.update_state.last_result_text = message.clone();
+                                st.pending_open_link = Some(OpenLinkRequest {
+                                    url,
+                                    error_message:
+                                        "Unable to open the latest release page right now."
+                                            .to_string(),
+                                });
+                                st.pending_toast = Some((message, false));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.update_action_in_progress = false;
+                                st.update_state.status_text =
+                                    "Automatic in-place update could not be completed."
+                                        .to_string();
+                                st.update_state.last_result_text = error.clone();
+                                st.pending_toast = Some((error, true));
+                            }
                         }
                     }
                 }
@@ -2859,6 +3345,696 @@ async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String>
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+enum UpdateActionOutcome {
+    Replaced { version: String },
+    OpenReleasePage { url: String, message: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseResponse {
+    tag_name: String,
+    html_url: String,
+    body: Option<String>,
+    assets: Vec<GithubReleaseAssetResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAssetResponse {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Debug)]
+struct UpdateCapability {
+    asset: Option<ReleaseAsset>,
+    supports_in_place_update: bool,
+    explanation: String,
+}
+
+async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, String> {
+    let repository_url = app_metadata
+        .repository_url
+        .as_deref()
+        .ok_or_else(|| "Repository URL is not configured.".to_string())?;
+    let (owner, repo) = github_repo_from_url(repository_url)
+        .ok_or_else(|| "Repository URL is not a supported GitHub repository.".to_string())?;
+
+    let client = build_github_client(app_metadata)?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
+    let response = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|_| "Unable to reach GitHub right now.".to_string())?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("No published GitHub releases were found for this project yet.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub returned {} while checking the latest release.",
+            response.status()
+        ));
+    }
+
+    let release = response
+        .json::<GithubReleaseResponse>()
+        .await
+        .map_err(|_| "GitHub returned an unexpected release response.".to_string())?;
+
+    let last_checked_unix = now_unix_timestamp();
+    let latest_version = release.tag_name.trim().to_string();
+    let release_notes_full = trim_release_notes(release.body);
+    let release_notes_preview = release_notes_full
+        .as_deref()
+        .map(release_notes_preview_text);
+    let comparison = compare_versions(&app_metadata.version, &release.tag_name);
+    let capability = detect_update_capability(&release.assets);
+
+    let (status_text, last_result_text, update_action_label, update_action_subtitle) =
+        match comparison {
+            Some(std::cmp::Ordering::Less) => {
+                let action_label = if capability.supports_in_place_update {
+                    "Update Now".to_string()
+                } else {
+                    "Download Latest".to_string()
+                };
+                let action_subtitle = if capability.supports_in_place_update {
+                    capability.explanation.clone()
+                } else {
+                    format!(
+                        "{} Opening the latest release page is still available.",
+                        capability.explanation
+                    )
+                };
+                (
+                    format!("Update available: {latest_version}"),
+                    format!("Latest GitHub release: {latest_version}"),
+                    action_label,
+                    action_subtitle,
+                )
+            }
+            Some(std::cmp::Ordering::Equal) => (
+                "You are up to date".to_string(),
+                format!(
+                    "Installed version {} matches the latest GitHub release.",
+                    app_metadata.version
+                ),
+                "Open Releases".to_string(),
+                "Review release notes or download another build from GitHub.".to_string(),
+            ),
+            Some(std::cmp::Ordering::Greater) => (
+                "Installed build is newer than the latest release".to_string(),
+                format!(
+                    "Installed version {} is newer than the latest published release {latest_version}.",
+                    app_metadata.version
+                ),
+                "Open Releases".to_string(),
+                "Review the latest published release in your browser.".to_string(),
+            ),
+            None => (
+                "Latest release found, but versions could not be compared".to_string(),
+                format!(
+                    "Latest GitHub release: {latest_version}. The installed and latest version strings could not be compared automatically."
+                ),
+                "Open Releases".to_string(),
+                "Version comparison was inconclusive, so the latest release page will open instead of attempting an in-place update."
+                    .to_string(),
+            ),
+        };
+
+    Ok(UpdateState {
+        latest_version: Some(latest_version),
+        status_text,
+        last_result_text,
+        last_checked_unix: Some(last_checked_unix),
+        release_notes_preview,
+        release_notes_full,
+        release_page_url: Some(release.html_url),
+        downloadable_asset: if capability.supports_in_place_update {
+            capability.asset
+        } else {
+            None
+        },
+        update_action_label,
+        update_action_subtitle,
+        supports_in_place_update: capability.supports_in_place_update,
+    })
+}
+
+fn initial_update_state(app_metadata: &AppMetadata) -> UpdateState {
+    let mut state = UpdateState {
+        release_page_url: app_metadata.releases_url.clone(),
+        ..UpdateState::default()
+    };
+    if app_metadata.releases_url.is_none() {
+        state.status_text = "Repository URL is not configured.".to_string();
+        state.last_result_text =
+            "Manual update checks are unavailable because the repository URL is missing."
+                .to_string();
+        state.update_action_subtitle = "Repository URL is not configured.".to_string();
+    }
+    state
+}
+
+fn update_check_failed_state(
+    app_metadata: &AppMetadata,
+    error: &str,
+    previous_state: &UpdateState,
+) -> UpdateState {
+    let mut state = previous_state.clone();
+    if state.release_page_url.is_none() {
+        state.release_page_url = app_metadata.releases_url.clone();
+    }
+    if state.update_action_label.is_empty() {
+        state.update_action_label = "Open Releases".to_string();
+    }
+    state.status_text = "Could not check for updates".to_string();
+    state.last_checked_unix = Some(now_unix_timestamp());
+    state.last_result_text = friendly_update_error(error);
+    state
+}
+
+async fn apply_update_action(
+    app_metadata: &AppMetadata,
+    update_state: &UpdateState,
+) -> Result<UpdateActionOutcome, String> {
+    let release_page_url = update_state
+        .release_page_url
+        .clone()
+        .or_else(|| app_metadata.releases_url.clone())
+        .ok_or_else(|| "Repository URL is not configured.".to_string())?;
+
+    if !update_state.supports_in_place_update {
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+
+    let asset = update_state.downloadable_asset.as_ref().ok_or_else(|| {
+        "No matching direct release asset was found for automatic replacement.".to_string()
+    })?;
+    let Some(executable_path) = supported_update_target_path(asset) else {
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
+                    .to_string(),
+        });
+    };
+
+    let client = build_github_client(app_metadata)?;
+    let response = client
+        .get(&asset.download_url)
+        .send()
+        .await
+        .map_err(|_| "Unable to download the latest release asset right now.".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub returned {} while downloading the latest release asset.",
+            response.status()
+        ));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "The latest release asset could not be downloaded completely.".to_string())?;
+    if bytes.is_empty() {
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "The latest release asset was empty, so automatic replacement was skipped. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+    if !bytes.starts_with(b"\x7fELF") {
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "The latest release asset could not be validated as a Linux executable. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+
+    let current_permissions = fs::metadata(&executable_path)
+        .map_err(|_| "The current executable permissions could not be read.".to_string())?
+        .permissions();
+    let parent = executable_path
+        .parent()
+        .ok_or_else(|| "The current executable directory could not be determined.".to_string())?;
+    let temp_path = temp_update_path(parent, &asset.name);
+    if fs::write(&temp_path, &bytes).is_err() {
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "The downloaded update could not be written next to the current binary. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+    if fs::set_permissions(&temp_path, current_permissions).is_err() {
+        let _ = fs::remove_file(&temp_path);
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "Execute permissions could not be preserved for the downloaded update. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+    if fs::rename(&temp_path, &executable_path).is_err() {
+        let _ = fs::remove_file(&temp_path);
+        return Ok(UpdateActionOutcome::OpenReleasePage {
+            url: release_page_url,
+            message:
+                "The downloaded update could not replace the current binary. Opening the latest release page instead."
+                    .to_string(),
+        });
+    }
+
+    Ok(UpdateActionOutcome::Replaced {
+        version: update_state
+            .latest_version
+            .clone()
+            .unwrap_or_else(|| asset.name.clone()),
+    })
+}
+
+fn build_github_client(app_metadata: &AppMetadata) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(format!("rog-helper-ui/{}", app_metadata.version))
+        .build()
+        .map_err(|_| "The update checker could not initialize its GitHub client.".to_string())
+}
+
+fn detect_update_capability(assets: &[GithubReleaseAssetResponse]) -> UpdateCapability {
+    let executable_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => {
+            return UpdateCapability {
+                asset: None,
+                supports_in_place_update: false,
+                explanation:
+                    "The current executable path could not be determined for automatic replacement."
+                        .to_string(),
+            };
+        }
+    };
+    let executable_name = match executable_path.file_name().and_then(|name| name.to_str()) {
+        Some(name) => name,
+        None => {
+            return UpdateCapability {
+                asset: None,
+                supports_in_place_update: false,
+                explanation:
+                    "The current executable name could not be determined for automatic replacement."
+                        .to_string(),
+            };
+        }
+    };
+
+    let asset = match matching_release_asset(assets, executable_name) {
+        Some(asset) => asset,
+        None => {
+            return UpdateCapability {
+                asset: None,
+                supports_in_place_update: false,
+                explanation:
+                    "No direct release asset matches the current binary name, so automatic replacement is disabled."
+                        .to_string(),
+            };
+        }
+    };
+
+    let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return UpdateCapability {
+            asset: None,
+            supports_in_place_update: false,
+            explanation:
+                "The HOME directory is not available, so a safe user-local update path could not be confirmed."
+                    .to_string(),
+        };
+    };
+    if !executable_path.starts_with(&home_dir) {
+        return UpdateCapability {
+            asset: None,
+            supports_in_place_update: false,
+            explanation:
+                "The current binary is not installed in a user-local path, so in-place replacement is disabled."
+                    .to_string(),
+        };
+    }
+
+    let metadata = match fs::symlink_metadata(&executable_path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return UpdateCapability {
+                asset: None,
+                supports_in_place_update: false,
+                explanation:
+                    "The current executable could not be inspected, so in-place replacement is disabled."
+                        .to_string(),
+            };
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return UpdateCapability {
+            asset: None,
+            supports_in_place_update: false,
+            explanation:
+                "The current executable is a symlink, so automatic replacement is disabled."
+                    .to_string(),
+        };
+    }
+
+    let Some(parent) = executable_path.parent() else {
+        return UpdateCapability {
+            asset: None,
+            supports_in_place_update: false,
+            explanation:
+                "The current executable directory could not be determined, so in-place replacement is disabled."
+                    .to_string(),
+        };
+    };
+    if !can_stage_update_in_dir(parent, executable_name) {
+        return UpdateCapability {
+            asset: None,
+            supports_in_place_update: false,
+            explanation:
+                "The current executable directory is not writable by the current user, so in-place replacement is disabled."
+                    .to_string(),
+        };
+    }
+
+    UpdateCapability {
+        asset: Some(asset),
+        supports_in_place_update: true,
+        explanation:
+            "A matching direct binary release asset can safely replace this user-local installation after validation. Restart rog-helper afterward."
+                .to_string(),
+    }
+}
+
+fn supported_update_target_path(asset: &ReleaseAsset) -> Option<PathBuf> {
+    let executable_path = std::env::current_exe().ok()?;
+    let executable_name = executable_path.file_name()?.to_str()?;
+    if executable_name != asset.name {
+        return None;
+    }
+
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from)?;
+    if !executable_path.starts_with(&home_dir) {
+        return None;
+    }
+
+    let metadata = fs::symlink_metadata(&executable_path).ok()?;
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+
+    let parent = executable_path.parent()?;
+    if !can_stage_update_in_dir(parent, executable_name) {
+        return None;
+    }
+
+    Some(executable_path)
+}
+
+fn matching_release_asset(
+    assets: &[GithubReleaseAssetResponse],
+    executable_name: &str,
+) -> Option<ReleaseAsset> {
+    assets
+        .iter()
+        .find(|asset| asset.name == executable_name)
+        .map(|asset| ReleaseAsset {
+            name: asset.name.clone(),
+            download_url: asset.browser_download_url.clone(),
+        })
+}
+
+fn can_stage_update_in_dir(dir: &Path, executable_name: &str) -> bool {
+    let probe_path = temp_update_path(dir, executable_name);
+    let write_result = fs::write(&probe_path, []);
+    let _ = fs::remove_file(&probe_path);
+    write_result.is_ok()
+}
+
+fn temp_update_path(dir: &Path, executable_name: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dir.join(format!(
+        ".{executable_name}.rog-helper-update-{}-{stamp}",
+        std::process::id()
+    ))
+}
+
+fn package_value(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn package_authors() -> String {
+    if env!("CARGO_PKG_AUTHORS").trim().is_empty() {
+        APP_AUTHORS_FALLBACK.to_string()
+    } else {
+        env!("CARGO_PKG_AUTHORS").replace(':', ", ")
+    }
+}
+
+fn detect_repository_url() -> Option<String> {
+    let manifest_repository = env!("CARGO_PKG_REPOSITORY").trim();
+    if !manifest_repository.is_empty() {
+        return canonicalize_git_remote_url(manifest_repository)
+            .or_else(|| Some(manifest_repository.to_string()));
+    }
+
+    detect_git_remote_repository_url().or_else(|| {
+        canonicalize_git_remote_url(APP_REPOSITORY_FALLBACK_URL)
+            .or_else(|| Some(APP_REPOSITORY_FALLBACK_URL.to_string()))
+    })
+}
+
+fn detect_git_remote_repository_url() -> Option<String> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !manifest_dir.exists() {
+        return None;
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(manifest_dir)
+        .arg("config")
+        .arg("--get")
+        .arg("remote.origin.url")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    canonicalize_git_remote_url(raw.trim())
+}
+
+fn canonicalize_git_remote_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let rest = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("http://github.com/") {
+        rest
+    } else {
+        return None;
+    };
+
+    let canonical = rest.trim_end_matches(".git").trim_end_matches('/');
+    Some(format!("https://github.com/{canonical}"))
+}
+
+fn github_repo_from_url(url: &str) -> Option<(String, String)> {
+    let canonical = canonicalize_git_remote_url(url)?;
+    let path = canonical.strip_prefix("https://github.com/")?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+fn detect_maintainer_name(authors: &str, repository_url: Option<&str>) -> String {
+    let preferred_author = authors
+        .split(',')
+        .map(str::trim)
+        .filter(|author| !author.is_empty())
+        .find(|author| {
+            let normalized = author.to_ascii_lowercase();
+            !normalized.contains("contributors")
+        })
+        .map(|author| {
+            author
+                .split('<')
+                .next()
+                .unwrap_or(author)
+                .trim()
+                .to_string()
+        });
+
+    preferred_author
+        .or_else(|| {
+            repository_url
+                .and_then(github_repo_from_url)
+                .map(|(owner, _)| owner)
+        })
+        .unwrap_or_else(|| APP_AUTHORS_FALLBACK.to_string())
+}
+
+fn release_notes_preview_text(notes: &str) -> String {
+    let preview = notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ");
+    truncate_text(&preview, 220)
+}
+
+fn trim_release_notes(body: Option<String>) -> Option<String> {
+    body.and_then(|body| {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn compare_versions(current: &str, latest: &str) -> Option<std::cmp::Ordering> {
+    let current = parse_version_for_compare(current)?;
+    let latest = parse_version_for_compare(latest)?;
+    Some(current.cmp(&latest))
+}
+
+fn parse_version_for_compare(raw: &str) -> Option<semver::Version> {
+    let trimmed = raw.trim();
+    let start = trimmed.find(|ch: char| ch.is_ascii_digit())?;
+    let tail = &trimmed[start..];
+    let end = tail
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '+')))
+        .unwrap_or(tail.len());
+    let candidate = &tail[..end];
+
+    let suffix_start = candidate.find(['-', '+']).unwrap_or(candidate.len());
+    let core = &candidate[..suffix_start];
+    let suffix = &candidate[suffix_start..];
+
+    let parts = core.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.len() > 3 {
+        return None;
+    }
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        return None;
+    }
+
+    let mut normalized_parts = parts;
+    while normalized_parts.len() < 3 {
+        normalized_parts.push("0");
+    }
+
+    semver::Version::parse(&format!(
+        "{}.{}.{}{}",
+        normalized_parts[0], normalized_parts[1], normalized_parts[2], suffix
+    ))
+    .ok()
+}
+
+fn now_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn format_timestamp_local(timestamp: i64) -> String {
+    if let Ok(datetime) = glib::DateTime::from_unix_local(timestamp) {
+        if let Ok(formatted) = datetime.format("%Y-%m-%d %H:%M:%S") {
+            return formatted.to_string();
+        }
+    }
+    format!("unix:{timestamp}")
+}
+
+fn open_uri_with_feedback(shared: &Arc<Mutex<SharedUiState>>, uri: &str, error_message: &str) {
+    if uri.trim().is_empty() {
+        if let Ok(mut st) = shared.lock() {
+            st.pending_toast = Some((error_message.to_string(), true));
+        }
+        return;
+    }
+
+    if let Err(error) =
+        gtk::gio::AppInfo::launch_default_for_uri(uri, None::<&gtk::gio::AppLaunchContext>)
+    {
+        warn!("failed to open external URI {uri}: {error}");
+        if let Ok(mut st) = shared.lock() {
+            st.pending_toast = Some((error_message.to_string(), true));
+        }
+    }
+}
+
+fn friendly_update_error(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("repository url is not configured") {
+        "Repository URL is not configured.".to_string()
+    } else if lower.contains("supported github repository") {
+        "The repository URL is not a supported GitHub repository.".to_string()
+    } else if lower.contains("no published github releases") {
+        "No published GitHub releases were found for this project yet.".to_string()
+    } else if lower.contains("unable to reach github") {
+        "Unable to reach GitHub right now.".to_string()
+    } else if lower.contains("unexpected release response") {
+        "GitHub returned an unexpected release response.".to_string()
+    } else if lower.contains("github returned") {
+        "GitHub did not accept the update check right now.".to_string()
+    } else {
+        "Unable to check for updates right now.".to_string()
+    }
 }
 
 fn ov<T>(v: T) -> OwnedValue
@@ -5024,5 +6200,28 @@ mod tests {
         assert!(cpu.per_core[0].online);
         assert_eq!(cpu.per_core[1].logical_cpu_id, 7);
         assert!(!cpu.per_core[1].online);
+    }
+
+    #[test]
+    fn parse_version_for_compare_handles_v_prefix_and_missing_patch() {
+        let parsed = parse_version_for_compare("v0.16").expect("version should parse");
+        assert_eq!(parsed.major, 0);
+        assert_eq!(parsed.minor, 16);
+        assert_eq!(parsed.patch, 0);
+
+        let comparison = compare_versions("0.16.0", "v0.16");
+        assert_eq!(comparison, Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn github_repo_from_url_supports_https_and_ssh_forms() {
+        assert_eq!(
+            github_repo_from_url("https://github.com/UdayaSri0/g-helper-linux"),
+            Some(("UdayaSri0".to_string(), "g-helper-linux".to_string()))
+        );
+        assert_eq!(
+            github_repo_from_url("git@github.com:UdayaSri0/g-helper-linux.git"),
+            Some(("UdayaSri0".to_string(), "g-helper-linux".to_string()))
+        );
     }
 }

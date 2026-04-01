@@ -21,7 +21,8 @@ This matrix reflects the current implementation in the repository today. It is b
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU temperature fallback | `nvidia-smi` | Read | Implemented | Used only when primary GPU temperature is unavailable from `hwmon` |
 | Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with a troubleshooting summary, structured feature-access reasons, raw fan hwmon mapping, and CPU access diagnostics |
-| About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing |
+| About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing; also shows maintainer info, source/support links, and release-status text |
+| Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |
 | Persistent configuration | None in current runtime | Read + Write | Missing | No saved settings or rule persistence in current code |

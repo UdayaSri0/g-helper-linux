@@ -234,11 +234,23 @@ Current content:
 - session DBus API endpoint
 - authors field
 - repository URL
+- maintainer name
+- maintainer GitHub URL
+- latest-release status
+- last check timestamp
+- last check result
+- release-notes preview
+- manual `Check for Updates` action
+- best-effort `Update Now` / `Download Latest` action
+- source, support, and issue-reporting buttons
 
 Current implementation note:
 
 - version, license, authors, and repository URL come from Cargo manifest fields
 - the UI still falls back to project defaults if those fields are blank
+- maintainer GitHub metadata is derived from the repository URL when possible
+- release checks are manual, run in the UI process, and use the GitHub Releases API
+- automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
 
 ## Current Capability Behavior
 
