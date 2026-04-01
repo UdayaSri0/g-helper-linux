@@ -1,159 +1,282 @@
 # GUI Spec
 
-This document describes the target GUI (tray + window) for `rog-helper-ui` and how it should evolve
-as new providers become available.
+This document describes the current GUI as implemented in `crates/rog-ui/src/main.rs`. Planned features that are not yet in the UI are called out separately so this file can serve both as a current UI reference and as a guide for future work.
 
 ## Scope
 
-- The UI must run unprivileged (no root).
-- The UI must not perform hardware I/O directly.
-- All hardware-affecting actions must go through `rog-helperd` (session DBus) which in turn talks to
-  system services (`asusd`, `supergfxd`) or read-only sources (`UPower`, `hwmon`).
-- The UI must be capability-driven: if a feature is unsupported or a dependency is missing, show a
-  clear read-only state.
+- The UI runs unprivileged.
+- The UI does not perform hardware I/O directly.
+- Hardware-affecting actions are routed through `rog-helperd` on the session bus.
+- The UI is capability-driven and should degrade gracefully when dependencies or permissions are missing.
 
-## Safety Model (Important)
+## Current Window Structure
 
-The UI does not "control CPU/GPU temperature" directly.
-Instead, it exposes safe controls that influence thermals:
+The current top-level structure uses:
 
-- Performance profile (Silent/Balanced/Turbo) via `asusd` (or safe fallback only when explicitly
-  supported).
-- Fan presets and fan curves (only when the machine exposes a supported interface).
-- GPU mode switching (Integrated/Hybrid/Dedicated) via `supergfxd`.
+- `adw::ToolbarView`
+- `adw::ViewStack`
+- `adw::ViewSwitcher`
+- `adw::ToastOverlay`
 
-Temperature is treated as telemetry. Any "temperature control" language in the UI should be framed
-as "cooling/performance settings" rather than direct temperature setpoints.
+The implemented page set is:
 
-## Main Window Structure
+1. Dashboard
+2. CPU
+3. GPU
+4. Battery
+5. RAM
+6. Lighting
+7. Diagnostics
+8. About
 
-Use `adw::ToolbarView` + `adw::ViewStack` + `adw::ViewSwitcher` for top navigation.
+The tray menu currently supports:
 
-Do not call `gtk_window_set_titlebar()` on `AdwApplicationWindow` (it is unsupported).
+- open main window
+- open GPU page
+- profile selection
+- GPU mode selection
+- About
+- Quit
 
-Pages:
+## Current Update Model
 
-1. Dashboard (telemetry + quick status)
-2. Profiles (performance profiles + Auto rules editor)
-3. Fans (capability-gated; presets + curves)
-4. GPU (capability-gated; mode switching with safe UX)
-5. Battery (capability-gated; charge limit presets + slider)
-6. Lighting (capability-gated; brightness + modes)
-7. Settings (service enablement + logging + export diagnostics)
-8. Diagnostics (always available; debug/health view)
+The current UI behavior is polling-based:
 
-## Dashboard (Milestone 1+)
+- a background Tokio runtime polls daemon state once per second
+- a GTK timeout refreshes widgets every 250 ms from cached state
 
-Primary goals:
+This matches the current daemon polling model and is the expected behavior unless the architecture changes.
 
-- Show "at a glance" telemetry: CPU temp, GPU temp, fan RPMs, battery %, power source.
-- Make failure states obvious and actionable (daemon not running, missing dependencies, etc).
+## Current Pages
 
-Recommended layout:
-
-- A compact grid of metric cards (CPU temp, GPU temp, Battery, Power Source).
-- A short fan RPM summary line (when fan readings exist).
-- An expandable "Sensors" section that lists all discovered temperature and fan sensors.
-- A status area for daemon connectivity and high-level warnings.
-
-Update behavior:
-
-- UI updates on a GTK timer (ex: 250ms) using the latest snapshot stored in shared state.
-- Telemetry fetch runs off the main thread (Tokio runtime in a background thread).
-- Target refresh: 1 Hz telemetry from daemon (more is unnecessary and can cause DBus spam).
-
-## Diagnostics (Milestone 1+)
+### Dashboard
 
 Purpose:
 
-- Make it easy to answer "why is feature X missing" without asking the user to open a terminal.
+- quick system overview
+- quick control surface
+- first place for warnings and daemon-availability status
 
-Must show:
+Current content:
 
-- Session DBus API endpoint (name, path, interface).
-- `DeviceCaps` matrix (true/false).
-- Raw discovery endpoints (system bus names, sysfs hints).
-- Notes and warnings.
+- metric cards for CPU temperature, GPU temperature, battery, power source, fans, and NVMe temperature when available
+- warning banner and warning summary area
+- quick actions for:
+  - performance profile
+  - GPU mode
+  - battery charge limit
+  - keyboard backlight brightness
+- expandable detail sections for temperatures, fans, and endpoint snippets
 
-Must provide:
+Current behavior:
 
-- "Copy diagnostics" button (clipboard).
-- Later: "Export diagnostics bundle" to a file.
+- controls are enabled or disabled based on daemon-reported capabilities
+- warning area shows read-only or missing-backend states
 
-## Profiles Page (Milestone 2)
+### CPU
 
-When `has_profiles=true`:
+Purpose:
 
-- Buttons/toggles for Silent/Balanced/Turbo.
-- Show current active profile.
-- Auto rules editor (AC vs Battery):
-  - On AC: profile + GPU mode + lighting option
-  - On Battery: same
-- Apply + Save actions.
+- expose CPU telemetry and generic Linux CPU controls
 
-When unsupported:
+Current content:
 
-- Show read-only explanation and dependency hint (ex: `asusd` missing).
+- overview cards for temperature, usage, package power, and average clock
+- quick controls for:
+  - turbo boost
+  - power mode
+  - min frequency
+  - max frequency
+- policy section for:
+  - scaling driver
+  - core count
+  - thread count
+  - governor
+  - energy performance preference
+- per-core table
+- advanced section for:
+  - core online/offline toggles
+  - detected CPU sysfs paths
+  - copy CPU diagnostics
 
-## Fans Page (Milestone 4, capability-gated)
+Current behavior:
 
-When `has_fan_curves=false`:
+- CPU controls can be visible but read-only
+- write access depends on daemon permissions and sysfs writability
+- core toggles require user confirmation in the current UI
 
-- Show "fan curves unsupported" message.
-- Still show fan RPMs if `has_fan_reading=true`.
+### GPU
 
-When supported:
+Purpose:
 
-- Curve editor with validation feedback.
-- Presets: Quiet / Balanced / Performance / Safe Max Cooling.
-- Apply + Revert + Reset.
-- "Advanced" toggle gates risky options.
+- surface GPU mode and related control state
 
-## GPU Page (Milestone 3)
+Current content:
 
-When `has_gpu_modes=true`:
+- current state group showing:
+  - current ASUS performance profile
+  - current GPU mode
+  - GPU switch hint
+- controls group for:
+  - profile apply
+  - GPU mode apply
+- status group showing the last action result
 
-- Show current mode and brief explanation.
-- Mode switch buttons.
-- Busy/unsafe hint (best-effort).
-- Clear messaging when logout/reboot required.
+Current behavior:
 
-## Battery Page (Milestone 2)
+- controls are gated by daemon capabilities
+- reboot or logout requirement is shown through a capability hint from the daemon
 
-When `has_charge_limit=true`:
+### Battery
 
-- Presets: 60/80/100.
-- Slider for supported range (default clamp 40..=100).
-- Explain battery health tradeoffs.
+Purpose:
 
-## Lighting Page (Milestone 2)
+- battery and power telemetry view
 
-When `has_aura=true` or `has_kbd_backlight=true`:
+Current content:
 
-- Brightness slider (capability-driven range).
-- Mode dropdown (capability-driven).
-- "Disable on battery" option (ties into Auto rules).
+- charge percentage
+- battery state
+- power source
+- AC online
+- charge power
+- discharge power
+- time to full
+- time to empty
+- battery health
+- cycle count
 
-Milestone 1 notes:
+Important note:
 
-- If the kernel exposes `asus::kbd_backlight` under `/sys/class/leds`, the daemon can report the
-  current keyboard backlight brightness.
-- Setting brightness via sysfs is only possible if the `brightness` attribute is writable by the
-  user (often it is not). In that case, the UI must show read-only state and a hint to install
-  `asusd`/`asusctl` (recommended) for unprivileged control.
-- RGB color/effects must be capability-gated (they typically require `asusd` Aura support).
+- the current Battery page is telemetry-focused
+- the current battery charge-limit control is on the Dashboard, not on this page
 
-## Settings (Milestone 2+)
+### RAM
 
-- Enable `rog-helperd` on login (systemd --user).
-- Logging level.
-- Export diagnostics bundle.
-- Conflict detection (warn if other fan control services are active).
+Purpose:
 
-## Error and Warning UX (Non-negotiable)
+- memory and swap telemetry view
 
-- Never show raw stack traces in the UI.
-- Always show:
-  - Human-friendly message
-  - Suggested action
-  - "Copy technical details"
+Current content:
+
+- total, used, available, free, cached, buffers, shared, and anonymous memory
+- swap totals and activity
+- zram and zswap state
+- PSI memory pressure metrics
+- advanced memory breakdown
+- top memory users with copy-to-clipboard support
+
+### Lighting
+
+Purpose:
+
+- surface current keyboard lighting backend and controls
+
+Current content:
+
+- backend and device name
+- current brightness
+- current mode
+- mode combo box
+- brightness slider
+- RGB color control placeholder
+- apply action
+- last-action status
+
+Current implementation note:
+
+- the active daemon backend is currently keyboard backlight via sysfs
+- current daemon-reported supported modes are `Off` and `Static`
+- `supports_rgb` is currently false for the implemented backend
+
+### Diagnostics
+
+Purpose:
+
+- expose capability and environment diagnostics without requiring a terminal
+
+Current content:
+
+- session daemon endpoint summary
+- capability flags
+- raw endpoint strings
+- notes
+- warnings
+- copy diagnostics button
+
+### About
+
+Purpose:
+
+- provide a built-in app identity and runtime metadata view
+
+Current content:
+
+- name
+- binary
+- version
+- license
+- session DBus API endpoint
+- maintainer/contributor field
+- source URL
+
+Current implementation note:
+
+- some of this metadata comes from Cargo manifest fields
+- when metadata is blank, the UI currently uses fallback values
+
+## Current Capability Behavior
+
+The current UI behavior is driven by daemon-reported capabilities and daemon-reported state.
+
+Examples:
+
+- profile controls depend on `has_profiles`
+- GPU controls depend on `has_gpu_modes`
+- battery charge-limit controls depend on `has_charge_limit`
+- keyboard backlight controls depend on `has_kbd_backlight` and backend writability
+- CPU controls depend on `cpu_caps` and `policy_writable`
+
+This is the expected current behavior and is preferable to guessing based on hardware model names.
+
+## Error and Warning UX
+
+Current UI expectations:
+
+- no raw stack traces in normal UI flow
+- warnings should be surfaced as readable status text or banners
+- unavailable features should degrade to disabled or read-only UI
+- diagnostics should remain copyable
+
+Current examples in the implementation include:
+
+- daemon unavailable messaging
+- keyboard backlight read-only banner
+- CPU controls read-only banner
+- last-action status for lighting and GPU/profile actions
+
+## Planned or Missing UI Features
+
+These are not current pages or complete current UI features.
+
+### Planned or future pages
+
+- Profiles page
+- Fans page
+- Settings page
+
+Related note:
+
+- some controls associated with those planned areas currently live on the Dashboard or GPU page
+
+### Planned or future capabilities
+
+- fan-curve editor
+- auto mode / rules editor
+- exported diagnostics bundle
+- Aura / RGB lighting control
+- more specialized conflict detection and service-management UI
+
+## Maintenance Note
+
+This file is intended to describe the real current UI. If the implementation in `crates/rog-ui/src/main.rs` changes, update this document at the same time rather than leaving planned and current behavior mixed together.
