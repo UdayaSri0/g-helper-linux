@@ -180,6 +180,10 @@ Desktop assets:
 - `packaging/arch/PKGBUILD`
 - `packaging/arch/.SRCINFO`
 - `packaging/arch/rog-helper.install`
+- `packaging/flatpak/io.github.roghelper.UI.yml`
+- `packaging/flatpak/cargo-sources.json`
+- `packaging/flatpak/flathub.json`
+- `packaging/flatpak/README.md`
 - `packaging/desktop/rog-helper.desktop`
 - `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
 - `packaging/dbus-session/io.github.roghelper.Daemon.service`
@@ -268,6 +272,40 @@ Notes:
   an AUR repository
 - the Arch package does not auto-enable the user service; enable it manually
   with `systemctl --user enable --now rog-helperd.service` if desired
+
+Build the local Flatpak manifest:
+
+```bash
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+packaging/scripts/build-flatpak.sh
+```
+
+This builds the Flatpak from `packaging/flatpak/io.github.roghelper.UI.yml`
+into `dist/flatpak-repo/`.
+
+Install it locally after the build:
+
+```bash
+flatpak install --user --reinstall dist/flatpak-repo io.github.roghelper.UI
+flatpak run io.github.roghelper.UI
+```
+
+Manifest validation only:
+
+```bash
+packaging/scripts/build-flatpak.sh --check
+```
+
+Notes:
+
+- the Flatpak manifest builds the same Rust workspace and installs `rog-helper-ui`,
+  `rog-helperd`, and `rog-helper` into `/app/bin`
+- the bundled daemon is activated on the session bus; the host `systemd --user`
+  unit is intentionally not installed from Flatpak
+- the manifest requests only specific system D-Bus names for `UPower`, `asusd`,
+  and `supergfxd`
+- direct sysfs writes are not available in Flatpak, so host-native packages are
+  still recommended for the fullest hardware-control support
 
 Build a Fedora-family RPM package:
 
@@ -362,6 +400,7 @@ Important note:
 - Debian packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Fedora RPMs render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Arch packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
+- Flatpak installs only a session D-Bus activation file for `/app/bin/rog-helperd`; it does not install the host user-service unit.
 - Release packages also install `io.github.roghelper.Daemon.service`, so opening the desktop app can activate the daemon on the session bus even when the user service is not yet enabled.
 
 ## Runtime Dependency Notes

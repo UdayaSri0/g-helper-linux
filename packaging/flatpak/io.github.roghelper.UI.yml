@@ -1,0 +1,76 @@
+app-id: io.github.roghelper.UI
+runtime: org.gnome.Platform
+runtime-version: "48"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: rog-helper-ui
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --talk-name=io.github.roghelper.Daemon
+  - --own-name=io.github.roghelper.Daemon
+  - --system-talk-name=org.freedesktop.UPower
+  - --system-talk-name=org.asuslinux.Daemon
+  - --system-talk-name=org.supergfxctl.Daemon
+modules:
+  - name: rust-stable
+    buildsystem: simple
+    build-commands:
+      - /usr/lib/sdk/rust-stable/enable.sh
+
+  - name: rog-helper
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      append-ld-library-path: /usr/lib/sdk/rust-stable/lib
+      env:
+        CARGO_HOME: /run/build/rog-helper/cargo
+        CARGO_NET_OFFLINE: "true"
+        CARGO_TARGET_DIR: /run/build/rog-helper/target
+    build-commands:
+      - cargo build --release --workspace --locked --offline
+      - install -Dm0755 target/release/rog-helper-ui /app/bin/rog-helper-ui
+      - install -Dm0755 target/release/rog-helperd /app/bin/rog-helperd
+      - install -Dm0755 target/release/rog-helper /app/bin/rog-helper
+      - |
+        sed \
+          -e 's/^Icon=.*/Icon=io.github.roghelper.UI/' \
+          packaging/desktop/rog-helper.desktop \
+          > io.github.roghelper.UI.desktop
+        install -Dm0644 \
+          io.github.roghelper.UI.desktop \
+          /app/share/applications/io.github.roghelper.UI.desktop
+      - |
+        sed \
+          -e 's#<launchable type="desktop-id">rog-helper.desktop</launchable>#<launchable type="desktop-id">io.github.roghelper.UI.desktop</launchable>#' \
+          packaging/metainfo/io.github.roghelper.UI.metainfo.xml \
+          > io.github.roghelper.UI.metainfo.xml
+        install -Dm0644 \
+          io.github.roghelper.UI.metainfo.xml \
+          /app/share/metainfo/io.github.roghelper.UI.metainfo.xml
+      - |
+        for size in 16 24 32 48 64 128 256 512; do
+          install -Dm0644 \
+            "packaging/desktop/icons/hicolor/${size}x${size}/apps/rog-helper.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/rog-helper.png"
+          install -Dm0644 \
+            "packaging/desktop/icons/hicolor/${size}x${size}/apps/rog-helper.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/io.github.roghelper.UI.png"
+        done
+      - |
+        sed 's#rog-helperd#/app/bin/rog-helperd#g' \
+          packaging/dbus-session/io.github.roghelper.Daemon.service \
+          > io.github.roghelper.Daemon.service
+        install -Dm0644 \
+          io.github.roghelper.Daemon.service \
+          /app/share/dbus-1/services/io.github.roghelper.Daemon.service
+      - install -Dm0644 LICENSE-APACHE /app/share/licenses/rog-helper/LICENSE-APACHE
+      - install -Dm0644 LICENSE-MIT /app/share/licenses/rog-helper/LICENSE-MIT
+    sources:
+      - cargo-sources.json
+      - type: dir
+        path: ../..
