@@ -195,8 +195,8 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 Direct `.deb` install:
 
 ```bash
-sha256sum -c rog-helper-0.2.0-SHA256SUMS.txt --ignore-missing
-sudo apt install ./rog-helper_0.2.0_amd64.deb
+sha256sum -c rog-helper-0.2.1-SHA256SUMS.txt --ignore-missing
+sudo apt install ./rog-helper_0.2.1_amd64.deb
 ```
 
 Optional user-session daemon enablement:
@@ -227,8 +227,8 @@ systemctl --user daemon-reload
 Direct `.rpm` install:
 
 ```bash
-sha256sum -c rog-helper-0.2.0-RPM-SHA256SUMS.txt --ignore-missing
-sudo dnf install ./rog-helper-0.2.0-1.x86_64.rpm
+sha256sum -c rog-helper-0.2.1-RPM-SHA256SUMS.txt --ignore-missing
+sudo dnf install ./rog-helper-0.2.1-1.x86_64.rpm
 ```
 
 Optional user-session daemon enablement:
@@ -339,9 +339,9 @@ sudo apt install rog-helper
 Download the AppImage and verify it before first run:
 
 ```bash
-sha256sum -c rog-helper-0.2.0-SHA256SUMS.txt --ignore-missing
-chmod +x rog-helper-v0.2.0-x86_64.AppImage
-./rog-helper-v0.2.0-x86_64.AppImage
+sha256sum -c rog-helper-0.2.1-SHA256SUMS.txt --ignore-missing
+chmod +x rog-helper-v0.2.1-x86_64.AppImage
+./rog-helper-v0.2.1-x86_64.AppImage
 ```
 
 The AppImage bundles:

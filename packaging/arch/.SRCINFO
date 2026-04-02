@@ -1,6 +1,6 @@
 pkgbase = rog-helper
 	pkgdesc = Linux-native ASUS ROG control app
-	pkgver = 0.2.0
+	pkgver = 0.2.1
 	pkgrel = 1
 	url = https://github.com/UdayaSri0/g-helper-linux
 	install = rog-helper.install
@@ -19,7 +19,7 @@ pkgbase = rog-helper
 	optdepends = supergfxd: GPU mode control
 	optdepends = upower: battery and power-source telemetry
 	options = !debug
-	source = g-helper-linux::git+https://github.com/UdayaSri0/g-helper-linux.git#tag=v0.2.0
+	source = g-helper-linux::git+https://github.com/UdayaSri0/g-helper-linux.git#tag=v0.2.1
 	sha256sums = SKIP
 
 pkgname = rog-helper
