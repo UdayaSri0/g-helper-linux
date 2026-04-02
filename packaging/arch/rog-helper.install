@@ -1,0 +1,20 @@
+post_install() {
+  cat <<'EOF'
+rog-helper installs a user service at /usr/lib/systemd/user/rog-helperd.service.
+
+Enable it for your user if you want the daemon to start with your login session:
+  systemctl --user daemon-reload
+  systemctl --user enable --now rog-helperd.service
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  cat <<'EOF'
+If you had rog-helperd enabled, reload your user manager:
+  systemctl --user daemon-reload
+EOF
+}

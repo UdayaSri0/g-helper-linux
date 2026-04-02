@@ -177,6 +177,9 @@ Source of truth:
 
 Desktop assets:
 
+- `packaging/arch/PKGBUILD`
+- `packaging/arch/.SRCINFO`
+- `packaging/arch/rog-helper.install`
 - `packaging/desktop/rog-helper.desktop`
 - `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
 - `packaging/dbus-session/io.github.roghelper.Daemon.service`
@@ -237,6 +240,34 @@ Requirements:
 - `desktop-file-validate` if desktop validation is desired
 - `appstreamcli` if AppStream validation is desired
 - `python3-pil` for generated icons
+
+Build the Arch package from a repository checkout:
+
+```bash
+cd packaging/arch
+makepkg -si
+```
+
+This installs from the current repository checkout through the bundled
+`PKGBUILD`, building the workspace and installing:
+
+- `/usr/bin/rog-helper-ui`
+- `/usr/bin/rog-helperd`
+- `/usr/bin/rog-helper`
+- `/usr/share/applications/rog-helper.desktop`
+- `/usr/share/dbus-1/services/io.github.roghelper.Daemon.service`
+- `/usr/share/metainfo/io.github.roghelper.UI.metainfo.xml`
+- `/usr/share/icons/hicolor/...`
+- `/usr/lib/systemd/user/rog-helperd.service`
+
+Notes:
+
+- the `PKGBUILD` auto-detects the repository root when run from `packaging/arch`
+- the committed `.SRCINFO` is generated against the future upstream `v0.2.0` tag
+- the same packaging defaults to the upstream tagged Git source when moved into
+  an AUR repository
+- the Arch package does not auto-enable the user service; enable it manually
+  with `systemctl --user enable --now rog-helperd.service` if desired
 
 Build a Fedora-family RPM package:
 
@@ -330,6 +361,7 @@ Important note:
 - The unit also sets a custom `PATH` that includes `%h/.cargo/bin` and `%h/.local/bin`.
 - Debian packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Fedora RPMs render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
+- Arch packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Release packages also install `io.github.roghelper.Daemon.service`, so opening the desktop app can activate the daemon on the session bus even when the user service is not yet enabled.
 
 ## Runtime Dependency Notes
