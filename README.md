@@ -62,9 +62,14 @@ Basic packaging assets are also included under `packaging/`:
 - `packaging/arch/PKGBUILD`
 - `packaging/arch/.SRCINFO`
 - `packaging/arch/rog-helper.install`
+- `packaging/flatpak/io.github.roghelper.UI.yml`
+- `packaging/flatpak/cargo-sources.json`
+- `packaging/flatpak/flathub.json`
+- `packaging/flatpak/README.md`
 - generated-on-demand hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
 - `packaging/scripts/build-deb.sh`
 - `packaging/scripts/build-rpm.sh`
+- `packaging/scripts/build-flatpak.sh`
 - `packaging/scripts/stage-apt-repo.sh`
 - `packaging/scripts/build-tarball.sh`
 - `packaging/scripts/build-appimage.sh`
@@ -281,6 +286,38 @@ If an AUR package repository is published later, package helpers such as `yay`
 or `paru` can install it. This repository already includes AUR-ready
 `PKGBUILD`, `.SRCINFO`, and install-hook metadata, but it does not publish to
 the AUR automatically today.
+
+## Flatpak Installation
+
+This repository ships a local Flatpak manifest under `packaging/flatpak/`.
+
+Build and install it from a repository checkout:
+
+```bash
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+ROG_HELPER_FLATPAK_INSTALL=1 packaging/scripts/build-flatpak.sh
+flatpak run io.github.roghelper.UI
+```
+
+The Flatpak bundles:
+
+- `rog-helper-ui`, `rog-helperd`, and `rog-helper` under `/app/bin`
+- a Flatpak-specific desktop file and AppStream metadata under `/app/share`
+- both `rog-helper` and `io.github.roghelper.UI` icon names under the hicolor theme
+- a session D-Bus activation file for the bundled `rog-helperd`
+
+Flatpak runtime notes:
+
+- `rog-helperd` runs inside the sandbox and is activated on the session bus; the host `systemd --user` unit is not installed or enabled
+- `UPower`, `asusd`, and `supergfxd` access is requested through specific system D-Bus permissions, but the host services still have to be installed and may still reject sandboxed callers
+- direct sysfs writes are not available in Flatpak, so CPU tuning, per-core toggles, and keyboard-backlight writes remain unavailable or read-only
+- procfs-backed per-process diagnostics are limited to processes visible inside the sandbox
+- the `nvidia-smi` fallback is not expected to work inside the sandbox
+- tray integration may still be limited on hosts that require extra StatusNotifier D-Bus ownership
+
+If a Flathub publication is added later, the end-user install path would become
+`flatpak install flathub io.github.roghelper.UI`, but that repository is not
+live today.
 
 ### Future APT Repository
 

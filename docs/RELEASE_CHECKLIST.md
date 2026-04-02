@@ -50,8 +50,13 @@ Current repository note:
 - [ ] `packaging/arch/PKGBUILD` reviewed
 - [ ] `packaging/arch/.SRCINFO` reviewed
 - [ ] `packaging/arch/rog-helper.install` reviewed
+- [ ] `packaging/flatpak/io.github.roghelper.UI.yml` reviewed
+- [ ] `packaging/flatpak/cargo-sources.json` reviewed
+- [ ] `packaging/flatpak/flathub.json` reviewed
+- [ ] `packaging/flatpak/README.md` reviewed
 - [ ] `packaging/scripts/build-deb.sh` reviewed
 - [ ] `packaging/scripts/build-rpm.sh` reviewed
+- [ ] `packaging/scripts/build-flatpak.sh` reviewed
 - [ ] `packaging/scripts/build-tarball.sh` reviewed
 - [ ] `packaging/scripts/build-appimage.sh` reviewed
 - [ ] `packaging/scripts/build-release-assets.sh` reviewed
