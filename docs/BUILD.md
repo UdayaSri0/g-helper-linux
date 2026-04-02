@@ -388,6 +388,10 @@ Current AppImage notes:
   packaging/scripts/build-appimage.sh --check-deps
   ```
 
+- if `linuxdeploy` still fails, the script now leaves `linuxdeploy.stdout.log`,
+  `linuxdeploy.stderr.log`, and `linuxdeploy.plugins.log` in the output
+  directory so CI failures stay diagnosable
+
 - the AppImage bundles the UI, daemon, CLI, desktop launcher, hicolor icons, AppStream metadata, session D-Bus activation file, and the user-service unit
 - the AppImage does not install menu integration or enable the user service on the host system
 - the build currently targets `x86_64` only

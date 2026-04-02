@@ -68,6 +68,14 @@ jobs:
       - name: Build AppImage
         run: ROG_HELPER_SKIP_PREPARE=1 ROG_HELPER_WRITE_SHA256SUMS=1 packaging/scripts/build-appimage.sh dist
 
+      - name: Upload AppImage Diagnostic Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-debug-${{ github.ref_name }}
+          path: dist/*.log
+          if-no-files-found: ignore
+
       - name: Stage APT Repository Preview
         run: packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview
 

@@ -72,6 +72,14 @@ jobs:
       - name: Build AppImage
         run: packaging/scripts/build-appimage.sh dist/appimage-ci
 
+      - name: Upload AppImage Diagnostic Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-debug-${{ github.sha }}
+          path: dist/appimage-ci/*.log
+          if-no-files-found: ignore
+
   fedora-rpm:
     runs-on: ubuntu-latest
     container: fedora:42
