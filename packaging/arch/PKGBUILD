@@ -1,0 +1,101 @@
+pkgname=rog-helper
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Linux-native ASUS ROG control app"
+arch=("x86_64")
+url="https://github.com/UdayaSri0/g-helper-linux"
+license=("MIT" "Apache-2.0")
+depends=("gtk4" "libadwaita" "hicolor-icon-theme")
+makedepends=("appstream" "cargo" "desktop-file-utils" "git" "python-pillow")
+optdepends=(
+  "asusd: ASUS platform profile and battery-limit control"
+  "supergfxd: GPU mode control"
+  "upower: battery and power-source telemetry"
+)
+install="rog-helper.install"
+options=(!debug)
+
+_repo_url="https://github.com/UdayaSri0/g-helper-linux.git"
+_local_checkout="$(realpath -m "${startdir}/../..")"
+
+if [[ "${ROG_HELPER_ARCH_FORCE_REMOTE:-0}" != "1" ]] && \
+  [[ -f "${_local_checkout}/Cargo.toml" && -d "${_local_checkout}/crates" ]]; then
+  _source_repo="file://${_local_checkout}"
+  _source_ref=""
+else
+  _source_repo="${ROG_HELPER_ARCH_SOURCE_REPO:-${_repo_url}}"
+  _source_ref="${ROG_HELPER_ARCH_SOURCE_REF:-#tag=v${pkgver}}"
+fi
+
+source=("g-helper-linux::git+${_source_repo}${_source_ref}")
+sha256sums=("SKIP")
+
+prepare() {
+  cd "${srcdir}/g-helper-linux"
+
+  export CARGO_HOME="${srcdir}/cargo-home"
+
+  cargo fetch --locked
+}
+
+build() {
+  cd "${srcdir}/g-helper-linux"
+
+  export CARGO_HOME="${srcdir}/cargo-home"
+  export CARGO_TARGET_DIR="${srcdir}/target"
+  export CC="${CC:-gcc}"
+  export CXX="${CXX:-g++}"
+  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-gcc}"
+
+  python3 packaging/scripts/generate_icons.py
+  desktop-file-validate packaging/desktop/rog-helper.desktop
+  appstreamcli validate --no-net packaging/metainfo/io.github.roghelper.UI.metainfo.xml
+  cargo build --release --workspace --locked
+}
+
+check() {
+  cd "${srcdir}/g-helper-linux"
+
+  export CARGO_HOME="${srcdir}/cargo-home"
+  export CARGO_TARGET_DIR="${srcdir}/target"
+  export CC="${CC:-gcc}"
+  export CXX="${CXX:-g++}"
+  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-gcc}"
+
+  cargo test --workspace --locked
+}
+
+package() {
+  cd "${srcdir}/g-helper-linux"
+
+  install -Dm0755 "${srcdir}/target/release/rog-helper-ui" "${pkgdir}/usr/bin/rog-helper-ui"
+  install -Dm0755 "${srcdir}/target/release/rog-helperd" "${pkgdir}/usr/bin/rog-helperd"
+  install -Dm0755 "${srcdir}/target/release/rog-helper" "${pkgdir}/usr/bin/rog-helper"
+
+  install -Dm0644 packaging/desktop/rog-helper.desktop \
+    "${pkgdir}/usr/share/applications/rog-helper.desktop"
+  install -Dm0644 packaging/metainfo/io.github.roghelper.UI.metainfo.xml \
+    "${pkgdir}/usr/share/metainfo/io.github.roghelper.UI.metainfo.xml"
+
+  for size in 16 24 32 48 64 128 256 512; do
+    install -Dm0644 \
+      "packaging/desktop/icons/hicolor/${size}x${size}/apps/rog-helper.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/rog-helper.png"
+  done
+
+  install -Dm0644 packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png \
+    "${pkgdir}/usr/share/pixmaps/rog-helper.png"
+
+  sed "s#rog-helperd#/usr/bin/rog-helperd#g" \
+    packaging/dbus-session/io.github.roghelper.Daemon.service \
+    > "${pkgdir}/usr/share/dbus-1/services/io.github.roghelper.Daemon.service"
+  chmod 0644 "${pkgdir}/usr/share/dbus-1/services/io.github.roghelper.Daemon.service"
+
+  sed "s#rog-helperd#/usr/bin/rog-helperd#g" \
+    packaging/systemd-user/rog-helperd.service \
+    > "${pkgdir}/usr/lib/systemd/user/rog-helperd.service"
+  chmod 0644 "${pkgdir}/usr/lib/systemd/user/rog-helperd.service"
+
+  install -Dm0644 LICENSE-APACHE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+  install -Dm0644 LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+}

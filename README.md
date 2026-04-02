@@ -59,6 +59,9 @@ Basic packaging assets are also included under `packaging/`:
 - `packaging/desktop/rog-helper.desktop`
 - `packaging/dbus-session/io.github.roghelper.Daemon.service`
 - `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
+- `packaging/arch/PKGBUILD`
+- `packaging/arch/.SRCINFO`
+- `packaging/arch/rog-helper.install`
 - generated-on-demand hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
 - `packaging/scripts/build-deb.sh`
 - `packaging/scripts/build-rpm.sh`
@@ -245,6 +248,39 @@ Remove cleanly with:
 sudo dnf remove rog-helper
 systemctl --user daemon-reload
 ```
+
+## Arch Linux Installation
+
+This repository ships a source-based `PKGBUILD` under `packaging/arch/`.
+
+Build and install it directly from a repository checkout:
+
+```bash
+git clone https://github.com/UdayaSri0/g-helper-linux.git
+cd g-helper-linux/packaging/arch
+makepkg -si
+```
+
+Optional user-session daemon enablement:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now rog-helperd.service
+```
+
+The Arch package installs:
+
+- `rog-helper-ui`, `rog-helperd`, and `rog-helper` under `/usr/bin`
+- the desktop launcher under `/usr/share/applications`
+- hicolor icons under `/usr/share/icons/hicolor`
+- AppStream metadata under `/usr/share/metainfo`
+- session D-Bus activation under `/usr/share/dbus-1/services`
+- the user service under `/usr/lib/systemd/user`
+
+If an AUR package repository is published later, package helpers such as `yay`
+or `paru` can install it. This repository already includes AUR-ready
+`PKGBUILD`, `.SRCINFO`, and install-hook metadata, but it does not publish to
+the AUR automatically today.
 
 ### Future APT Repository
 

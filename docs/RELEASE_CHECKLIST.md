@@ -47,6 +47,9 @@ Current repository note:
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
 - [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
+- [ ] `packaging/arch/PKGBUILD` reviewed
+- [ ] `packaging/arch/.SRCINFO` reviewed
+- [ ] `packaging/arch/rog-helper.install` reviewed
 - [ ] `packaging/scripts/build-deb.sh` reviewed
 - [ ] `packaging/scripts/build-rpm.sh` reviewed
 - [ ] `packaging/scripts/build-tarball.sh` reviewed
