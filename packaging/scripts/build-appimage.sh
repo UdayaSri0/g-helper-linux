@@ -167,7 +167,7 @@ supported_mksquashfs_compressors() {
 }
 
 choose_appimage_compression() {
-  local requested="${ROG_HELPER_APPIMAGE_COMPRESSION:-xz}"
+  local requested="${ROG_HELPER_APPIMAGE_COMPRESSION:-zstd}"
   local resolved=""
   local supported=()
   local compressor

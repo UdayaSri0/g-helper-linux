@@ -388,9 +388,10 @@ Current AppImage notes:
   packaging/scripts/build-appimage.sh --check-deps
   ```
 
-- the script prefers `xz` AppImage compression, but will fall back to a
-  supported `mksquashfs` compressor such as `zstd` on hosts that do not ship
-  `xz` support
+- the script defaults to `zstd` AppImage compression because current
+  `linuxdeploy-plugin-appimage` packaging paths on GitHub runners do not
+  reliably support `xz`; set `ROG_HELPER_APPIMAGE_COMPRESSION` to override it
+  on hosts where you have verified another compressor works
 
 - if `linuxdeploy` still fails, the script now leaves `linuxdeploy.stdout.log`,
   `linuxdeploy.stderr.log`, and `linuxdeploy.plugins.log` in the output
