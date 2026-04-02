@@ -17,7 +17,7 @@ builds from that local checkout.
 
 ## Future AUR publishing
 
-When `v0.2.0` is pushed upstream, this packaging can be moved into a dedicated
+When `v0.2.1` is pushed upstream, this packaging can be moved into a dedicated
 AUR repository with:
 
 - `PKGBUILD`
@@ -32,7 +32,7 @@ Suggested publish flow:
    ```bash
    ROG_HELPER_ARCH_FORCE_REMOTE=1 \
    ROG_HELPER_ARCH_SOURCE_REPO="https://github.com/UdayaSri0/g-helper-linux.git" \
-   ROG_HELPER_ARCH_SOURCE_REF="#tag=v0.2.0" \
+   ROG_HELPER_ARCH_SOURCE_REF="#tag=v0.2.1" \
    makepkg --printsrcinfo > .SRCINFO
    ```
 
