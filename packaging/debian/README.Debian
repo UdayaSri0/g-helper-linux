@@ -1,0 +1,25 @@
+rog-helper for Debian-family systems
+===================================
+
+This package installs:
+
+- /usr/bin/rog-helper-ui
+- /usr/bin/rog-helperd
+- /usr/bin/rog-helper
+- a desktop launcher and hicolor icon assets
+- AppStream metadata
+- a session D-Bus activation file for io.github.roghelper.Daemon
+- a systemd --user unit at /usr/lib/systemd/user/rog-helperd.service
+
+The desktop app can activate the daemon over the session bus on demand, so the
+package works without enabling the user unit first.
+
+To keep the daemon running across your desktop session, enable the user unit:
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now rog-helperd.service
+
+If you remove the package after enabling the user unit, refresh your current
+session so systemd drops the removed unit file:
+
+  systemctl --user daemon-reload

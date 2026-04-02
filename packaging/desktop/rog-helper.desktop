@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=rog-helper
-Comment=Linux-native ASUS ROG control app
+Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux
 TryExec=rog-helper-ui
 Exec=rog-helper-ui
 Icon=rog-helper
@@ -9,4 +9,4 @@ Terminal=false
 StartupNotify=true
 StartupWMClass=io.github.roghelper.UI
 Categories=Settings;HardwareSettings;
-Keywords=ASUS;ROG;Laptop;CPU;GPU;Battery;
+Keywords=ASUS;ROG;Laptop;Power;Battery;CPU;GPU;Diagnostics;

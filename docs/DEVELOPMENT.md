@@ -21,7 +21,7 @@ Top-level structure:
 - `docs/`
   - project documentation
 - `packaging/`
-  - systemd user service and desktop entry
+  - desktop entry, session DBus activation, AppStream metadata, and release scripts
 
 ## How the Current Crates Are Structured
 

@@ -28,6 +28,7 @@ Use this checklist before calling the repository release-ready.
 Current repository note:
 
 - the About page now reads version, license, authors, and repository URL from Cargo metadata, and derives maintainer/source metadata from the repository URL when possible, so manifest drift will show up directly in the UI
+- the workspace version is now the packaging source of truth for all crates and release assets
 
 ## Icons and Assets
 
@@ -38,20 +39,25 @@ Current repository note:
 
 Current repository note:
 
-- `assets/logo.png` is the master logo source, and the generated hicolor icon set now lives under `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the `.deb`, and the AppDir/AppImage flow all agree on the `rog-helper` icon name
+- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the AppStream metadata, the `.deb`, the AppImage, and the tarball flow all agree on the `rog-helper` icon name
 
 ## Service and Packaging Files
 
 - [ ] `packaging/systemd-user/rog-helperd.service` reviewed
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
+- [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
+- [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
 - [ ] `packaging/scripts/build-deb.sh` reviewed
+- [ ] `packaging/scripts/build-tarball.sh` reviewed
 - [ ] `packaging/scripts/build-appimage.sh` reviewed
+- [ ] `packaging/scripts/build-release-assets.sh` reviewed
 - [ ] user-service install flow tested
 - [ ] `ExecStart` / `Exec` paths are valid for the release target
+- [ ] release artifact names and SHA256 files reviewed
 
 Current repository note:
 
-- the user service expects `rog-helperd` on `PATH`
+- `.deb` builds render absolute daemon paths under `/usr/bin`, while prefix tarballs and AppImage bundles keep a `PATH`-based daemon exec for non-`/usr` installs
 
 ## Build, Test, and Static Checks
 
@@ -62,7 +68,7 @@ Current repository note:
 
 Important note:
 
-- CI is configured to run these checks, so release readiness should include confirming the current source state matches CI expectations
+- CI is configured to run these checks plus package-build smoke tests, and tagged releases are built by `.github/workflows/release.yml`
 
 ## Manual Runtime Verification
 

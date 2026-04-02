@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.roghelper.UI</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>rog-helper</name>
+  <summary>Linux-native ASUS ROG control app</summary>
+  <developer_name>UdayaSri0</developer_name>
+  <launchable type="desktop-id">rog-helper.desktop</launchable>
+  <url type="homepage">https://github.com/UdayaSri0/g-helper-linux</url>
+  <url type="bugtracker">https://github.com/UdayaSri0/g-helper-linux/issues</url>
+  <provides>
+    <binary>rog-helper-ui</binary>
+    <binary>rog-helperd</binary>
+    <binary>rog-helper</binary>
+  </provides>
+  <categories>
+    <category>Settings</category>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <description>
+    <p>
+      rog-helper is a Linux-native control surface for ASUS ROG laptops with a
+      GTK4/libadwaita desktop UI, a user-session daemon, and a diagnostics CLI.
+    </p>
+    <p>
+      The current release integrates with asusd, supergfxd, UPower, hwmon,
+      CPU sysfs, keyboard backlight sysfs, power-supply sysfs, memory telemetry,
+      and an NVIDIA read-only fallback.
+    </p>
+  </description>
+</component>
