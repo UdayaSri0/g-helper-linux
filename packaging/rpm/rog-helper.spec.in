@@ -1,0 +1,53 @@
+%global debug_package %{nil}
+
+Name:           @PACKAGE_NAME@
+Version:        @VERSION@
+Release:        @RPM_RELEASE@
+Summary:        @SUMMARY@
+License:        @LICENSE@
+URL:            @HOMEPAGE@
+Source0:        %{name}-%{version}-rpm-root.tar.xz
+ExclusiveArch:  x86_64
+
+Requires:       hicolor-icon-theme
+
+%description
+@DESCRIPTION@
+
+%prep
+mkdir -p %{name}-%{version}
+cd %{name}-%{version}
+tar -xJf %{SOURCE0}
+
+%build
+# Release binaries are staged by the repository packaging pipeline.
+
+%install
+rm -rf %{buildroot}
+cd %{name}-%{version}
+mkdir -p %{buildroot}
+cp -a usr %{buildroot}/
+
+%files
+%license %{_docdir}/%{name}/LICENSE-APACHE
+%license %{_docdir}/%{name}/LICENSE-MIT
+%{_bindir}/rog-helper
+%{_bindir}/rog-helper-ui
+%{_bindir}/rog-helperd
+%{_datadir}/applications/rog-helper.desktop
+%{_datadir}/dbus-1/services/io.github.roghelper.Daemon.service
+%{_datadir}/icons/hicolor/16x16/apps/rog-helper.png
+%{_datadir}/icons/hicolor/24x24/apps/rog-helper.png
+%{_datadir}/icons/hicolor/32x32/apps/rog-helper.png
+%{_datadir}/icons/hicolor/48x48/apps/rog-helper.png
+%{_datadir}/icons/hicolor/64x64/apps/rog-helper.png
+%{_datadir}/icons/hicolor/128x128/apps/rog-helper.png
+%{_datadir}/icons/hicolor/256x256/apps/rog-helper.png
+%{_datadir}/icons/hicolor/512x512/apps/rog-helper.png
+%{_datadir}/metainfo/io.github.roghelper.UI.metainfo.xml
+%{_datadir}/pixmaps/rog-helper.png
+/usr/lib/systemd/user/rog-helperd.service
+
+%changelog
+* @CHANGELOG_DATE@ @MAINTAINER@ - @VERSION@-@RPM_RELEASE@
+- Build Fedora-family release package for rog-helper

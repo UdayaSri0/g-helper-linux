@@ -21,5 +21,10 @@ if [[ "${ROG_HELPER_BUILD_APPIMAGE:-1}" == "1" ]]; then
   ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-appimage.sh" "$OUTPUT_DIR"
 fi
 
+if [[ "${ROG_HELPER_BUILD_RPM:-auto}" == "1" ]] || \
+  [[ "${ROG_HELPER_BUILD_RPM:-auto}" == "auto" && -x "$(command -v rpmbuild || true)" ]]; then
+  ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-rpm.sh" "$OUTPUT_DIR"
+fi
+
 write_sha256sums "$OUTPUT_DIR"
 echo "release assets ready in $OUTPUT_DIR"

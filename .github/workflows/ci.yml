@@ -43,3 +43,23 @@ jobs:
         run: |
           packaging/scripts/build-release-assets.sh dist/ci
           packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
+
+  fedora-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:42
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Fedora Build Dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            cargo rust gcc \
+            pkgconf-pkg-config gtk4-devel libadwaita-devel \
+            appstream desktop-file-utils python3-pillow \
+            rpm-build
+
+      - name: Build Fedora RPM
+        run: packaging/scripts/build-rpm.sh dist/fedora-ci
+
+      - name: Inspect RPM Contents
+        run: rpm -qpl dist/fedora-ci/*.rpm | sed -n '1,200p'

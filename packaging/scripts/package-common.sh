@@ -7,6 +7,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 PACKAGE_NAME="rog-helper"
 ICON_NAME="rog-helper"
 DEBIAN_DIR="$REPO_ROOT/packaging/debian"
+RPM_DIR="$REPO_ROOT/packaging/rpm"
 DESKTOP_FILE="$REPO_ROOT/packaging/desktop/rog-helper.desktop"
 APPSTREAM_FILE="$REPO_ROOT/packaging/metainfo/io.github.roghelper.UI.metainfo.xml"
 DBUS_SESSION_SERVICE="$REPO_ROOT/packaging/dbus-session/io.github.roghelper.Daemon.service"
@@ -264,6 +265,27 @@ write_debian_control() {
     "DEPENDS=$depends" \
     "SUMMARY=$(package_summary)" \
     "DESCRIPTION=$(package_description_lines)"
+}
+
+write_rpm_spec() {
+  local dest="$1"
+  local rpm_release="$2"
+  local changelog_date
+
+  changelog_date="$(LC_ALL=C date -u '+%a %b %d %Y')"
+
+  render_template_file \
+    "$RPM_DIR/rog-helper.spec.in" \
+    "$dest" \
+    "PACKAGE_NAME=$PACKAGE_NAME" \
+    "VERSION=$(package_version)" \
+    "RPM_RELEASE=$rpm_release" \
+    "SUMMARY=$(package_summary)" \
+    "LICENSE=$(package_license)" \
+    "HOMEPAGE=$(package_repository)" \
+    "DESCRIPTION=$(package_description_lines)" \
+    "CHANGELOG_DATE=$changelog_date" \
+    "MAINTAINER=$(package_maintainer)"
 }
 
 debian_runtime_depends() {

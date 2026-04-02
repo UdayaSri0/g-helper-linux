@@ -39,7 +39,7 @@ Current repository note:
 
 Current repository note:
 
-- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the AppStream metadata, the `.deb`, the AppImage, and the tarball flow all agree on the `rog-helper` icon name
+- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the AppStream metadata, the `.deb`, the `.rpm`, the AppImage, and the tarball flow all agree on the `rog-helper` icon name
 
 ## Service and Packaging Files
 
@@ -48,6 +48,7 @@ Current repository note:
 - [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
 - [ ] `packaging/scripts/build-deb.sh` reviewed
+- [ ] `packaging/scripts/build-rpm.sh` reviewed
 - [ ] `packaging/scripts/build-tarball.sh` reviewed
 - [ ] `packaging/scripts/build-appimage.sh` reviewed
 - [ ] `packaging/scripts/build-release-assets.sh` reviewed
@@ -57,7 +58,7 @@ Current repository note:
 
 Current repository note:
 
-- `.deb` builds render absolute daemon paths under `/usr/bin`, while prefix tarballs and AppImage bundles keep a `PATH`-based daemon exec for non-`/usr` installs
+- `.deb` and `.rpm` builds render absolute daemon paths under `/usr/bin`, while prefix tarballs and AppImage bundles keep a `PATH`-based daemon exec for non-`/usr` installs
 
 ## Build, Test, and Static Checks
 
