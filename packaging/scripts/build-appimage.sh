@@ -154,6 +154,63 @@ print_appimage_build_deps() {
   done
 }
 
+supported_mksquashfs_compressors() {
+  mksquashfs -help 2>&1 | awk '
+    /Compressors available:/ {capture=1; next}
+    capture && /^[[:space:]]+[[:alnum:]][[:alnum:]-]*([[:space:]]+\(.*\))?[[:space:]]*$/ {
+      gsub(/^[[:space:]]+/, "", $0)
+      print $1
+      next
+    }
+    capture && $0 !~ /^[[:space:]]/ {exit}
+  '
+}
+
+choose_appimage_compression() {
+  local requested="${ROG_HELPER_APPIMAGE_COMPRESSION:-xz}"
+  local resolved=""
+  local supported=()
+  local compressor
+  local explicit=0
+
+  if [[ -n "${ROG_HELPER_APPIMAGE_COMPRESSION:-}" ]]; then
+    explicit=1
+  fi
+
+  while IFS= read -r compressor; do
+    [[ -n "$compressor" ]] || continue
+    supported+=("$compressor")
+    if [[ "$compressor" == "$requested" ]]; then
+      resolved="$requested"
+    fi
+  done < <(supported_mksquashfs_compressors)
+
+  if [[ -n "$resolved" ]]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  if (( explicit )); then
+    echo "requested AppImage compression is not supported by mksquashfs: $requested" >&2
+    printf 'supported compressors: %s\n' "${supported[*]:-none detected}" >&2
+    exit 1
+  fi
+
+  for compressor in zstd gzip lz4 lzo xz lzma; do
+    for resolved in "${supported[@]}"; do
+      if [[ "$resolved" == "$compressor" ]]; then
+        echo "default AppImage compression '$requested' is unavailable; falling back to '$compressor'" >&2
+        printf '%s\n' "$compressor"
+        return 0
+      fi
+    done
+  done
+
+  echo "could not find a supported mksquashfs compressor" >&2
+  printf 'supported compressors: %s\n' "${supported[*]:-none detected}" >&2
+  exit 1
+}
+
 print_tool_status() {
   local label="$1"
   local resolved="${2:-}"
@@ -213,6 +270,7 @@ print_linuxdeploy_tooling() {
   local appimage_plugin_path="$TOOLS_DIR/linuxdeploy-plugin-appimage-x86_64.AppImage"
   local gtk_plugin_path="$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
   local resolved
+  local compressors
 
   log_section "AppImage Tooling"
   print_tool_status "linuxdeploy" "$linuxdeploy_path"
@@ -232,6 +290,8 @@ print_linuxdeploy_tooling() {
   print_tool_status "mksquashfs" "$resolved"
   if [[ -n "$resolved" ]]; then
     "$resolved" -version 2>&1 | head -n 1 | sed 's#^#  #'
+    compressors="$(supported_mksquashfs_compressors | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    printf '  %-28s %s\n' "mksquashfs compressors" "${compressors:-unknown}"
   fi
 
   resolved="$(resolve_appimage_command file 2>/dev/null || true)"
@@ -328,6 +388,11 @@ fi
 
 require_appimage_build_deps
 
+APPIMAGE_COMPRESSION="$(choose_appimage_compression)"
+export APPIMAGE_COMPRESSION
+log_section "AppImage Compression"
+echo "using mksquashfs compressor: $APPIMAGE_COMPRESSION"
+
 rm -rf "$APPDIR"
 install_release_binary rog-helper-ui "$APPDIR/usr/bin/rog-helper-ui"
 install_release_binary rog-helperd "$APPDIR/usr/bin/rog-helperd"
@@ -373,7 +438,7 @@ printf ' %q' \
   "APPIMAGE_EXTRACT_AND_RUN=1" \
   "ARCH=$ARCH" \
   "DEPLOY_GTK_VERSION=4" \
-  "LDAI_COMP=${ROG_HELPER_APPIMAGE_COMPRESSION:-xz}" \
+  "LDAI_COMP=$APPIMAGE_COMPRESSION" \
   "LDAI_OUTPUT=$APPIMAGE_PATH" \
   "LDAI_VERSION=v${VERSION}" \
   "PATH=$TOOLS_DIR:$PATH"
@@ -392,7 +457,7 @@ printf '\n'
   export APPIMAGE_EXTRACT_AND_RUN=1
   export ARCH
   export DEPLOY_GTK_VERSION=4
-  export LDAI_COMP="${ROG_HELPER_APPIMAGE_COMPRESSION:-xz}"
+  export LDAI_COMP="$APPIMAGE_COMPRESSION"
   export LDAI_OUTPUT="$APPIMAGE_PATH"
   export LDAI_VERSION="v${VERSION}"
   if [[ -n "$APPIMAGE_DEBUG" ]]; then
