@@ -388,6 +388,10 @@ Current AppImage notes:
   packaging/scripts/build-appimage.sh --check-deps
   ```
 
+- the script prefers `xz` AppImage compression, but will fall back to a
+  supported `mksquashfs` compressor such as `zstd` on hosts that do not ship
+  `xz` support
+
 - if `linuxdeploy` still fails, the script now leaves `linuxdeploy.stdout.log`,
   `linuxdeploy.stderr.log`, and `linuxdeploy.plugins.log` in the output
   directory so CI failures stay diagnosable
