@@ -17,7 +17,7 @@ install_release_binary rog-helper "$OUTPUT_DIR/rog-helper"
 ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-deb.sh" "$OUTPUT_DIR"
 ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-tarball.sh" "$OUTPUT_DIR"
 
-if [[ "${ROG_HELPER_BUILD_APPIMAGE:-0}" == "1" ]]; then
+if [[ "${ROG_HELPER_BUILD_APPIMAGE:-1}" == "1" ]]; then
   ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-appimage.sh" "$OUTPUT_DIR"
 fi
 

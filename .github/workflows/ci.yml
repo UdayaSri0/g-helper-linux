@@ -23,7 +23,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libgtk-4-dev libadwaita-1-dev \
-            appstream desktop-file-utils dpkg-dev python3-pil
+            appstream desktop-file-utils dpkg-dev python3-pil \
+            file findutils libgdk-pixbuf-2.0-dev libgirepository1.0-dev \
+            libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -39,6 +41,5 @@ jobs:
 
       - name: Package Foundations
         run: |
-          packaging/scripts/build-deb.sh dist/ci
+          packaging/scripts/build-release-assets.sh dist/ci
           packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
-          packaging/scripts/build-tarball.sh dist/ci

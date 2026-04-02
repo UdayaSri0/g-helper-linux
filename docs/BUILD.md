@@ -131,6 +131,7 @@ cargo install --path crates/rog-cli --bin rog-helper --locked
 Tagged releases publish:
 
 - `rog-helper_<version>_<arch>.deb`
+- `rog-helper-v<version>-x86_64.AppImage`
 - `rog-helper-<version>-linux-<arch>.tar.xz`
 - direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries
 - `rog-helper-<version>-SHA256SUMS.txt`
@@ -252,7 +253,7 @@ Build the full tagged-release asset set:
 packaging/scripts/build-release-assets.sh
 ```
 
-This emits direct binaries, the `.deb`, the Linux tarball, and `SHA256` checksums under `dist/`.
+This emits direct binaries, the `.deb`, the AppImage, the Linux tarball, and `SHA256` checksums under `dist/`.
 
 Stage a future APT repository preview from built `.deb` files:
 
@@ -269,15 +270,20 @@ This creates an unsigned Debian-family repository layout with:
 
 It is a staging helper only; publishing a real repository still requires hosting and GPG signing.
 
-Stage an AppDir / AppImage bundle:
+Build the portable AppImage bundle:
 
 ```bash
 packaging/scripts/build-appimage.sh
 ```
 
-If `appimagetool` is installed, the script also emits an AppImage in `dist/`. Otherwise it leaves a ready-to-inspect `dist/AppDir/` with the desktop file and icon assets in the expected locations.
-If `appimagetool` is not installed, the script also emits a versioned `AppDir.tar.xz` fallback next to the staged `dist/AppDir/` tree.
-The current AppDir flow now stages the UI, daemon, CLI, session DBus activation, AppStream metadata, icons, and user service, but it is still not treated as the primary public release artifact until self-contained runtime bundling is validated across more distros.
+This emits `rog-helper-v<version>-x86_64.AppImage` in `dist/` and leaves the staged `dist/AppDir/` tree behind for inspection.
+
+Current AppImage notes:
+
+- the script downloads pinned `linuxdeploy`, `linuxdeploy-plugin-appimage`, and `linuxdeploy-plugin-gtk` helpers into a local cache directory if they are missing
+- the AppImage bundles the UI, daemon, CLI, desktop launcher, hicolor icons, AppStream metadata, session D-Bus activation file, and the user-service unit
+- the AppImage does not install menu integration or enable the user service on the host system
+- the build currently targets `x86_64` only
 
 ## systemd --user
 

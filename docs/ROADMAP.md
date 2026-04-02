@@ -141,7 +141,7 @@ Still evolving:
 
 - hardware support tracking
 - broader install validation
-- fully self-contained AppImage runtime bundling
+- broader cross-distro AppImage runtime validation
 
 ## Planned or Missing
 

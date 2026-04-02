@@ -116,7 +116,7 @@ Important gaps in the current implementation:
 - Persistent user configuration
 - Typed DBus payloads shared between daemon and UI
 - Complete tested hardware support matrix
-- Broader cross-distro install validation and fully self-contained AppImage runtime bundling
+- Broader cross-distro install validation, including wider AppImage runtime validation beyond the current Ubuntu-class release host
 
 Some related domain types and traits already exist in `rog-core` and `rog-providers`, but they are not fully wired into runtime behavior yet.
 
@@ -173,6 +173,7 @@ cargo run -p rog-cli -- caps
 Tagged releases now ship Linux release assets instead of source-only tags:
 
 - `.deb` packages for Debian/Ubuntu-style installs
+- portable `x86_64` AppImages for direct download-and-run use
 - prefix-friendly Linux tarballs for `/usr/local`
 - direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries for advanced user-local installs and the UI updater
 - SHA256 checksum files for every published asset
@@ -225,6 +226,29 @@ deb [signed-by=/usr/share/keyrings/rog-helper-archive-keyring.gpg] https://<futu
 sudo apt update
 sudo apt install rog-helper
 ```
+
+## AppImage Usage
+
+Download the AppImage and verify it before first run:
+
+```bash
+sha256sum -c rog-helper-0.2.0-SHA256SUMS.txt --ignore-missing
+chmod +x rog-helper-v0.2.0-x86_64.AppImage
+./rog-helper-v0.2.0-x86_64.AppImage
+```
+
+The AppImage bundles:
+
+- `rog-helper-ui`
+- `rog-helperd`
+- `rog-helper`
+- the desktop launcher, icon assets, AppStream metadata, and session D-Bus activation files needed inside the portable bundle
+
+Important AppImage notes:
+
+- the AppImage does not install itself into the system menu or enable desktop integration automatically
+- the bundled `rog-helperd.service` unit is included for reference, but it is not installed or enabled by running the AppImage
+- the AppImage updates the session environment so the bundled D-Bus activation file can find `rog-helperd`, but if you want persistent login-session integration, prefer the `.deb` package
 
 ## Build and Run Basics
 

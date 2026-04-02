@@ -7,6 +7,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_FILES: |
+    dist/*.deb
+    dist/*.AppImage
+    dist/*.tar.xz
+    dist/rog-helper
+    dist/rog-helperd
+    dist/rog-helper-ui
+    dist/*SHA256SUMS.txt
 
 permissions:
   contents: write
@@ -27,7 +35,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libgtk-4-dev libadwaita-1-dev \
-            appstream desktop-file-utils dpkg-dev python3-pil
+            appstream desktop-file-utils dpkg-dev python3-pil \
+            file findutils libgdk-pixbuf-2.0-dev libgirepository1.0-dev \
+            libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
 
       - name: Verify Tag Matches Workspace Version
         env:
@@ -61,13 +71,11 @@ PY
       - name: Stage APT Repository Preview
         run: packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview
 
-      - name: Upload Debian Package Artifact
+      - name: Upload Release Package Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: debian-package-${{ github.ref_name }}
-          path: |
-            dist/*.deb
-            dist/*SHA256SUMS.txt
+          name: release-packages-${{ github.ref_name }}
+          path: ${{ env.RELEASE_FILES }}
           if-no-files-found: error
 
       - name: Upload APT Repository Preview
@@ -94,7 +102,7 @@ PY
         if: steps.release_notes.outputs.present == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: ${{ env.RELEASE_FILES }}
           body_path: ${{ steps.release_notes.outputs.path }}
           fail_on_unmatched_files: true
 
@@ -102,5 +110,5 @@ PY
         if: steps.release_notes.outputs.present != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: ${{ env.RELEASE_FILES }}
           fail_on_unmatched_files: true
