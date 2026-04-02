@@ -5,7 +5,9 @@
   <project_license>MIT OR Apache-2.0</project_license>
   <name>rog-helper</name>
   <summary>Linux-native ASUS ROG control app</summary>
-  <developer_name>UdayaSri0</developer_name>
+  <developer id="io.github.roghelper">
+    <name>UdayaSri0</name>
+  </developer>
   <launchable type="desktop-id">rog-helper.desktop</launchable>
   <url type="homepage">https://github.com/UdayaSri0/g-helper-linux</url>
   <url type="bugtracker">https://github.com/UdayaSri0/g-helper-linux/issues</url>

@@ -42,11 +42,35 @@ jobs:
 
       - name: Package Foundations
         run: |
-          packaging/scripts/build-release-assets.sh dist/ci
+          ROG_HELPER_BUILD_APPIMAGE=0 packaging/scripts/build-release-assets.sh dist/ci
           packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
 
       - name: Validate Flatpak Manifest
         run: packaging/scripts/build-flatpak.sh --check
+
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install AppImage Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl \
+            libgtk-4-dev libadwaita-1-dev \
+            appstream desktop-file-utils python3-pil \
+            file findutils libgdk-pixbuf-2.0-dev libgdk-pixbuf2.0-bin \
+            libgirepository1.0-dev libglib2.0-dev-bin librsvg2-dev \
+            patchelf squashfs-tools
+
+      - name: Verify AppImage Host Tools
+        run: packaging/scripts/build-appimage.sh --check-deps
+
+      - name: Build AppImage
+        run: packaging/scripts/build-appimage.sh dist/appimage-ci
 
   fedora-rpm:
     runs-on: ubuntu-latest

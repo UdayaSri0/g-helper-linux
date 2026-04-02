@@ -375,6 +375,19 @@ This emits `rog-helper-v<version>-x86_64.AppImage` in `dist/` and leaves the sta
 Current AppImage notes:
 
 - the script downloads pinned `linuxdeploy`, `linuxdeploy-plugin-appimage`, and `linuxdeploy-plugin-gtk` helpers into a local cache directory if they are missing
+- on Ubuntu/Debian hosts, install the extra AppImage host tools with:
+
+  ```bash
+  sudo apt-get install -y curl file findutils libgdk-pixbuf-2.0-dev libgdk-pixbuf2.0-bin \
+    libgirepository1.0-dev libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
+  ```
+
+- verify the AppImage-specific commands before building with:
+
+  ```bash
+  packaging/scripts/build-appimage.sh --check-deps
+  ```
+
 - the AppImage bundles the UI, daemon, CLI, desktop launcher, hicolor icons, AppStream metadata, session D-Bus activation file, and the user-service unit
 - the AppImage does not install menu integration or enable the user service on the host system
 - the build currently targets `x86_64` only

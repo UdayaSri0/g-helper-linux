@@ -33,10 +33,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
+            build-essential pkg-config curl \
             libgtk-4-dev libadwaita-1-dev \
             appstream desktop-file-utils dpkg-dev python3-pil \
-            file findutils libgdk-pixbuf-2.0-dev libgirepository1.0-dev \
+            file findutils libgdk-pixbuf-2.0-dev libgdk-pixbuf2.0-bin \
+            libgirepository1.0-dev \
             libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
 
       - name: Verify Tag Matches Workspace Version
@@ -59,7 +60,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Build Release Assets
-        run: packaging/scripts/build-release-assets.sh dist
+        run: ROG_HELPER_BUILD_APPIMAGE=0 packaging/scripts/build-release-assets.sh dist
+
+      - name: Verify AppImage Host Tools
+        run: packaging/scripts/build-appimage.sh --check-deps
+
+      - name: Build AppImage
+        run: ROG_HELPER_SKIP_PREPARE=1 ROG_HELPER_WRITE_SHA256SUMS=1 packaging/scripts/build-appimage.sh dist
 
       - name: Stage APT Repository Preview
         run: packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview

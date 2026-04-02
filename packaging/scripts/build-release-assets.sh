@@ -19,6 +19,8 @@ ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-tarball.sh" "$OUTPUT_DIR"
 
 if [[ "${ROG_HELPER_BUILD_APPIMAGE:-1}" == "1" ]]; then
   ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-appimage.sh" "$OUTPUT_DIR"
+else
+  echo "skipping AppImage build because ROG_HELPER_BUILD_APPIMAGE=${ROG_HELPER_BUILD_APPIMAGE:-1}"
 fi
 
 if [[ "${ROG_HELPER_BUILD_RPM:-auto}" == "1" ]] || \
