@@ -61,6 +61,7 @@ Basic packaging assets are also included under `packaging/`:
 - `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
 - generated-on-demand hicolor PNG icon set under `packaging/desktop/icons/hicolor/`
 - `packaging/scripts/build-deb.sh`
+- `packaging/scripts/build-rpm.sh`
 - `packaging/scripts/stage-apt-repo.sh`
 - `packaging/scripts/build-tarball.sh`
 - `packaging/scripts/build-appimage.sh`
@@ -173,6 +174,7 @@ cargo run -p rog-cli -- caps
 Tagged releases now ship Linux release assets instead of source-only tags:
 
 - `.deb` packages for Debian/Ubuntu-style installs
+- `.rpm` packages for Fedora-family installs
 - portable `x86_64` AppImages for direct download-and-run use
 - prefix-friendly Linux tarballs for `/usr/local`
 - direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries for advanced user-local installs and the UI updater
@@ -209,6 +211,38 @@ Remove cleanly with:
 
 ```bash
 sudo apt remove rog-helper
+systemctl --user daemon-reload
+```
+
+## Fedora Installation
+
+Direct `.rpm` install:
+
+```bash
+sha256sum -c rog-helper-0.2.0-RPM-SHA256SUMS.txt --ignore-missing
+sudo dnf install ./rog-helper-0.2.0-1.x86_64.rpm
+```
+
+Optional user-session daemon enablement:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now rog-helperd.service
+```
+
+The Fedora RPM installs:
+
+- `rog-helper-ui`, `rog-helperd`, and `rog-helper` under `/usr/bin`
+- the desktop launcher under `/usr/share/applications`
+- hicolor icons under `/usr/share/icons/hicolor`
+- AppStream metadata under `/usr/share/metainfo`
+- session D-Bus activation under `/usr/share/dbus-1/services`
+- the user service under `/usr/lib/systemd/user`
+
+Remove cleanly with:
+
+```bash
+sudo dnf remove rog-helper
 systemctl --user daemon-reload
 ```
 

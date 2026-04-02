@@ -43,14 +43,7 @@ jobs:
         env:
           GIT_TAG: ${{ github.ref_name }}
         run: |
-          VERSION="$(python3 - <<'PY'
-from pathlib import Path
-import tomllib
-
-workspace = tomllib.loads(Path("Cargo.toml").read_text())
-print(workspace["workspace"]["package"]["version"])
-PY
-)"
+          VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
           test "v${VERSION}" = "$GIT_TAG"
 
       - name: Format
@@ -111,4 +104,48 @@ PY
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.RELEASE_FILES }}
+          fail_on_unmatched_files: true
+
+  fedora-rpm:
+    needs: linux-release
+    runs-on: ubuntu-latest
+    container: fedora:42
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Fedora Build Dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            cargo rust gcc \
+            pkgconf-pkg-config gtk4-devel libadwaita-devel \
+            appstream desktop-file-utils python3-pillow \
+            rpm-build
+
+      - name: Verify Tag Matches Workspace Version
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          test "v${VERSION}" = "$GIT_TAG"
+
+      - name: Build Fedora RPM
+        run: packaging/scripts/build-rpm.sh dist
+
+      - name: Upload Fedora RPM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-rpm-${{ github.ref_name }}
+          path: |
+            dist/*.rpm
+            dist/*RPM-SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish Fedora RPM To Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.rpm
+            dist/*RPM-SHA256SUMS.txt
           fail_on_unmatched_files: true

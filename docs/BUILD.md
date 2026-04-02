@@ -131,15 +131,23 @@ cargo install --path crates/rog-cli --bin rog-helper --locked
 Tagged releases publish:
 
 - `rog-helper_<version>_<arch>.deb`
+- `rog-helper-<version>-1.x86_64.rpm`
 - `rog-helper-v<version>-x86_64.AppImage`
 - `rog-helper-<version>-linux-<arch>.tar.xz`
 - direct `rog-helper`, `rog-helperd`, and `rog-helper-ui` binaries
 - `rog-helper-<version>-SHA256SUMS.txt`
+- `rog-helper-<version>-RPM-SHA256SUMS.txt`
 
 Debian or Ubuntu install:
 
 ```bash
 sudo apt-get install ./rog-helper_<version>_<arch>.deb
+```
+
+Fedora install:
+
+```bash
+sudo dnf install ./rog-helper-<version>-1.x86_64.rpm
 ```
 
 Portable prefix install under `/usr/local`:
@@ -230,6 +238,21 @@ Requirements:
 - `appstreamcli` if AppStream validation is desired
 - `python3-pil` for generated icons
 
+Build a Fedora-family RPM package:
+
+```bash
+packaging/scripts/build-rpm.sh
+```
+
+This emits `rog-helper-<version>-1.x86_64.rpm` and a matching `rog-helper-<version>-RPM-SHA256SUMS.txt` file in `dist/`.
+
+Requirements:
+
+- `rpmbuild`
+- `desktop-file-validate` if desktop validation is desired
+- `appstreamcli` if AppStream validation is desired
+- `python3-pil` for generated icons
+
 Build a prefix-friendly Linux tarball:
 
 ```bash
@@ -254,6 +277,8 @@ packaging/scripts/build-release-assets.sh
 ```
 
 This emits direct binaries, the `.deb`, the AppImage, the Linux tarball, and `SHA256` checksums under `dist/`.
+
+When run on a host with `rpmbuild` available, the same helper also emits the Fedora RPM and its RPM-specific checksum file.
 
 Stage a future APT repository preview from built `.deb` files:
 
@@ -304,6 +329,7 @@ Important note:
 - The unit uses `ExecStart=rog-helperd`, so it expects the binary to already be installed on `PATH`.
 - The unit also sets a custom `PATH` that includes `%h/.cargo/bin` and `%h/.local/bin`.
 - Debian packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
+- Fedora RPMs render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Release packages also install `io.github.roghelper.Daemon.service`, so opening the desktop app can activate the daemon on the session bus even when the user service is not yet enabled.
 
 ## Runtime Dependency Notes
