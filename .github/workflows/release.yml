@@ -42,10 +42,22 @@ jobs:
 
       - name: Verify Tag Matches Workspace Version
         env:
+          GIT_REF: ${{ github.ref }}
           GIT_TAG: ${{ github.ref_name }}
         run: |
           VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
-          test "v${VERSION}" = "$GIT_TAG"
+          EXPECTED_TAG="v${VERSION}"
+          ACTUAL_TAG="$GIT_TAG"
+          if [[ "$GIT_REF" == refs/tags/* ]]; then
+            ACTUAL_TAG="${GIT_REF#refs/tags/}"
+          fi
+          if [[ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]]; then
+            echo "expected tag: $EXPECTED_TAG" >&2
+            echo "actual tag: $ACTUAL_TAG" >&2
+            echo "workspace version: $VERSION" >&2
+            exit 1
+          fi
+          echo "Release tag matches workspace version: $ACTUAL_TAG"
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -140,10 +152,22 @@ jobs:
 
       - name: Verify Tag Matches Workspace Version
         env:
+          GIT_REF: ${{ github.ref }}
           GIT_TAG: ${{ github.ref_name }}
         run: |
           VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
-          test "v${VERSION}" = "$GIT_TAG"
+          EXPECTED_TAG="v${VERSION}"
+          ACTUAL_TAG="$GIT_TAG"
+          if [[ "$GIT_REF" == refs/tags/* ]]; then
+            ACTUAL_TAG="${GIT_REF#refs/tags/}"
+          fi
+          if [[ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]]; then
+            echo "expected tag: $EXPECTED_TAG" >&2
+            echo "actual tag: $ACTUAL_TAG" >&2
+            echo "workspace version: $VERSION" >&2
+            exit 1
+          fi
+          echo "Release tag matches workspace version: $ACTUAL_TAG"
 
       - name: Build Fedora RPM
         run: packaging/scripts/build-rpm.sh dist

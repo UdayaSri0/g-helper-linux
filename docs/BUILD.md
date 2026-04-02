@@ -166,6 +166,7 @@ Notes:
 - direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
 - verify release assets with the published SHA256 file before installing them
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
+- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.2.0`, the correct release tag is `v0.2.0`
 
 ## Optional Desktop Launcher Install
 
