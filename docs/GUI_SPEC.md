@@ -38,6 +38,10 @@ The tray menu currently supports:
 - About
 - Quit
 
+The window close button defaults to hiding the main window when tray support is
+available. The tray Quit action and the About-page lifecycle Quit action remain
+the explicit full-exit paths.
+
 ## Current Update Model
 
 The current UI behavior is polling-based:
@@ -240,6 +244,11 @@ Current content:
 - last check timestamp
 - last check result
 - release-notes preview
+- lifecycle controls for:
+  - close behavior
+  - launch on login
+  - start minimized to tray
+  - explicit full exit
 - manual `Check for Updates` action
 - best-effort `Update Now` / `Download Latest` action
 - source, support, and issue-reporting buttons
@@ -251,6 +260,7 @@ Current implementation note:
 - maintainer GitHub metadata is derived from the repository URL when possible
 - release checks are manual, run in the UI process, and use the GitHub Releases API
 - automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
+- lifecycle preferences are limited UI settings persisted in the user's XDG config/autostart locations; they are not a general hardware-control settings system
 
 ## Current Capability Behavior
 

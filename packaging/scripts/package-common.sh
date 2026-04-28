@@ -323,15 +323,29 @@ EOF
 
 write_sha256sums() {
   local output_dir="$1"
-  local checksum_file="$output_dir/${PACKAGE_NAME}-$(package_version)-SHA256SUMS.txt"
+  local version
+  local checksum_file
   local tmp_file
+
+  version="$(package_version)"
+  checksum_file="$output_dir/${PACKAGE_NAME}-${version}-SHA256SUMS.txt"
   tmp_file="$(mktemp)"
 
   (
     cd "$output_dir"
-    find . -maxdepth 1 -type f ! -name "$(basename "$checksum_file")" -printf '%P\0' |
-      sort -z |
-      xargs -0r sha256sum
+    {
+      for asset in \
+        "$PACKAGE_NAME" \
+        "${PACKAGE_NAME}d" \
+        "${PACKAGE_NAME}-ui"; do
+        [[ -f "$asset" ]] && printf '%s\0' "$asset"
+      done
+      find . -maxdepth 1 -type f \
+        \( -name "${PACKAGE_NAME}_${version}_*.deb" \
+        -o -name "${PACKAGE_NAME}-v${version}-*.AppImage" \
+        -o -name "${PACKAGE_NAME}-${version}-linux-*.tar.xz" \) \
+        -printf '%P\0'
+    } | sort -z | xargs -0r sha256sum
   ) >"$tmp_file"
 
   mv "$tmp_file" "$checksum_file"

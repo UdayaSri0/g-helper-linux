@@ -81,7 +81,13 @@ These are held in-memory behind `RwLock`s in `crates/rog-daemon/src/main.rs`.
 
 The UI keeps a cached mirror of daemon state in `SharedUiState` inside `crates/rog-ui/src/main.rs`. It is not authoritative and is refreshed continuously from the daemon.
 
-There is no persistent configuration file in current code. The workspace includes `toml` as a dependency at the workspace level, but runtime configuration persistence is not currently implemented.
+The UI has a small TOML-backed lifecycle settings file for window/tray behavior,
+launch-on-login, start-minimized-to-tray, and the one-time close-to-tray hint.
+It is stored below the user's XDG config directory as
+`rog-helper/ui.toml`.
+
+This is intentionally limited. The current runtime still does not persist
+hardware control preferences, fan curves, profiles, or automation rules.
 
 ## Polling Model
 
