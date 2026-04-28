@@ -571,6 +571,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glib-build-tools"
+version = "0.22.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76bc74d848343c966717a1542cea5056eced15c99e17afe56ea46ef290383d24"
+dependencies = [
+ "gio",
+]
+
+[[package]]
 name = "glib-macros"
 version = "0.22.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,6 +1465,7 @@ name = "rog-ui"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "glib-build-tools",
  "gtk4",
  "ksni",
  "libadwaita",

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/roghelper">
+    <file>icons/scalable/actions/rog-dashboard-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-cpu-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-gpu-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-battery-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-memory-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-lighting-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-diagnostics-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-about-symbolic.svg</file>
+  </gresource>
+</gresources>

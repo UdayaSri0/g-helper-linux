@@ -25,6 +25,9 @@ semver = "1"
 
 rog-core = { path = "../rog-core" }
 
+[build-dependencies]
+glib-build-tools = "=0.22.0-alpha.3"
+
 [[bin]]
 name = "rog-helper-ui"
 path = "src/main.rs"

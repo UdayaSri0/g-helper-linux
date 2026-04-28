@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adw::prelude::*;
+use gtk::gio;
 use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
@@ -27,6 +28,15 @@ const APP_BINARY_NAME: &str = "rog-helper-ui";
 const APP_ICON_NAME: &str = "rog-helper";
 const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
 const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
+const ICON_RESOURCE_PATH: &str = "/io/github/roghelper/icons";
+const ICON_DASHBOARD: &str = "rog-dashboard-symbolic";
+const ICON_CPU: &str = "rog-cpu-symbolic";
+const ICON_GPU: &str = "rog-gpu-symbolic";
+const ICON_BATTERY: &str = "rog-battery-symbolic";
+const ICON_RAM: &str = "rog-memory-symbolic";
+const ICON_LIGHTING: &str = "rog-lighting-symbolic";
+const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
+const ICON_ABOUT: &str = "rog-about-symbolic";
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -574,6 +584,8 @@ fn main() -> anyhow::Result<()> {
     info!("starting rog-helper-ui");
 
     let _ = adw::init();
+    gio::resources_register_include!("rog-ui.gresource")
+        .expect("failed to register rog-ui resources");
 
     let app = adw::Application::builder()
         .application_id("io.github.roghelper.UI")
@@ -584,7 +596,16 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn register_icon_resources() {
+    if let Some(display) = gtk::gdk::Display::default() {
+        let theme = gtk::IconTheme::for_display(&display);
+        theme.add_resource_path(ICON_RESOURCE_PATH);
+    }
+}
+
 fn build_ui(app: &adw::Application) {
+    register_icon_resources();
+
     let app_metadata = AppMetadata::detect();
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
     if let Ok(mut st) = shared.lock() {
@@ -1788,14 +1809,14 @@ fn build_ui(app: &adw::Application) {
 
     let lighting = clamped_scroller(&lighting_page);
 
-    stack.add_titled(&dash, Some("dashboard"), "Dashboard");
-    stack.add_titled(&cpu_view, Some("cpu"), "CPU");
-    stack.add_titled(&gpu, Some("gpu"), "GPU");
-    stack.add_titled(&battery, Some("battery"), "Battery");
-    stack.add_titled(&ram, Some("ram"), "RAM");
-    stack.add_titled(&lighting, Some("lighting"), "Lighting");
-    stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
-    stack.add_titled(&about, Some("about"), "About");
+    stack.add_titled_with_icon(&dash, Some("dashboard"), "Dashboard", ICON_DASHBOARD);
+    stack.add_titled_with_icon(&cpu_view, Some("cpu"), "CPU", ICON_CPU);
+    stack.add_titled_with_icon(&gpu, Some("gpu"), "GPU", ICON_GPU);
+    stack.add_titled_with_icon(&battery, Some("battery"), "Battery", ICON_BATTERY);
+    stack.add_titled_with_icon(&ram, Some("ram"), "RAM", ICON_RAM);
+    stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
+    stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
+    stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
     let switcher = adw::ViewSwitcher::new();
     switcher.set_stack(Some(&stack));
