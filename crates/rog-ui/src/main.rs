@@ -4149,17 +4149,11 @@ fn canonicalize_git_remote_url(raw: &str) -> Option<String> {
         return None;
     }
 
-    let rest = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("http://github.com/") {
-        rest
-    } else {
-        return None;
-    };
+    let rest = trimmed
+        .strip_prefix("git@github.com:")
+        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| trimmed.strip_prefix("https://github.com/"))
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))?;
 
     let canonical = rest.trim_end_matches(".git").trim_end_matches('/');
     Some(format!("https://github.com/{canonical}"))
