@@ -1474,6 +1474,7 @@ dependencies = [
  "semver",
  "serde",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",
