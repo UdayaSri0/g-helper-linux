@@ -2,6 +2,8 @@
 
 This document is for contributors working on the current repository state.
 
+For a shorter entry point with run commands, source-file map, and grouped docs links, start with [QUICK_START.md](QUICK_START.md).
+
 ## Repo Layout
 
 Top-level structure:

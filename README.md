@@ -39,6 +39,14 @@ High-level responsibilities:
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime architecture.
 
+## Quick Start and Docs
+
+Start with [docs/QUICK_START.md](docs/QUICK_START.md) for the shortest path to:
+
+- running the daemon, UI, and diagnostics CLI from source
+- finding the main source files by feature area
+- choosing the right user or developer document
+
 ## Workspace Overview
 
 - `crates/rog-core`
@@ -394,17 +402,27 @@ Current first-release behavior to expect:
 
 ## Documentation Index
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Start here:
+
+- [docs/QUICK_START.md](docs/QUICK_START.md)
+
+User docs:
+
 - [docs/BUILD.md](docs/BUILD.md)
-- [docs/ROADMAP.md](docs/ROADMAP.md)
-- [docs/GUI_SPEC.md](docs/GUI_SPEC.md)
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)
-- [docs/DBUS_API.md](docs/DBUS_API.md)
-- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
+- [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)
 - [docs/UI_PAGES.md](docs/UI_PAGES.md)
 - [docs/HARDWARE_SUPPORT.md](docs/HARDWARE_SUPPORT.md)
 - [docs/HARDWARE_VALIDATION_TEMPLATE.md](docs/HARDWARE_VALIDATION_TEMPLATE.md)
+
+Developer docs:
+
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/DBUS_API.md](docs/DBUS_API.md)
+- [docs/DBUS_NOTES.md](docs/DBUS_NOTES.md)
+- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)
+- [docs/GUI_SPEC.md](docs/GUI_SPEC.md)
+- [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

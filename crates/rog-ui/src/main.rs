@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adw::prelude::*;
+use gtk::gio;
 use gtk::glib;
 use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
@@ -15,7 +16,7 @@ use rog_core::{
     CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
     FeatureAvailability, PowerSource, TelemetrySnapshot, TopProcessMem,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -27,6 +28,19 @@ const APP_BINARY_NAME: &str = "rog-helper-ui";
 const APP_ICON_NAME: &str = "rog-helper";
 const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
 const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
+const APP_CONFIG_DIR_NAME: &str = "rog-helper";
+const APP_SETTINGS_FILE_NAME: &str = "ui.toml";
+const AUTOSTART_DESKTOP_FILE_NAME: &str = "rog-helper.desktop";
+const START_MINIMIZED_ARG: &str = "--minimized-to-tray";
+const ICON_RESOURCE_PATH: &str = "/io/github/roghelper/icons";
+const ICON_DASHBOARD: &str = "rog-dashboard-symbolic";
+const ICON_CPU: &str = "rog-cpu-symbolic";
+const ICON_GPU: &str = "rog-gpu-symbolic";
+const ICON_BATTERY: &str = "rog-battery-symbolic";
+const ICON_RAM: &str = "rog-memory-symbolic";
+const ICON_LIGHTING: &str = "rog-lighting-symbolic";
+const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
+const ICON_ABOUT: &str = "rog-about-symbolic";
 
 #[zbus::proxy(
     interface = "io.github.roghelper.Daemon1",
@@ -95,6 +109,66 @@ impl AppMetadata {
             maintainer_url,
             issues_url,
             releases_url,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseBehavior {
+    MinimizeToTray,
+    ExitApplication,
+}
+
+impl CloseBehavior {
+    fn from_id(value: &str) -> Self {
+        match value {
+            "exit_application" => Self::ExitApplication,
+            _ => Self::MinimizeToTray,
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::MinimizeToTray => "minimize_to_tray",
+            Self::ExitApplication => "exit_application",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AppSettings {
+    close_behavior: CloseBehavior,
+    launch_on_login: bool,
+    start_minimized_to_tray: bool,
+    close_to_tray_hint_shown: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            close_behavior: CloseBehavior::MinimizeToTray,
+            launch_on_login: false,
+            start_minimized_to_tray: false,
+            close_to_tray_hint_shown: false,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct AppSettingsFile {
+    close_behavior: Option<String>,
+    launch_on_login: Option<bool>,
+    start_minimized_to_tray: Option<bool>,
+    close_to_tray_hint_shown: Option<bool>,
+}
+
+impl From<&AppSettings> for AppSettingsFile {
+    fn from(settings: &AppSettings) -> Self {
+        Self {
+            close_behavior: Some(settings.close_behavior.id().to_string()),
+            launch_on_login: Some(settings.launch_on_login),
+            start_minimized_to_tray: Some(settings.start_minimized_to_tray),
+            close_to_tray_hint_shown: Some(settings.close_to_tray_hint_shown),
         }
     }
 }
@@ -176,6 +250,8 @@ struct SharedUiState {
     pending_open_link: Option<OpenLinkRequest>,
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
+    settings: AppSettings,
+    tray_available: Option<bool>,
     show_window: bool,
     show_about: bool,
     show_gpu_page: bool,
@@ -213,6 +289,8 @@ impl Default for SharedUiState {
             pending_open_link: None,
             pending_toast: None,
             daemon_error: None,
+            settings: AppSettings::default(),
+            tray_available: None,
             show_window: false,
             show_about: false,
             show_gpu_page: false,
@@ -574,21 +652,65 @@ fn main() -> anyhow::Result<()> {
     info!("starting rog-helper-ui");
 
     let _ = adw::init();
+    gio::resources_register_include!("rog-ui.gresource")
+        .expect("failed to register rog-ui resources");
+
+    let raw_args = std::env::args().collect::<Vec<_>>();
+    let start_minimized_from_cli = raw_args.iter().skip(1).any(|arg| {
+        matches!(
+            arg.as_str(),
+            START_MINIMIZED_ARG | "--background" | "--hidden"
+        )
+    });
+    let app_args = raw_args
+        .into_iter()
+        .filter(|arg| {
+            !matches!(
+                arg.as_str(),
+                START_MINIMIZED_ARG | "--background" | "--hidden"
+            )
+        })
+        .collect::<Vec<_>>();
 
     let app = adw::Application::builder()
         .application_id("io.github.roghelper.UI")
         .build();
 
-    app.connect_activate(build_ui);
-    app.run();
+    let ui_started = std::rc::Rc::new(std::cell::Cell::new(false));
+    app.connect_activate(move |app| {
+        if ui_started.replace(true) {
+            if let Some(window) = app
+                .active_window()
+                .or_else(|| app.windows().into_iter().next())
+            {
+                window.present();
+            }
+            return;
+        }
+
+        build_ui(app, start_minimized_from_cli);
+    });
+    app.run_with_args(&app_args);
     Ok(())
 }
 
-fn build_ui(app: &adw::Application) {
+fn register_icon_resources() {
+    if let Some(display) = gtk::gdk::Display::default() {
+        let theme = gtk::IconTheme::for_display(&display);
+        theme.add_resource_path(ICON_RESOURCE_PATH);
+    }
+}
+
+fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
+    register_icon_resources();
+
     let app_metadata = AppMetadata::detect();
+    let app_settings = load_app_settings();
+    let start_hidden = start_minimized_from_cli || app_settings.start_minimized_to_tray;
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
     if let Ok(mut st) = shared.lock() {
         st.update_state = initial_update_state(&app_metadata);
+        st.settings = app_settings.clone();
     }
     spawn_background(shared.clone(), app_metadata.clone());
 
@@ -1445,6 +1567,59 @@ fn build_ui(app: &adw::Application) {
     let about_dbus = pref_value_row(&about_app_group, "Session DBus API", true);
     about_page.add(&about_app_group);
 
+    let lifecycle_group = adw::PreferencesGroup::builder()
+        .title("Lifecycle")
+        .description("Window, tray, and login startup behavior.")
+        .build();
+
+    let close_behavior_combo = gtk::ComboBoxText::new();
+    style_combo_control(&close_behavior_combo);
+    close_behavior_combo.append(Some("minimize_to_tray"), "Minimize to tray");
+    close_behavior_combo.append(Some("exit_application"), "Exit application");
+    close_behavior_combo.set_active_id(Some(app_settings.close_behavior.id()));
+    let close_behavior_row = adw::ActionRow::builder()
+        .title("On Close")
+        .subtitle("Choose what the window close button does.")
+        .build();
+    close_behavior_row.add_suffix(&close_behavior_combo);
+    close_behavior_row.set_activatable(false);
+    lifecycle_group.add(&close_behavior_row);
+
+    let launch_on_login_switch = gtk::Switch::new();
+    launch_on_login_switch.set_active(app_settings.launch_on_login);
+    launch_on_login_switch.set_valign(gtk::Align::Center);
+    let launch_on_login_row = adw::ActionRow::builder()
+        .title("Launch on Login")
+        .subtitle("Start rog-helper when the user session starts.")
+        .build();
+    launch_on_login_row.add_suffix(&launch_on_login_switch);
+    launch_on_login_row.set_activatable(false);
+    lifecycle_group.add(&launch_on_login_row);
+
+    let start_minimized_switch = gtk::Switch::new();
+    start_minimized_switch.set_active(app_settings.start_minimized_to_tray);
+    start_minimized_switch.set_valign(gtk::Align::Center);
+    let start_minimized_row = adw::ActionRow::builder()
+        .title("Start Minimized to Tray")
+        .subtitle("Open quietly in the background on startup.")
+        .build();
+    start_minimized_row.add_suffix(&start_minimized_switch);
+    start_minimized_row.set_activatable(false);
+    lifecycle_group.add(&start_minimized_row);
+
+    let quit_app_button = gtk::Button::with_label("Quit");
+    style_apply_button(&quit_app_button);
+    quit_app_button.set_size_request(96, -1);
+    let quit_app_row = adw::ActionRow::builder()
+        .title("Exit Completely")
+        .subtitle("Stop telemetry refresh, tray updates, and the background UI process.")
+        .build();
+    quit_app_row.add_suffix(&quit_app_button);
+    quit_app_row.set_activatable(false);
+    lifecycle_group.add(&quit_app_row);
+
+    about_page.add(&lifecycle_group);
+
     let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
     let about_authors = pref_value_row(&about_project_group, "Authors", false);
     let about_repository = pref_value_row(&about_project_group, "Repository", false);
@@ -1593,6 +1768,64 @@ fn build_ui(app: &adw::Application) {
     support_button.set_sensitive(app_metadata.repository_url.is_some());
     report_issue_button.set_sensitive(app_metadata.issues_url.is_some());
 
+    {
+        let shared = shared.clone();
+        close_behavior_combo.connect_changed(move |combo| {
+            let behavior = combo
+                .active_id()
+                .map(|id| CloseBehavior::from_id(&id))
+                .unwrap_or(CloseBehavior::MinimizeToTray);
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                settings.close_behavior = behavior;
+            }) {
+                if let Ok(mut st) = shared.lock() {
+                    st.pending_toast = Some((error, true));
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        launch_on_login_switch.connect_state_set(move |_, enabled| {
+            match persist_settings_change(&shared, |settings| {
+                settings.launch_on_login = enabled;
+            }) {
+                Ok(_) => glib::Propagation::Proceed,
+                Err(error) => {
+                    if let Ok(mut st) = shared.lock() {
+                        st.pending_toast = Some((error, true));
+                    }
+                    glib::Propagation::Stop
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        start_minimized_switch.connect_state_set(move |_, enabled| {
+            match persist_settings_change(&shared, |settings| {
+                settings.start_minimized_to_tray = enabled;
+            }) {
+                Ok(_) => glib::Propagation::Proceed,
+                Err(error) => {
+                    if let Ok(mut st) = shared.lock() {
+                        st.pending_toast = Some((error, true));
+                    }
+                    glib::Propagation::Stop
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let app = app.clone();
+        quit_app_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.quit = true;
+            }
+            app.quit();
+        });
+    }
     {
         let shared = shared.clone();
         check_updates_button.connect_clicked(move |_| {
@@ -1788,14 +2021,14 @@ fn build_ui(app: &adw::Application) {
 
     let lighting = clamped_scroller(&lighting_page);
 
-    stack.add_titled(&dash, Some("dashboard"), "Dashboard");
-    stack.add_titled(&cpu_view, Some("cpu"), "CPU");
-    stack.add_titled(&gpu, Some("gpu"), "GPU");
-    stack.add_titled(&battery, Some("battery"), "Battery");
-    stack.add_titled(&ram, Some("ram"), "RAM");
-    stack.add_titled(&lighting, Some("lighting"), "Lighting");
-    stack.add_titled(&diag, Some("diagnostics"), "Diagnostics");
-    stack.add_titled(&about, Some("about"), "About");
+    stack.add_titled_with_icon(&dash, Some("dashboard"), "Dashboard", ICON_DASHBOARD);
+    stack.add_titled_with_icon(&cpu_view, Some("cpu"), "CPU", ICON_CPU);
+    stack.add_titled_with_icon(&gpu, Some("gpu"), "GPU", ICON_GPU);
+    stack.add_titled_with_icon(&battery, Some("battery"), "Battery", ICON_BATTERY);
+    stack.add_titled_with_icon(&ram, Some("ram"), "RAM", ICON_RAM);
+    stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
+    stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
+    stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
     let switcher = adw::ViewSwitcher::new();
     switcher.set_stack(Some(&stack));
@@ -1818,7 +2051,52 @@ fn build_ui(app: &adw::Application) {
         .build();
     win.set_icon_name(Some(APP_ICON_NAME));
     win.set_content(Some(&toast_overlay));
-    win.present();
+
+    let app_keepalive = app.hold();
+    {
+        let shared = shared.clone();
+        let app_clone = app.clone();
+        win.connect_close_request(move |window| {
+            let _keepalive = &app_keepalive;
+            let (close_behavior, tray_available) = shared
+                .lock()
+                .map(|st| (st.settings.close_behavior, st.tray_available))
+                .unwrap_or((CloseBehavior::ExitApplication, Some(false)));
+
+            if close_behavior == CloseBehavior::MinimizeToTray && tray_available != Some(false) {
+                window.hide();
+                let mut settings_to_save = None;
+                if let Ok(mut st) = shared.lock() {
+                    if !st.settings.close_to_tray_hint_shown {
+                        st.settings.close_to_tray_hint_shown = true;
+                        st.pending_toast = Some((
+                            "rog-helper is still running in the tray.".to_string(),
+                            false,
+                        ));
+                        settings_to_save = Some(st.settings.clone());
+                    }
+                }
+                if let Some(settings) = settings_to_save {
+                    if let Err(error) = save_app_settings(&settings) {
+                        warn!("failed to save close-to-tray hint state: {error}");
+                    }
+                }
+            } else if let Ok(mut st) = shared.lock() {
+                st.quit = true;
+                app_clone.quit();
+            } else {
+                app_clone.quit();
+            }
+
+            glib::Propagation::Stop
+        });
+    }
+
+    if start_hidden {
+        win.hide();
+    } else {
+        win.present();
+    }
 
     {
         let stack = stack.clone();
@@ -2494,11 +2772,15 @@ fn build_ui(app: &adw::Application) {
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
-        diag_buffer.set_text(if caps_text.is_empty() {
-            "Loading diagnostics..."
-        } else {
-            &caps_text
-        });
+        update_diagnostics_buffer(
+            &diag_buffer,
+            &diag_scroller,
+            if caps_text.is_empty() {
+                "Loading diagnostics..."
+            } else {
+                &caps_text
+            },
+        );
 
         if daemon_error.is_some() {
             status_label.set_text(
@@ -2878,6 +3160,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     None
                 }
             };
+            if let Ok(mut st) = shared.lock() {
+                st.tray_available = Some(tray_handle.is_some());
+                if tray_handle.is_none()
+                    && st.settings.close_behavior == CloseBehavior::MinimizeToTray
+                {
+                    st.show_window = true;
+                    st.pending_toast =
+                        Some(("Tray is unavailable; keeping the main window open.".to_string(), true));
+                }
+            }
 
             loop {
                 if shared.lock().map(|st| st.quit).unwrap_or(true) {
@@ -3061,7 +3353,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         battery_limit,
                         lighting,
                     )) => {
-                        let summary = summary_from_telemetry(&t);
+                        let summary = summary_from_state(&t, profile.as_deref(), gpu_mode.as_deref());
                         if let Some(h) = &tray_handle {
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
                         }
@@ -3857,17 +4149,11 @@ fn canonicalize_git_remote_url(raw: &str) -> Option<String> {
         return None;
     }
 
-    let rest = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("http://github.com/") {
-        rest
-    } else {
-        return None;
-    };
+    let rest = trimmed
+        .strip_prefix("git@github.com:")
+        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| trimmed.strip_prefix("https://github.com/"))
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))?;
 
     let canonical = rest.trim_end_matches(".git").trim_end_matches('/');
     Some(format!("https://github.com/{canonical}"))
@@ -4002,6 +4288,171 @@ fn format_timestamp_local(timestamp: i64) -> String {
     format!("unix:{timestamp}")
 }
 
+fn load_app_settings() -> AppSettings {
+    let mut settings = AppSettings::default();
+    if let Ok(path) = settings_file_path() {
+        match fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<AppSettingsFile>(&contents) {
+                Ok(file_settings) => {
+                    if let Some(value) = file_settings.close_behavior.as_deref() {
+                        settings.close_behavior = CloseBehavior::from_id(value);
+                    }
+                    if let Some(value) = file_settings.launch_on_login {
+                        settings.launch_on_login = value;
+                    }
+                    if let Some(value) = file_settings.start_minimized_to_tray {
+                        settings.start_minimized_to_tray = value;
+                    }
+                    if let Some(value) = file_settings.close_to_tray_hint_shown {
+                        settings.close_to_tray_hint_shown = value;
+                    }
+                }
+                Err(error) => warn!("failed to parse UI settings {}: {error}", path.display()),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => warn!("failed to read UI settings {}: {error}", path.display()),
+        }
+    }
+
+    if let Ok(enabled) = autostart_enabled() {
+        settings.launch_on_login = enabled;
+    }
+
+    settings
+}
+
+fn persist_settings_change<F>(
+    shared: &Arc<Mutex<SharedUiState>>,
+    update: F,
+) -> Result<AppSettings, String>
+where
+    F: FnOnce(&mut AppSettings),
+{
+    let mut next = shared
+        .lock()
+        .map_err(|_| "Unable to update settings right now.".to_string())?
+        .settings
+        .clone();
+    update(&mut next);
+    save_app_settings(&next)?;
+
+    let mut st = shared
+        .lock()
+        .map_err(|_| "Unable to update settings right now.".to_string())?;
+    st.settings = next.clone();
+    Ok(next)
+}
+
+fn save_app_settings(settings: &AppSettings) -> Result<(), String> {
+    let path = settings_file_path()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Unable to determine the settings directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Unable to create settings directory: {error}"))?;
+
+    let file_settings = AppSettingsFile::from(settings);
+    let contents = toml::to_string_pretty(&file_settings)
+        .map_err(|error| format!("Unable to serialize settings: {error}"))?;
+    fs::write(&path, contents).map_err(|error| format!("Unable to save settings: {error}"))?;
+
+    sync_autostart(settings)
+}
+
+fn settings_file_path() -> Result<PathBuf, String> {
+    Ok(xdg_config_home()?
+        .join(APP_CONFIG_DIR_NAME)
+        .join(APP_SETTINGS_FILE_NAME))
+}
+
+fn autostart_file_path() -> Result<PathBuf, String> {
+    Ok(xdg_config_home()?
+        .join("autostart")
+        .join(AUTOSTART_DESKTOP_FILE_NAME))
+}
+
+fn xdg_config_home() -> Result<PathBuf, String> {
+    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !value.is_empty() {
+            return Ok(PathBuf::from(value));
+        }
+    }
+
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config"))
+        .ok_or_else(|| "HOME is not set, so settings cannot be saved.".to_string())
+}
+
+fn autostart_enabled() -> Result<bool, String> {
+    let path = autostart_file_path()?;
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Unable to read autostart entry: {error}")),
+    };
+
+    let mut disabled = false;
+    for line in contents.lines().map(str::trim) {
+        if key_value_is(line, "Hidden", "true")
+            || key_value_is(line, "X-GNOME-Autostart-enabled", "false")
+        {
+            disabled = true;
+            break;
+        }
+    }
+
+    Ok(!disabled)
+}
+
+fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
+    let Some((raw_key, raw_value)) = line.split_once('=') else {
+        return false;
+    };
+    raw_key.trim().eq_ignore_ascii_case(key)
+        && raw_value.trim().eq_ignore_ascii_case(expected_value)
+}
+
+fn sync_autostart(settings: &AppSettings) -> Result<(), String> {
+    let path = autostart_file_path()?;
+    if !settings.launch_on_login {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Unable to remove autostart entry: {error}")),
+        }
+        return Ok(());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Unable to determine the autostart directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Unable to create autostart directory: {error}"))?;
+    fs::write(&path, autostart_desktop_entry(settings))
+        .map_err(|error| format!("Unable to save autostart entry: {error}"))
+}
+
+fn autostart_desktop_entry(settings: &AppSettings) -> String {
+    let exec = if settings.start_minimized_to_tray {
+        format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
+    } else {
+        APP_BINARY_NAME.to_string()
+    };
+
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=rog-helper\n\
+         Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux\n\
+         Exec={exec}\n\
+         Icon={APP_ICON_NAME}\n\
+         Terminal=false\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
+}
+
 fn open_uri_with_feedback(shared: &Arc<Mutex<SharedUiState>>, uri: &str, error_message: &str) {
     if uri.trim().is_empty() {
         if let Ok(mut st) = shared.lock() {
@@ -4046,10 +4497,14 @@ where
     OwnedValue::try_from(v.into()).expect("OwnedValue conversion should succeed")
 }
 
-fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
+fn summary_from_state(
+    t: &TelemetrySnapshot,
+    profile: Option<&str>,
+    gpu_mode: Option<&str>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(p) = t.power_source {
-        parts.push(format!("{p:?}"));
+        parts.push(power_source_label(p).to_string());
     }
     if let Some(b) = t.battery_percent {
         parts.push(format!("{b:.0}%"));
@@ -4060,10 +4515,23 @@ fn summary_from_telemetry(t: &TelemetrySnapshot) -> String {
     if let Some(g) = t.gpu_temp_c {
         parts.push(format!("GPU {g:.0}C"));
     }
+    if let Some(profile) = profile.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("Profile {profile}"));
+    }
+    if let Some(gpu_mode) = gpu_mode.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("Mode {gpu_mode}"));
+    }
     if parts.is_empty() {
         "rog-helper".to_string()
     } else {
         parts.join(" | ")
+    }
+}
+
+fn power_source_label(source: PowerSource) -> &'static str {
+    match source {
+        PowerSource::Ac => "AC",
+        PowerSource::Battery => "Battery",
     }
 }
 
@@ -5340,10 +5808,13 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     let value = gtk::Label::new(Some("(n/a)"));
     value.set_xalign(1.0);
     value.set_halign(gtk::Align::End);
-    value.set_wrap(true);
-    value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_wrap(false);
+    value.set_single_line_mode(true);
+    value.set_ellipsize(gtk::pango::EllipsizeMode::End);
     value.set_justify(gtk::Justification::Right);
+    value.set_width_chars(14);
     value.set_max_width_chars(32);
+    value.set_size_request(128, -1);
     if monospace {
         value.add_css_class("monospace");
     }
@@ -5691,6 +6162,47 @@ fn clamped_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroller.set_child(Some(&clamp));
     scroller
+}
+
+fn update_diagnostics_buffer(
+    buffer: &gtk::TextBuffer,
+    scroller: &gtk::ScrolledWindow,
+    next_text: &str,
+) {
+    let current_text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    if current_text.as_str() == next_text {
+        return;
+    }
+
+    let adjustment = scroller.vadjustment();
+    let scroll_value = adjustment.value();
+    let selection = buffer
+        .selection_bounds()
+        .map(|(start, end)| (start.offset(), end.offset()));
+    let cursor_offset = buffer.iter_at_mark(&buffer.get_insert()).offset();
+    let max_offset = next_text.chars().count().min(i32::MAX as usize) as i32;
+
+    buffer.set_text(next_text);
+
+    if let Some((start_offset, end_offset)) = selection {
+        let start_iter = buffer.iter_at_offset(start_offset.clamp(0, max_offset));
+        let end_iter = buffer.iter_at_offset(end_offset.clamp(0, max_offset));
+        buffer.select_range(&start_iter, &end_iter);
+    } else {
+        let cursor_iter = buffer.iter_at_offset(cursor_offset.clamp(0, max_offset));
+        buffer.place_cursor(&cursor_iter);
+    }
+
+    restore_adjustment_value(&adjustment, scroll_value);
+    glib::idle_add_local_once(move || {
+        restore_adjustment_value(&adjustment, scroll_value);
+    });
+}
+
+fn restore_adjustment_value(adjustment: &gtk::Adjustment, value: f64) {
+    let lower = adjustment.lower();
+    let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
+    adjustment.set_value(value.clamp(lower, upper));
 }
 
 fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
@@ -6225,5 +6737,33 @@ mod tests {
             github_repo_from_url("git@github.com:UdayaSri0/g-helper-linux.git"),
             Some(("UdayaSri0".to_string(), "g-helper-linux".to_string()))
         );
+    }
+
+    #[test]
+    fn summary_from_state_includes_tray_hover_fields() {
+        let mut telemetry = TelemetrySnapshot::empty_now(0);
+        telemetry.power_source = Some(PowerSource::Ac);
+        telemetry.battery_percent = Some(87.0);
+        telemetry.cpu_temp_c = Some(61.3);
+        telemetry.gpu_temp_c = Some(50.2);
+
+        assert_eq!(
+            summary_from_state(&telemetry, Some("Turbo"), Some("Hybrid")),
+            "AC | 87% | CPU 61C | GPU 50C | Profile Turbo | Mode Hybrid"
+        );
+    }
+
+    #[test]
+    fn autostart_entry_supports_minimized_launch() {
+        let settings = AppSettings {
+            launch_on_login: true,
+            start_minimized_to_tray: true,
+            ..AppSettings::default()
+        };
+
+        let entry = autostart_desktop_entry(&settings);
+
+        assert!(entry.contains("Type=Application"));
+        assert!(entry.contains(&format!("Exec={APP_BINARY_NAME} {START_MINIMIZED_ARG}")));
     }
 }
