@@ -5340,10 +5340,13 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     let value = gtk::Label::new(Some("(n/a)"));
     value.set_xalign(1.0);
     value.set_halign(gtk::Align::End);
-    value.set_wrap(true);
-    value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_wrap(false);
+    value.set_single_line_mode(true);
+    value.set_ellipsize(gtk::pango::EllipsizeMode::End);
     value.set_justify(gtk::Justification::Right);
+    value.set_width_chars(14);
     value.set_max_width_chars(32);
+    value.set_size_request(128, -1);
     if monospace {
         value.add_css_class("monospace");
     }
