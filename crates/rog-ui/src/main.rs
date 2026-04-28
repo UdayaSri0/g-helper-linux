@@ -2515,11 +2515,15 @@ fn build_ui(app: &adw::Application) {
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
-        diag_buffer.set_text(if caps_text.is_empty() {
-            "Loading diagnostics..."
-        } else {
-            &caps_text
-        });
+        update_diagnostics_buffer(
+            &diag_buffer,
+            &diag_scroller,
+            if caps_text.is_empty() {
+                "Loading diagnostics..."
+            } else {
+                &caps_text
+            },
+        );
 
         if daemon_error.is_some() {
             status_label.set_text(
@@ -5715,6 +5719,47 @@ fn clamped_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroller.set_child(Some(&clamp));
     scroller
+}
+
+fn update_diagnostics_buffer(
+    buffer: &gtk::TextBuffer,
+    scroller: &gtk::ScrolledWindow,
+    next_text: &str,
+) {
+    let current_text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    if current_text.as_str() == next_text {
+        return;
+    }
+
+    let adjustment = scroller.vadjustment();
+    let scroll_value = adjustment.value();
+    let selection = buffer
+        .selection_bounds()
+        .map(|(start, end)| (start.offset(), end.offset()));
+    let cursor_offset = buffer.iter_at_mark(&buffer.get_insert()).offset();
+    let max_offset = next_text.chars().count().min(i32::MAX as usize) as i32;
+
+    buffer.set_text(next_text);
+
+    if let Some((start_offset, end_offset)) = selection {
+        let start_iter = buffer.iter_at_offset(start_offset.clamp(0, max_offset));
+        let end_iter = buffer.iter_at_offset(end_offset.clamp(0, max_offset));
+        buffer.select_range(&start_iter, &end_iter);
+    } else {
+        let cursor_iter = buffer.iter_at_offset(cursor_offset.clamp(0, max_offset));
+        buffer.place_cursor(&cursor_iter);
+    }
+
+    restore_adjustment_value(&adjustment, scroll_value);
+    glib::idle_add_local_once(move || {
+        restore_adjustment_value(&adjustment, scroll_value);
+    });
+}
+
+fn restore_adjustment_value(adjustment: &gtk::Adjustment, value: f64) {
+    let lower = adjustment.lower();
+    let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
+    adjustment.set_value(value.clamp(lower, upper));
 }
 
 fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
