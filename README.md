@@ -113,6 +113,7 @@ Current source-backed features include:
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
 - About page update/support section with manual GitHub release checks, release-note preview, source/support links, and issue-reporting action
+- Limited UI lifecycle preferences for close-to-tray behavior, launch-on-login autostart, and start-minimized-to-tray behavior
 - Official `rog-helper` logo wired into desktop packaging, launcher metadata, tray/window icon naming, and packaging scripts
 - Session DBus API for the UI and other local clients
 
@@ -130,7 +131,7 @@ Important gaps in the current implementation:
 - Fan curve editing and fan-curve daemon APIs
 - Aura/RGB lighting support
 - Live auto mode / policy automation integration
-- Persistent user configuration
+- Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
 - Typed DBus payloads shared between daemon and UI
 - Complete tested hardware support matrix
 - Broader cross-distro install validation, including wider AppImage runtime validation beyond the current Ubuntu-class release host
@@ -203,8 +204,8 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 Direct `.deb` install:
 
 ```bash
-sha256sum -c rog-helper-0.2.1-SHA256SUMS.txt --ignore-missing
-sudo apt install ./rog-helper_0.2.1_amd64.deb
+sha256sum -c rog-helper-0.2.2-SHA256SUMS.txt --ignore-missing
+sudo apt install ./rog-helper_0.2.2_amd64.deb
 ```
 
 Optional user-session daemon enablement:
@@ -235,8 +236,8 @@ systemctl --user daemon-reload
 Direct `.rpm` install:
 
 ```bash
-sha256sum -c rog-helper-0.2.1-RPM-SHA256SUMS.txt --ignore-missing
-sudo dnf install ./rog-helper-0.2.1-1.x86_64.rpm
+sha256sum -c rog-helper-0.2.2-RPM-SHA256SUMS.txt --ignore-missing
+sudo dnf install ./rog-helper-0.2.2-1.x86_64.rpm
 ```
 
 Optional user-session daemon enablement:
@@ -347,9 +348,9 @@ sudo apt install rog-helper
 Download the AppImage and verify it before first run:
 
 ```bash
-sha256sum -c rog-helper-0.2.1-SHA256SUMS.txt --ignore-missing
-chmod +x rog-helper-v0.2.1-x86_64.AppImage
-./rog-helper-v0.2.1-x86_64.AppImage
+sha256sum -c rog-helper-0.2.2-SHA256SUMS.txt --ignore-missing
+chmod +x rog-helper-v0.2.2-x86_64.AppImage
+./rog-helper-v0.2.2-x86_64.AppImage
 ```
 
 The AppImage bundles:
@@ -391,7 +392,7 @@ The application can launch without all external services, but feature availabili
 
 When these dependencies are missing or read-only, the UI is expected to degrade gracefully instead of crashing.
 
-Current first-release behavior to expect:
+Current release behavior to expect:
 
 - missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
 - missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required

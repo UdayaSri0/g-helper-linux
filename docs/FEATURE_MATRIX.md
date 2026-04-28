@@ -24,8 +24,9 @@ This matrix reflects the current implementation in the repository today. It is b
 | About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing; also shows maintainer info, source/support links, and release-status text |
 | Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
+| UI lifecycle preferences | `rog-ui` + XDG config/autostart files | Read + Write | Implemented | Limited to close behavior, launch-on-login, start-minimized-to-tray, and the close-to-tray hint |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |
-| Persistent configuration | None in current runtime | Read + Write | Missing | No saved settings or rule persistence in current code |
+| Persistent hardware/control configuration | None in current runtime | Read + Write | Missing | No saved hardware-control preferences, fan curves, profiles, or automation rules |
 
 ## Notes
 

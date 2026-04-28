@@ -21,7 +21,7 @@ Implication:
 
 ## Untested / Not Yet Validated
 
-The scenarios below are the minimum first-release hardware checks that still need real evidence unless a linked record is added.
+The scenarios below are the minimum release hardware checks that still need real evidence unless a linked record is added.
 
 | Scenario | Current status | Evidence location |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ ls -l /sys/devices/system/cpu/cpu*/online
 ls -l /sys/class/leds/*/brightness
 ```
 
-## First-Release Scenario Matrix
+## Release Scenario Matrix
 
 The rows below describe what the first release should eventually have evidence for. A single machine does not need to satisfy every row.
 

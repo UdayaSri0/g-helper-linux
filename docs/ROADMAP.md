@@ -74,6 +74,7 @@ The tray currently supports:
 - GPU mode selection
 - About
 - Quit
+- close-to-tray window behavior with an explicit full-exit path
 
 ## In Progress or Still Evolving
 
@@ -183,9 +184,14 @@ Planned but missing:
 
 ### Persistent configuration
 
+Implemented in limited form:
+
+- UI lifecycle settings for close behavior, launch-on-login, start-minimized-to-tray,
+  and the one-time close-to-tray hint
+
 Planned but missing:
 
-- persistent user settings
+- persistent hardware/control preferences
 - saved automation rules
 - durable control preferences
 

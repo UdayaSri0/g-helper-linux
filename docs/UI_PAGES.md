@@ -258,6 +258,7 @@ Important note:
 - last check timestamp
 - last check result
 - release-notes preview
+- lifecycle controls for close behavior, launch on login, start minimized to tray, and full exit
 
 ### What it supports
 
@@ -265,18 +266,21 @@ Important note:
 - best-effort `Update Now` for safe user-local direct-binary installs
 - browser actions for source / GitHub, support / repository, and issue reporting
 - safe fallback to opening the latest release page when automatic in-place replacement is not supported
+- persisted close-to-tray and startup behavior preferences
 
 ### Capability dependencies
 
 - static metadata has no daemon capability dependency
 - release checks depend on network access to GitHub
 - automatic in-place replacement depends on a matching direct release asset plus a writable user-local binary path
+- launch-on-login depends on write access to the user's XDG autostart directory
 
 ### Missing or planned
 
 - no packaged icon asset display
 - no distro package-manager integration or privileged updater
 - no scheduled background update checks
+- no general Settings page or persistent hardware/control rules yet
 - metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
 ## Current Planned-But-Not-Implemented Pages

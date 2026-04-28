@@ -167,7 +167,7 @@ Then compare the `*_access_status` and `*_access_reason` fields with what the Da
 
 ## CPU Telemetry Works, But CPU Controls Are Read-Only
 
-This is the expected first-release behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
+This is expected behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
 
 Typical signs:
 
