@@ -83,9 +83,10 @@ Capture these commands:
 
 ```bash
 cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- lighting-diagnostics
 busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon
 ```
 
@@ -119,8 +120,8 @@ The rows below describe what the first release should eventually have evidence f
 | CPU readable but not writable | CPU telemetry works, but CPU sysfs files are not writable by the current user | CPU telemetry remains visible, affected controls are read-only, and Diagnostics lists the blocked paths | `caps`, CPU Diagnostics copy, CPU screenshot, CPU sysfs `ls -l` output |
 | CPU writable | CPU control sysfs paths are writable for the daemon user | at least one quick control and one policy control apply successfully | `caps`, CPU screenshot before/after, Diagnostics copy |
 | keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness is still visible and the control is clearly read-only | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
-| Aura/RGB exposed by asusd | `caps` reports `has_aura: true` and the lighting backend is `asusd-aura` | RGB picker and backend-reported lighting modes are enabled when writable; brightness still works through Aura or sysfs fallback | `caps`, `dbus --filter "asus\|rog\|aura\|kbd\|keyboard"`, Lighting screenshot, Diagnostics copy |
-| asusd present without Aura/RGB | asusd service exists, but `caps` reports `has_aura: false` | RGB picker stays disabled with a clear “not exposed by asusd” or brightness-only fallback message | `caps`, DBus introspection output, Lighting screenshot |
+| Aura/RGB exposed by asusd | `caps` reports `has_aura: true` and the lighting backend is `asusd-aura` | RGB picker and backend-reported lighting modes are enabled when writable; brightness still works through Aura or sysfs fallback | `caps`, `lighting-diagnostics`, `dbus --filter "asus\|rog\|aura\|kbd\|keyboard\|led\|rgb"`, Lighting screenshot, Diagnostics copy |
+| asusd present without Aura/RGB | asusd service exists, but `caps` reports `has_aura: false` | RGB picker stays disabled with a clear “not exposed by asusd” or brightness-only fallback message | `caps`, `lighting-diagnostics`, DBus introspection output, Lighting screenshot |
 | fan count `0` | no usable `fan_rows` are detected | UI does not invent fan rows; Diagnostics explains that fan telemetry is unavailable | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |

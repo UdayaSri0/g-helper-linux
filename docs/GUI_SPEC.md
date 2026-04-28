@@ -205,6 +205,7 @@ Current implementation note:
 - the sysfs keyboard backlight backend remains the brightness-only fallback
 - sysfs daemon-reported supported modes are `Off` and `Static`
 - Aura mode choices and RGB enablement come from the daemon-reported backend capability data
+- Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
 ### Diagnostics

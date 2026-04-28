@@ -160,6 +160,22 @@ File: `crates/rog-providers/src/kbd_backlight.rs`
   - no RGB colour support
   - write access often depends on system-level permissions
 
+## `lighting`
+
+File: `crates/rog-providers/src/lighting.rs`
+
+- Purpose
+  - combine sysfs keyboard backlight and asusd Aura probe data into a copyable lighting diagnostics report
+- Read / Write
+  - Read only diagnostics helper
+- Dependencies
+  - `kbd_backlight`
+  - `aura`
+  - `rog-core` lighting diagnostics model
+- Current limitations
+  - it reports backend capability and probe evidence; it does not perform hardware writes itself
+  - report quality depends on what DBus introspection and sysfs permissions expose on the host
+
 ## `nvidia_smi`
 
 File: `crates/rog-providers/src/nvidia_smi.rs`

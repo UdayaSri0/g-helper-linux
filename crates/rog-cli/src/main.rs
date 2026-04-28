@@ -4,12 +4,13 @@ use std::process::Command;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
-use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability};
+use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability, LightingDiagnostics};
 use rog_providers::asusd::AsusdPlatformProvider;
-use rog_providers::aura::AuraProvider;
+use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
+use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
@@ -35,7 +36,7 @@ enum Cmd {
         /// Regex used to filter bus names (case-insensitive).
         #[arg(
             long,
-            default_value = "asus|rog|aura|kbd|keyboard|supergfx|power|upower"
+            default_value = "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
         )]
         filter: String,
         /// Introspect a specific service name.
@@ -62,6 +63,10 @@ enum Cmd {
     },
     /// Print a best-effort DeviceCaps summary (Milestone 1).
     Caps,
+    /// Print keyboard lighting and RGB/Aura diagnostics only.
+    Lighting,
+    /// Print keyboard lighting and RGB/Aura diagnostics only.
+    LightingDiagnostics,
 }
 
 #[tokio::main]
@@ -98,13 +103,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Sensors { root } => cmd_sensors(root.as_deref()).await?,
         Cmd::Caps => cmd_caps().await?,
+        Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
     }
 
     Ok(())
 }
 
 async fn cmd_services() -> anyhow::Result<()> {
-    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower")?;
     let names = dbus::list_system_bus_names_matching(&re)
         .await
         .context("list system bus names")?;
@@ -228,48 +234,43 @@ async fn cmd_caps() -> anyhow::Result<()> {
         warn!("hwmon failed: {e}");
         rog_core::TelemetrySnapshot::empty_now(0)
     });
-    let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
-        Ok(v) => (v, None),
-        Err(e) => {
-            warn!("kbd backlight probe failed: {e}");
-            (None, Some(e.to_string()))
-        }
-    };
+    let lighting_probe = probe_lighting_diagnostics().await;
 
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
-    caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
-    let (aura, aura_probe_notes, aura_probe_error) = match AuraProvider::probe_system().await {
-        Ok(probe) => (probe.provider, probe.notes, None),
-        Err(e) => {
-            warn!("asusd Aura probe failed: {e}");
-            (
-                None,
-                vec!["asusd Aura probe could not run to completion.".to_string()],
-                Some(e.to_string()),
-            )
-        }
-    };
-    caps.has_aura = aura.is_some();
-    let sysfs_writable = kbd_backlight
+    caps.has_kbd_backlight = lighting_probe.kbd_detected;
+    caps.has_aura = lighting_probe.aura.is_some();
+    let sysfs_writable = lighting_probe
+        .kbd_backlight
         .as_ref()
         .map(KbdBacklightSysfs::can_set_brightness)
         .unwrap_or(false);
     caps.kbd_backlight_access = lighting_access_from_backend_flags(
         caps.has_aura,
-        kbd_backlight.is_some(),
+        lighting_probe.kbd_backlight.is_some(),
         sysfs_writable,
         caps.has_kbd_backlight,
-        kbd_backlight_probe_error.as_deref(),
+        lighting_probe.kbd_probe_error.as_deref(),
     );
-    if let Some(aura) = &aura {
+    if let Some(aura) = &lighting_probe.aura {
         caps.endpoints.push(aura.endpoint_tag());
     }
-    if let Some(err) = &aura_probe_error {
+    if let Some(err) = &lighting_probe.aura_probe_error {
         caps.notes.push(format!("asusd Aura probe failed: {err}"));
     }
-    caps.notes.extend(aura_probe_notes);
-    if let Some(kbd) = &kbd_backlight {
+    caps.notes.extend(lighting_probe.aura_notes.clone());
+    caps.notes.push(lighting_probe.diagnostics.summary_line());
+    if let Some(warning) = &lighting_probe.diagnostics.permission_warning {
+        caps.notes.push(warning.clone());
+    }
+    if let Some(reason) = &lighting_probe.diagnostics.unavailable_reason {
+        caps.notes.push(reason.clone());
+    }
+    if let Some(action) = &lighting_probe.diagnostics.recommended_action {
+        caps.notes
+            .push(format!("Lighting recommended action: {action}"));
+    }
+    if let Some(kbd) = &lighting_probe.kbd_backlight {
         caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
         caps.notes.push(format!(
             "Keyboard backlight via {} (max {}, writable={}).",
@@ -278,7 +279,7 @@ async fn cmd_caps() -> anyhow::Result<()> {
             kbd.can_set_brightness()
         ));
     }
-    if let Some(err) = &kbd_backlight_probe_error {
+    if let Some(err) = &lighting_probe.kbd_probe_error {
         caps.notes
             .push(format!("keyboard backlight probing failed: {err}"));
     }
@@ -444,7 +445,7 @@ async fn cmd_caps() -> anyhow::Result<()> {
     }
 
     // Include filtered DBus names as endpoints for diagnostics.
-    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower")?;
     if let Ok(names) = dbus::list_system_bus_names_matching(&re).await {
         for n in names {
             caps.endpoints.push(format!("system-bus-name:{n}"));
@@ -452,7 +453,82 @@ async fn cmd_caps() -> anyhow::Result<()> {
     }
 
     println!("{:#?}", caps);
+    println!();
+    println!("{}", lighting_probe.diagnostics.to_report_text());
     Ok(())
+}
+
+async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {
+    let lighting_probe = probe_lighting_diagnostics().await;
+    println!("{}", lighting_probe.diagnostics.to_report_text());
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LightingProbe {
+    kbd_backlight: Option<KbdBacklightSysfs>,
+    kbd_detected: bool,
+    kbd_probe_error: Option<String>,
+    aura: Option<AuraProvider>,
+    aura_probe_error: Option<String>,
+    aura_notes: Vec<String>,
+    diagnostics: LightingDiagnostics,
+}
+
+async fn probe_lighting_diagnostics() -> LightingProbe {
+    let (kbd_backlight, kbd_probe_error) = match KbdBacklightSysfs::probe() {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("kbd backlight probe failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+    let kbd_detected = kbd_backlight.is_some() || detect_kbd_backlight();
+
+    let (aura, aura_probe, aura_notes, aura_probe_error) = match AuraProvider::probe_system().await
+    {
+        Ok(probe) => (probe.provider, probe.diagnostics, probe.notes, None),
+        Err(e) => {
+            warn!("asusd Aura probe failed: {e}");
+            let mut diagnostics = AuraProbeDiagnostics::default();
+            diagnostics.probe_errors.push(e.to_string());
+            (
+                None,
+                diagnostics,
+                vec!["asusd Aura probe could not run to completion.".to_string()],
+                Some(e.to_string()),
+            )
+        }
+    };
+
+    let (aura_state, aura_state_error) = if let Some(aura) = &aura {
+        match aura.read_state().await {
+            Ok(state) => (Some(state), None),
+            Err(e) => (None, Some(e.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+
+    let diagnostics = build_lighting_diagnostics(
+        kbd_backlight.as_ref(),
+        kbd_detected,
+        kbd_probe_error.as_deref(),
+        aura.as_ref(),
+        &aura_probe,
+        aura_state.as_ref(),
+        aura_state_error.as_deref(),
+    );
+
+    LightingProbe {
+        kbd_backlight,
+        kbd_detected,
+        kbd_probe_error,
+        aura,
+        aura_probe_error,
+        aura_notes,
+        diagnostics,
+    }
 }
 
 fn systemctl_unit_status(service: &str) -> Option<String> {

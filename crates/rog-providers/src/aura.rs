@@ -34,6 +34,7 @@ impl AuraEndpoint {
 #[derive(Debug, Clone)]
 pub struct AuraProbeResult {
     pub provider: Option<AuraProvider>,
+    pub diagnostics: AuraProbeDiagnostics,
     pub notes: Vec<String>,
 }
 
@@ -41,6 +42,22 @@ impl AuraProbeResult {
     pub fn is_available(&self) -> bool {
         self.provider.is_some()
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuraProbeDiagnostics {
+    pub services_checked: Vec<String>,
+    pub service_detected: bool,
+    pub service_name: Option<String>,
+    pub object_paths_checked: Vec<String>,
+    pub interfaces_detected: Vec<String>,
+    pub aura_interface_detected: bool,
+    pub keyboard_interface_detected: bool,
+    pub potential_aura_interfaces: Vec<String>,
+    pub rgb_methods_detected: Vec<String>,
+    pub rgb_properties_detected: Vec<String>,
+    pub selected_endpoint: Option<String>,
+    pub probe_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +83,11 @@ impl AuraProvider {
         };
 
         let mut notes = Vec::new();
-        for service in SERVICE_CANDIDATES {
+        let mut diagnostics = AuraProbeDiagnostics::default();
+        let services = service_candidates_from_names(&names);
+        diagnostics.services_checked = services.clone();
+
+        for service in &services {
             if !names.is_empty() && !names.iter().any(|n| n == service) {
                 notes.push(format!(
                     "asusd Aura probe: service {service} is not present."
@@ -74,18 +95,33 @@ impl AuraProvider {
                 continue;
             }
 
+            diagnostics.service_detected = true;
+            if diagnostics.service_name.is_none() {
+                diagnostics.service_name = Some(service.clone());
+            }
+
             let roots = service_roots(service);
             for root in roots {
-                let nodes = walk_introspection(&conn, service, root).await;
+                let walk = walk_introspection(&conn, service, root).await;
+                for path in walk.paths_checked {
+                    push_unique(&mut diagnostics.object_paths_checked, path);
+                }
+                for error in walk.errors {
+                    push_unique(&mut diagnostics.probe_errors, error);
+                }
+
+                let nodes = walk.nodes;
                 for node in nodes {
                     for iface in parse_interfaces(&node.xml) {
+                        record_interface_diagnostics(&mut diagnostics, service, &node.path, &iface);
+
                         let Some(controls) = AuraControls::from_interface(&node.path, &iface)
                         else {
                             continue;
                         };
 
                         let endpoint = AuraEndpoint {
-                            service: (*service).to_string(),
+                            service: service.clone(),
                             path: node.path.clone(),
                             interface: iface.name.clone(),
                         };
@@ -95,6 +131,7 @@ impl AuraProvider {
                             controls,
                         };
 
+                        diagnostics.selected_endpoint = Some(provider.endpoint.endpoint_tag());
                         notes.push(format!(
                             "ASUS Aura/RGB lighting exposed by {}.",
                             provider.endpoint.endpoint_tag()
@@ -102,6 +139,7 @@ impl AuraProvider {
                         notes.push(provider.capability_note());
                         return Ok(AuraProbeResult {
                             provider: Some(provider),
+                            diagnostics,
                             notes,
                         });
                     }
@@ -120,6 +158,7 @@ impl AuraProvider {
 
         Ok(AuraProbeResult {
             provider: None,
+            diagnostics,
             notes,
         })
     }
@@ -472,6 +511,13 @@ struct DbusNode {
     xml: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct IntrospectionWalk {
+    nodes: Vec<DbusNode>,
+    paths_checked: Vec<String>,
+    errors: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct InterfaceInfo {
     name: String,
@@ -501,22 +547,53 @@ fn service_roots(service: &str) -> Vec<&'static str> {
     }
 }
 
-async fn walk_introspection(conn: &zbus::Connection, service: &str, root: &str) -> Vec<DbusNode> {
+fn service_candidates_from_names(names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
+    for service in SERVICE_CANDIDATES {
+        push_unique(&mut out, (*service).to_string());
+    }
+
+    let re = Regex::new("(?i)asus|rog|aura|keyboard|kbd|led|rgb").unwrap();
+    for name in names {
+        if re.is_match(name) {
+            push_unique(&mut out, name.clone());
+        }
+    }
+
+    out
+}
+
+async fn walk_introspection(
+    conn: &zbus::Connection,
+    service: &str,
+    root: &str,
+) -> IntrospectionWalk {
+    let mut out = IntrospectionWalk::default();
     let mut visited = BTreeSet::new();
     let mut queue = VecDeque::from([(root.to_string(), 0_usize)]);
 
     while let Some((path, depth)) = queue.pop_front() {
-        if out.len() >= PROBE_MAX_NODES || depth > PROBE_MAX_DEPTH || !visited.insert(path.clone())
+        if out.nodes.len() >= PROBE_MAX_NODES
+            || depth > PROBE_MAX_DEPTH
+            || !visited.insert(path.clone())
         {
             continue;
         }
 
-        let Ok(xml) = introspect(conn, service, &path).await else {
-            continue;
+        push_unique(&mut out.paths_checked, format!("{service}:{path}"));
+
+        let xml = match introspect(conn, service, &path).await {
+            Ok(xml) => xml,
+            Err(e) => {
+                push_unique(
+                    &mut out.errors,
+                    format!("introspection failed for {service}:{path}: {e}"),
+                );
+                continue;
+            }
         };
         let children = parse_children(&xml);
-        out.push(DbusNode {
+        out.nodes.push(DbusNode {
             path: path.clone(),
             xml,
         });
@@ -532,6 +609,48 @@ async fn walk_introspection(conn: &zbus::Connection, service: &str, root: &str) 
     }
 
     out
+}
+
+fn record_interface_diagnostics(
+    diagnostics: &mut AuraProbeDiagnostics,
+    service: &str,
+    path: &str,
+    iface: &InterfaceInfo,
+) {
+    let tag = format!("{service}:{path}:{}", iface.name);
+    push_unique(&mut diagnostics.interfaces_detected, tag.clone());
+
+    let name_key = normalize_name(&iface.name);
+    if name_key.contains("aura") {
+        diagnostics.aura_interface_detected = true;
+    }
+    if name_key.contains("keyboard") || name_key.contains("kbd") {
+        diagnostics.keyboard_interface_detected = true;
+    }
+
+    if aura_score(path, iface) >= 8 {
+        push_unique(&mut diagnostics.potential_aura_interfaces, tag.clone());
+    }
+
+    for method in &iface.methods {
+        let key = normalize_name(&method.name);
+        if is_rgb_name(&key) || (is_lighting_keyword_name(&key) && key.starts_with("set")) {
+            push_unique(
+                &mut diagnostics.rgb_methods_detected,
+                format!("{tag}.{}", method.name),
+            );
+        }
+    }
+
+    for prop in &iface.properties {
+        let key = normalize_name(&prop.name);
+        if is_rgb_name(&key) || is_lighting_keyword_name(&key) {
+            push_unique(
+                &mut diagnostics.rgb_properties_detected,
+                format!("{tag}.{}", prop.name),
+            );
+        }
+    }
 }
 
 async fn introspect(conn: &zbus::Connection, service: &str, path: &str) -> RogResult<String> {
@@ -688,6 +807,15 @@ fn is_rgb_name(key: &str) -> bool {
         || key.contains("colour")
         || key.contains("staticcolour")
         || key.contains("staticcolor")
+}
+
+fn is_lighting_keyword_name(key: &str) -> bool {
+    key.contains("aura")
+        || key.contains("led")
+        || key.contains("keyboard")
+        || key.contains("kbd")
+        || key.contains("backlight")
+        || is_rgb_name(key)
 }
 
 fn is_brightness_name(key: &str) -> bool {
@@ -1003,6 +1131,12 @@ async fn call_set_u32_method(proxy: &Proxy<'_>, method: &DbusMethod, value: u32)
 
 fn rgb_to_u32(rgb: RgbColor) -> u32 {
     ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
 }
 
 fn map_dbus_error(ctx: &str, e: zbus::Error) -> RogError {

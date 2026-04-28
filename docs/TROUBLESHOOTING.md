@@ -273,15 +273,20 @@ What to do:
 
 The repository does not currently ship a bundled udev rule or privileged helper for this path.
 
-## RGB Colour Is Disabled
+## Keyboard RGB / Aura Diagnostics
 
 RGB colour requires an asusd Aura/keyboard lighting interface on system DBus.
 
 Check:
 
 ```bash
+gdbus introspect --system --dest xyz.ljones.Asusd --object-path /xyz/ljones --recurse
+cargo run -p rog-cli -- lighting-diagnostics
 cargo run -p rog-cli -- caps
-cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard"
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb"
+ls -la /sys/class/leds
+cat /sys/class/leds/asus::kbd_backlight/brightness
+cat /sys/class/leds/asus::kbd_backlight/max_brightness
 ```
 
 Expected behavior:
@@ -290,6 +295,9 @@ Expected behavior:
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
 - if asusd is present but does not expose Aura/RGB, Diagnostics should say that RGB is not exposed by asusd
+- if only sysfs is available, Diagnostics should explain that the active backend only supports brightness through `/sys/class/leds/...`
+- if write access is blocked, Diagnostics should name the brightness file permission issue
+- if a potential Aura-like interface is found but unsupported, include the introspection output in a GitHub issue
 
 If RGB is unavailable, the app should keep brightness controls available when sysfs backlight support exists.
 
@@ -339,9 +347,10 @@ These commands are useful for most current troubleshooting:
 
 ```bash
 cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- lighting-diagnostics
 ```
 
 When you are doing real hardware validation instead of one-off troubleshooting, record the outputs in:

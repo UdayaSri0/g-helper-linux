@@ -341,6 +341,360 @@ impl LightingState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightingDiagnostics {
+    pub keyboard_backlight_detected: bool,
+    pub keyboard_backlight_backend: Option<String>,
+    pub keyboard_backlight_device: Option<String>,
+    pub keyboard_backlight_path: Option<String>,
+    pub keyboard_backlight_brightness_path: Option<String>,
+    pub keyboard_backlight_current_brightness: Option<u32>,
+    pub keyboard_backlight_max_brightness: Option<u32>,
+    pub keyboard_backlight_readable: bool,
+    pub keyboard_backlight_writable: bool,
+
+    pub supports_brightness: bool,
+    pub supports_modes: bool,
+    pub supported_modes: Vec<String>,
+    pub active_mode: Option<String>,
+
+    pub supports_rgb: bool,
+    pub rgb_backend_detected: bool,
+    pub rgb_backend_name: Option<String>,
+    pub rgb_current_hex: Option<String>,
+
+    pub asusd_service_detected: bool,
+    pub asusd_service_name: Option<String>,
+    pub asusd_services_checked: Vec<String>,
+    pub asusd_object_paths_checked: Vec<String>,
+    pub asusd_interfaces_detected: Vec<String>,
+    pub asusd_aura_interface_detected: bool,
+    pub asusd_keyboard_interface_detected: bool,
+    pub asusd_potential_aura_interfaces: Vec<String>,
+    pub asusd_rgb_methods_detected: Vec<String>,
+    pub asusd_rgb_properties_detected: Vec<String>,
+
+    pub active_backend: String,
+    pub fallback_reason: Option<String>,
+    pub unavailable_reason: Option<String>,
+    pub permission_warning: Option<String>,
+    pub last_probe_error: Option<String>,
+    pub probe_errors: Vec<String>,
+    pub recommended_action: Option<String>,
+}
+
+impl LightingDiagnostics {
+    pub fn unknown() -> Self {
+        Self {
+            keyboard_backlight_detected: false,
+            keyboard_backlight_backend: None,
+            keyboard_backlight_device: None,
+            keyboard_backlight_path: None,
+            keyboard_backlight_brightness_path: None,
+            keyboard_backlight_current_brightness: None,
+            keyboard_backlight_max_brightness: None,
+            keyboard_backlight_readable: false,
+            keyboard_backlight_writable: false,
+            supports_brightness: false,
+            supports_modes: false,
+            supported_modes: Vec::new(),
+            active_mode: None,
+            supports_rgb: false,
+            rgb_backend_detected: false,
+            rgb_backend_name: None,
+            rgb_current_hex: None,
+            asusd_service_detected: false,
+            asusd_service_name: None,
+            asusd_services_checked: Vec::new(),
+            asusd_object_paths_checked: Vec::new(),
+            asusd_interfaces_detected: Vec::new(),
+            asusd_aura_interface_detected: false,
+            asusd_keyboard_interface_detected: false,
+            asusd_potential_aura_interfaces: Vec::new(),
+            asusd_rgb_methods_detected: Vec::new(),
+            asusd_rgb_properties_detected: Vec::new(),
+            active_backend: "none".to_string(),
+            fallback_reason: None,
+            unavailable_reason: None,
+            permission_warning: None,
+            last_probe_error: None,
+            probe_errors: Vec::new(),
+            recommended_action: None,
+        }
+    }
+
+    pub fn summary_line(&self) -> String {
+        if self.supports_rgb {
+            format!(
+                "RGB lighting is available through {}.",
+                self.rgb_backend_name
+                    .as_deref()
+                    .unwrap_or(self.active_backend.as_str())
+            )
+        } else if self.supports_brightness {
+            self.fallback_reason.clone().unwrap_or_else(|| {
+                "Keyboard brightness is available, but RGB colour control is not available."
+                    .to_string()
+            })
+        } else {
+            self.unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "No keyboard lighting backend is available.".to_string())
+        }
+    }
+
+    pub fn to_report_text(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push("Keyboard Lighting / RGB Diagnostics".to_string());
+        lines.push("===================================".to_string());
+        lines.push(String::new());
+        lines.push("Summary:".to_string());
+        lines.push(format!(
+            "- Active backend: {}",
+            display_backend_name(&self.active_backend)
+        ));
+        lines.push(format!(
+            "- Keyboard backlight detected: {}",
+            yes_no(self.keyboard_backlight_detected)
+        ));
+        lines.push(format!(
+            "- Brightness control: {}",
+            availability_text(self.supports_brightness, self.keyboard_backlight_writable)
+        ));
+        lines.push(format!(
+            "- RGB control: {}",
+            if self.supports_rgb {
+                "available"
+            } else {
+                "not available"
+            }
+        ));
+        lines.push(format!("- Reason: {}", self.summary_line()));
+        lines.push(format!(
+            "- Aura support: {}",
+            if self.rgb_backend_detected {
+                "detected"
+            } else if self.asusd_potential_aura_interfaces.is_empty() {
+                "not detected through asusd"
+            } else {
+                "potential interface detected"
+            }
+        ));
+        lines.push(format!(
+            "- asusd status: {}",
+            if self.asusd_service_detected {
+                format!(
+                    "service detected ({})",
+                    self.asusd_service_name
+                        .as_deref()
+                        .unwrap_or("name not recorded")
+                )
+            } else {
+                "service not detected".to_string()
+            }
+        ));
+        if let Some(action) = &self.recommended_action {
+            lines.push(format!("- Recommended action: {action}"));
+        }
+
+        lines.push(String::new());
+        lines.push("Sysfs Keyboard Backlight:".to_string());
+        lines.push(format!(
+            "- Device: {}",
+            opt_text(self.keyboard_backlight_device.as_deref())
+        ));
+        lines.push(format!(
+            "- Backend: {}",
+            opt_text(self.keyboard_backlight_backend.as_deref())
+        ));
+        lines.push(format!(
+            "- Path: {}",
+            opt_text(self.keyboard_backlight_path.as_deref())
+        ));
+        lines.push(format!(
+            "- Brightness path: {}",
+            opt_text(self.keyboard_backlight_brightness_path.as_deref())
+        ));
+        lines.push(format!(
+            "- Brightness: {}",
+            opt_u32(self.keyboard_backlight_current_brightness)
+        ));
+        lines.push(format!(
+            "- Max brightness: {}",
+            opt_u32(self.keyboard_backlight_max_brightness)
+        ));
+        lines.push(format!(
+            "- Readable: {}",
+            yes_no(self.keyboard_backlight_readable)
+        ));
+        lines.push(format!(
+            "- Writable: {}",
+            yes_no(self.keyboard_backlight_writable)
+        ));
+        lines.push(format!(
+            "- Supported modes: {}",
+            list_text(&self.supported_modes)
+        ));
+        lines.push(format!("- Supports RGB: {}", yes_no(false)));
+
+        lines.push(String::new());
+        lines.push("ASUS/Aura DBus Probe:".to_string());
+        lines.push(format!(
+            "- Services checked: {}",
+            list_text(&self.asusd_services_checked)
+        ));
+        lines.push(format!(
+            "- Service detected: {}",
+            if self.asusd_service_detected {
+                opt_text(self.asusd_service_name.as_deref()).to_string()
+            } else {
+                "no".to_string()
+            }
+        ));
+        lines.push(format!(
+            "- Object paths checked: {}",
+            list_text(&self.asusd_object_paths_checked)
+        ));
+        lines.push(format!(
+            "- Interfaces detected: {}",
+            list_text(&self.asusd_interfaces_detected)
+        ));
+        lines.push(format!(
+            "- Aura-like interface found: {}",
+            yes_no(
+                self.asusd_aura_interface_detected
+                    || !self.asusd_potential_aura_interfaces.is_empty()
+            )
+        ));
+        lines.push(format!(
+            "- Keyboard-like interface found: {}",
+            yes_no(self.asusd_keyboard_interface_detected)
+        ));
+        lines.push(format!(
+            "- Potential Aura interfaces: {}",
+            list_text(&self.asusd_potential_aura_interfaces)
+        ));
+        lines.push(format!(
+            "- RGB methods found: {}",
+            list_text(&self.asusd_rgb_methods_detected)
+        ));
+        lines.push(format!(
+            "- RGB properties found: {}",
+            list_text(&self.asusd_rgb_properties_detected)
+        ));
+        lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
+
+        lines.push(String::new());
+        lines.push("Decision:".to_string());
+        lines.push(format!(
+            "- has_kbd_backlight: {}",
+            yes_no(self.keyboard_backlight_detected)
+        ));
+        lines.push(format!("- has_aura: {}", yes_no(self.rgb_backend_detected)));
+        lines.push(format!("- supports_rgb: {}", yes_no(self.supports_rgb)));
+        lines.push(format!(
+            "- selected backend: {}",
+            display_backend_name(&self.active_backend)
+        ));
+        lines.push(format!(
+            "- fallback reason: {}",
+            opt_text(self.fallback_reason.as_deref())
+        ));
+        lines.push(format!(
+            "- unavailable reason: {}",
+            opt_text(self.unavailable_reason.as_deref())
+        ));
+
+        let mut warnings = Vec::new();
+        if let Some(warning) = &self.permission_warning {
+            warnings.push(warning.clone());
+        }
+        if !self.supports_rgb && self.supports_brightness {
+            warnings.push(
+                "Keyboard brightness is available through the sysfs LED backend, but RGB colour control is not available because no Aura/RGB backend was detected."
+                    .to_string(),
+            );
+        }
+        if self.asusd_service_detected && !self.rgb_backend_detected {
+            warnings.push(
+                "asusd is running, but no Aura/RGB keyboard interface was found in the detected DBus interfaces. This laptop or asusd version may not expose RGB control through DBus."
+                    .to_string(),
+            );
+        }
+        if !self.asusd_potential_aura_interfaces.is_empty() && !self.rgb_backend_detected {
+            warnings.push(
+                "Potential Aura/RGB interface detected, but rog-helper does not yet implement this interface. Please include the introspection output in a GitHub issue."
+                    .to_string(),
+            );
+        }
+        if let Some(error) = &self.last_probe_error {
+            warnings.push(format!("Last probe error: {error}"));
+        }
+        if !self.probe_errors.is_empty() {
+            warnings.extend(
+                self.probe_errors
+                    .iter()
+                    .map(|e| format!("Probe error: {e}")),
+            );
+        }
+
+        lines.push(String::new());
+        lines.push("Warnings:".to_string());
+        if warnings.is_empty() {
+            lines.push("- none".to_string());
+        } else {
+            for warning in warnings {
+                lines.push(format!("- {warning}"));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
+fn display_backend_name(value: &str) -> String {
+    match normalize_lighting_word(value).as_str() {
+        "sysfsled" => "Sysfs LED keyboard backlight".to_string(),
+        "asusdaura" => "ASUS Aura DBus".to_string(),
+        "none" | "" => "None".to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn availability_text(supported: bool, writable: bool) -> &'static str {
+    match (supported, writable) {
+        (true, true) => "available",
+        (true, false) => "read-only",
+        (false, _) => "not available",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn opt_text(value: Option<&str>) -> &str {
+    value.filter(|v| !v.trim().is_empty()).unwrap_or("(none)")
+}
+
+fn opt_u32(value: Option<u32>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
+fn list_text(values: &[String]) -> String {
+    if values.is_empty() {
+        "(none)".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
 fn normalize_lighting_word(value: &str) -> String {
     value
         .to_ascii_lowercase()
@@ -907,5 +1261,91 @@ mod tests {
             Some(LightingMode::Strobe)
         );
         assert_eq!(LightingMode::parse_label("not-a-mode"), None);
+    }
+
+    #[test]
+    fn lighting_diagnostics_formats_sysfs_only_brightness_report() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.keyboard_backlight_detected = true;
+        diagnostics.keyboard_backlight_backend = Some("sysfs-led".to_string());
+        diagnostics.keyboard_backlight_device = Some("asus::kbd_backlight".to_string());
+        diagnostics.keyboard_backlight_path =
+            Some("/sys/class/leds/asus::kbd_backlight".to_string());
+        diagnostics.keyboard_backlight_brightness_path =
+            Some("/sys/class/leds/asus::kbd_backlight/brightness".to_string());
+        diagnostics.keyboard_backlight_current_brightness = Some(0);
+        diagnostics.keyboard_backlight_max_brightness = Some(3);
+        diagnostics.keyboard_backlight_readable = true;
+        diagnostics.keyboard_backlight_writable = true;
+        diagnostics.supports_brightness = true;
+        diagnostics.supports_modes = true;
+        diagnostics.supported_modes = vec!["Off".to_string(), "Static".to_string()];
+        diagnostics.active_mode = Some("Off".to_string());
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.fallback_reason = Some(
+            "Keyboard brightness is available through the sysfs LED backend, but RGB colour control is not available because no Aura/RGB backend was detected."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Active backend: Sysfs LED keyboard backlight"));
+        assert!(report.contains("RGB control: not available"));
+        assert!(report.contains("Supported modes: Off, Static"));
+        assert!(report.contains("asus::kbd_backlight"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_formats_read_only_sysfs_warning() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.keyboard_backlight_detected = true;
+        diagnostics.supports_brightness = true;
+        diagnostics.keyboard_backlight_readable = true;
+        diagnostics.keyboard_backlight_writable = false;
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.permission_warning = Some(
+            "Keyboard backlight brightness was detected, but the brightness file is not writable by the current user/session daemon."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Brightness control: read-only"));
+        assert!(report.contains("brightness file is not writable"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_explains_asusd_without_aura() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.asusd_service_detected = true;
+        diagnostics.asusd_service_name = Some("xyz.ljones.Asusd".to_string());
+        diagnostics.asusd_services_checked = vec!["xyz.ljones.Asusd".to_string()];
+        diagnostics.asusd_interfaces_detected =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Platform".to_string()];
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.supports_brightness = true;
+        diagnostics.fallback_reason = Some(
+            "Keyboard brightness is available through the sysfs LED backend, but asusd did not expose a supported Aura/RGB keyboard interface."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("asusd status: service detected (xyz.ljones.Asusd)"));
+        assert!(report.contains("no Aura/RGB keyboard interface was found"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_explains_potential_unimplemented_aura_interface() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.asusd_service_detected = true;
+        diagnostics.asusd_service_name = Some("xyz.ljones.Asusd".to_string());
+        diagnostics.asusd_potential_aura_interfaces =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Aura".to_string()];
+        diagnostics.asusd_aura_interface_detected = true;
+        diagnostics.asusd_rgb_methods_detected =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Aura.SetLedMode".to_string()];
+        diagnostics.active_backend = "none".to_string();
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Potential Aura interfaces"));
+        assert!(report.contains("does not yet implement this interface"));
     }
 }

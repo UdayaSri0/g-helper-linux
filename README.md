@@ -182,8 +182,9 @@ Optional CLI diagnostics:
 
 ```bash
 cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- lighting-diagnostics
 ```
 
 ## Release Installs

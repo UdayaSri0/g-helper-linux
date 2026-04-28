@@ -5,7 +5,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | Feature | Backend / provider | Read / Write | Current status | Notes / limitations |
 | --- | --- | --- | --- | --- |
 | Session daemon API | `rog-daemon` | Read + Write | Implemented | Session bus API exposed at `io.github.roghelper.Daemon` |
-| Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Useful for service, DBus, sensor, and capability inspection |
+| Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Useful for service, DBus, sensor, capability, and dedicated keyboard lighting/RGB inspection |
 | Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are populated; `has_fan_curves` is not currently populated to true |
 | Performance profile | `asusd` | Read + Write | Implemented | Requires `asusd`; UI exposes quick actions and GPU-page controls |
 | Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; current UI control lives on Dashboard |
@@ -20,7 +20,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU temperature fallback | `nvidia-smi` | Read | Implemented | Used only when primary GPU temperature is unavailable from `hwmon` |
-| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with a troubleshooting summary, structured feature-access reasons, raw fan hwmon mapping, and CPU access diagnostics |
+| Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Copyable text view with a troubleshooting summary, structured feature-access reasons, raw fan hwmon mapping, CPU access diagnostics, and keyboard lighting/RGB diagnostics |
 | About page | `rog-ui` | Read | Implemented | Uses Cargo metadata when present and fallbacks when it is missing; also shows maintainer info, source/support links, and release-status text |
 | Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |

@@ -213,6 +213,11 @@ Important note:
 - sysfs-supported modes are limited to `Off` and `Static`
 - Aura-supported modes are not invented by the UI; they come from daemon/backend reporting
 
+### Diagnostics report
+
+- copy diagnostics includes a `Keyboard Lighting / RGB Diagnostics` section
+- the report lists sysfs LED paths, current brightness, read/write status, asusd services checked, interfaces found, RGB-looking methods/properties, fallback reasons, and recommended action text
+
 ## Diagnostics
 
 ### What it shows

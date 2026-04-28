@@ -328,6 +328,11 @@ struct LightingInfo {
     supported_modes: Vec<String>,
     status: String,
     last_error: Option<String>,
+    diagnostics_summary: Option<String>,
+    diagnostics_details: Option<String>,
+    fallback_reason: Option<String>,
+    unavailable_reason: Option<String>,
+    permission_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3490,6 +3495,10 @@ async fn fetch_state() -> Result<
         .cloned()
         .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
         .and_then(lighting_from_dbus);
+    let lighting_diagnostics_details = state
+        .get("lighting_diagnostics_details")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
 
     let caps = caps_from_dbus(&caps_map);
     let cpu_caps = cpu_caps_from_dbus(&cpu_caps_map);
@@ -3510,6 +3519,9 @@ async fn fetch_state() -> Result<
     if let Some(lighting) = lighting.as_ref() {
         caps_text.push_str("\n\n");
         caps_text.push_str(&lighting_diagnostics_text(lighting));
+    } else if let Some(details) = lighting_diagnostics_details.as_deref() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(details);
     }
     let cpu_access_text = cpu_access_report_text(&cpu_caps);
     if !cpu_access_text.is_empty() {
@@ -5244,6 +5256,11 @@ fn lighting_availability_label(
     access: &FeatureAvailability,
 ) -> String {
     if let Some(lighting) = lighting {
+        if let Some(summary) = lighting.diagnostics_summary.as_deref() {
+            if !summary.trim().is_empty() && lighting.last_error.is_none() {
+                return summary.to_string();
+            }
+        }
         if let Some(error) = &lighting.last_error {
             return format!("backend_error ({error})");
         }
@@ -5316,6 +5333,8 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
         if lighting.supports_rgb {
             if lighting.can_set {
                 "Choose an RGB colour to stage and apply.".to_string()
+            } else if let Some(warning) = lighting.permission_warning.as_deref() {
+                warning.to_string()
             } else if access.reason.is_empty() {
                 "RGB colour is available, but writes are blocked for the current user.".to_string()
             } else {
@@ -5323,13 +5342,17 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
             }
         } else {
             if lighting.backend.eq_ignore_ascii_case("sysfs-led") {
-                "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
-                    .to_string()
+                lighting.fallback_reason.clone().unwrap_or_else(|| {
+                    "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+                        .to_string()
+                })
             } else if lighting.status == "rgb_not_exposed" {
                 "asusd is available, but it does not expose a writable Aura RGB colour control."
                     .to_string()
             } else if let Some(error) = lighting.last_error.as_deref() {
                 format!("RGB colour is blocked by a backend error: {error}")
+            } else if let Some(reason) = lighting.unavailable_reason.as_deref() {
+                reason.to_string()
             } else {
                 "RGB colour is not supported by the current lighting backend.".to_string()
             }
@@ -6172,6 +6195,11 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
         status: s(&map, "status").unwrap_or_else(|| "unknown".to_string()),
         last_error: s(&map, "last_error"),
+        diagnostics_summary: s(&map, "diagnostics_summary"),
+        diagnostics_details: s(&map, "diagnostics_details"),
+        fallback_reason: s(&map, "fallback_reason"),
+        unavailable_reason: s(&map, "unavailable_reason"),
+        permission_warning: s(&map, "permission_warning"),
     })
 }
 
@@ -6595,6 +6623,12 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
 }
 
 fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
+    if let Some(details) = lighting.diagnostics_details.as_deref() {
+        if !details.trim().is_empty() {
+            return details.to_string();
+        }
+    }
+
     let mut lines = Vec::new();
     lines.push("Lighting Diagnostics".to_string());
     lines.push("====================".to_string());

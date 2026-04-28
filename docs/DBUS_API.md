@@ -89,6 +89,8 @@ Important note:
 - `warnings` -> `as`
 - `cpu_caps` -> nested `a{sv}` CPU capability map
 - `cpu` -> nested `a{sv}` CPU telemetry map
+- `lighting_diagnostics_summary` -> `s`
+- `lighting_diagnostics_details` -> `s`
 
 Optional keys:
 
@@ -114,6 +116,16 @@ When present, `lighting` includes:
 - `can_set` / `writable` -> `b`
 - `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
 - `last_error` -> optional `s`
+- `diagnostics_summary` -> `s`
+- `diagnostics_details` -> `s`
+- `fallback_reason` -> optional `s`
+- `unavailable_reason` -> optional `s`
+- `permission_warning` -> optional `s`
+
+The diagnostics detail string is a copyable report headed `Keyboard Lighting / RGB Diagnostics`.
+It includes the selected backend, sysfs LED paths, brightness read/write state, asusd services and
+interfaces found through introspection, RGB-looking methods/properties, fallback reasons, and
+recommended next actions.
 
 ## `GetTelemetry` Response
 

@@ -7,14 +7,15 @@ use regex::Regex;
 use rog_core::{
     dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
     CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, GpuMode, LightingMode, LightingState, PerformanceProfile, PowerSource,
-    RgbColor, TelemetrySnapshot,
+    FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode, LightingState,
+    PerformanceProfile, PowerSource, RgbColor, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
-use rog_providers::aura::AuraProvider;
+use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
+use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::power_supply::PowerSupplySysfsProvider;
@@ -48,7 +49,10 @@ struct ControlState {
 struct RogHelperDaemon {
     state: Arc<SharedState>,
     kbd_backlight: Option<KbdBacklightSysfs>,
+    kbd_backlight_detected: bool,
+    kbd_backlight_probe_error: Option<String>,
     aura: Option<AuraProvider>,
+    aura_probe_diagnostics: AuraProbeDiagnostics,
     asusd: Option<AsusdPlatformProvider>,
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
@@ -58,7 +62,10 @@ impl RogHelperDaemon {
     fn new(
         state: Arc<SharedState>,
         kbd_backlight: Option<KbdBacklightSysfs>,
+        kbd_backlight_detected: bool,
+        kbd_backlight_probe_error: Option<String>,
         aura: Option<AuraProvider>,
+        aura_probe_diagnostics: AuraProbeDiagnostics,
         asusd: Option<AsusdPlatformProvider>,
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
@@ -66,7 +73,10 @@ impl RogHelperDaemon {
         Self {
             state,
             kbd_backlight,
+            kbd_backlight_detected,
+            kbd_backlight_probe_error,
             aura,
+            aura_probe_diagnostics,
             asusd,
             supergfx,
             cpu,
@@ -137,6 +147,15 @@ impl RogHelperDaemon {
         if let Some(l) = self.lighting_to_dbus().await {
             m.insert("lighting".to_string(), ov(l));
         }
+        let lighting_diagnostics = self.lighting_diagnostics(None, None);
+        m.insert(
+            "lighting_diagnostics_summary".to_string(),
+            ov(lighting_diagnostics.summary_line()),
+        );
+        m.insert(
+            "lighting_diagnostics_details".to_string(),
+            ov(lighting_diagnostics.to_report_text()),
+        );
         let control = self.read_control_state();
         if let Some(p) = control.profile {
             m.insert("profile".to_string(), ov(profile_to_str(p)));
@@ -405,17 +424,21 @@ async fn main() -> anyhow::Result<()> {
             (None, Some(e.to_string()))
         }
     };
-    let (aura, aura_probe_notes, aura_probe_error) = match AuraProvider::probe_system().await {
-        Ok(probe) => (probe.provider, probe.notes, None),
-        Err(e) => {
-            warn!("asusd Aura provider probe failed: {e}");
-            (
-                None,
-                vec!["asusd Aura probe could not run to completion.".to_string()],
-                Some(e.to_string()),
-            )
-        }
-    };
+    let (aura, aura_probe_diagnostics, aura_probe_notes, aura_probe_error) =
+        match AuraProvider::probe_system().await {
+            Ok(probe) => (probe.provider, probe.diagnostics, probe.notes, None),
+            Err(e) => {
+                warn!("asusd Aura provider probe failed: {e}");
+                let mut diagnostics = AuraProbeDiagnostics::default();
+                diagnostics.probe_errors.push(e.to_string());
+                (
+                    None,
+                    diagnostics,
+                    vec!["asusd Aura probe could not run to completion.".to_string()],
+                    Some(e.to_string()),
+                )
+            }
+        };
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
         Ok(v) => (v, None),
         Err(e) => {
@@ -474,6 +497,26 @@ async fn main() -> anyhow::Result<()> {
         caps.notes.push(format!("asusd Aura probe failed: {err}"));
     }
     caps.notes.extend(aura_probe_notes);
+    let startup_lighting_diagnostics = build_lighting_diagnostics(
+        kbd_backlight.as_ref(),
+        kbd_backlight_detected,
+        kbd_backlight_probe_error.as_deref(),
+        aura.as_ref(),
+        &aura_probe_diagnostics,
+        None,
+        aura_probe_error.as_deref(),
+    );
+    caps.notes.push(startup_lighting_diagnostics.summary_line());
+    if let Some(warning) = &startup_lighting_diagnostics.permission_warning {
+        caps.notes.push(warning.clone());
+    }
+    if let Some(reason) = &startup_lighting_diagnostics.unavailable_reason {
+        caps.notes.push(reason.clone());
+    }
+    if let Some(action) = &startup_lighting_diagnostics.recommended_action {
+        caps.notes
+            .push(format!("Lighting recommended action: {action}"));
+    }
 
     if let Some(kbd) = &kbd_backlight {
         caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
@@ -681,7 +724,10 @@ async fn main() -> anyhow::Result<()> {
     let daemon = RogHelperDaemon::new(
         shared.clone(),
         kbd_backlight.clone(),
+        kbd_backlight_detected,
+        kbd_backlight_probe_error.clone(),
         aura.clone(),
+        aura_probe_diagnostics.clone(),
         asusd.clone(),
         supergfx.clone(),
         cpu.clone(),
@@ -1796,35 +1842,59 @@ impl RogHelperDaemon {
             match aura.read_state().await {
                 Ok(mut state) => {
                     self.merge_sysfs_brightness(&mut state);
-                    return Some(lighting_state_to_dbus(&state));
+                    let diagnostics = self.lighting_diagnostics(Some(&state), None);
+                    return Some(lighting_state_to_dbus(&state, &diagnostics));
                 }
                 Err(e) => {
+                    let error = e.to_string();
+                    let diagnostics = self.lighting_diagnostics(None, Some(error.as_str()));
                     if let Some(mut state) = self.sysfs_lighting_state() {
                         state.status = "aura_backend_error".to_string();
-                        state.last_error = Some(format!("Aura backend read failed: {e}"));
-                        return Some(lighting_state_to_dbus(&state));
+                        state.last_error = Some(format!("Aura backend read failed: {error}"));
+                        return Some(lighting_state_to_dbus(&state, &diagnostics));
                     }
-                    return Some(lighting_state_to_dbus(&LightingState {
-                        backend: "asusd-aura".to_string(),
-                        device: aura.endpoint_tag(),
-                        brightness: None,
-                        max_brightness: None,
-                        mode: None,
-                        supported_modes: aura.supported_modes_hint(),
-                        supports_rgb: aura.supports_rgb(),
-                        writable: aura.supports_rgb()
-                            || aura.can_set_mode()
-                            || aura.can_set_brightness(),
-                        rgb: None,
-                        status: "backend_error".to_string(),
-                        last_error: Some(format!("Aura backend read failed: {e}")),
-                    }));
+                    return Some(lighting_state_to_dbus(
+                        &LightingState {
+                            backend: "asusd-aura".to_string(),
+                            device: aura.endpoint_tag(),
+                            brightness: None,
+                            max_brightness: None,
+                            mode: None,
+                            supported_modes: aura.supported_modes_hint(),
+                            supports_rgb: aura.supports_rgb(),
+                            writable: aura.supports_rgb()
+                                || aura.can_set_mode()
+                                || aura.can_set_brightness(),
+                            rgb: None,
+                            status: "backend_error".to_string(),
+                            last_error: Some(format!("Aura backend read failed: {error}")),
+                        },
+                        &diagnostics,
+                    ));
                 }
             }
         }
 
-        self.sysfs_lighting_state()
-            .map(|state| lighting_state_to_dbus(&state))
+        self.sysfs_lighting_state().map(|state| {
+            let diagnostics = self.lighting_diagnostics(Some(&state), None);
+            lighting_state_to_dbus(&state, &diagnostics)
+        })
+    }
+
+    fn lighting_diagnostics(
+        &self,
+        state: Option<&LightingState>,
+        aura_state_error: Option<&str>,
+    ) -> LightingDiagnostics {
+        build_lighting_diagnostics(
+            self.kbd_backlight.as_ref(),
+            self.kbd_backlight_detected,
+            self.kbd_backlight_probe_error.as_deref(),
+            self.aura.as_ref(),
+            &self.aura_probe_diagnostics,
+            state,
+            aura_state_error,
+        )
     }
 
     fn merge_sysfs_brightness(&self, state: &mut LightingState) {
@@ -1868,7 +1938,10 @@ impl RogHelperDaemon {
     }
 }
 
-fn lighting_state_to_dbus(state: &LightingState) -> HashMap<String, OwnedValue> {
+fn lighting_state_to_dbus(
+    state: &LightingState,
+    diagnostics: &LightingDiagnostics,
+) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert("backend".to_string(), ov(state.backend.clone()));
     m.insert("device".to_string(), ov(state.device.clone()));
@@ -1899,6 +1972,23 @@ fn lighting_state_to_dbus(state: &LightingState) -> HashMap<String, OwnedValue> 
     m.insert("status".to_string(), ov(state.status.clone()));
     if let Some(error) = &state.last_error {
         m.insert("last_error".to_string(), ov(error.clone()));
+    }
+    m.insert(
+        "diagnostics_summary".to_string(),
+        ov(diagnostics.summary_line()),
+    );
+    m.insert(
+        "diagnostics_details".to_string(),
+        ov(diagnostics.to_report_text()),
+    );
+    if let Some(reason) = &diagnostics.fallback_reason {
+        m.insert("fallback_reason".to_string(), ov(reason.clone()));
+    }
+    if let Some(reason) = &diagnostics.unavailable_reason {
+        m.insert("unavailable_reason".to_string(), ov(reason.clone()));
+    }
+    if let Some(warning) = &diagnostics.permission_warning {
+        m.insert("permission_warning".to_string(), ov(warning.clone()));
     }
     m
 }

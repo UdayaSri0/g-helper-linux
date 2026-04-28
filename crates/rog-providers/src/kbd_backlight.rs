@@ -71,6 +71,14 @@ impl KbdBacklightSysfs {
         &self.led_name
     }
 
+    pub fn led_path(&self) -> &Path {
+        &self.led_path
+    }
+
+    pub fn brightness_path(&self) -> PathBuf {
+        self.led_path.join("brightness")
+    }
+
     pub fn max_brightness(&self) -> u32 {
         self.max_brightness
     }
@@ -86,8 +94,12 @@ impl KbdBacklightSysfs {
     }
 
     pub fn can_set_brightness(&self) -> bool {
-        let p = self.led_path.join("brightness");
+        let p = self.brightness_path();
         OpenOptions::new().write(true).open(&p).is_ok()
+    }
+
+    pub fn can_read_brightness(&self) -> bool {
+        self.read_brightness().is_ok()
     }
 
     pub fn set_brightness(&self, brightness: u32) -> RogResult<()> {
