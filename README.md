@@ -129,7 +129,7 @@ See:
 Important gaps in the current implementation:
 
 - Fan curve editing and fan-curve daemon APIs
-- Aura/RGB lighting support
+- Broader Aura/RGB lighting validation across ASUS models and asusd versions
 - Live auto mode / policy automation integration
 - Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
 - Typed DBus payloads shared between daemon and UI
@@ -385,7 +385,7 @@ Tagged release packaging is driven by `.github/workflows/release.yml`.
 The application can launch without all external services, but feature availability depends on what is installed and reachable:
 
 - `UPower`: expected for battery and power-source telemetry
-- `asusd`: required for ASUS platform profile and battery-limit control
+- `asusd`: required for ASUS platform profile, battery-limit control, and Aura/RGB lighting when exposed by the backend
 - `supergfxd`: required for GPU mode control
 - Writable sysfs access: required for some CPU and keyboard-backlight operations
 - Tray support: depends on desktop support for StatusNotifierItem / AppIndicator integration
@@ -395,6 +395,7 @@ When these dependencies are missing or read-only, the UI is expected to degrade 
 Current release behavior to expect:
 
 - missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
+- asusd without Aura/RGB -> RGB controls stay disabled while brightness-only sysfs support remains available when present
 - missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
 - readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
 - readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable

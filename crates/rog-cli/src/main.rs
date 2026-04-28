@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability};
 use rog_providers::asusd::AsusdPlatformProvider;
+use rog_providers::aura::AuraProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
@@ -32,7 +33,10 @@ enum Cmd {
     /// List and optionally introspect system DBus services.
     Dbus {
         /// Regex used to filter bus names (case-insensitive).
-        #[arg(long, default_value = "asus|rog|supergfx|power|upower")]
+        #[arg(
+            long,
+            default_value = "asus|rog|aura|kbd|keyboard|supergfx|power|upower"
+        )]
         filter: String,
         /// Introspect a specific service name.
         #[arg(long)]
@@ -100,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn cmd_services() -> anyhow::Result<()> {
-    let re = Regex::new("(?i)asus|rog|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|supergfx|power|upower")?;
     let names = dbus::list_system_bus_names_matching(&re)
         .await
         .context("list system bus names")?;
@@ -235,29 +239,49 @@ async fn cmd_caps() -> anyhow::Result<()> {
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
     caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
-    caps.kbd_backlight_access = if let Some(kbd) = &kbd_backlight {
-        if kbd.can_set_brightness() {
-            FeatureAvailability::new(
-                FeatureAccessState::Available,
-                "Keyboard backlight is available through the sysfs LED backend.",
-            )
-        } else {
-            FeatureAvailability::new(
-                FeatureAccessState::PermissionDenied,
-                "Keyboard backlight is detected, but writes are blocked for the current user.",
+    let (aura, aura_probe_notes, aura_probe_error) = match AuraProvider::probe_system().await {
+        Ok(probe) => (probe.provider, probe.notes, None),
+        Err(e) => {
+            warn!("asusd Aura probe failed: {e}");
+            (
+                None,
+                vec!["asusd Aura probe could not run to completion.".to_string()],
+                Some(e.to_string()),
             )
         }
-    } else if kbd_backlight_probe_error.is_some() || caps.has_kbd_backlight {
-        FeatureAvailability::new(
-            FeatureAccessState::TemporarilyUnavailable,
-            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
-        )
-    } else {
-        FeatureAvailability::new(
-            FeatureAccessState::Unsupported,
-            "No keyboard backlight control was detected on this machine.",
-        )
     };
+    caps.has_aura = aura.is_some();
+    let sysfs_writable = kbd_backlight
+        .as_ref()
+        .map(KbdBacklightSysfs::can_set_brightness)
+        .unwrap_or(false);
+    caps.kbd_backlight_access = lighting_access_from_backend_flags(
+        caps.has_aura,
+        kbd_backlight.is_some(),
+        sysfs_writable,
+        caps.has_kbd_backlight,
+        kbd_backlight_probe_error.as_deref(),
+    );
+    if let Some(aura) = &aura {
+        caps.endpoints.push(aura.endpoint_tag());
+    }
+    if let Some(err) = &aura_probe_error {
+        caps.notes.push(format!("asusd Aura probe failed: {err}"));
+    }
+    caps.notes.extend(aura_probe_notes);
+    if let Some(kbd) = &kbd_backlight {
+        caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
+        caps.notes.push(format!(
+            "Keyboard backlight via {} (max {}, writable={}).",
+            kbd.led_name(),
+            kbd.max_brightness(),
+            kbd.can_set_brightness()
+        ));
+    }
+    if let Some(err) = &kbd_backlight_probe_error {
+        caps.notes
+            .push(format!("keyboard backlight probing failed: {err}"));
+    }
 
     let (asusd, asusd_connect_error) = match AsusdPlatformProvider::connect_system().await {
         Ok(v) => (v, None),
@@ -420,7 +444,7 @@ async fn cmd_caps() -> anyhow::Result<()> {
     }
 
     // Include filtered DBus names as endpoints for diagnostics.
-    let re = Regex::new("(?i)asus|rog|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|supergfx|power|upower")?;
     if let Ok(names) = dbus::list_system_bus_names_matching(&re).await {
         for n in names {
             caps.endpoints.push(format!("system-bus-name:{n}"));
@@ -502,6 +526,45 @@ fn backend_access_from_connect_error(
     }
 }
 
+fn lighting_access_from_backend_flags(
+    aura_available: bool,
+    sysfs_available: bool,
+    sysfs_writable: bool,
+    sysfs_detected: bool,
+    sysfs_probe_error: Option<&str>,
+) -> FeatureAvailability {
+    if aura_available {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard lighting is available through ASUS Aura/RGB.",
+        );
+    }
+
+    if sysfs_available {
+        if sysfs_writable {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Keyboard backlight is available through the sysfs LED backend.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            )
+        }
+    } else if sysfs_probe_error.is_some() || sysfs_detected {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard lighting control was detected on this machine.",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +594,21 @@ mod tests {
             FeatureAccessState::TemporarilyUnavailable
         );
         assert_eq!(availability.reason, "temporarily unavailable reason");
+    }
+
+    #[test]
+    fn lighting_access_fallbacks_match_provider_priority() {
+        assert_eq!(
+            lighting_access_from_backend_flags(true, false, false, false, None).status,
+            FeatureAccessState::Available
+        );
+        assert_eq!(
+            lighting_access_from_backend_flags(false, true, true, true, None).status,
+            FeatureAccessState::Available
+        );
+        assert_eq!(
+            lighting_access_from_backend_flags(false, false, false, false, None).status,
+            FeatureAccessState::Unsupported
+        );
     }
 }

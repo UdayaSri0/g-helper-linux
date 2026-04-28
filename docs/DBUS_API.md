@@ -39,7 +39,7 @@ This is the current design, not a placeholder.
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
 | `GetCpuDiagnostics` | none | `s` | Returns formatted text diagnostics for CPU support and state |
-| `SetLighting` | `a{sv}` | `()` | Current backend is sysfs keyboard backlight |
+| `SetLighting` | `a{sv}` | `()` | Uses Aura/RGB through asusd when exposed; otherwise sysfs keyboard backlight fallback |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
 | `SetBatteryLimit` | `t` (`u64`) | `()` | Uses `asusd` when available |
@@ -75,7 +75,7 @@ This is the current design, not a placeholder.
 
 Important note:
 
-- `has_aura` and `has_fan_curves` exist in the payload shape but are not currently probed to true by the daemon.
+- `has_aura` is `true` only when the daemon finds an introspectable asusd Aura/keyboard lighting interface. `has_fan_curves` exists in the payload shape but is not currently probed to true by the daemon.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
@@ -98,6 +98,22 @@ Optional keys:
 - `battery_limit` -> `t`
 
 This is the main fetch path used by the current UI.
+
+### Lighting map
+
+When present, `lighting` includes:
+
+- `backend` -> `s`, for example `asusd-aura` or `sysfs-led`
+- `device` -> `s`, for example `aura-dbus:<service>:<path>:<interface>` detail or the sysfs LED name
+- `brightness` -> `t`
+- `max_brightness` -> `t`
+- `mode` -> `s`, when reported
+- `supported_modes` -> `as`
+- `supports_rgb` -> `b`
+- `rgb_hex` -> optional `s` in `#RRGGBB` form
+- `can_set` / `writable` -> `b`
+- `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
+- `last_error` -> optional `s`
 
 ## `GetTelemetry` Response
 
@@ -297,10 +313,10 @@ Current accepted keys:
 
 Current behavior:
 
-- current backend is sysfs keyboard backlight only
-- mode `Off` maps brightness to `0`
-- current backend accepts `Off` and `Static`
-- RGB color is rejected by the current daemon backend
+- if Aura/RGB is exposed by asusd and `mode` or `rgb_hex` is supplied, the daemon routes that request through the Aura provider
+- if Aura brightness is not exposed, brightness can still use the sysfs keyboard backlight fallback when present
+- without Aura, the sysfs backend accepts brightness plus `Off` and `Static` only
+- `rgb_hex` without writable Aura/RGB support returns a clear `NotSupported` error
 
 ## `SetProfile`
 

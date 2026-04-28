@@ -27,8 +27,30 @@ File: `crates/rog-providers/src/asusd.rs`
     - `org.asuslinux.Daemon` / `/org/asuslinux` / `org.asuslinux.Platform`
 - Current limitations
   - only profile and charge-limit coverage are implemented
-  - Aura / RGB and fan curves are not implemented here yet
+  - Aura / RGB is implemented in the separate `aura` provider
+  - fan curves are not implemented here yet
   - interface compatibility across `asusd` versions is still a live concern
+
+## `aura`
+
+File: `crates/rog-providers/src/aura.rs`
+
+- Purpose
+  - ASUS Aura/RGB keyboard lighting discovery and control through asusd DBus
+- Read / Write
+  - Read + Write when the backend exposes writable controls
+- Dependencies
+  - system DBus
+  - `asusd` service exposing an introspectable Aura/keyboard LED interface
+- External services and paths
+  - service candidates:
+    - `xyz.ljones.Asusd`
+    - `org.asuslinux.Daemon`
+  - object paths and interface names are discovered through DBus introspection
+- Current limitations
+  - no hardcoded hardware model database
+  - RGB, mode, and brightness support depend on what asusd exposes on the machine
+  - if Aura is absent or incompatible, the daemon keeps the sysfs brightness-only fallback
 
 ## `supergfx`
 
@@ -135,7 +157,7 @@ File: `crates/rog-providers/src/kbd_backlight.rs`
   - `max_brightness`
 - Current limitations
   - brightness only
-  - no Aura / RGB support
+  - no RGB colour support
   - write access often depends on system-level permissions
 
 ## `nvidia_smi`
@@ -233,8 +255,8 @@ File: `crates/rog-providers/src/traits.rs`
 
 The provider layer already covers a meaningful amount of real system integration, but it is still uneven:
 
-- profile, battery limit, GPU mode, CPU control, and multiple telemetry sources are implemented
-- Aura / RGB, fan curves, and a unified telemetry abstraction are not implemented end-to-end
+- profile, battery limit, GPU mode, Aura/RGB lighting when exposed, CPU control, and multiple telemetry sources are implemented
+- fan curves and a unified telemetry abstraction are not implemented end-to-end
 
 When updating provider-related docs, compare against:
 

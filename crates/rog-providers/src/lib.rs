@@ -1,6 +1,7 @@
 //! Provider layer: DBus clients + sysfs readers.
 
 pub mod asusd;
+pub mod aura;
 pub mod cpu;
 pub mod dbus;
 pub mod hwmon;

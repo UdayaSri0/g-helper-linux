@@ -191,18 +191,20 @@ Current content:
 - backend and device name
 - current brightness
 - current mode
+- current RGB colour when reported
 - availability status
 - mode combo box
 - brightness slider
-- RGB color control placeholder
+- RGB colour control
 - apply action
 - last-action status
 
 Current implementation note:
 
-- the active daemon backend is currently keyboard backlight via sysfs
-- current daemon-reported supported modes are `Off` and `Static`
-- `supports_rgb` is currently false for the implemented backend
+- the daemon prefers an asusd Aura/RGB DBus backend when introspection confirms one exists
+- the sysfs keyboard backlight backend remains the brightness-only fallback
+- sysfs daemon-reported supported modes are `Off` and `Static`
+- Aura mode choices and RGB enablement come from the daemon-reported backend capability data
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
 ### Diagnostics
@@ -311,7 +313,6 @@ Related note:
 - fan-curve editor
 - auto mode / rules editor
 - exported diagnostics bundle
-- Aura / RGB lighting control
 - more specialized conflict detection and service-management UI
 
 ## Maintenance Note

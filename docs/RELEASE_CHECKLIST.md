@@ -154,7 +154,7 @@ Review and explicitly record:
 
 Current repository note:
 
-- fan curves, Aura / RGB lighting, auto mode / policy integration, persistent hardware/control configuration, and broader hardware support validation are not implemented end-to-end yet
+- fan curves, auto mode / policy integration, persistent hardware/control configuration, and broader hardware support validation are not implemented end-to-end yet; Aura/RGB depends on asusd backend exposure and still needs wider model validation
 
 ## Final Sign-Off
 

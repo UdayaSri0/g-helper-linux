@@ -7,9 +7,11 @@ use regex::Regex;
 use rog_core::{
     dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
     CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, GpuMode, PerformanceProfile, PowerSource, TelemetrySnapshot,
+    FeatureAvailability, GpuMode, LightingMode, LightingState, PerformanceProfile, PowerSource,
+    RgbColor, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
+use rog_providers::aura::AuraProvider;
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
@@ -46,6 +48,7 @@ struct ControlState {
 struct RogHelperDaemon {
     state: Arc<SharedState>,
     kbd_backlight: Option<KbdBacklightSysfs>,
+    aura: Option<AuraProvider>,
     asusd: Option<AsusdPlatformProvider>,
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
@@ -55,6 +58,7 @@ impl RogHelperDaemon {
     fn new(
         state: Arc<SharedState>,
         kbd_backlight: Option<KbdBacklightSysfs>,
+        aura: Option<AuraProvider>,
         asusd: Option<AsusdPlatformProvider>,
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
@@ -62,6 +66,7 @@ impl RogHelperDaemon {
         Self {
             state,
             kbd_backlight,
+            aura,
             asusd,
             supergfx,
             cpu,
@@ -121,7 +126,7 @@ impl RogHelperDaemon {
         caps_to_dbus(&self.read_state().caps)
     }
 
-    fn get_state(&self) -> HashMap<String, OwnedValue> {
+    async fn get_state(&self) -> HashMap<String, OwnedValue> {
         let state = self.read_state();
         let mut m = state_to_dbus(&state);
         m.insert(
@@ -129,7 +134,7 @@ impl RogHelperDaemon {
             ov(cpu_caps_to_dbus(&state.cpu_caps)),
         );
         m.insert("cpu".to_string(), ov(cpu_to_dbus(&state.cpu)));
-        if let Some(l) = self.lighting_to_dbus() {
+        if let Some(l) = self.lighting_to_dbus().await {
             m.insert("lighting".to_string(), ov(l));
         }
         let control = self.read_control_state();
@@ -162,34 +167,80 @@ impl RogHelperDaemon {
         cpu_diagnostics_text(&state.cpu_caps, &state.cpu)
     }
 
-    fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
-        let Some(kbd) = &self.kbd_backlight else {
-            return Err(fdo::Error::NotSupported(
-                "lighting not supported on this system".to_string(),
-            ));
-        };
-
+    async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
         let mode = state
             .get("mode")
             .and_then(|v| <&str>::try_from(v).ok())
-            .unwrap_or("Static");
+            .map(|v| v.to_string());
         let rgb_hex = state.get("rgb_hex").and_then(|v| <&str>::try_from(v).ok());
-        let mut brightness = u64_from_map(&state, "brightness").unwrap_or(0);
-        if mode.eq_ignore_ascii_case("off") {
-            brightness = 0;
+        let brightness = u64_from_map(&state, "brightness");
+
+        if let Some(aura) = &self.aura {
+            if let Some(mode) = mode.as_deref() {
+                let parsed_mode = LightingMode::parse_label(mode)
+                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
+                if aura.can_set_mode() {
+                    aura.set_mode(parsed_mode)
+                        .await
+                        .map_err(map_rog_error_to_fdo)?;
+                } else if !matches!(parsed_mode, LightingMode::Off | LightingMode::Static) {
+                    return Err(fdo::Error::NotSupported(format!(
+                        "Aura backend does not expose writable lighting modes for '{mode}'."
+                    )));
+                }
+            }
+
+            if let Some(rgb_hex) = rgb_hex {
+                if !aura.supports_rgb() {
+                    return Err(fdo::Error::NotSupported(
+                        "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
+                    ));
+                }
+                let rgb = RgbColor::parse_hex(rgb_hex).map_err(map_rog_error_to_fdo)?;
+                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
+            }
+
+            if let Some(brightness) = brightness {
+                if aura.can_set_brightness() {
+                    aura.set_brightness(brightness.min(u32::MAX as u64) as u32)
+                        .await
+                        .map_err(map_rog_error_to_fdo)?;
+                } else if let Some(kbd) = &self.kbd_backlight {
+                    kbd.set_brightness(brightness as u32)
+                        .map_err(map_rog_error_to_fdo)?;
+                } else if brightness != 0 {
+                    return Err(fdo::Error::NotSupported(
+                        "Aura backend does not expose brightness and no sysfs keyboard backlight fallback is available."
+                            .to_string(),
+                    ));
+                }
+            }
+
+            return Ok(());
         }
 
         if rgb_hex.is_some() {
             return Err(fdo::Error::NotSupported(
-                "RGB color is not supported by the sysfs LED backend (requires asusd/Aura)."
+                "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
                     .to_string(),
             ));
+        }
+        let mode = mode.unwrap_or_else(|| "Static".to_string());
+        let mut brightness = brightness.unwrap_or(0);
+        if mode.eq_ignore_ascii_case("off") {
+            brightness = 0;
         }
         if !mode.eq_ignore_ascii_case("off") && !mode.eq_ignore_ascii_case("static") {
             return Err(fdo::Error::NotSupported(format!(
                 "Lighting mode '{mode}' is not supported by the sysfs LED backend."
             )));
         }
+
+        let Some(kbd) = &self.kbd_backlight else {
+            return Err(fdo::Error::NotSupported(
+                "lighting not supported on this system".to_string(),
+            ));
+        };
 
         kbd.set_brightness(brightness as u32)
             .map_err(map_rog_error_to_fdo)?;
@@ -354,6 +405,17 @@ async fn main() -> anyhow::Result<()> {
             (None, Some(e.to_string()))
         }
     };
+    let (aura, aura_probe_notes, aura_probe_error) = match AuraProvider::probe_system().await {
+        Ok(probe) => (probe.provider, probe.notes, None),
+        Err(e) => {
+            warn!("asusd Aura provider probe failed: {e}");
+            (
+                None,
+                vec!["asusd Aura probe could not run to completion.".to_string()],
+                Some(e.to_string()),
+            )
+        }
+    };
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
         Ok(v) => (v, None),
         Err(e) => {
@@ -386,38 +448,32 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
     let kbd_backlight_detected = kbd_backlight.is_some() || detect_kbd_backlight();
+    caps.has_aura = aura.is_some();
     caps.has_kbd_backlight = kbd_backlight_detected;
-    caps.kbd_backlight_access = if let Some(kbd) = &kbd_backlight {
-        if kbd.can_set_brightness() {
-            FeatureAvailability::new(
-                FeatureAccessState::Available,
-                "Keyboard backlight is available through the sysfs LED backend.",
-            )
-        } else {
-            FeatureAvailability::new(
-                FeatureAccessState::PermissionDenied,
-                "Keyboard backlight is detected, but writes are blocked for the current user.",
-            )
-        }
-    } else if let Some(err) = &kbd_backlight_probe_error {
+    let sysfs_writable = kbd_backlight
+        .as_ref()
+        .map(KbdBacklightSysfs::can_set_brightness)
+        .unwrap_or(false);
+    caps.kbd_backlight_access = lighting_access_from_backend_flags(
+        caps.has_aura,
+        kbd_backlight.is_some(),
+        sysfs_writable,
+        kbd_backlight_detected,
+        kbd_backlight_probe_error.as_deref(),
+    );
+    if let Some(err) = &kbd_backlight_probe_error {
         caps.notes
             .push(format!("keyboard backlight probing failed: {err}"));
-        FeatureAvailability::new(
-            FeatureAccessState::TemporarilyUnavailable,
-            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
-        )
-    } else if kbd_backlight_detected {
-        FeatureAvailability::new(
-            FeatureAccessState::TemporarilyUnavailable,
-            "Keyboard backlight hardware was detected, but the current backend is not ready yet.",
-        )
-    } else {
-        FeatureAvailability::new(
-            FeatureAccessState::Unsupported,
-            "No keyboard backlight control was detected on this machine.",
-        )
-    };
+    }
     let mut control_state = ControlState::default();
+
+    if let Some(aura) = &aura {
+        caps.endpoints.push(aura.endpoint_tag());
+    }
+    if let Some(err) = &aura_probe_error {
+        caps.notes.push(format!("asusd Aura probe failed: {err}"));
+    }
+    caps.notes.extend(aura_probe_notes);
 
     if let Some(kbd) = &kbd_backlight {
         caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
@@ -602,7 +658,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Diagnostics: include relevant system bus names (no asusd/supergfxd hardcoding).
-    let re = Regex::new("(?i)asus|rog|supergfx|power|upower").expect("valid regex");
+    let re =
+        Regex::new("(?i)asus|rog|aura|kbd|keyboard|supergfx|power|upower").expect("valid regex");
     if let Ok(names) = rog_providers::dbus::list_system_bus_names_matching(&re).await {
         for n in names {
             caps.endpoints.push(format!("system-bus-name:{n}"));
@@ -624,6 +681,7 @@ async fn main() -> anyhow::Result<()> {
     let daemon = RogHelperDaemon::new(
         shared.clone(),
         kbd_backlight.clone(),
+        aura.clone(),
         asusd.clone(),
         supergfx.clone(),
         cpu.clone(),
@@ -876,6 +934,50 @@ fn detect_kbd_backlight() -> bool {
         }
     }
     false
+}
+
+fn lighting_access_from_backend_flags(
+    aura_available: bool,
+    sysfs_available: bool,
+    sysfs_writable: bool,
+    sysfs_detected: bool,
+    sysfs_probe_error: Option<&str>,
+) -> FeatureAvailability {
+    if aura_available {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard lighting is available through ASUS Aura/RGB.",
+        );
+    }
+
+    if sysfs_available {
+        if sysfs_writable {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Keyboard backlight is available through the sysfs LED backend.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            )
+        }
+    } else if sysfs_probe_error.is_some() {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
+        )
+    } else if sysfs_detected {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the current backend is not ready yet.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard lighting control was detected on this machine.",
+        )
+    }
 }
 
 fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
@@ -1689,30 +1791,116 @@ fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
 }
 
 impl RogHelperDaemon {
-    fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
+    async fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
+        if let Some(aura) = &self.aura {
+            match aura.read_state().await {
+                Ok(mut state) => {
+                    self.merge_sysfs_brightness(&mut state);
+                    return Some(lighting_state_to_dbus(&state));
+                }
+                Err(e) => {
+                    if let Some(mut state) = self.sysfs_lighting_state() {
+                        state.status = "aura_backend_error".to_string();
+                        state.last_error = Some(format!("Aura backend read failed: {e}"));
+                        return Some(lighting_state_to_dbus(&state));
+                    }
+                    return Some(lighting_state_to_dbus(&LightingState {
+                        backend: "asusd-aura".to_string(),
+                        device: aura.endpoint_tag(),
+                        brightness: None,
+                        max_brightness: None,
+                        mode: None,
+                        supported_modes: aura.supported_modes_hint(),
+                        supports_rgb: aura.supports_rgb(),
+                        writable: aura.supports_rgb()
+                            || aura.can_set_mode()
+                            || aura.can_set_brightness(),
+                        rgb: None,
+                        status: "backend_error".to_string(),
+                        last_error: Some(format!("Aura backend read failed: {e}")),
+                    }));
+                }
+            }
+        }
+
+        self.sysfs_lighting_state()
+            .map(|state| lighting_state_to_dbus(&state))
+    }
+
+    fn merge_sysfs_brightness(&self, state: &mut LightingState) {
+        if state.brightness.is_some() && state.max_brightness.is_some() {
+            return;
+        }
+        let Some(kbd) = &self.kbd_backlight else {
+            return;
+        };
+        if state.brightness.is_none() {
+            state.brightness = kbd.read_brightness().ok();
+        }
+        if state.max_brightness.is_none() {
+            state.max_brightness = Some(kbd.max_brightness());
+        }
+        state.writable |= kbd.can_set_brightness();
+    }
+
+    fn sysfs_lighting_state(&self) -> Option<LightingState> {
         let kbd = self.kbd_backlight.as_ref()?;
         let brightness = kbd.read_brightness().ok()?;
-        let max = kbd.max_brightness();
-        let can_set = kbd.can_set_brightness();
-        let mode = if brightness == 0 { "Off" } else { "Static" };
+        let mode = if brightness == 0 {
+            LightingMode::Off
+        } else {
+            LightingMode::Static
+        };
 
-        let mut m = HashMap::new();
-        m.insert("backend".to_string(), ov("sysfs-led"));
-        m.insert("device".to_string(), ov(kbd.led_name().to_string()));
-        m.insert(
-            "brightness".to_string(),
-            OwnedValue::from(brightness as u64),
-        );
-        m.insert("max_brightness".to_string(), OwnedValue::from(max as u64));
-        m.insert("can_set".to_string(), OwnedValue::from(can_set));
-        m.insert("mode".to_string(), ov(mode));
-        m.insert("supports_rgb".to_string(), OwnedValue::from(false));
-        m.insert(
-            "supported_modes".to_string(),
-            ov(vec!["Off".to_string(), "Static".to_string()]),
-        );
-        Some(m)
+        Some(LightingState {
+            backend: "sysfs-led".to_string(),
+            device: kbd.led_name().to_string(),
+            brightness: Some(brightness),
+            max_brightness: Some(kbd.max_brightness()),
+            mode: Some(mode),
+            supported_modes: vec![LightingMode::Off, LightingMode::Static],
+            supports_rgb: false,
+            rgb: None,
+            writable: kbd.can_set_brightness(),
+            status: "rgb_unsupported".to_string(),
+            last_error: None,
+        })
     }
+}
+
+fn lighting_state_to_dbus(state: &LightingState) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert("backend".to_string(), ov(state.backend.clone()));
+    m.insert("device".to_string(), ov(state.device.clone()));
+    m.insert(
+        "brightness".to_string(),
+        OwnedValue::from(state.brightness.unwrap_or(0) as u64),
+    );
+    m.insert(
+        "max_brightness".to_string(),
+        OwnedValue::from(state.max_brightness.unwrap_or(0) as u64),
+    );
+    m.insert("can_set".to_string(), OwnedValue::from(state.writable));
+    m.insert("writable".to_string(), OwnedValue::from(state.writable));
+    if let Some(mode) = state.mode_label() {
+        m.insert("mode".to_string(), ov(mode));
+    }
+    m.insert(
+        "supported_modes".to_string(),
+        ov(state.supported_mode_labels()),
+    );
+    m.insert(
+        "supports_rgb".to_string(),
+        OwnedValue::from(state.supports_rgb),
+    );
+    if let Some(rgb) = state.rgb {
+        m.insert("rgb_hex".to_string(), ov(rgb.to_hex()));
+    }
+    m.insert("status".to_string(), ov(state.status.clone()));
+    if let Some(error) = &state.last_error {
+        m.insert("last_error".to_string(), ov(error.clone()));
+    }
+    m
 }
 
 #[cfg(test)]
@@ -1922,5 +2110,29 @@ mod tests {
                 .and_then(|value| u64::try_from(value).ok()),
             Some(11)
         );
+    }
+
+    #[test]
+    fn lighting_access_prefers_aura_when_available() {
+        let access = lighting_access_from_backend_flags(true, false, false, false, None);
+
+        assert_eq!(access.status, FeatureAccessState::Available);
+        assert!(access.reason.contains("ASUS Aura"));
+    }
+
+    #[test]
+    fn lighting_access_keeps_sysfs_brightness_fallback() {
+        let access = lighting_access_from_backend_flags(false, true, true, true, None);
+
+        assert_eq!(access.status, FeatureAccessState::Available);
+        assert!(access.reason.contains("sysfs LED backend"));
+    }
+
+    #[test]
+    fn lighting_access_reports_unsupported_when_no_backend_exists() {
+        let access = lighting_access_from_backend_flags(false, false, false, false, None);
+
+        assert_eq!(access.status, FeatureAccessState::Unsupported);
+        assert!(access.reason.contains("No keyboard lighting control"));
     }
 }

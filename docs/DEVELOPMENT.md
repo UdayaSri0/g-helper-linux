@@ -226,7 +226,7 @@ The most common current drift pattern in this repository is older roadmap or GUI
 Some areas are modeled more broadly than they are implemented:
 
 - fan curves
-- Aura / RGB lighting
+- Aura / RGB lighting hardware coverage
 - policy automation
 - typed DBus payloads
 

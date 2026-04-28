@@ -236,15 +236,123 @@ impl FanCurve {
 pub enum LightingMode {
     Off,
     Static,
-    Breathing,
+    Breathe,
     Rainbow,
+    Strobe,
+    Pulse,
+    Wave,
     Other(String),
+}
+
+impl LightingMode {
+    pub fn parse_label(value: &str) -> Option<Self> {
+        let key = normalize_lighting_word(value);
+        match key.as_str() {
+            "off" | "none" => Some(Self::Off),
+            "static" | "steady" | "constant" => Some(Self::Static),
+            "breathe" | "breathing" | "breath" => Some(Self::Breathe),
+            "strobe" | "strobing" | "flash" | "flashing" => Some(Self::Strobe),
+            "rainbow" => Some(Self::Rainbow),
+            "pulse" | "pulsing" => Some(Self::Pulse),
+            "wave" | "colourwave" | "colorwave" => Some(Self::Wave),
+            _ => None,
+        }
+    }
+
+    pub fn from_backend_label(value: &str) -> Self {
+        Self::parse_label(value).unwrap_or_else(|| Self::Other(value.trim().to_string()))
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Off => "Off".to_string(),
+            Self::Static => "Static".to_string(),
+            Self::Breathe => "Breathe".to_string(),
+            Self::Rainbow => "Rainbow".to_string(),
+            Self::Strobe => "Strobe".to_string(),
+            Self::Pulse => "Pulse".to_string(),
+            Self::Wave => "Wave".to_string(),
+            Self::Other(value) => value.clone(),
+        }
+    }
+
+    pub fn same_user_mode(&self, other: &Self) -> bool {
+        normalize_lighting_word(&self.label()) == normalize_lighting_word(&other.label())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl RgbColor {
+    pub fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    pub fn parse_hex(value: &str) -> RogResult<Self> {
+        let value = value.trim();
+        let value = value.strip_prefix('#').unwrap_or(value);
+        if value.len() != 6 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(RogError::InvalidInput(format!(
+                "RGB colour '{value}' must be in #RRGGBB format"
+            )));
+        }
+
+        let r = parse_hex_byte(&value[0..2])?;
+        let g = parse_hex_byte(&value[2..4])?;
+        let b = parse_hex_byte(&value[4..6])?;
+        Ok(Self { r, g, b })
+    }
+
+    pub fn to_hex(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightingState {
-    pub brightness: u8,
-    pub mode: LightingMode,
+    pub backend: String,
+    pub device: String,
+    pub brightness: Option<u32>,
+    pub max_brightness: Option<u32>,
+    pub mode: Option<LightingMode>,
+    pub supported_modes: Vec<LightingMode>,
+    pub supports_rgb: bool,
+    pub rgb: Option<RgbColor>,
+    pub writable: bool,
+    pub status: String,
+    pub last_error: Option<String>,
+}
+
+impl LightingState {
+    pub fn mode_label(&self) -> Option<String> {
+        self.mode.as_ref().map(LightingMode::label)
+    }
+
+    pub fn supported_mode_labels(&self) -> Vec<String> {
+        self.supported_modes
+            .iter()
+            .map(LightingMode::label)
+            .collect()
+    }
+}
+
+fn normalize_lighting_word(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn parse_hex_byte(value: &str) -> RogResult<u8> {
+    u8::from_str_radix(value, 16)
+        .map_err(|e| RogError::InvalidInput(format!("invalid RGB hex byte '{value}': {e}")))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,5 +866,46 @@ mod tests {
         assert_eq!(BatteryLimitPercent::clamp_default(10).0, 40);
         assert_eq!(BatteryLimitPercent::clamp_default(80).0, 80);
         assert_eq!(BatteryLimitPercent::clamp_default(150).0, 100);
+    }
+
+    #[test]
+    fn rgb_hex_parser_accepts_hash_and_plain_rrggbb() {
+        assert_eq!(
+            RgbColor::parse_hex("#1A2b3C").unwrap(),
+            RgbColor::new(26, 43, 60)
+        );
+        assert_eq!(
+            RgbColor::parse_hex("00ff7F").unwrap(),
+            RgbColor::new(0, 255, 127)
+        );
+        assert_eq!(RgbColor::new(10, 11, 12).to_hex(), "#0A0B0C");
+    }
+
+    #[test]
+    fn rgb_hex_parser_rejects_invalid_values() {
+        for value in ["", "#123", "12345G", "#00112233", "red"] {
+            assert!(
+                RgbColor::parse_hex(value).is_err(),
+                "{value} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn lighting_mode_parser_normalizes_user_facing_aliases() {
+        assert_eq!(LightingMode::parse_label("Off"), Some(LightingMode::Off));
+        assert_eq!(
+            LightingMode::parse_label("Breathing"),
+            Some(LightingMode::Breathe)
+        );
+        assert_eq!(
+            LightingMode::parse_label("colour wave"),
+            Some(LightingMode::Wave)
+        );
+        assert_eq!(
+            LightingMode::parse_label("flashing"),
+            Some(LightingMode::Strobe)
+        );
+        assert_eq!(LightingMode::parse_label("not-a-mode"), None);
     }
 }

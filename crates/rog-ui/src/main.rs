@@ -14,7 +14,7 @@ use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     dbus_keys, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind,
     CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, PowerSource, TelemetrySnapshot, TopProcessMem,
+    FeatureAvailability, PowerSource, RgbColor, TelemetrySnapshot, TopProcessMem,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -324,13 +324,16 @@ struct LightingInfo {
     can_set: bool,
     mode: String,
     supports_rgb: bool,
+    rgb_hex: Option<String>,
     supported_modes: Vec<String>,
+    status: String,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct PendingLighting {
     brightness: u64,
-    mode: String,
+    mode: Option<String>,
     rgb_hex: Option<String>,
 }
 
@@ -922,7 +925,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if let Ok(mut st) = shared.lock() {
                 st.pending_lighting = Some(PendingLighting {
                     brightness: desired_brightness,
-                    mode: desired_mode,
+                    mode: Some(desired_mode),
                     rgb_hex: None,
                 });
                 st.lighting_error = None;
@@ -1929,6 +1932,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let lighting_backend = pref_value_row(&lighting_overview_group, "Backend", false);
     let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
     let lighting_mode = pref_value_row(&lighting_overview_group, "Mode", false);
+    let lighting_rgb_current = pref_value_row(&lighting_overview_group, "RGB Colour", false);
     lighting_page.add(&lighting_overview_group);
 
     let lighting_controls_group = adw::PreferencesGroup::builder().title("Controls").build();
@@ -1953,8 +1957,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     rgb_button.set_title("Keyboard RGB");
     rgb_button.set_sensitive(false);
     let rgb_row = adw::ActionRow::builder()
-        .title("RGB Color")
-        .subtitle("Checking whether RGB color control is available.")
+        .title("RGB Colour")
+        .subtitle("Checking whether RGB colour control is available.")
         .build();
     rgb_row.add_suffix(&rgb_button);
     rgb_row.set_activatable(false);
@@ -1977,6 +1981,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lighting_backend.set_text(&feature_value_label(&lighting_unknown));
     lighting_current.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_mode.set_text(&lighting_placeholder_value(&lighting_unknown));
+    lighting_rgb_current.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_availability.set_text(&feature_value_label(&lighting_unknown));
     lighting_last_action.set_text(&lighting_last_action_text(None, &lighting_unknown));
     brightness_row.set_subtitle(&lighting_brightness_subtitle(None, &lighting_unknown));
@@ -1991,10 +1996,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let rgb_button = rgb_button.clone();
         apply_lighting.connect_clicked(move |_| {
             let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
-            let desired_mode = mode_combo
-                .active_id()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Static".to_string());
+            let desired_mode = mode_combo.active_id().map(|s| s.to_string());
 
             let mut desired_rgb_hex = None;
             if let Ok(st) = shared.lock() {
@@ -2995,11 +2997,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         details_endpoints_group.set_visible(!endpoint_entries.is_empty());
 
         // Lighting page (capability-driven).
-        lighting_availability.set_text(&feature_value_label(&caps.kbd_backlight_access));
+        lighting_availability.set_text(&lighting_availability_label(
+            lighting.as_ref(),
+            &caps.kbd_backlight_access,
+        ));
         if let Some(ref l) = lighting {
             lighting_backend.set_text(&lighting_backend_label(l));
             lighting_current.set_text(&lighting_current_label(l));
             lighting_mode.set_text(&lighting_mode_label(l));
+            lighting_rgb_current.set_text(&lighting_rgb_current_label(l));
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
             if !brightness_scale.is_focus() {
@@ -3007,7 +3013,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             let can_set = l.can_set;
             brightness_scale.set_sensitive(can_set);
-            mode_combo.set_sensitive(can_set);
             apply_lighting.set_sensitive(can_set);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
                 Some(l),
@@ -3020,9 +3025,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ));
 
             let mut modes = l.supported_modes.clone();
-            if modes.is_empty() {
+            if modes.is_empty() && l.backend.eq_ignore_ascii_case("sysfs-led") {
                 modes = vec!["Off".to_string(), "Static".to_string()];
             }
+            mode_combo.set_sensitive(can_set && !modes.is_empty());
             if !mode_combo.is_focus() {
                 let mut last = last_supported_modes.borrow_mut();
                 if *last != modes {
@@ -3033,21 +3039,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     *last = modes.clone();
                 }
 
-                let desired = modes
+                if let Some(desired) = modes
                     .iter()
                     .find(|m| m.as_str().eq_ignore_ascii_case(&l.mode))
                     .cloned()
                     .or_else(|| modes.first().cloned())
-                    .unwrap_or_else(|| "Static".to_string());
-                mode_combo.set_active_id(Some(&desired));
+                {
+                    mode_combo.set_active_id(Some(&desired));
+                } else {
+                    mode_combo.set_active_id(None);
+                }
             }
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
+            if let Some(rgba) = l
+                .rgb_hex
+                .as_deref()
+                .and_then(rgb_hex_to_rgba)
+                .filter(|_| !rgb_button.is_focus())
+            {
+                rgb_button.set_rgba(&rgba);
+            }
             rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
         } else {
             lighting_backend.set_text(&feature_value_label(&caps.kbd_backlight_access));
             lighting_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_mode.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
+            lighting_rgb_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             brightness_scale.set_range(0.0, 3.0);
             if !brightness_scale.is_focus() {
                 brightness_scale.set_value(0.0);
@@ -3489,6 +3507,10 @@ async fn fetch_state() -> Result<
         caps_text.push_str("\n\n");
         caps_text.push_str(&fan_text);
     }
+    if let Some(lighting) = lighting.as_ref() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(&lighting_diagnostics_text(lighting));
+    }
     let cpu_access_text = cpu_access_report_text(&cpu_caps);
     if !cpu_access_text.is_empty() {
         caps_text.push_str("\n\n");
@@ -3525,7 +3547,9 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
 
     let mut m = HashMap::new();
     m.insert("brightness".to_string(), OwnedValue::from(p.brightness));
-    m.insert("mode".to_string(), ov(p.mode));
+    if let Some(mode) = p.mode {
+        m.insert("mode".to_string(), ov(mode));
+    }
     if let Some(rgb) = p.rgb_hex {
         m.insert("rgb_hex".to_string(), ov(rgb));
     }
@@ -5172,6 +5196,7 @@ fn lighting_backend_label(lighting: &LightingInfo) -> String {
     } else {
         match normalize_label(&lighting.backend).as_str() {
             "sysfsled" => "Sysfs LED backend".to_string(),
+            "asusdaura" => "ASUS Aura DBus backend".to_string(),
             _ => lighting.backend.clone(),
         }
     };
@@ -5184,7 +5209,11 @@ fn lighting_backend_label(lighting: &LightingInfo) -> String {
 }
 
 fn lighting_current_label(lighting: &LightingInfo) -> String {
-    format!("{}/{}", lighting.brightness, lighting.max_brightness)
+    if lighting.max_brightness == 0 {
+        "Brightness not reported".to_string()
+    } else {
+        format!("{}/{}", lighting.brightness, lighting.max_brightness)
+    }
 }
 
 fn lighting_mode_label(lighting: &LightingInfo) -> String {
@@ -5193,6 +5222,43 @@ fn lighting_mode_label(lighting: &LightingInfo) -> String {
     } else {
         lighting.mode.clone()
     }
+}
+
+fn lighting_rgb_current_label(lighting: &LightingInfo) -> String {
+    if lighting.supports_rgb {
+        lighting
+            .rgb_hex
+            .clone()
+            .unwrap_or_else(|| "Current RGB colour not reported".to_string())
+    } else if lighting.backend.eq_ignore_ascii_case("sysfs-led") {
+        "Unsupported by sysfs brightness backend".to_string()
+    } else if lighting.status == "rgb_not_exposed" {
+        "Not exposed by asusd".to_string()
+    } else {
+        "Unsupported by current backend".to_string()
+    }
+}
+
+fn lighting_availability_label(
+    lighting: Option<&LightingInfo>,
+    access: &FeatureAvailability,
+) -> String {
+    if let Some(lighting) = lighting {
+        if let Some(error) = &lighting.last_error {
+            return format!("backend_error ({error})");
+        }
+        return match lighting.status.as_str() {
+            "available" => "available".to_string(),
+            "rgb_not_exposed" => "available (RGB colour is not exposed by asusd)".to_string(),
+            "rgb_read_only" => "available (RGB colour is read-only)".to_string(),
+            "rgb_unsupported" => "available (brightness-only sysfs fallback)".to_string(),
+            "aura_backend_error" | "backend_error" => "temporarily_unavailable".to_string(),
+            other if !other.is_empty() => other.to_string(),
+            _ => feature_value_label(access),
+        };
+    }
+
+    feature_value_label(access)
 }
 
 fn lighting_brightness_subtitle(
@@ -5249,14 +5315,24 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
     if let Some(lighting) = lighting {
         if lighting.supports_rgb {
             if lighting.can_set {
-                "Choose an RGB color to stage and apply.".to_string()
+                "Choose an RGB colour to stage and apply.".to_string()
             } else if access.reason.is_empty() {
-                "RGB color is available, but writes are blocked for the current user.".to_string()
+                "RGB colour is available, but writes are blocked for the current user.".to_string()
             } else {
                 access.reason.clone()
             }
         } else {
-            "RGB color is not supported by the current lighting backend.".to_string()
+            if lighting.backend.eq_ignore_ascii_case("sysfs-led") {
+                "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+                    .to_string()
+            } else if lighting.status == "rgb_not_exposed" {
+                "asusd is available, but it does not expose a writable Aura RGB colour control."
+                    .to_string()
+            } else if let Some(error) = lighting.last_error.as_deref() {
+                format!("RGB colour is blocked by a backend error: {error}")
+            } else {
+                "RGB colour is not supported by the current lighting backend.".to_string()
+            }
         }
     } else {
         match access.status {
@@ -5272,18 +5348,18 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
                 }
             }
             FeatureAccessState::TemporarilyUnavailable => {
-                "Lighting backend is temporarily unavailable. RGB color cannot be changed right now."
+                "Lighting backend is temporarily unavailable. RGB colour cannot be changed right now."
                     .to_string()
             }
             FeatureAccessState::Unsupported => {
                 "Keyboard lighting is not supported on this machine.".to_string()
             }
             FeatureAccessState::Available => {
-                "Waiting for lighting backend details before enabling RGB color."
+                "Waiting for lighting backend details before enabling RGB colour."
                     .to_string()
             }
             FeatureAccessState::Unknown => {
-                "Checking whether RGB color control is available.".to_string()
+                "Checking whether RGB colour control is available.".to_string()
             }
         }
     }
@@ -5497,7 +5573,7 @@ fn troubleshooting_summary_text(
         ("Performance Profile", &caps.profile_access),
         ("Charge Limit", &caps.charge_limit_access),
         ("GPU Mode", &caps.gpu_mode_access),
-        ("Keyboard Backlight", &caps.kbd_backlight_access),
+        ("Keyboard Lighting", &caps.kbd_backlight_access),
     ] {
         if !access.is_available() && access.status != FeatureAccessState::Unknown {
             issues.push(format!(
@@ -5574,8 +5650,15 @@ fn friendly_action_error(error: &str) -> String {
         "GPU mode switching requires supergfxd. Install or start supergfxd, then retry.".to_string()
     } else if lower.contains("lighting not supported on this system") {
         "No lighting backend is available on this machine.".to_string()
-    } else if lower.contains("rgb color is not supported by the sysfs led backend") {
-        "RGB color is not supported by the current lighting backend.".to_string()
+    } else if lower.contains("rgb colour requires asus aura support")
+        || lower.contains("rgb color is not supported by the sysfs led backend")
+    {
+        "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+            .to_string()
+    } else if lower.contains("rgb colour is not exposed")
+        || lower.contains("rgb color is not exposed")
+    {
+        "asusd is available, but it does not expose a writable Aura RGB colour control.".to_string()
     } else if lower.contains("lighting mode")
         && lower.contains("not supported by the sysfs led backend")
     {
@@ -6085,7 +6168,10 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         can_set: b(&map, "can_set").unwrap_or(false),
         mode: s(&map, "mode").unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
+        rgb_hex: s(&map, "rgb_hex"),
         supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
+        status: s(&map, "status").unwrap_or_else(|| "unknown".to_string()),
+        last_error: s(&map, "last_error"),
     })
 }
 
@@ -6213,6 +6299,16 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     let g = to_u8(rgba.green());
     let b = to_u8(rgba.blue());
     format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+fn rgb_hex_to_rgba(value: &str) -> Option<gtk::gdk::RGBA> {
+    let rgb = RgbColor::parse_hex(value).ok()?;
+    Some(gtk::gdk::RGBA::new(
+        rgb.r as f32 / 255.0,
+        rgb.g as f32 / 255.0,
+        rgb.b as f32 / 255.0,
+        1.0,
+    ))
 }
 
 fn cpu_path_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuPathAccess> {
@@ -6495,6 +6591,38 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
         ));
     }
 
+    lines.join("\n")
+}
+
+fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
+    let mut lines = Vec::new();
+    lines.push("Lighting Diagnostics".to_string());
+    lines.push("====================".to_string());
+    lines.push(format!("backend: {}", lighting.backend));
+    lines.push(format!("device: {}", lighting.device));
+    lines.push(format!(
+        "brightness: {}/{}",
+        lighting.brightness, lighting.max_brightness
+    ));
+    lines.push(format!("mode: {}", lighting.mode));
+    lines.push(format!(
+        "supported_modes: {}",
+        if lighting.supported_modes.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            lighting.supported_modes.join(", ")
+        }
+    ));
+    lines.push(format!("supports_rgb: {}", lighting.supports_rgb));
+    lines.push(format!(
+        "rgb_hex: {}",
+        lighting.rgb_hex.as_deref().unwrap_or("(not reported)")
+    ));
+    lines.push(format!("writable: {}", lighting.can_set));
+    lines.push(format!("status: {}", lighting.status));
+    if let Some(error) = &lighting.last_error {
+        lines.push(format!("last_error: {error}"));
+    }
     lines.join("\n")
 }
 

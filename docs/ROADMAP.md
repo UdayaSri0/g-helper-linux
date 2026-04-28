@@ -176,11 +176,11 @@ Note:
 
 ### Aura / RGB lighting
 
-Planned but missing:
+Implemented when asusd exposes a compatible Aura/keyboard lighting DBus backend, with remaining work focused on:
 
-- provider-backed Aura lighting support
-- daemon support for RGB/effects
-- UI support beyond current keyboard brightness and mode placeholders
+- broader hardware validation
+- additional asusd interface shape coverage if real machines expose unsupported signatures
+- clearer reporting for backend-specific effects that do not map to the shared mode labels
 
 ### Persistent configuration
 
@@ -211,7 +211,7 @@ The most useful next technical priorities, based on current implementation statu
 
 1. Fan curves
 2. Auto mode / policy integration
-3. Aura / RGB lighting
+3. Broader Aura / RGB hardware validation
 4. Stronger typed daemon/UI contract
 5. Packaging and release readiness
 

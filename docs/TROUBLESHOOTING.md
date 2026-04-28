@@ -245,7 +245,7 @@ Then compare those values with the CPU page and Diagnostics text.
 
 ## Keyboard Backlight Is Visible, But Read-Only
 
-The current runtime lighting backend is keyboard backlight brightness via sysfs.
+The sysfs lighting fallback controls keyboard backlight brightness only.
 
 Typical signs:
 
@@ -264,7 +264,7 @@ Expected current behavior:
 
 - current brightness can still be shown
 - the control stays visible
-- the UI does not pretend Aura / RGB support exists
+- the UI does not enable RGB colour unless the daemon reports writable Aura/RGB support
 
 What to do:
 
@@ -272,6 +272,26 @@ What to do:
 - restart `rog-helperd` after changing local policy
 
 The repository does not currently ship a bundled udev rule or privileged helper for this path.
+
+## RGB Colour Is Disabled
+
+RGB colour requires an asusd Aura/keyboard lighting interface on system DBus.
+
+Check:
+
+```bash
+cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard"
+```
+
+Expected behavior:
+
+- `has_aura: true` only when an Aura/RGB provider was actually detected
+- `has_kbd_backlight: true` can still be true for brightness-only sysfs support
+- the Lighting page enables the RGB picker only when `supports_rgb` is true
+- if asusd is present but does not expose Aura/RGB, Diagnostics should say that RGB is not exposed by asusd
+
+If RGB is unavailable, the app should keep brightness controls available when sysfs backlight support exists.
 
 ## Missing Telemetry or Limited `hwmon` Coverage
 

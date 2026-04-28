@@ -6,13 +6,13 @@ This matrix reflects the current implementation in the repository today. It is b
 | --- | --- | --- | --- | --- |
 | Session daemon API | `rog-daemon` | Read + Write | Implemented | Session bus API exposed at `io.github.roghelper.Daemon` |
 | Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Useful for service, DBus, sensor, and capability inspection |
-| Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight` are populated; `has_aura` and `has_fan_curves` are not currently populated to true |
+| Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are populated; `has_fan_curves` is not currently populated to true |
 | Performance profile | `asusd` | Read + Write | Implemented | Requires `asusd`; UI exposes quick actions and GPU-page controls |
 | Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; current UI control lives on Dashboard |
 | GPU mode | `supergfxd` | Read + Write | Implemented | Requires `supergfxd`; current safety model is hint-based rather than a full busy-state system |
 | Keyboard backlight brightness | sysfs LED backend (`kbd_backlight`) | Read + Write | Implemented | Writable only if the current user can write the LED `brightness` file |
-| Lighting mode | sysfs LED backend | Read + Write | Partial | Current daemon backend supports `Off` and `Static` only |
-| Aura / RGB lighting | None in current runtime | Read + Write | Missing | Model and UI placeholders exist, but no runtime backend is wired in |
+| Lighting mode | sysfs LED backend or asusd Aura DBus | Read + Write | Partial | Sysfs supports `Off` and `Static`; Aura mode choices come only from the probed backend |
+| Aura / RGB lighting | asusd Aura DBus provider | Read + Write | Implemented, hardware-dependent | Requires an introspectable Aura/keyboard lighting interface from `asusd`; degrades to sysfs brightness-only when Aura/RGB is not exposed |
 | Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; friendly labels come from hwmon when available, otherwise the UI falls back to `Fan N`; rows remain visible even when an individual input is currently unavailable |
 | Fan curves | None in current runtime | Read + Write | Missing | Domain model and traits exist, but there is no provider, daemon API, or UI flow yet |
 | CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, physical-core/logical-thread counts, and per-logical-CPU state |

@@ -188,6 +188,7 @@ Important note:
 - current lighting backend
 - current brightness
 - current mode
+- current RGB colour when reported
 - availability status
 - last action status
 
@@ -205,11 +206,12 @@ Important note:
 - RGB support depends on `supports_rgb`
 - unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
-### Missing or planned
+### Backend behavior
 
-- no Aura / RGB runtime backend yet
-- current backend is keyboard brightness only
-- current daemon-supported modes are limited to `Off` and `Static`
+- asusd Aura/RGB is used when a supported Aura/keyboard lighting interface is exposed on system DBus
+- sysfs keyboard backlight remains available as a brightness-only fallback
+- sysfs-supported modes are limited to `Off` and `Static`
+- Aura-supported modes are not invented by the UI; they come from daemon/backend reporting
 
 ## Diagnostics
 
