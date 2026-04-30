@@ -2146,17 +2146,26 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let hero = gtk::Box::new(gtk::Orientation::Vertical, 14);
     hero.add_css_class("fans-hero");
-    let hero_top = gtk::FlowBox::new();
-    hero_top.set_selection_mode(gtk::SelectionMode::None);
-    hero_top.set_min_children_per_line(1);
-    hero_top.set_max_children_per_line(3);
-    hero_top.set_column_spacing(14);
-    hero_top.set_row_spacing(14);
+    let gauge_row = gtk::FlowBox::new();
+    gauge_row.add_css_class("fans-gauge-row");
+    gauge_row.set_selection_mode(gtk::SelectionMode::None);
+    gauge_row.set_min_children_per_line(1);
+    gauge_row.set_max_children_per_line(2);
+    gauge_row.set_column_spacing(16);
+    gauge_row.set_row_spacing(16);
     let gpu_temp_gauge = TempGauge::new("GPU", GaugeAccent::Blue);
     let cpu_temp_gauge = TempGauge::new("CPU", GaugeAccent::Magenta);
+    gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
+    cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
+    let gpu_gauge_card = build_fans_gauge_card(&gpu_temp_gauge);
+    let cpu_gauge_card = build_fans_gauge_card(&cpu_temp_gauge);
+    gauge_row.insert(&gpu_gauge_card, -1);
+    gauge_row.insert(&cpu_gauge_card, -1);
+    hero.append(&gauge_row);
 
     let mode_panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
     mode_panel.add_css_class("fan-control-panel");
+    mode_panel.add_css_class("fans-cooling-mode-card");
     let mode_title = gtk::Label::new(Some("Cooling Mode"));
     mode_title.set_xalign(0.0);
     mode_title.add_css_class("title-3");
@@ -2173,12 +2182,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     mode_panel.append(&mode_title);
     mode_panel.append(&mode_hint);
     mode_panel.append(&fan_last_action_label);
-    hero_top.insert(gpu_temp_gauge.widget(), -1);
-    hero_top.insert(&mode_panel, -1);
-    hero_top.insert(cpu_temp_gauge.widget(), -1);
-    hero.append(&hero_top);
+    hero.append(&mode_panel);
 
     let hero_fans_flow = gtk::FlowBox::new();
+    hero_fans_flow.add_css_class("fans-rotor-grid");
     hero_fans_flow.set_selection_mode(gtk::SelectionMode::None);
     hero_fans_flow.set_min_children_per_line(1);
     hero_fans_flow.set_max_children_per_line(4);
@@ -2797,6 +2804,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_card.set_unit(None);
                 gpu_temp_gauge.set_temp(None);
             }
+            gpu_temp_gauge.set_speed_metrics(
+                "Core Clock",
+                t.gpu_core_clock_mhz.map(u64::from),
+                Some("Memory Clock"),
+                t.gpu_memory_clock_mhz.map(u64::from),
+            );
 
             if let Some(v) = t.battery_percent {
                 batt_card.set_value(format!("{v:.0}"));
@@ -3014,6 +3027,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 &fan_entries,
             );
             details_fan_group_ref.set_visible(true);
+        } else {
+            gpu_temp_gauge.set_temp(None);
+            gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
         }
 
         // CPU page + cards.
@@ -3050,6 +3066,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 cpu_card_clock.set_value("--");
                 cpu_card_clock.set_unit(None);
             }
+            cpu_temp_gauge.set_speed_metrics(
+                "Avg Clock",
+                cpu_data.avg_freq_mhz.map(|mhz| mhz.round().max(0.0) as u64),
+                None,
+                None,
+            );
             cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
 
             cpu_scaling_driver
@@ -3337,6 +3359,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_card_usage.set_value("--");
             cpu_card_power.set_value("--");
             cpu_card_clock.set_value("--");
+            cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
             cpu_read_only_banner.set_revealed(false);
             cpu_per_core_buffer.set_text("Logical CPU / thread telemetry unavailable.");
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
@@ -5247,6 +5270,14 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     if let Some(v) = map.get("gpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
         t.gpu_temp_c = Some(v as f32);
     }
+    t.gpu_core_clock_mhz = map
+        .get("gpu_core_clock_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
+    t.gpu_memory_clock_mhz = map
+        .get("gpu_memory_clock_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
     if let Some(temps) = map
         .get("temps_c")
         .cloned()
@@ -7059,6 +7090,25 @@ fn install_css() {
     radial-gradient(circle at 82% 18%, alpha(#ff00b8, 0.12), transparent 42%),
     alpha(currentColor, 0.045);
 }
+.fans-performance-dashboard,
+.fans-gauge-row,
+.fans-rotor-grid {
+  background: transparent;
+}
+.fans-gauge-card {
+  padding: 14px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 12%, alpha(#00a7ff, 0.12), transparent 46%),
+    alpha(currentColor, 0.040);
+  border: 1px solid alpha(currentColor, 0.10);
+}
+.fans-gauge-card-large {
+  min-width: 300px;
+}
+.fans-cooling-mode-card {
+  margin-top: 2px;
+}
 .fans-status-pill {
   padding: 5px 10px;
   border-radius: 999px;
@@ -7097,6 +7147,9 @@ fn install_css() {
   background:
     radial-gradient(circle at 50% 16%, alpha(#00a7ff, 0.13), transparent 42%),
     alpha(currentColor, 0.040);
+}
+.fan-rotor-card {
+  min-width: 150px;
 }
 .fan-card-read-only {
   border-color: alpha(#7aa5c9, 0.18);
@@ -7674,9 +7727,20 @@ fn fans_status_pill(text: &str) -> gtk::Label {
     label
 }
 
+fn build_fans_gauge_card(gauge: &TempGauge) -> gtk::Box {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("fans-gauge-card");
+    root.add_css_class("fans-gauge-card-large");
+    root.set_hexpand(true);
+    root.set_size_request(300, -1);
+    root.append(gauge.widget());
+    root
+}
+
 fn build_fan_visual_slot() -> FanVisualSlot {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
     root.add_css_class("fan-visual-card");
+    root.add_css_class("fan-rotor-card");
     root.set_hexpand(true);
     root.set_size_request(150, -1);
 
@@ -8114,6 +8178,11 @@ mod tests {
 
         let mut map = HashMap::new();
         map.insert("timestamp_ms".to_string(), OwnedValue::from(10_u64));
+        map.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(2100_u64));
+        map.insert(
+            "gpu_memory_clock_mhz".to_string(),
+            OwnedValue::from(7000_u64),
+        );
         map.insert(
             dbus_keys::TELEMETRY_FAN_ROWS_KEY.to_string(),
             ov(vec![fan_row]),
@@ -8128,6 +8197,8 @@ mod tests {
         assert_eq!(fan.raw_label.as_deref(), Some("gpu"));
         assert_eq!(fan.display_label, "GPU Fan");
         assert_eq!(fan.rpm, Some(2875));
+        assert_eq!(telemetry.gpu_core_clock_mhz, Some(2100));
+        assert_eq!(telemetry.gpu_memory_clock_mhz, Some(7000));
     }
 
     #[test]

@@ -1181,6 +1181,8 @@ pub struct TelemetrySnapshot {
 
     pub cpu_temp_c: Option<f32>,
     pub gpu_temp_c: Option<f32>,
+    pub gpu_core_clock_mhz: Option<u32>,
+    pub gpu_memory_clock_mhz: Option<u32>,
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
@@ -1247,6 +1249,8 @@ impl TelemetrySnapshot {
             timestamp_ms,
             cpu_temp_c: None,
             gpu_temp_c: None,
+            gpu_core_clock_mhz: None,
+            gpu_memory_clock_mhz: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
             fan_rows: Vec::new(),

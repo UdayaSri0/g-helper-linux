@@ -185,9 +185,13 @@ Current telemetry keys are grouped below.
 - `timestamp_ms`
 - `cpu_temp_c`
 - `gpu_temp_c`
+- `gpu_core_clock_mhz`
+- `gpu_memory_clock_mhz`
 - `temps_c`
 - `fans_rpm`
 - `fan_rows`
+
+`gpu_core_clock_mhz` and `gpu_memory_clock_mhz` are best-effort NVIDIA clock values from the daemon-side `nvidia-smi` provider. They are omitted when `nvidia-smi` is missing, unsupported, timed out, or the GPU is powered down.
 
 `fans_rpm` is a flattened convenience map keyed by chosen display label and only includes rows that currently report an RPM value.
 

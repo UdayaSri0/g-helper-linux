@@ -202,6 +202,19 @@ Common reasons:
 
 The app should degrade to read-only telemetry instead of trying unsafe writes.
 
+## GPU Clock Shows `-- MHz`
+
+The Fans page shows GPU core and memory clocks only when the daemon can read them safely. On NVIDIA systems this is best-effort `nvidia-smi` telemetry.
+
+Common reasons clocks are unavailable:
+
+- `nvidia-smi` is not installed
+- the active GPU is AMD or Intel and no clock provider is exposed yet
+- the NVIDIA GPU is powered down in hybrid/integrated mode
+- the query timed out or the driver reported the clock as unsupported
+
+The UI should show `-- MHz` and continue updating temperature and fan RPM telemetry.
+
 ## Permission Denied Writing PWM or Fan Target
 
 If `fan-caps` reports permission warnings, inspect ownership:

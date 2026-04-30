@@ -225,9 +225,16 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
             snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
         }
     }
+    let nvidia = NvidiaSmiTelemetryProvider::default();
+    if let Ok(Some(clocks)) = nvidia.read_gpu_clocks_mhz().await {
+        snap.gpu_core_clock_mhz = clocks.core_clock_mhz;
+        snap.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+    }
     println!("  timestamp_ms: {}", snap.timestamp_ms);
     println!("  cpu_temp_c: {:?}", snap.cpu_temp_c);
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
+    println!("  gpu_core_clock_mhz: {:?}", snap.gpu_core_clock_mhz);
+    println!("  gpu_memory_clock_mhz: {:?}", snap.gpu_memory_clock_mhz);
     println!("  temps: {}", snap.temps_c.len());
     println!("  fans: {}", snap.fans_rpm.len());
     for fan in &snap.fan_rows {

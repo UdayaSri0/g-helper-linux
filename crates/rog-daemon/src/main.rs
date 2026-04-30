@@ -1122,6 +1122,14 @@ async fn main() -> anyhow::Result<()> {
                         Err(e) => warnings.push(format!("nvidia-smi telemetry unavailable: {e}")),
                     }
                 }
+                match nvidia.read_gpu_clocks_mhz().await {
+                    Ok(Some(clocks)) => {
+                        telemetry.gpu_core_clock_mhz = clocks.core_clock_mhz;
+                        telemetry.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {}
+                }
 
                 match upower.read_status().await {
                     Ok(st) => {
@@ -1794,6 +1802,15 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     }
     if let Some(v) = t.gpu_temp_c {
         m.insert("gpu_temp_c".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.gpu_core_clock_mhz {
+        m.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(v as u64));
+    }
+    if let Some(v) = t.gpu_memory_clock_mhz {
+        m.insert(
+            "gpu_memory_clock_mhz".to_string(),
+            OwnedValue::from(v as u64),
+        );
     }
     if !t.temps_c.is_empty() {
         let temps: HashMap<String, f64> = t
@@ -2605,6 +2622,8 @@ mod tests {
     #[test]
     fn telemetry_to_dbus_emits_structured_fan_rows() {
         let mut telemetry = TelemetrySnapshot::empty_now(42);
+        telemetry.gpu_core_clock_mhz = Some(2100);
+        telemetry.gpu_memory_clock_mhz = Some(7000);
         telemetry.fan_rows.push(FanTelemetry {
             hwmon_device: "hwmon3".to_string(),
             hwmon_path: "/sys/class/hwmon/hwmon3".to_string(),
@@ -2639,6 +2658,8 @@ mod tests {
             "CPU Fan"
         );
         assert_eq!(u64_from_map(row, dbus_keys::FAN_ROW_RPM_KEY), Some(3210));
+        assert_eq!(u64_from_map(&map, "gpu_core_clock_mhz"), Some(2100));
+        assert_eq!(u64_from_map(&map, "gpu_memory_clock_mhz"), Some(7000));
     }
 
     #[test]

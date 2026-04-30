@@ -92,6 +92,10 @@ impl FanRotor {
 struct TempGaugeState {
     temp_c: Option<f32>,
     label: String,
+    primary_speed_label: String,
+    primary_speed_mhz: Option<u64>,
+    secondary_speed_label: Option<String>,
+    secondary_speed_mhz: Option<u64>,
     accent: GaugeAccent,
 }
 
@@ -110,14 +114,19 @@ pub struct TempGauge {
 impl TempGauge {
     pub fn new(label: &str, accent: GaugeAccent) -> Self {
         let area = gtk::DrawingArea::new();
-        area.set_content_width(220);
-        area.set_content_height(220);
+        area.set_content_width(300);
+        area.set_content_height(260);
+        area.set_hexpand(true);
         area.add_css_class("fan-gauge-widget");
         area.set_tooltip_text(Some("Temperature gauge from daemon telemetry."));
 
         let state = Rc::new(RefCell::new(TempGaugeState {
             temp_c: None,
             label: label.to_string(),
+            primary_speed_label: "Clock".to_string(),
+            primary_speed_mhz: None,
+            secondary_speed_label: None,
+            secondary_speed_mhz: None,
             accent,
         }));
         let draw_state = state.clone();
@@ -134,6 +143,22 @@ impl TempGauge {
 
     pub fn set_temp(&self, temp_c: Option<f32>) {
         self.state.borrow_mut().temp_c = temp_c;
+        self.area.queue_draw();
+    }
+
+    pub fn set_speed_metrics(
+        &self,
+        primary_label: &str,
+        primary_mhz: Option<u64>,
+        secondary_label: Option<&str>,
+        secondary_mhz: Option<u64>,
+    ) {
+        let mut state = self.state.borrow_mut();
+        state.primary_speed_label = primary_label.to_string();
+        state.primary_speed_mhz = primary_mhz;
+        state.secondary_speed_label = secondary_label.map(ToString::to_string);
+        state.secondary_speed_mhz = secondary_mhz;
+        drop(state);
         self.area.queue_draw();
     }
 }
@@ -230,21 +255,6 @@ fn draw_fan_rotor(ctx: &Context, width: f64, height: f64, state: &FanRotorState)
     ctx.arc(cx, cy, radius * 0.18, 0.0, 2.0 * PI);
     ctx.stroke().ok();
 
-    if !state.compact {
-        let text = state
-            .rpm
-            .map(|rpm| format!("{rpm}"))
-            .unwrap_or_else(|| "--".to_string());
-        draw_center_text(
-            ctx,
-            cx,
-            cy + radius * 0.56,
-            &text,
-            "RPM",
-            size * 0.13,
-            (r, g, b),
-        );
-    }
     ctx.restore().ok();
 }
 
@@ -273,8 +283,8 @@ fn draw_blade(ctx: &Context, cx: f64, cy: f64, radius: f64, angle: f64, compact:
 fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGaugeState) {
     let size = width.min(height);
     let cx = width / 2.0;
-    let cy = height / 2.0;
-    let radius = size * 0.40;
+    let cy = height * 0.43;
+    let radius = size * 0.36;
     let temp = state.temp_c.map(|value| value.clamp(0.0, 100.0));
     let (r, g, b) = gauge_color(state.accent, temp);
     let start = 0.78 * PI;
@@ -283,7 +293,7 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
 
     radial_glow(ctx, cx, cy, radius * 1.45, (r, g, b), 0.11);
 
-    ctx.set_line_width((size * 0.035).max(4.0));
+    ctx.set_line_width((size * 0.042).max(5.0));
     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.12);
     ctx.arc(cx, cy, radius, start, end);
     ctx.stroke().ok();
@@ -295,12 +305,12 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
     }
 
     ctx.set_line_width(1.0);
-    for tick in 0..=10 {
-        let a = start + range * (tick as f64 / 10.0);
+    for tick in 0..=20 {
+        let a = start + range * (tick as f64 / 20.0);
         let inner = if tick % 2 == 0 {
-            radius * 0.86
+            radius * 0.84
         } else {
-            radius * 0.92
+            radius * 0.91
         };
         let outer = radius * 1.03;
         let p1 = polar(cx, cy, inner, a);
@@ -321,7 +331,7 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
         cy - size * 0.02,
         &value,
         "C",
-        size * 0.22,
+        size * 0.23,
         (r, g, b),
     );
     draw_label(
@@ -329,7 +339,7 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
         cx,
         cy + radius * 0.48,
         &state.label,
-        size * 0.10,
+        size * 0.105,
         (1.0, 1.0, 1.0),
         0.82,
     );
@@ -338,10 +348,33 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
         cx,
         cy + radius * 0.68,
         "Temperature",
-        size * 0.062,
+        size * 0.066,
         (1.0, 1.0, 1.0),
         0.55,
     );
+
+    let primary_speed = speed_line(&state.primary_speed_label, state.primary_speed_mhz);
+    draw_label(
+        ctx,
+        cx,
+        height - size * 0.205,
+        &primary_speed,
+        size * 0.067,
+        (1.0, 1.0, 1.0),
+        0.72,
+    );
+    if let Some(label) = state.secondary_speed_label.as_deref() {
+        let secondary_speed = speed_line(label, state.secondary_speed_mhz);
+        draw_label(
+            ctx,
+            cx,
+            height - size * 0.105,
+            &secondary_speed,
+            size * 0.058,
+            (1.0, 1.0, 1.0),
+            0.54,
+        );
+    }
 }
 
 fn draw_curve_preview(ctx: &Context, width: f64, height: f64, state: &CurvePreviewState) {
@@ -439,6 +472,11 @@ fn gauge_color(accent: GaugeAccent, temp: Option<f32>) -> Color {
         GaugeAccent::Blue => (0.0, 0.68, 1.0),
         GaugeAccent::Magenta => (1.0, 0.0, 0.72),
     }
+}
+
+fn speed_line(label: &str, mhz: Option<u64>) -> String {
+    mhz.map(|value| format!("{label}: {value} MHz"))
+        .unwrap_or_else(|| format!("{label}: -- MHz"))
 }
 
 fn draw_center_text(

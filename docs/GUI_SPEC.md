@@ -300,7 +300,7 @@ Current examples in the implementation include:
 The Fans page is a current UI page.
 
 - shows a styled header with backend, detected fan count, current mode, and mapping warnings
-- includes circular CPU/GPU temperature gauges when telemetry is available
+- includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
 - includes animated fan rotors whose visual speed is scaled from live RPM and capped for readability
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings

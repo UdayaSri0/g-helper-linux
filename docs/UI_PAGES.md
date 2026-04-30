@@ -295,7 +295,8 @@ Important note:
 Current page.
 
 - styled Fan Control header with backend/count/mode/mapping status pills
-- circular CPU/GPU temperature gauges
+- large CPU/GPU temperature gauges that sit side by side on normal laptop widths and stack on narrow windows
+- operating MHz display in the CPU/GPU gauge cards when telemetry is available
 - animated fan rotors in the hero dashboard, scaled from live RPM telemetry
 - capability warning banner
 - sync toggle when multiple controllable fans exist
