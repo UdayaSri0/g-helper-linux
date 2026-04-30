@@ -299,13 +299,18 @@ Current examples in the implementation include:
 
 The Fans page is a current UI page.
 
-- shows fan backend, detected fan count, current mode, last action, and a warning banner for read-only or uncertain states
-- keeps per-fan telemetry visible for every detected fan
+- shows a styled header with backend, detected fan count, current mode, and mapping warnings
+- includes circular CPU/GPU temperature gauges when telemetry is available
+- includes animated fan rotors whose visual speed is scaled from live RPM and capped for readability
+- keeps per-fan telemetry visible for every detected fan, including read-only fans
+- shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support
 - exposes sync mode only when more than one controllable fan is detected
 - exposes time-limited full-speed boost buttons for 5, 10, and 15 minutes when boost is supported
 - always exposes Return to Auto for controllable fans
 - asks for explicit acknowledgement before first manual fan control
+- shows a disabled safe-curve preview when curves are unsupported
+- keeps raw diagnostics collapsed by default while preserving Copy fan diagnostics
 - keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
 - never writes directly to sysfs or hardware from the UI
 

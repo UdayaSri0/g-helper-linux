@@ -109,6 +109,7 @@ Current source-backed features include:
 - Keyboard backlight brightness read/write through sysfs when permissions allow
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
 - Fan monitoring and safe fan controls for supported ASUS/Linux hardware
+  - polished RPM monitoring dashboard with animated fan rotors and circular temperature gauges
   - best-effort dynamic RPM telemetry for 0..N fans
   - manual percentage control only when writable PWM endpoints are confirmed
   - optional RPM target, sync mode, time-limited boost, and Auto/BIOS restore when supported

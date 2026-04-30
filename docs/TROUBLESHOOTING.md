@@ -184,6 +184,7 @@ find /sys/class/hwmon -maxdepth 3 -type f \( -name "fan*_input" -o -name "fan*_l
 Expected behavior:
 
 - fan rows remain visible
+- the Fans page still shows animated RPM rotors and individual fan cards for telemetry
 - manual controls are disabled unless `rog-helperd` reports writable `pwmN` plus `pwmN_enable`
 - RPM target controls are disabled unless writable `fanN_target` exists
 - Diagnostics lists endpoint paths and permission warnings
