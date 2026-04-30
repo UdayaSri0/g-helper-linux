@@ -98,6 +98,200 @@ pub struct FanCurve {
     pub points: Vec<FanPoint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanInfo {
+    pub id: String,
+    pub index: u32,
+    pub label: String,
+    pub current_rpm: Option<u32>,
+    pub min_rpm: Option<u32>,
+    pub max_rpm: Option<u32>,
+    pub current_percent: Option<u8>,
+    pub controllable: bool,
+    pub supports_manual_percent: bool,
+    pub supports_manual_rpm_target: bool,
+    pub supports_curve: bool,
+    pub supports_auto: bool,
+    pub backend: String,
+    pub endpoints: Vec<String>,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanInfo {
+    pub fn read_only_from_telemetry(index: u32, telemetry: &FanTelemetry) -> Self {
+        Self {
+            id: format!("hwmon-fan-{index}"),
+            index,
+            label: telemetry.display_label.clone(),
+            current_rpm: telemetry.rpm,
+            min_rpm: None,
+            max_rpm: None,
+            current_percent: None,
+            controllable: false,
+            supports_manual_percent: false,
+            supports_manual_rpm_target: false,
+            supports_curve: false,
+            supports_auto: false,
+            backend: "hwmon-read-only".to_string(),
+            endpoints: vec![telemetry.input_path.clone()],
+            notes: Vec::new(),
+            warnings: vec![
+                "RPM telemetry is available, but no writable fan-control endpoint was detected."
+                    .to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FanControlMode {
+    Auto,
+    ManualPercent,
+    ManualRpmTarget,
+    Curve,
+    FullSpeedBoost,
+    Unsupported,
+    ReadOnly,
+}
+
+impl FanControlMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ManualPercent => "manual_percent",
+            Self::ManualRpmTarget => "manual_rpm_target",
+            Self::Curve => "curve",
+            Self::FullSpeedBoost => "full_speed_boost",
+            Self::Unsupported => "unsupported",
+            Self::ReadOnly => "read_only",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "bios" | "bios_default" => Self::Auto,
+            "manual_percent" | "manual" | "percent" => Self::ManualPercent,
+            "manual_rpm_target" | "rpm" | "rpm_target" => Self::ManualRpmTarget,
+            "curve" => Self::Curve,
+            "full_speed_boost" | "boost" | "max" => Self::FullSpeedBoost,
+            "read_only" | "readonly" => Self::ReadOnly,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanCaps {
+    pub has_fan_reading: bool,
+    pub has_fan_curves: bool,
+    pub has_fan_manual_percent: bool,
+    pub has_fan_manual_rpm_target: bool,
+    pub has_individual_fan_control: bool,
+    pub has_fan_sync_control: bool,
+    pub has_fan_boost: bool,
+    pub fan_count: u32,
+    pub fan_backend: String,
+    pub endpoints: Vec<String>,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanCaps {
+    pub fn from_fans(fans: &[FanInfo]) -> Self {
+        let controllable_count = fans.iter().filter(|fan| fan.controllable).count();
+        let has_fan_manual_percent = fans.iter().any(|fan| fan.supports_manual_percent);
+        let has_fan_manual_rpm_target = fans.iter().any(|fan| fan.supports_manual_rpm_target);
+        let has_fan_curves = fans.iter().any(|fan| fan.supports_curve);
+        let has_fan_reading = fans.iter().any(|fan| fan.current_rpm.is_some());
+        let fan_backend = if fans.is_empty() {
+            "unsupported".to_string()
+        } else if has_fan_curves && fans.iter().any(|fan| fan.backend.contains("asusd")) {
+            "asusd".to_string()
+        } else if controllable_count > 0 {
+            "hwmon".to_string()
+        } else {
+            "read-only".to_string()
+        };
+        let mut endpoints = Vec::new();
+        let mut notes = Vec::new();
+        let mut warnings = Vec::new();
+        for fan in fans {
+            endpoints.extend(fan.endpoints.clone());
+            notes.extend(fan.notes.clone());
+            warnings.extend(fan.warnings.clone());
+        }
+        endpoints.sort();
+        endpoints.dedup();
+        notes.sort();
+        notes.dedup();
+        warnings.sort();
+        warnings.dedup();
+
+        Self {
+            has_fan_reading,
+            has_fan_curves,
+            has_fan_manual_percent,
+            has_fan_manual_rpm_target,
+            has_individual_fan_control: controllable_count > 0,
+            has_fan_sync_control: controllable_count > 1,
+            has_fan_boost: has_fan_manual_percent,
+            fan_count: fans.len() as u32,
+            fan_backend,
+            endpoints,
+            notes,
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanState {
+    pub fans: Vec<FanInfo>,
+    pub caps: FanCaps,
+    pub mode: FanControlMode,
+    pub sync_enabled: bool,
+    pub last_action: Option<String>,
+    pub active_boost_fan_id: Option<String>,
+    pub active_boost_until_ms: Option<u64>,
+    pub active_curve_summary: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanState {
+    pub fn from_fans(fans: Vec<FanInfo>) -> Self {
+        let caps = FanCaps::from_fans(&fans);
+        let mode = if fans.is_empty() {
+            FanControlMode::Unsupported
+        } else if caps.has_individual_fan_control {
+            FanControlMode::Auto
+        } else {
+            FanControlMode::ReadOnly
+        };
+        Self {
+            fans,
+            caps,
+            mode,
+            sync_enabled: false,
+            last_action: None,
+            active_boost_fan_id: None,
+            active_boost_until_ms: None,
+            active_curve_summary: None,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanControlRequest {
+    pub fan_id: String,
+    pub mode: FanControlMode,
+    pub speed_percent: Option<u8>,
+    pub rpm_target: Option<u32>,
+    pub curve: Option<FanCurve>,
+    pub duration_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeFloor {
     pub temp_c: u8,
@@ -117,15 +311,15 @@ pub struct FanCurvePolicy {
 impl Default for FanCurvePolicy {
     fn default() -> Self {
         Self {
-            temp_min_c: 20,
+            temp_min_c: 30,
             temp_max_c: 100,
             duty_min_percent: 0,
             duty_max_percent: 100,
             enforce_monotonic: true,
-            // Safety-first: avoid 0% fan at higher temps.
+            // Safety-first: avoid low fan duty at higher temperatures.
             safe_floor: Some(SafeFloor {
-                temp_c: 70,
-                min_duty_percent: 20,
+                temp_c: 85,
+                min_duty_percent: 70,
             }),
         }
     }
@@ -230,6 +424,163 @@ impl FanCurve {
 
         Ok(warnings)
     }
+
+    pub fn validate_safe(&self, policy: FanCurvePolicy) -> RogResult<()> {
+        validate_fan_curve_points(&self.points, policy)
+    }
+}
+
+pub fn validate_fan_percent(percent: u8) -> RogResult<()> {
+    if percent <= 100 {
+        Ok(())
+    } else {
+        Err(RogError::InvalidInput(format!(
+            "fan speed percent {percent} is outside 0..=100"
+        )))
+    }
+}
+
+pub fn validate_fan_id_exists(fan_id: &str, fans: &[FanInfo]) -> RogResult<()> {
+    if fan_id.trim().is_empty() {
+        return Ok(());
+    }
+    if fans.iter().any(|fan| fan.id == fan_id) {
+        Ok(())
+    } else {
+        Err(RogError::InvalidInput(format!("unknown fan id '{fan_id}'")))
+    }
+}
+
+pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) -> RogResult<()> {
+    if points.is_empty() {
+        return Err(RogError::InvalidInput(
+            "fan curve must not be empty".to_string(),
+        ));
+    }
+
+    let mut last_temp = None;
+    let mut last_duty = None;
+    for point in points {
+        if point.temp_c < policy.temp_min_c || point.temp_c > policy.temp_max_c {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve temperature {}C is outside {}..={}C",
+                point.temp_c, policy.temp_min_c, policy.temp_max_c
+            )));
+        }
+        if point.duty_percent < policy.duty_min_percent
+            || point.duty_percent > policy.duty_max_percent
+        {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve speed {}% is outside {}..={}%",
+                point.duty_percent, policy.duty_min_percent, policy.duty_max_percent
+            )));
+        }
+        if let Some(prev_temp) = last_temp {
+            if point.temp_c <= prev_temp {
+                return Err(RogError::InvalidInput(
+                    "fan curve temperature points must be strictly increasing".to_string(),
+                ));
+            }
+        }
+        if policy.enforce_monotonic {
+            if let Some(prev_duty) = last_duty {
+                if point.duty_percent < prev_duty {
+                    return Err(RogError::InvalidInput(
+                        "fan curve speed percentages must be non-decreasing".to_string(),
+                    ));
+                }
+            }
+        }
+        if point.temp_c >= 95 && point.duty_percent < 100 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at 100% at or above 95C".to_string(),
+            ));
+        }
+        if point.temp_c >= 90 && point.duty_percent < 90 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at least 90% at or above 90C".to_string(),
+            ));
+        }
+        if point.temp_c >= 85 && point.duty_percent < 70 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at least 70% at or above 85C".to_string(),
+            ));
+        }
+        last_temp = Some(point.temp_c);
+        last_duty = Some(point.duty_percent);
+    }
+    Ok(())
+}
+
+pub fn validate_fan_request(request: &FanControlRequest, fans: &[FanInfo]) -> RogResult<()> {
+    validate_fan_id_exists(&request.fan_id, fans)?;
+    let selected: Vec<&FanInfo> = if request.fan_id.trim().is_empty() {
+        fans.iter().collect()
+    } else {
+        fans.iter().filter(|fan| fan.id == request.fan_id).collect()
+    };
+
+    match request.mode {
+        FanControlMode::Auto => {
+            if selected.iter().any(|fan| !fan.supports_auto) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not expose Auto/BIOS restore".to_string(),
+                ));
+            }
+        }
+        FanControlMode::ManualPercent | FanControlMode::FullSpeedBoost => {
+            let percent = request.speed_percent.ok_or_else(|| {
+                RogError::InvalidInput("manual fan control requires speed_percent".to_string())
+            })?;
+            validate_fan_percent(percent)?;
+            if selected.iter().any(|fan| !fan.supports_manual_percent) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support manual percentage control"
+                        .to_string(),
+                ));
+            }
+            if matches!(request.mode, FanControlMode::FullSpeedBoost)
+                && request.duration_seconds.unwrap_or(0) == 0
+            {
+                return Err(RogError::InvalidInput(
+                    "full-speed boost must be time-limited".to_string(),
+                ));
+            }
+        }
+        FanControlMode::ManualRpmTarget => {
+            let rpm = request.rpm_target.ok_or_else(|| {
+                RogError::InvalidInput("RPM target mode requires rpm_target".to_string())
+            })?;
+            if rpm == 0 {
+                return Err(RogError::InvalidInput(
+                    "RPM target must be greater than zero".to_string(),
+                ));
+            }
+            if selected.iter().any(|fan| !fan.supports_manual_rpm_target) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support RPM target control".to_string(),
+                ));
+            }
+        }
+        FanControlMode::Curve => {
+            let curve = request.curve.as_ref().ok_or_else(|| {
+                RogError::InvalidInput("curve mode requires a fan curve".to_string())
+            })?;
+            curve.validate_safe(FanCurvePolicy::default())?;
+            if selected.iter().any(|fan| !fan.supports_curve) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support fan curves".to_string(),
+                ));
+            }
+        }
+        FanControlMode::Unsupported | FanControlMode::ReadOnly => {
+            return Err(RogError::NotSupported(
+                "selected fan mode is not writable".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -718,6 +1069,13 @@ pub struct DeviceCaps {
     pub has_gpu_modes: bool,
     pub has_aura: bool,
     pub has_kbd_backlight: bool,
+    pub has_fan_manual_percent: bool,
+    pub has_fan_manual_rpm_target: bool,
+    pub has_individual_fan_control: bool,
+    pub has_fan_sync_control: bool,
+    pub has_fan_boost: bool,
+    pub fan_count: u32,
+    pub fan_backend: String,
     pub requires_reboot_for_gpu_switch: bool,
     pub profile_access: FeatureAvailability,
     pub charge_limit_access: FeatureAvailability,
@@ -739,6 +1097,13 @@ impl DeviceCaps {
             has_gpu_modes: false,
             has_aura: false,
             has_kbd_backlight: false,
+            has_fan_manual_percent: false,
+            has_fan_manual_rpm_target: false,
+            has_individual_fan_control: false,
+            has_fan_sync_control: false,
+            has_fan_boost: false,
+            fan_count: 0,
+            fan_backend: "unknown".to_string(),
             requires_reboot_for_gpu_switch: false,
             profile_access: FeatureAvailability::unknown(),
             charge_limit_access: FeatureAvailability::unknown(),
@@ -1148,6 +1513,7 @@ impl CpuCaps {
 pub struct AppState {
     pub caps: DeviceCaps,
     pub telemetry: TelemetrySnapshot,
+    pub fan_state: FanState,
     pub cpu_caps: CpuCaps,
     pub cpu: CpuTelemetry,
     pub warnings: Vec<String>,
@@ -1155,8 +1521,15 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(caps: DeviceCaps, telemetry: TelemetrySnapshot) -> Self {
+        let fans = telemetry
+            .fan_rows
+            .iter()
+            .enumerate()
+            .map(|(idx, fan)| FanInfo::read_only_from_telemetry((idx + 1) as u32, fan))
+            .collect::<Vec<_>>();
         Self {
             caps,
+            fan_state: FanState::from_fans(fans),
             cpu_caps: CpuCaps::unknown(),
             cpu: CpuTelemetry::empty_now(telemetry.timestamp_ms),
             telemetry,
@@ -1211,8 +1584,152 @@ mod tests {
             }],
         };
         let _warnings = curve.sanitize(FanCurvePolicy::default()).unwrap();
-        assert_eq!(curve.points[0].temp_c, 20);
+        assert_eq!(curve.points[0].temp_c, 30);
         assert_eq!(curve.points[0].duty_percent, 100);
+    }
+
+    #[test]
+    fn valid_safe_fan_curve_is_accepted() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 35,
+                    duty_percent: 15,
+                },
+                FanPoint {
+                    temp_c: 75,
+                    duty_percent: 70,
+                },
+                FanPoint {
+                    temp_c: 85,
+                    duty_percent: 90,
+                },
+                FanPoint {
+                    temp_c: 90,
+                    duty_percent: 100,
+                },
+                FanPoint {
+                    temp_c: 95,
+                    duty_percent: 100,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_ok());
+    }
+
+    #[test]
+    fn empty_fan_curve_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: Vec::new(),
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn unordered_fan_curve_temperature_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 60,
+                    duty_percent: 40,
+                },
+                FanPoint {
+                    temp_c: 50,
+                    duty_percent: 50,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn unsafe_high_temperature_low_speed_curve_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 35,
+                    duty_percent: 20,
+                },
+                FanPoint {
+                    temp_c: 90,
+                    duty_percent: 20,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn out_of_range_percent_request_is_rejected() {
+        let fan = test_controllable_fan();
+        let request = FanControlRequest {
+            fan_id: "fan1".to_string(),
+            mode: FanControlMode::ManualPercent,
+            speed_percent: Some(101),
+            rpm_target: None,
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[fan]).is_err());
+    }
+
+    #[test]
+    fn rpm_target_rejected_when_unsupported() {
+        let fan = test_controllable_fan();
+        let request = FanControlRequest {
+            fan_id: "fan1".to_string(),
+            mode: FanControlMode::ManualRpmTarget,
+            speed_percent: None,
+            rpm_target: Some(3000),
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[fan]).is_err());
+    }
+
+    #[test]
+    fn unknown_fan_id_rejected() {
+        let request = FanControlRequest {
+            fan_id: "missing".to_string(),
+            mode: FanControlMode::Auto,
+            speed_percent: None,
+            rpm_target: None,
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[]).is_err());
+    }
+
+    fn test_controllable_fan() -> FanInfo {
+        FanInfo {
+            id: "fan1".to_string(),
+            index: 1,
+            label: "Fan 1".to_string(),
+            current_rpm: Some(1000),
+            min_rpm: None,
+            max_rpm: None,
+            current_percent: None,
+            controllable: true,
+            supports_manual_percent: true,
+            supports_manual_rpm_target: false,
+            supports_curve: false,
+            supports_auto: true,
+            backend: "test".to_string(),
+            endpoints: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+        }
     }
 
     #[test]

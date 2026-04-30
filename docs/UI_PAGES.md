@@ -290,12 +290,24 @@ Important note:
 - no general Settings page or persistent hardware/control rules yet
 - metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
+## Fans
+
+Current page.
+
+- backend/count/mode summary
+- capability warning banner
+- sync toggle when multiple controllable fans exist
+- manual percentage slider when writable PWM support is confirmed
+- 5/10/15 minute boost actions when manual percentage support exists
+- Return to Auto action
+- copyable fan diagnostics with IDs, RPM, percentages, endpoints, notes, and warnings
+- read-only telemetry remains visible when writes are unsupported or permission-denied
+
 ## Current Planned-But-Not-Implemented Pages
 
 These are not separate pages in the current UI:
 
 - Profiles
-- Fans
 - Settings
 
 Related note:

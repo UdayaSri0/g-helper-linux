@@ -32,6 +32,12 @@ The following features are present in the current codebase.
   - GPU mode read/write
   - reboot/logout hints
 - keyboard backlight brightness via sysfs
+- fan monitoring and safe fan controls for supported ASUS/Linux hardware
+  - dynamic 0..N fan telemetry
+  - writable hwmon manual percentage control when confirmed
+  - optional RPM target when `fanN_target` is writable
+  - sync mode and time-limited boost
+  - Auto/BIOS restore path
 - CPU telemetry and generic Linux CPU controls
 - memory, swap, PSI, zram, and top-process telemetry
 
@@ -150,16 +156,17 @@ These are not implemented end-to-end in the current repository.
 
 ### Fan curves
 
-Planned but missing:
+Partially implemented:
 
-- provider-backed fan curve read/write
-- daemon fan-curve API
-- fan-curve UI
-- device-level fan-curve capability detection
+- core safety validation
+- daemon DBus API surface
+- capability-driven UI diagnostics
 
-Note:
+Still missing:
 
-- the domain model for fan curves and validation already exists in `rog-core`
+- verified asusd fan-curve backend
+- generic hwmon curve writes, because curve point file formats are hardware-specific
+- graphical curve editor beyond the current API/diagnostic surface
 
 ### Auto mode and policy automation
 

@@ -169,6 +169,71 @@ Then compare the `*_access_status` and `*_access_reason` fields with what the Da
 
 This is expected behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
 
+## Fans Visible, But Controls Disabled
+
+This is expected on many laptops. Linux often exposes `fan*_input` RPM telemetry without exposing safe writable control.
+
+Check:
+
+```bash
+cargo run -p rog-cli -- fans
+cargo run -p rog-cli -- fan-caps
+find /sys/class/hwmon -maxdepth 3 -type f \( -name "fan*_input" -o -name "fan*_label" -o -name "pwm*" -o -name "fan*_target" \) -print
+```
+
+Expected behavior:
+
+- fan rows remain visible
+- manual controls are disabled unless `rog-helperd` reports writable `pwmN` plus `pwmN_enable`
+- RPM target controls are disabled unless writable `fanN_target` exists
+- Diagnostics lists endpoint paths and permission warnings
+
+## Fan RPM Appears, But Manual Control Is Unavailable
+
+`fan*_input` is normally read-only RPM telemetry. Manual percentage control needs a matching writable PWM endpoint.
+
+Common reasons:
+
+- the kernel driver exposes telemetry only
+- `pwmN` or `pwmN_enable` does not exist
+- the files exist but are not writable by the daemon user
+- firmware/BIOS owns the fan policy and ignores software control
+
+The app should degrade to read-only telemetry instead of trying unsafe writes.
+
+## Permission Denied Writing PWM or Fan Target
+
+If `fan-caps` reports permission warnings, inspect ownership:
+
+```bash
+ls -l /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null
+```
+
+Do not grant broad sysfs write access. If you choose to change local policy, grant only the specific confirmed fan-control files and restart `rog-helperd`.
+
+## asusd Present, But Fan Curves Unsupported
+
+Fan curves are hardware and asusd-interface dependent. If asusd does not expose a discoverable fan-curve API, `rog-helperd` reports curves unsupported rather than broken.
+
+Useful inspection:
+
+```bash
+busctl --system list | grep -Ei "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog" --service xyz.ljones.Asusd --path / --depth 3
+```
+
+## Firmware or BIOS Overrides Curves
+
+Some laptops accept a software fan value briefly and then firmware policy takes over. Use Auto/BIOS mode if fan behavior is inconsistent, and include `fans`, `fan-caps`, and hwmon path output in hardware validation notes.
+
+## Fan Labels Unknown
+
+If `fan*_label` is missing, the app uses `Fan 1`, `Fan 2`, and so on. It does not guess CPU/GPU mapping from position alone.
+
+## Boost Failed or Restored Auto
+
+Boost requires writable manual percentage support. It is always time-limited. If temperatures become unavailable or a critical temperature is observed during manual control, the daemon attempts to restore Auto/BIOS mode and records a warning.
+
 Typical signs:
 
 - CPU telemetry is visible

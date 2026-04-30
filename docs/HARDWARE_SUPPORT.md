@@ -34,6 +34,12 @@ The scenarios below are the minimum release hardware checks that still need real
 | fan count `1` | Untested | none |
 | fan count `2` | Untested | none |
 | fan count `3+` | Untested | none |
+| fan manual percent works | Untested | none |
+| fan RPM target works | Untested | none |
+| fan curve works | Untested | none |
+| fan sync mode works | Untested | none |
+| fan boost mode works | Untested | none |
+| fan restore Auto works | Untested | none |
 | hybrid CPU with physical cores != logical threads | Untested | none |
 | tray visibility across desktop environments | Untested | none |
 
@@ -85,6 +91,8 @@ Capture these commands:
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
+cargo run -p rog-cli -- fans
+cargo run -p rog-cli -- fan-caps
 cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- lighting-diagnostics
 busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon
@@ -107,6 +115,7 @@ ls -l /sys/devices/system/cpu/cpufreq/policy*/scaling_{min,max}_freq
 ls -l /sys/devices/system/cpu/intel_pstate/no_turbo
 ls -l /sys/devices/system/cpu/cpu*/online
 ls -l /sys/class/leds/*/brightness
+find /sys/class/hwmon -maxdepth 3 -type f \( -name "fan*_input" -o -name "fan*_label" -o -name "pwm*" -o -name "fan*_target" \) -print
 ```
 
 ## Release Scenario Matrix
@@ -126,7 +135,29 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
+| fan manual percent writable | `fan-caps` reports `has_fan_manual_percent: true` | Fans page enables percentage controls after acknowledgement; daemon applies through hwmon and Auto remains available | `fans`, `fan-caps`, Fans screenshot, before/after RPM |
+| fan RPM target writable | `fan-caps` reports `has_fan_manual_rpm_target: true` | RPM target is available only for fans exposing writable `fanN_target` | `fans`, `fan-caps`, endpoint `ls -l` |
+| fan curve backend available | `fan-caps` reports `has_fan_curves: true` | curve apply validates safe high-temperature points and rejects dangerous curves | `fan-caps`, DBus/API result, Fans screenshot |
+| fan sync mode | more than one controllable fan is detected | sync applies only to controllable fans and keeps read-only fan telemetry visible | `fans`, Fans screenshot before/after |
+| fan boost mode | `has_fan_boost: true` | boost runs at 100% for a selected duration, then restores Auto/BIOS mode | `fans`, Fans screenshot, after-timeout confirmation |
+| fan restore Auto | any controllable fan backend | Return to Auto returns control to firmware/backend automatic mode | `fans`, Fans screenshot before/after |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
+
+## Fan-Control Validation Fields
+
+Include these fields in each machine record when fan testing is relevant:
+
+- fan count detected
+- labels detected
+- RPM reading works
+- manual percent works
+- RPM target works
+- fan curve works
+- sync mode works
+- boost mode works
+- restore Auto works
+- backend used
+- notes/warnings
 
 ## How To Add Real Evidence
 

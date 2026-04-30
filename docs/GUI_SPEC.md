@@ -295,6 +295,20 @@ Current examples in the implementation include:
 - CPU write-access banner with diagnostics handoff
 - last-action status for lighting and GPU/profile actions
 
+## Fans Page
+
+The Fans page is a current UI page.
+
+- shows fan backend, detected fan count, current mode, last action, and a warning banner for read-only or uncertain states
+- keeps per-fan telemetry visible for every detected fan
+- exposes manual percentage control only when the daemon reports writable manual percent support
+- exposes sync mode only when more than one controllable fan is detected
+- exposes time-limited full-speed boost buttons for 5, 10, and 15 minutes when boost is supported
+- always exposes Return to Auto for controllable fans
+- asks for explicit acknowledgement before first manual fan control
+- keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
+- never writes directly to sysfs or hardware from the UI
+
 ## Planned or Missing UI Features
 
 These are not current pages or complete current UI features.
@@ -302,7 +316,6 @@ These are not current pages or complete current UI features.
 ### Planned or future pages
 
 - Profiles page
-- Fans page
 - Settings page
 
 Related note:
@@ -311,7 +324,7 @@ Related note:
 
 ### Planned or future capabilities
 
-- fan-curve editor
+- graphical fan-curve editor beyond the current validated DBus/API surface
 - auto mode / rules editor
 - exported diagnostics bundle
 - more specialized conflict detection and service-management UI

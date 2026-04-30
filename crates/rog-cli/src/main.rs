@@ -4,7 +4,9 @@ use std::process::Command;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
-use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability, LightingDiagnostics};
+use rog_core::{
+    DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability, LightingDiagnostics,
+};
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
 use rog_providers::dbus;
@@ -63,6 +65,10 @@ enum Cmd {
     },
     /// Print a best-effort DeviceCaps summary (Milestone 1).
     Caps,
+    /// Print detected fan telemetry and control support.
+    Fans,
+    /// Print fan capability summary only.
+    FanCaps,
     /// Print keyboard lighting and RGB/Aura diagnostics only.
     Lighting,
     /// Print keyboard lighting and RGB/Aura diagnostics only.
@@ -103,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Sensors { root } => cmd_sensors(root.as_deref()).await?,
         Cmd::Caps => cmd_caps().await?,
+        Cmd::Fans => cmd_fans().await?,
+        Cmd::FanCaps => cmd_fan_caps().await?,
         Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
     }
 
@@ -222,7 +230,43 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
     println!("  temps: {}", snap.temps_c.len());
     println!("  fans: {}", snap.fans_rpm.len());
+    for fan in &snap.fan_rows {
+        println!(
+            "    {}: {} ({})",
+            fan.display_label,
+            fan.rpm
+                .map(|rpm| format!("{rpm} rpm"))
+                .unwrap_or_else(|| "RPM unavailable".to_string()),
+            fan.input_path
+        );
+    }
 
+    Ok(())
+}
+
+async fn cmd_fans() -> anyhow::Result<()> {
+    let provider = HwmonTelemetryProvider::default();
+    let fans = provider.list_fans().context("list fans")?;
+    print_fan_caps(&FanCaps::from_fans(&fans));
+    println!();
+    println!("Detected fans:");
+    if fans.is_empty() {
+        println!("  (none)");
+        println!("  No fan hwmon inputs are exposed. This can be normal on some laptops/kernels.");
+    }
+    for fan in &fans {
+        print_fan_info(fan);
+    }
+    println!();
+    println!("Notes:");
+    println!("  Diagnostics do not require root. If PWM files exist but are read-only, root or a focused udev/system policy may reveal writable control, but rog-ui still only writes through rog-helperd.");
+    Ok(())
+}
+
+async fn cmd_fan_caps() -> anyhow::Result<()> {
+    let provider = HwmonTelemetryProvider::default();
+    let caps = provider.fan_caps().context("probe fan caps")?;
+    print_fan_caps(&caps);
     Ok(())
 }
 
@@ -238,6 +282,22 @@ async fn cmd_caps() -> anyhow::Result<()> {
 
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
+    if let Ok(fan_caps) = hwmon.fan_caps() {
+        caps.has_fan_reading = fan_caps.has_fan_reading;
+        caps.has_fan_curves = fan_caps.has_fan_curves;
+        caps.has_fan_manual_percent = fan_caps.has_fan_manual_percent;
+        caps.has_fan_manual_rpm_target = fan_caps.has_fan_manual_rpm_target;
+        caps.has_individual_fan_control = fan_caps.has_individual_fan_control;
+        caps.has_fan_sync_control = fan_caps.has_fan_sync_control;
+        caps.has_fan_boost = fan_caps.has_fan_boost;
+        caps.fan_count = fan_caps.fan_count;
+        caps.fan_backend = fan_caps.fan_backend;
+        for endpoint in fan_caps.endpoints {
+            caps.endpoints.push(format!("fan:{endpoint}"));
+        }
+        caps.notes.extend(fan_caps.notes);
+        caps.notes.extend(fan_caps.warnings);
+    }
     caps.has_kbd_backlight = lighting_probe.kbd_detected;
     caps.has_aura = lighting_probe.aura.is_some();
     let sysfs_writable = lighting_probe
@@ -456,6 +516,71 @@ async fn cmd_caps() -> anyhow::Result<()> {
     println!();
     println!("{}", lighting_probe.diagnostics.to_report_text());
     Ok(())
+}
+
+fn print_fan_caps(caps: &FanCaps) {
+    println!("Fan capabilities:");
+    println!("  backend: {}", caps.fan_backend);
+    println!("  fan_count: {}", caps.fan_count);
+    println!("  has_fan_reading: {}", caps.has_fan_reading);
+    println!("  has_fan_manual_percent: {}", caps.has_fan_manual_percent);
+    println!(
+        "  has_fan_manual_rpm_target: {}",
+        caps.has_fan_manual_rpm_target
+    );
+    println!("  has_fan_curves: {}", caps.has_fan_curves);
+    println!(
+        "  has_individual_fan_control: {}",
+        caps.has_individual_fan_control
+    );
+    println!("  has_fan_sync_control: {}", caps.has_fan_sync_control);
+    println!("  has_fan_boost: {}", caps.has_fan_boost);
+    if !caps.endpoints.is_empty() {
+        println!("  endpoints:");
+        for endpoint in &caps.endpoints {
+            println!("    {endpoint}");
+        }
+    }
+    if !caps.warnings.is_empty() {
+        println!("  warnings:");
+        for warning in &caps.warnings {
+            println!("    {warning}");
+        }
+    }
+}
+
+fn print_fan_info(fan: &FanInfo) {
+    println!("  {} [{}]", fan.label, fan.id);
+    println!(
+        "    rpm: {}",
+        fan.current_rpm
+            .map(|rpm| rpm.to_string())
+            .unwrap_or_else(|| "(unavailable)".to_string())
+    );
+    println!(
+        "    percent: {}",
+        fan.current_percent
+            .map(|percent| format!("{percent}%"))
+            .unwrap_or_else(|| "(not reported)".to_string())
+    );
+    println!("    backend: {}", fan.backend);
+    println!("    controllable: {}", fan.controllable);
+    println!("    manual_percent: {}", fan.supports_manual_percent);
+    println!("    rpm_target: {}", fan.supports_manual_rpm_target);
+    println!("    curve: {}", fan.supports_curve);
+    println!("    auto_restore: {}", fan.supports_auto);
+    if !fan.endpoints.is_empty() {
+        println!("    endpoints:");
+        for endpoint in &fan.endpoints {
+            println!("      {endpoint}");
+        }
+    }
+    for note in &fan.notes {
+        println!("    note: {note}");
+    }
+    for warning in &fan.warnings {
+        println!("    warning: {warning}");
+    }
 }
 
 async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {

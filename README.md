@@ -108,7 +108,10 @@ Current source-backed features include:
 - ASUS battery charge limit read/write through `asusd`
 - Keyboard backlight brightness read/write through sysfs when permissions allow
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
-- Best-effort dynamic fan telemetry for 0..N fans, with friendly labels when hwmon exposes them
+- Fan monitoring and safe fan controls for supported ASUS/Linux hardware
+  - best-effort dynamic RPM telemetry for 0..N fans
+  - manual percentage control only when writable PWM endpoints are confirmed
+  - optional RPM target, sync mode, time-limited boost, and Auto/BIOS restore when supported
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
@@ -128,7 +131,7 @@ See:
 
 Important gaps in the current implementation:
 
-- Fan curve editing and fan-curve daemon APIs
+- Verified ASUS/asusd fan-curve backend and graphical fan-curve editor
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions
 - Live auto mode / policy automation integration
 - Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences

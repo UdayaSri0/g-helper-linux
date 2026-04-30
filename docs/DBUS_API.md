@@ -39,6 +39,9 @@ This is the current design, not a placeholder.
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
 | `GetCpuDiagnostics` | none | `s` | Returns formatted text diagnostics for CPU support and state |
+| `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
+| `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
+| `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
 | `SetLighting` | `a{sv}` | `()` | Uses Aura/RGB through asusd when exposed; otherwise sysfs keyboard backlight fallback |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
@@ -49,6 +52,13 @@ This is the current design, not a placeholder.
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
+| `SetFanAuto` | `s` | `()` | Empty string means all controllable fans |
+| `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Percentage is `0..=100`; empty string or sync mode applies to all controllable fans |
+| `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Only available when writable `fanN_target` is explicitly detected |
+| `SetFanCurve` | `sa{sv}` | `()` | Validates conservative temperature/speed points before provider write |
+| `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
+| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
+| `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
 
 ## `GetCaps` Response
 
@@ -57,6 +67,13 @@ This is the current design, not a placeholder.
 - `has_profiles` -> `bool`
 - `has_fan_curves` -> `bool`
 - `has_fan_reading` -> `bool`
+- `has_fan_manual_percent` -> `bool`
+- `has_fan_manual_rpm_target` -> `bool`
+- `has_individual_fan_control` -> `bool`
+- `has_fan_sync_control` -> `bool`
+- `has_fan_boost` -> `bool`
+- `fan_count` -> `t`
+- `fan_backend` -> `s`
 - `has_charge_limit` -> `bool`
 - `has_gpu_modes` -> `bool`
 - `has_aura` -> `bool`
@@ -75,7 +92,7 @@ This is the current design, not a placeholder.
 
 Important note:
 
-- `has_aura` is `true` only when the daemon finds an introspectable asusd Aura/keyboard lighting interface. `has_fan_curves` exists in the payload shape but is not currently probed to true by the daemon.
+- `has_aura` is `true` only when the daemon finds an introspectable asusd Aura/keyboard lighting interface. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
@@ -89,6 +106,8 @@ Important note:
 - `warnings` -> `as`
 - `cpu_caps` -> nested `a{sv}` CPU capability map
 - `cpu` -> nested `a{sv}` CPU telemetry map
+- `fan_caps` -> nested `a{sv}` fan capability map
+- `fan_state` -> nested `a{sv}` fan state map
 - `lighting_diagnostics_summary` -> `s`
 - `lighting_diagnostics_details` -> `s`
 
@@ -126,6 +145,34 @@ The diagnostics detail string is a copyable report headed `Keyboard Lighting / R
 It includes the selected backend, sysfs LED paths, brightness read/write state, asusd services and
 interfaces found through introspection, RGB-looking methods/properties, fallback reasons, and
 recommended next actions.
+
+### Fan state map
+
+`fan_state` includes:
+
+- `fan_caps` -> nested capability map
+- `fans` -> array of nested fan maps
+- `mode` -> `s`: `auto`, `manual_percent`, `manual_rpm_target`, `curve`, `full_speed_boost`, `read_only`, or `unsupported`
+- `sync_enabled` -> `b`
+- `last_action` -> optional `s`
+- `active_boost_fan_id` -> optional `s`
+- `active_boost_until_ms` -> optional `t`
+- `active_curve_summary` -> optional `s`
+- `warnings` -> `as`
+
+Each fan map includes:
+
+- `id`, `index`, `label`
+- optional `current_rpm`, `min_rpm`, `max_rpm`, `current_percent`
+- `controllable`
+- `supports_manual_percent`
+- `supports_manual_rpm_target`
+- `supports_curve`
+- `supports_auto`
+- `backend`
+- `endpoints`, `notes`, `warnings`
+
+Fan control methods return `InvalidArgs` for unsafe input, `NotSupported` for missing backend support, and `AccessDenied` for permission-denied sysfs writes.
 
 ## `GetTelemetry` Response
 

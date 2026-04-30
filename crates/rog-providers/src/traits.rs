@@ -1,8 +1,8 @@
 #![allow(async_fn_in_trait)]
 
 use rog_core::{
-    BatteryLimitPercent, FanCurve, FanDomain, GpuMode, LightingState, PerformanceProfile,
-    TelemetrySnapshot,
+    BatteryLimitPercent, FanCaps, FanControlRequest, FanCurve, FanDomain, FanInfo, FanState,
+    GpuMode, LightingState, PerformanceProfile, TelemetrySnapshot,
 };
 
 use rog_core::RogResult;
@@ -17,6 +17,14 @@ pub trait FanProvider {
     async fn supports_curves(&self) -> RogResult<bool>;
     async fn get_curve(&self, domain: FanDomain) -> RogResult<FanCurve>;
     async fn set_curve(&self, domain: FanDomain, curve: FanCurve) -> RogResult<()>;
+    async fn fan_caps(&self) -> RogResult<FanCaps>;
+    async fn list_fans(&self) -> RogResult<Vec<FanInfo>>;
+    async fn get_fan_state(&self) -> RogResult<FanState>;
+    async fn set_fan_auto(&self, fan_id: Option<&str>) -> RogResult<()>;
+    async fn set_fan_manual_percent(&self, fan_id: &str, percent: u8) -> RogResult<()>;
+    async fn set_fan_rpm_target(&self, fan_id: &str, rpm: u32) -> RogResult<()>;
+    async fn set_fan_control(&self, request: FanControlRequest) -> RogResult<()>;
+    async fn restore_fan_defaults(&self) -> RogResult<()>;
 }
 
 pub trait GpuProvider {

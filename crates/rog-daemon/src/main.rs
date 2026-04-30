@@ -6,9 +6,10 @@ use anyhow::Context;
 use regex::Regex;
 use rog_core::{
     dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
-    CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode, LightingState,
-    PerformanceProfile, PowerSource, RgbColor, TelemetrySnapshot,
+    CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanCaps, FanControlMode, FanCurve,
+    FanDomain, FanInfo, FanPoint, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
+    GpuMode, LightingDiagnostics, LightingMode, LightingState, PerformanceProfile, PowerSource,
+    RgbColor, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -38,11 +39,29 @@ struct SharedState {
     control: RwLock<ControlState>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ControlState {
     profile: Option<PerformanceProfile>,
     gpu_mode: Option<GpuMode>,
     battery_limit: Option<BatteryLimitPercent>,
+    fan_sync_enabled: bool,
+    fan_mode: FanControlMode,
+    fan_last_action: Option<String>,
+    fan_boost_until_ms: Option<u64>,
+}
+
+impl Default for ControlState {
+    fn default() -> Self {
+        Self {
+            profile: None,
+            gpu_mode: None,
+            battery_limit: None,
+            fan_sync_enabled: false,
+            fan_mode: FanControlMode::Auto,
+            fan_last_action: None,
+            fan_boost_until_ms: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,9 +75,11 @@ struct RogHelperDaemon {
     asusd: Option<AsusdPlatformProvider>,
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
+    hwmon: HwmonTelemetryProvider,
 }
 
 impl RogHelperDaemon {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         state: Arc<SharedState>,
         kbd_backlight: Option<KbdBacklightSysfs>,
@@ -69,6 +90,7 @@ impl RogHelperDaemon {
         asusd: Option<AsusdPlatformProvider>,
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
+        hwmon: HwmonTelemetryProvider,
     ) -> Self {
         Self {
             state,
@@ -80,6 +102,7 @@ impl RogHelperDaemon {
             asusd,
             supergfx,
             cpu,
+            hwmon,
         }
     }
 
@@ -103,6 +126,25 @@ impl RogHelperDaemon {
         guard.cpu_caps = caps;
     }
 
+    fn set_fan_state(&self, mut fan_state: FanState) {
+        let control = self.read_control_state();
+        fan_state.sync_enabled = control.fan_sync_enabled;
+        fan_state.mode = control.fan_mode;
+        fan_state.last_action = control.fan_last_action;
+        fan_state.active_boost_until_ms = control.fan_boost_until_ms;
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        guard.fan_state = fan_state;
+        guard.caps.has_fan_reading = guard.fan_state.caps.has_fan_reading;
+        guard.caps.has_fan_curves = guard.fan_state.caps.has_fan_curves;
+        guard.caps.has_fan_manual_percent = guard.fan_state.caps.has_fan_manual_percent;
+        guard.caps.has_fan_manual_rpm_target = guard.fan_state.caps.has_fan_manual_rpm_target;
+        guard.caps.has_individual_fan_control = guard.fan_state.caps.has_individual_fan_control;
+        guard.caps.has_fan_sync_control = guard.fan_state.caps.has_fan_sync_control;
+        guard.caps.has_fan_boost = guard.fan_state.caps.has_fan_boost;
+        guard.caps.fan_count = guard.fan_state.caps.fan_count;
+        guard.caps.fan_backend = guard.fan_state.caps.fan_backend.clone();
+    }
+
     fn read_control_state(&self) -> ControlState {
         self.state.control.read().expect("rwlock poisoned").clone()
     }
@@ -117,6 +159,18 @@ impl RogHelperDaemon {
         guard.profile = profile;
         guard.gpu_mode = gpu_mode;
         guard.battery_limit = battery_limit;
+    }
+
+    fn update_fan_control_state(
+        &self,
+        mode: FanControlMode,
+        last_action: impl Into<String>,
+        boost_until_ms: Option<u64>,
+    ) {
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.fan_mode = mode;
+        guard.fan_last_action = Some(last_action.into());
+        guard.fan_boost_until_ms = boost_until_ms;
     }
 
     fn refresh_cpu_state(&self) -> rog_core::RogResult<()> {
@@ -144,6 +198,14 @@ impl RogHelperDaemon {
             ov(cpu_caps_to_dbus(&state.cpu_caps)),
         );
         m.insert("cpu".to_string(), ov(cpu_to_dbus(&state.cpu)));
+        m.insert(
+            dbus_keys::FAN_STATE_KEY.to_string(),
+            ov(fan_state_to_dbus(&state.fan_state)),
+        );
+        m.insert(
+            dbus_keys::FAN_CAPS_KEY.to_string(),
+            ov(fan_caps_to_dbus(&state.fan_state.caps)),
+        );
         if let Some(l) = self.lighting_to_dbus().await {
             m.insert("lighting".to_string(), ov(l));
         }
@@ -184,6 +246,171 @@ impl RogHelperDaemon {
     fn get_cpu_diagnostics(&self) -> String {
         let state = self.read_state();
         cpu_diagnostics_text(&state.cpu_caps, &state.cpu)
+    }
+
+    fn get_fan_caps(&self) -> HashMap<String, OwnedValue> {
+        fan_caps_to_dbus(&self.read_state().fan_state.caps)
+    }
+
+    fn get_fan_state(&self) -> HashMap<String, OwnedValue> {
+        fan_state_to_dbus(&self.read_state().fan_state)
+    }
+
+    fn get_fan_curves(&self) -> HashMap<String, OwnedValue> {
+        let mut m = HashMap::new();
+        m.insert(
+            "supported".to_string(),
+            OwnedValue::from(self.read_state().fan_state.caps.has_fan_curves),
+        );
+        m.insert(
+            "reason".to_string(),
+            ov(
+                "Fan curve reading is backend-dependent and not exposed by the active backend yet."
+                    .to_string(),
+            ),
+        );
+        m
+    }
+
+    async fn set_fan_auto(&self, fan_id: &str) -> fdo::Result<()> {
+        self.hwmon
+            .set_fan_auto(if fan_id.trim().is_empty() {
+                None
+            } else {
+                Some(fan_id)
+            })
+            .map_err(map_rog_error_to_fdo)?;
+        self.update_fan_control_state(
+            FanControlMode::Auto,
+            "Returned fan control to Auto/BIOS mode.",
+            None,
+        );
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+        Ok(())
+    }
+
+    async fn set_fan_manual_percent(&self, fan_id: &str, percent: u64) -> fdo::Result<()> {
+        let percent = u8::try_from(percent)
+            .map_err(|_| fdo::Error::InvalidArgs("fan percent must fit into u8".to_string()))?;
+        let target = if self.read_control_state().fan_sync_enabled || fan_id.trim().is_empty() {
+            ""
+        } else {
+            fan_id
+        };
+        self.hwmon
+            .set_fan_manual_percent(target, percent)
+            .map_err(map_rog_error_to_fdo)?;
+        self.update_fan_control_state(
+            FanControlMode::ManualPercent,
+            format!("Applied manual fan speed: {percent}%."),
+            None,
+        );
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+        Ok(())
+    }
+
+    async fn set_fan_rpm_target(&self, fan_id: &str, rpm: u64) -> fdo::Result<()> {
+        let rpm = u32::try_from(rpm)
+            .map_err(|_| fdo::Error::InvalidArgs("fan RPM target must fit into u32".to_string()))?;
+        self.hwmon
+            .set_fan_rpm_target(fan_id, rpm)
+            .map_err(map_rog_error_to_fdo)?;
+        self.update_fan_control_state(
+            FanControlMode::ManualRpmTarget,
+            format!("Applied fan RPM target: {rpm} rpm."),
+            None,
+        );
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+        Ok(())
+    }
+
+    async fn set_fan_curve(
+        &self,
+        fan_id: &str,
+        curve: HashMap<String, OwnedValue>,
+    ) -> fdo::Result<()> {
+        let curve = fan_curve_from_dbus(fan_id, &curve).map_err(map_rog_error_to_fdo)?;
+        self.hwmon
+            .set_fan_curve(fan_id, curve)
+            .map_err(map_rog_error_to_fdo)?;
+        self.update_fan_control_state(FanControlMode::Curve, "Applied fan curve.", None);
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+        Ok(())
+    }
+
+    fn set_fan_sync(&self, enabled: bool) {
+        let mut guard = self.state.control.write().expect("rwlock poisoned");
+        guard.fan_sync_enabled = enabled;
+        guard.fan_last_action = Some(if enabled {
+            "Fan sync enabled.".to_string()
+        } else {
+            "Fan sync disabled.".to_string()
+        });
+    }
+
+    async fn set_fan_boost(
+        &self,
+        fan_id: &str,
+        percent: u64,
+        duration_seconds: u64,
+    ) -> fdo::Result<()> {
+        if duration_seconds == 0 || duration_seconds > 60 * 60 {
+            return Err(fdo::Error::InvalidArgs(
+                "fan boost duration must be 1..=3600 seconds".to_string(),
+            ));
+        }
+        let percent = u8::try_from(percent)
+            .map_err(|_| fdo::Error::InvalidArgs("fan percent must fit into u8".to_string()))?;
+        let target = if fan_id.trim().is_empty() { "" } else { fan_id };
+        self.hwmon
+            .set_fan_manual_percent(target, percent)
+            .map_err(map_rog_error_to_fdo)?;
+        let boost_until = now_ms().saturating_add(duration_seconds.saturating_mul(1000));
+        self.update_fan_control_state(
+            FanControlMode::FullSpeedBoost,
+            format!("Fan boost active at {percent}% for {duration_seconds}s."),
+            Some(boost_until),
+        );
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(duration_seconds)).await;
+            let current_until = daemon.read_control_state().fan_boost_until_ms;
+            if current_until == Some(boost_until) {
+                if let Err(err) = daemon.hwmon.set_fan_auto(None) {
+                    warn!("fan boost auto restore failed: {err}");
+                    daemon.update_fan_control_state(
+                        FanControlMode::ReadOnly,
+                        format!("Fan boost restore failed: {err}"),
+                        None,
+                    );
+                } else {
+                    daemon.update_fan_control_state(
+                        FanControlMode::Auto,
+                        "Fan boost finished; restored Auto/BIOS mode.",
+                        None,
+                    );
+                }
+                if let Ok(state) = daemon.hwmon.fan_state() {
+                    daemon.set_fan_state(state);
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn reset_fans_to_auto(&self) -> fdo::Result<()> {
+        self.hwmon
+            .set_fan_auto(None)
+            .map_err(map_rog_error_to_fdo)?;
+        self.update_fan_control_state(
+            FanControlMode::Auto,
+            "Reset all controllable fans to Auto/BIOS mode.",
+            None,
+        );
+        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
+        Ok(())
     }
 
     async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
@@ -459,7 +686,18 @@ async fn main() -> anyhow::Result<()> {
             warn!("cpu telemetry read failed: {e}");
             CpuTelemetry::empty_now(now_ms())
         });
-    caps.has_fan_reading = !hw_snapshot.fans_rpm.is_empty();
+    let initial_fan_state = hwmon.fan_state().unwrap_or_else(|e| {
+        warn!("fan capability probe failed: {e}");
+        FanState::from_fans(
+            hw_snapshot
+                .fan_rows
+                .iter()
+                .enumerate()
+                .map(|(idx, fan)| FanInfo::read_only_from_telemetry((idx + 1) as u32, fan))
+                .collect(),
+        )
+    });
+    apply_fan_caps_to_device_caps(&mut caps, &initial_fan_state.caps);
     if hw_snapshot.fan_rows.is_empty() {
         caps.notes
             .push("Fan telemetry via hwmon: no fan inputs detected.".to_string());
@@ -469,6 +707,18 @@ async fn main() -> anyhow::Result<()> {
             hw_snapshot.fan_rows.len(),
             hw_snapshot.fans_rpm.len()
         ));
+    }
+    caps.notes.push(format!(
+        "Fan control backend: {} (manual_percent={}, rpm_target={}, curves={}, sync={}, boost={}).",
+        initial_fan_state.caps.fan_backend,
+        initial_fan_state.caps.has_fan_manual_percent,
+        initial_fan_state.caps.has_fan_manual_rpm_target,
+        initial_fan_state.caps.has_fan_curves,
+        initial_fan_state.caps.has_fan_sync_control,
+        initial_fan_state.caps.has_fan_boost,
+    ));
+    for endpoint in &initial_fan_state.caps.endpoints {
+        caps.endpoints.push(format!("fan:{endpoint}"));
     }
     let kbd_backlight_detected = kbd_backlight.is_some() || detect_kbd_backlight();
     caps.has_aura = aura.is_some();
@@ -713,6 +963,7 @@ async fn main() -> anyhow::Result<()> {
     let has_charge_limit = caps.has_charge_limit;
     let has_gpu_modes = caps.has_gpu_modes;
     let mut init_state = AppState::new(caps, hw_snapshot);
+    init_state.fan_state = initial_fan_state;
     init_state.cpu_caps = cpu_caps.clone();
     init_state.cpu = initial_cpu;
     let shared = Arc::new(SharedState {
@@ -731,6 +982,7 @@ async fn main() -> anyhow::Result<()> {
         asusd.clone(),
         supergfx.clone(),
         cpu.clone(),
+        hwmon.clone(),
     );
     daemon.set_cpu_caps(cpu_caps.clone());
     let daemon_iface = daemon.clone();
@@ -912,6 +1164,54 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => warnings.push(format!("cpu telemetry unavailable: {e}")),
                 }
 
+                match hwmon.fan_state() {
+                    Ok(fan_state) => {
+                        let current_mode = daemon.read_control_state().fan_mode;
+                        let temp_missing = telemetry.cpu_temp_c.is_none() && telemetry.gpu_temp_c.is_none();
+                        let critical_temp = telemetry
+                            .cpu_temp_c
+                            .into_iter()
+                            .chain(telemetry.gpu_temp_c)
+                            .any(|temp| temp >= 95.0);
+                        if matches!(
+                            current_mode,
+                            FanControlMode::ManualPercent
+                                | FanControlMode::ManualRpmTarget
+                                | FanControlMode::Curve
+                                | FanControlMode::FullSpeedBoost
+                        ) && (temp_missing || critical_temp)
+                        {
+                            let reason = if critical_temp {
+                                "critical temperature threshold reached"
+                            } else {
+                                "temperature telemetry disappeared"
+                            };
+                            match hwmon.set_fan_auto(None) {
+                                Ok(()) => {
+                                    warnings.push(format!(
+                                        "fan safety restore: {reason}; returned fans to Auto/BIOS mode"
+                                    ));
+                                    daemon.update_fan_control_state(
+                                        FanControlMode::Auto,
+                                        format!("Safety restore: {reason}; Auto/BIOS mode requested."),
+                                        None,
+                                    );
+                                }
+                                Err(err) => {
+                                    warnings.push(format!("fan safety restore failed after {reason}: {err}"));
+                                    daemon.update_fan_control_state(
+                                        FanControlMode::ReadOnly,
+                                        format!("Safety restore failed after {reason}: {err}"),
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        daemon.set_fan_state(fan_state);
+                    }
+                    Err(e) => warnings.push(format!("fan state unavailable: {e}")),
+                }
+
                 let mut current_profile = None;
                 let mut current_gpu_mode = None;
                 let mut current_battery_limit = None;
@@ -948,6 +1248,17 @@ async fn main() -> anyhow::Result<()> {
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("ctrl-c received; exiting");
+                if matches!(
+                    daemon.read_control_state().fan_mode,
+                    FanControlMode::ManualPercent
+                        | FanControlMode::ManualRpmTarget
+                        | FanControlMode::Curve
+                        | FanControlMode::FullSpeedBoost
+                ) {
+                    if let Err(err) = hwmon.set_fan_auto(None) {
+                        warn!("fan auto restore on shutdown failed: {err}");
+                    }
+                }
                 break;
             }
         }
@@ -1030,6 +1341,14 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert("caps".to_string(), ov(caps_to_dbus(&s.caps)));
     m.insert("telemetry".to_string(), ov(telemetry_to_dbus(&s.telemetry)));
+    m.insert(
+        dbus_keys::FAN_STATE_KEY.to_string(),
+        ov(fan_state_to_dbus(&s.fan_state)),
+    );
+    m.insert(
+        dbus_keys::FAN_CAPS_KEY.to_string(),
+        ov(fan_caps_to_dbus(&s.fan_state.caps)),
+    );
     m.insert("warnings".to_string(), ov(s.warnings.clone()));
     m
 }
@@ -1059,6 +1378,31 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
         OwnedValue::from(c.has_kbd_backlight),
     );
     m.insert(
+        "has_fan_manual_percent".to_string(),
+        OwnedValue::from(c.has_fan_manual_percent),
+    );
+    m.insert(
+        "has_fan_manual_rpm_target".to_string(),
+        OwnedValue::from(c.has_fan_manual_rpm_target),
+    );
+    m.insert(
+        "has_individual_fan_control".to_string(),
+        OwnedValue::from(c.has_individual_fan_control),
+    );
+    m.insert(
+        "has_fan_sync_control".to_string(),
+        OwnedValue::from(c.has_fan_sync_control),
+    );
+    m.insert(
+        "has_fan_boost".to_string(),
+        OwnedValue::from(c.has_fan_boost),
+    );
+    m.insert(
+        "fan_count".to_string(),
+        OwnedValue::from(c.fan_count as u64),
+    );
+    m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
+    m.insert(
         "requires_reboot_for_gpu_switch".to_string(),
         OwnedValue::from(c.requires_reboot_for_gpu_switch),
     );
@@ -1079,6 +1423,161 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
         &mut m,
         dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX,
         &c.kbd_backlight_access,
+    );
+    m
+}
+
+fn apply_fan_caps_to_device_caps(caps: &mut DeviceCaps, fan_caps: &FanCaps) {
+    caps.has_fan_reading = fan_caps.has_fan_reading;
+    caps.has_fan_curves = fan_caps.has_fan_curves;
+    caps.has_fan_manual_percent = fan_caps.has_fan_manual_percent;
+    caps.has_fan_manual_rpm_target = fan_caps.has_fan_manual_rpm_target;
+    caps.has_individual_fan_control = fan_caps.has_individual_fan_control;
+    caps.has_fan_sync_control = fan_caps.has_fan_sync_control;
+    caps.has_fan_boost = fan_caps.has_fan_boost;
+    caps.fan_count = fan_caps.fan_count;
+    caps.fan_backend = fan_caps.fan_backend.clone();
+}
+
+fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert(
+        "has_fan_reading".to_string(),
+        OwnedValue::from(c.has_fan_reading),
+    );
+    m.insert(
+        "has_fan_curves".to_string(),
+        OwnedValue::from(c.has_fan_curves),
+    );
+    m.insert(
+        "has_fan_manual_percent".to_string(),
+        OwnedValue::from(c.has_fan_manual_percent),
+    );
+    m.insert(
+        "has_fan_manual_rpm_target".to_string(),
+        OwnedValue::from(c.has_fan_manual_rpm_target),
+    );
+    m.insert(
+        "has_individual_fan_control".to_string(),
+        OwnedValue::from(c.has_individual_fan_control),
+    );
+    m.insert(
+        "has_fan_sync_control".to_string(),
+        OwnedValue::from(c.has_fan_sync_control),
+    );
+    m.insert(
+        "has_fan_boost".to_string(),
+        OwnedValue::from(c.has_fan_boost),
+    );
+    m.insert(
+        "fan_count".to_string(),
+        OwnedValue::from(c.fan_count as u64),
+    );
+    m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
+    m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
+    m.insert("notes".to_string(), ov(c.notes.clone()));
+    m.insert("warnings".to_string(), ov(c.warnings.clone()));
+    m
+}
+
+fn fan_state_to_dbus(s: &FanState) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert(
+        dbus_keys::FAN_CAPS_KEY.to_string(),
+        ov(fan_caps_to_dbus(&s.caps)),
+    );
+    m.insert(
+        dbus_keys::FAN_INFOS_KEY.to_string(),
+        ov(s.fans.iter().map(fan_info_to_dbus).collect::<Vec<_>>()),
+    );
+    m.insert("mode".to_string(), ov(s.mode.as_str().to_string()));
+    m.insert("sync_enabled".to_string(), OwnedValue::from(s.sync_enabled));
+    if let Some(last_action) = &s.last_action {
+        m.insert("last_action".to_string(), ov(last_action.clone()));
+    }
+    if let Some(fan_id) = &s.active_boost_fan_id {
+        m.insert("active_boost_fan_id".to_string(), ov(fan_id.clone()));
+    }
+    if let Some(until) = s.active_boost_until_ms {
+        m.insert("active_boost_until_ms".to_string(), OwnedValue::from(until));
+    }
+    if let Some(summary) = &s.active_curve_summary {
+        m.insert("active_curve_summary".to_string(), ov(summary.clone()));
+    }
+    m.insert("warnings".to_string(), ov(s.warnings.clone()));
+    m
+}
+
+fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    m.insert(dbus_keys::FAN_INFO_ID_KEY.to_string(), ov(fan.id.clone()));
+    m.insert(
+        dbus_keys::FAN_INFO_INDEX_KEY.to_string(),
+        OwnedValue::from(fan.index as u64),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_LABEL_KEY.to_string(),
+        ov(fan.label.clone()),
+    );
+    if let Some(v) = fan.current_rpm {
+        m.insert(
+            dbus_keys::FAN_INFO_CURRENT_RPM_KEY.to_string(),
+            OwnedValue::from(v as u64),
+        );
+    }
+    if let Some(v) = fan.min_rpm {
+        m.insert(
+            dbus_keys::FAN_INFO_MIN_RPM_KEY.to_string(),
+            OwnedValue::from(v as u64),
+        );
+    }
+    if let Some(v) = fan.max_rpm {
+        m.insert(
+            dbus_keys::FAN_INFO_MAX_RPM_KEY.to_string(),
+            OwnedValue::from(v as u64),
+        );
+    }
+    if let Some(v) = fan.current_percent {
+        m.insert(
+            dbus_keys::FAN_INFO_CURRENT_PERCENT_KEY.to_string(),
+            OwnedValue::from(v as u64),
+        );
+    }
+    m.insert(
+        dbus_keys::FAN_INFO_CONTROLLABLE_KEY.to_string(),
+        OwnedValue::from(fan.controllable),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_SUPPORTS_MANUAL_PERCENT_KEY.to_string(),
+        OwnedValue::from(fan.supports_manual_percent),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY.to_string(),
+        OwnedValue::from(fan.supports_manual_rpm_target),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY.to_string(),
+        OwnedValue::from(fan.supports_curve),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY.to_string(),
+        OwnedValue::from(fan.supports_auto),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_BACKEND_KEY.to_string(),
+        ov(fan.backend.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_ENDPOINTS_KEY.to_string(),
+        ov(fan.endpoints.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_NOTES_KEY.to_string(),
+        ov(fan.notes.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_WARNINGS_KEY.to_string(),
+        ov(fan.warnings.clone()),
     );
     m
 }
@@ -1825,6 +2324,45 @@ fn u64_from_map(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u64> {
         .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
 }
 
+fn fan_curve_from_dbus(
+    fan_id: &str,
+    map: &HashMap<String, OwnedValue>,
+) -> rog_core::RogResult<FanCurve> {
+    let rows = map
+        .get("points")
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .ok_or_else(|| {
+            rog_core::RogError::InvalidInput("fan curve requires a points array".to_string())
+        })?;
+    let mut points = Vec::with_capacity(rows.len());
+    for row in rows {
+        let temp_c = u64_from_map(&row, "temp_c")
+            .and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| {
+                rog_core::RogError::InvalidInput("fan curve point missing temp_c".to_string())
+            })?;
+        let duty_percent = u64_from_map(&row, "speed_percent")
+            .or_else(|| u64_from_map(&row, "duty_percent"))
+            .and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| {
+                rog_core::RogError::InvalidInput(
+                    "fan curve point missing speed_percent".to_string(),
+                )
+            })?;
+        points.push(FanPoint {
+            temp_c,
+            duty_percent,
+        });
+    }
+    let curve = FanCurve {
+        domain: FanDomain::Other(fan_id.to_string()),
+        points,
+    };
+    curve.validate_safe(rog_core::FanCurvePolicy::default())?;
+    Ok(curve)
+}
+
 fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
     match e {
         rog_core::RogError::DependencyMissing(msg) => fdo::Error::Failed(msg),
@@ -1832,6 +2370,7 @@ fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
         rog_core::RogError::PermissionDenied(msg) => fdo::Error::AccessDenied(msg),
         rog_core::RogError::InvalidInput(msg) => fdo::Error::InvalidArgs(msg),
         rog_core::RogError::TransientFailure(msg) => fdo::Error::TimedOut(msg),
+        rog_core::RogError::TemporarilyUnavailable(msg) => fdo::Error::Failed(msg),
         rog_core::RogError::Unexpected(msg) => fdo::Error::Failed(msg),
     }
 }
