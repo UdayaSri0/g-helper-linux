@@ -140,8 +140,8 @@ These are used by the daemon and surfaced in the UI diagnostics view.
 
 Important implementation note:
 
-- `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, and `has_kbd_backlight` are actively populated today.
-- `has_aura` and `has_fan_curves` exist in the model, but the current daemon does not probe them to true.
+- `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are actively populated today.
+- `has_fan_curves` exists in the model, but the current daemon does not probe it to true.
 
 That means the capability model is broader than the current provider coverage.
 
@@ -216,7 +216,7 @@ The current architecture has several known limitations:
 
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
 - Fan curve support is modeled but not implemented end-to-end
-- Aura/RGB lighting support is modeled but not implemented
+- Aura/RGB lighting depends on asusd exposing a compatible introspectable backend and still needs broad hardware validation
 - The daemon and UI each live mostly in a single large source file
 - The UI and daemon duplicate some formatting and payload-shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model

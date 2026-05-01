@@ -85,6 +85,8 @@ package() {
 
   install -Dm0644 packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png \
     "${pkgdir}/usr/share/pixmaps/rog-helper.png"
+  install -Dm0644 crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/actions/rog-fan-symbolic.svg"
 
   sed "s#rog-helperd#/usr/bin/rog-helperd#g" \
     packaging/dbus-session/io.github.roghelper.Daemon.service \

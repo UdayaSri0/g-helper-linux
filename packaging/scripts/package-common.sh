@@ -199,6 +199,13 @@ install_icon_theme_assets() {
     "$prefix_root/share/pixmaps/${ICON_NAME}.png"
 }
 
+install_app_symbolic_icons() {
+  local prefix_root="$1"
+  install -Dm0644 \
+    "$REPO_ROOT/crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg" \
+    "$prefix_root/share/icons/hicolor/scalable/actions/rog-fan-symbolic.svg"
+}
+
 install_desktop_entry() {
   local prefix_root="$1"
   install -Dm0644 "$DESKTOP_FILE" "$prefix_root/share/applications/${ICON_NAME}.desktop"

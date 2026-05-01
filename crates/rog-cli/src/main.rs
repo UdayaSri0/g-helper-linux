@@ -4,11 +4,15 @@ use std::process::Command;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
-use rog_core::{DeviceCaps, FeatureAccessState, FeatureAvailability};
+use rog_core::{
+    DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability, LightingDiagnostics,
+};
 use rog_providers::asusd::AsusdPlatformProvider;
+use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
+use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
@@ -32,7 +36,10 @@ enum Cmd {
     /// List and optionally introspect system DBus services.
     Dbus {
         /// Regex used to filter bus names (case-insensitive).
-        #[arg(long, default_value = "asus|rog|supergfx|power|upower")]
+        #[arg(
+            long,
+            default_value = "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
+        )]
         filter: String,
         /// Introspect a specific service name.
         #[arg(long)]
@@ -58,6 +65,14 @@ enum Cmd {
     },
     /// Print a best-effort DeviceCaps summary (Milestone 1).
     Caps,
+    /// Print detected fan telemetry and control support.
+    Fans,
+    /// Print fan capability summary only.
+    FanCaps,
+    /// Print keyboard lighting and RGB/Aura diagnostics only.
+    Lighting,
+    /// Print keyboard lighting and RGB/Aura diagnostics only.
+    LightingDiagnostics,
 }
 
 #[tokio::main]
@@ -94,13 +109,16 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Sensors { root } => cmd_sensors(root.as_deref()).await?,
         Cmd::Caps => cmd_caps().await?,
+        Cmd::Fans => cmd_fans().await?,
+        Cmd::FanCaps => cmd_fan_caps().await?,
+        Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
     }
 
     Ok(())
 }
 
 async fn cmd_services() -> anyhow::Result<()> {
-    let re = Regex::new("(?i)asus|rog|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower")?;
     let names = dbus::list_system_bus_names_matching(&re)
         .await
         .context("list system bus names")?;
@@ -207,12 +225,55 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
             snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
         }
     }
+    let nvidia = NvidiaSmiTelemetryProvider::default();
+    if let Ok(Some(clocks)) = nvidia.read_gpu_clocks_mhz().await {
+        snap.gpu_core_clock_mhz = clocks.core_clock_mhz;
+        snap.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+    }
     println!("  timestamp_ms: {}", snap.timestamp_ms);
     println!("  cpu_temp_c: {:?}", snap.cpu_temp_c);
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
+    println!("  gpu_core_clock_mhz: {:?}", snap.gpu_core_clock_mhz);
+    println!("  gpu_memory_clock_mhz: {:?}", snap.gpu_memory_clock_mhz);
     println!("  temps: {}", snap.temps_c.len());
     println!("  fans: {}", snap.fans_rpm.len());
+    for fan in &snap.fan_rows {
+        println!(
+            "    {}: {} ({})",
+            fan.display_label,
+            fan.rpm
+                .map(|rpm| format!("{rpm} rpm"))
+                .unwrap_or_else(|| "RPM unavailable".to_string()),
+            fan.input_path
+        );
+    }
 
+    Ok(())
+}
+
+async fn cmd_fans() -> anyhow::Result<()> {
+    let provider = HwmonTelemetryProvider::default();
+    let fans = provider.list_fans().context("list fans")?;
+    print_fan_caps(&FanCaps::from_fans(&fans));
+    println!();
+    println!("Detected fans:");
+    if fans.is_empty() {
+        println!("  (none)");
+        println!("  No fan hwmon inputs are exposed. This can be normal on some laptops/kernels.");
+    }
+    for fan in &fans {
+        print_fan_info(fan);
+    }
+    println!();
+    println!("Notes:");
+    println!("  Diagnostics do not require root. If PWM files exist but are read-only, root or a focused udev/system policy may reveal writable control, but rog-ui still only writes through rog-helperd.");
+    Ok(())
+}
+
+async fn cmd_fan_caps() -> anyhow::Result<()> {
+    let provider = HwmonTelemetryProvider::default();
+    let caps = provider.fan_caps().context("probe fan caps")?;
+    print_fan_caps(&caps);
     Ok(())
 }
 
@@ -224,40 +285,71 @@ async fn cmd_caps() -> anyhow::Result<()> {
         warn!("hwmon failed: {e}");
         rog_core::TelemetrySnapshot::empty_now(0)
     });
-    let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
-        Ok(v) => (v, None),
-        Err(e) => {
-            warn!("kbd backlight probe failed: {e}");
-            (None, Some(e.to_string()))
-        }
-    };
+    let lighting_probe = probe_lighting_diagnostics().await;
 
     let mut caps = DeviceCaps::unknown();
     caps.has_fan_reading = !snap.fans_rpm.is_empty();
-    caps.has_kbd_backlight = kbd_backlight.is_some() || detect_kbd_backlight();
-    caps.kbd_backlight_access = if let Some(kbd) = &kbd_backlight {
-        if kbd.can_set_brightness() {
-            FeatureAvailability::new(
-                FeatureAccessState::Available,
-                "Keyboard backlight is available through the sysfs LED backend.",
-            )
-        } else {
-            FeatureAvailability::new(
-                FeatureAccessState::PermissionDenied,
-                "Keyboard backlight is detected, but writes are blocked for the current user.",
-            )
+    if let Ok(fan_caps) = hwmon.fan_caps() {
+        caps.has_fan_reading = fan_caps.has_fan_reading;
+        caps.has_fan_curves = fan_caps.has_fan_curves;
+        caps.has_fan_manual_percent = fan_caps.has_fan_manual_percent;
+        caps.has_fan_manual_rpm_target = fan_caps.has_fan_manual_rpm_target;
+        caps.has_individual_fan_control = fan_caps.has_individual_fan_control;
+        caps.has_fan_sync_control = fan_caps.has_fan_sync_control;
+        caps.has_fan_boost = fan_caps.has_fan_boost;
+        caps.fan_count = fan_caps.fan_count;
+        caps.fan_backend = fan_caps.fan_backend;
+        for endpoint in fan_caps.endpoints {
+            caps.endpoints.push(format!("fan:{endpoint}"));
         }
-    } else if kbd_backlight_probe_error.is_some() || caps.has_kbd_backlight {
-        FeatureAvailability::new(
-            FeatureAccessState::TemporarilyUnavailable,
-            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
-        )
-    } else {
-        FeatureAvailability::new(
-            FeatureAccessState::Unsupported,
-            "No keyboard backlight control was detected on this machine.",
-        )
-    };
+        caps.notes.extend(fan_caps.notes);
+        caps.notes.extend(fan_caps.warnings);
+    }
+    caps.has_kbd_backlight = lighting_probe.kbd_detected;
+    caps.has_aura = lighting_probe.aura.is_some();
+    let sysfs_writable = lighting_probe
+        .kbd_backlight
+        .as_ref()
+        .map(KbdBacklightSysfs::can_set_brightness)
+        .unwrap_or(false);
+    caps.kbd_backlight_access = lighting_access_from_backend_flags(
+        caps.has_aura,
+        lighting_probe.kbd_backlight.is_some(),
+        sysfs_writable,
+        caps.has_kbd_backlight,
+        lighting_probe.kbd_probe_error.as_deref(),
+    );
+    if let Some(aura) = &lighting_probe.aura {
+        caps.endpoints.push(aura.endpoint_tag());
+    }
+    if let Some(err) = &lighting_probe.aura_probe_error {
+        caps.notes.push(format!("asusd Aura probe failed: {err}"));
+    }
+    caps.notes.extend(lighting_probe.aura_notes.clone());
+    caps.notes.push(lighting_probe.diagnostics.summary_line());
+    if let Some(warning) = &lighting_probe.diagnostics.permission_warning {
+        caps.notes.push(warning.clone());
+    }
+    if let Some(reason) = &lighting_probe.diagnostics.unavailable_reason {
+        caps.notes.push(reason.clone());
+    }
+    if let Some(action) = &lighting_probe.diagnostics.recommended_action {
+        caps.notes
+            .push(format!("Lighting recommended action: {action}"));
+    }
+    if let Some(kbd) = &lighting_probe.kbd_backlight {
+        caps.endpoints.push(format!("sysfs-led:{}", kbd.led_name()));
+        caps.notes.push(format!(
+            "Keyboard backlight via {} (max {}, writable={}).",
+            kbd.led_name(),
+            kbd.max_brightness(),
+            kbd.can_set_brightness()
+        ));
+    }
+    if let Some(err) = &lighting_probe.kbd_probe_error {
+        caps.notes
+            .push(format!("keyboard backlight probing failed: {err}"));
+    }
 
     let (asusd, asusd_connect_error) = match AsusdPlatformProvider::connect_system().await {
         Ok(v) => (v, None),
@@ -420,7 +512,7 @@ async fn cmd_caps() -> anyhow::Result<()> {
     }
 
     // Include filtered DBus names as endpoints for diagnostics.
-    let re = Regex::new("(?i)asus|rog|supergfx|power|upower")?;
+    let re = Regex::new("(?i)asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower")?;
     if let Ok(names) = dbus::list_system_bus_names_matching(&re).await {
         for n in names {
             caps.endpoints.push(format!("system-bus-name:{n}"));
@@ -428,7 +520,147 @@ async fn cmd_caps() -> anyhow::Result<()> {
     }
 
     println!("{:#?}", caps);
+    println!();
+    println!("{}", lighting_probe.diagnostics.to_report_text());
     Ok(())
+}
+
+fn print_fan_caps(caps: &FanCaps) {
+    println!("Fan capabilities:");
+    println!("  backend: {}", caps.fan_backend);
+    println!("  fan_count: {}", caps.fan_count);
+    println!("  has_fan_reading: {}", caps.has_fan_reading);
+    println!("  has_fan_manual_percent: {}", caps.has_fan_manual_percent);
+    println!(
+        "  has_fan_manual_rpm_target: {}",
+        caps.has_fan_manual_rpm_target
+    );
+    println!("  has_fan_curves: {}", caps.has_fan_curves);
+    println!(
+        "  has_individual_fan_control: {}",
+        caps.has_individual_fan_control
+    );
+    println!("  has_fan_sync_control: {}", caps.has_fan_sync_control);
+    println!("  has_fan_boost: {}", caps.has_fan_boost);
+    if !caps.endpoints.is_empty() {
+        println!("  endpoints:");
+        for endpoint in &caps.endpoints {
+            println!("    {endpoint}");
+        }
+    }
+    if !caps.warnings.is_empty() {
+        println!("  warnings:");
+        for warning in &caps.warnings {
+            println!("    {warning}");
+        }
+    }
+}
+
+fn print_fan_info(fan: &FanInfo) {
+    println!("  {} [{}]", fan.label, fan.id);
+    println!(
+        "    rpm: {}",
+        fan.current_rpm
+            .map(|rpm| rpm.to_string())
+            .unwrap_or_else(|| "(unavailable)".to_string())
+    );
+    println!(
+        "    percent: {}",
+        fan.current_percent
+            .map(|percent| format!("{percent}%"))
+            .unwrap_or_else(|| "(not reported)".to_string())
+    );
+    println!("    backend: {}", fan.backend);
+    println!("    controllable: {}", fan.controllable);
+    println!("    manual_percent: {}", fan.supports_manual_percent);
+    println!("    rpm_target: {}", fan.supports_manual_rpm_target);
+    println!("    curve: {}", fan.supports_curve);
+    println!("    auto_restore: {}", fan.supports_auto);
+    if !fan.endpoints.is_empty() {
+        println!("    endpoints:");
+        for endpoint in &fan.endpoints {
+            println!("      {endpoint}");
+        }
+    }
+    for note in &fan.notes {
+        println!("    note: {note}");
+    }
+    for warning in &fan.warnings {
+        println!("    warning: {warning}");
+    }
+}
+
+async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {
+    let lighting_probe = probe_lighting_diagnostics().await;
+    println!("{}", lighting_probe.diagnostics.to_report_text());
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LightingProbe {
+    kbd_backlight: Option<KbdBacklightSysfs>,
+    kbd_detected: bool,
+    kbd_probe_error: Option<String>,
+    aura: Option<AuraProvider>,
+    aura_probe_error: Option<String>,
+    aura_notes: Vec<String>,
+    diagnostics: LightingDiagnostics,
+}
+
+async fn probe_lighting_diagnostics() -> LightingProbe {
+    let (kbd_backlight, kbd_probe_error) = match KbdBacklightSysfs::probe() {
+        Ok(v) => (v, None),
+        Err(e) => {
+            warn!("kbd backlight probe failed: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+    let kbd_detected = kbd_backlight.is_some() || detect_kbd_backlight();
+
+    let (aura, aura_probe, aura_notes, aura_probe_error) = match AuraProvider::probe_system().await
+    {
+        Ok(probe) => (probe.provider, probe.diagnostics, probe.notes, None),
+        Err(e) => {
+            warn!("asusd Aura probe failed: {e}");
+            let mut diagnostics = AuraProbeDiagnostics::default();
+            diagnostics.probe_errors.push(e.to_string());
+            (
+                None,
+                diagnostics,
+                vec!["asusd Aura probe could not run to completion.".to_string()],
+                Some(e.to_string()),
+            )
+        }
+    };
+
+    let (aura_state, aura_state_error) = if let Some(aura) = &aura {
+        match aura.read_state().await {
+            Ok(state) => (Some(state), None),
+            Err(e) => (None, Some(e.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+
+    let diagnostics = build_lighting_diagnostics(
+        kbd_backlight.as_ref(),
+        kbd_detected,
+        kbd_probe_error.as_deref(),
+        aura.as_ref(),
+        &aura_probe,
+        aura_state.as_ref(),
+        aura_state_error.as_deref(),
+    );
+
+    LightingProbe {
+        kbd_backlight,
+        kbd_detected,
+        kbd_probe_error,
+        aura,
+        aura_probe_error,
+        aura_notes,
+        diagnostics,
+    }
 }
 
 fn systemctl_unit_status(service: &str) -> Option<String> {
@@ -502,6 +734,45 @@ fn backend_access_from_connect_error(
     }
 }
 
+fn lighting_access_from_backend_flags(
+    aura_available: bool,
+    sysfs_available: bool,
+    sysfs_writable: bool,
+    sysfs_detected: bool,
+    sysfs_probe_error: Option<&str>,
+) -> FeatureAvailability {
+    if aura_available {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard lighting is available through ASUS Aura/RGB.",
+        );
+    }
+
+    if sysfs_available {
+        if sysfs_writable {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Keyboard backlight is available through the sysfs LED backend.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Keyboard backlight is detected, but writes are blocked for the current user.",
+            )
+        }
+    } else if sysfs_probe_error.is_some() || sysfs_detected {
+        FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "Keyboard backlight hardware was detected, but the backend could not be opened right now.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard lighting control was detected on this machine.",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +802,21 @@ mod tests {
             FeatureAccessState::TemporarilyUnavailable
         );
         assert_eq!(availability.reason, "temporarily unavailable reason");
+    }
+
+    #[test]
+    fn lighting_access_fallbacks_match_provider_priority() {
+        assert_eq!(
+            lighting_access_from_backend_flags(true, false, false, false, None).status,
+            FeatureAccessState::Available
+        );
+        assert_eq!(
+            lighting_access_from_backend_flags(false, true, true, true, None).status,
+            FeatureAccessState::Available
+        );
+        assert_eq!(
+            lighting_access_from_backend_flags(false, false, false, false, None).status,
+            FeatureAccessState::Unsupported
+        );
     }
 }

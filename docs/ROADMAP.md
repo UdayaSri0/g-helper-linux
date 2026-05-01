@@ -32,6 +32,12 @@ The following features are present in the current codebase.
   - GPU mode read/write
   - reboot/logout hints
 - keyboard backlight brightness via sysfs
+- fan monitoring and safe fan controls for supported ASUS/Linux hardware
+  - dynamic 0..N fan telemetry
+  - writable hwmon manual percentage control when confirmed
+  - optional RPM target when `fanN_target` is writable
+  - sync mode and time-limited boost
+  - Auto/BIOS restore path
 - CPU telemetry and generic Linux CPU controls
 - memory, swap, PSI, zram, and top-process telemetry
 
@@ -150,16 +156,17 @@ These are not implemented end-to-end in the current repository.
 
 ### Fan curves
 
-Planned but missing:
+Partially implemented:
 
-- provider-backed fan curve read/write
-- daemon fan-curve API
-- fan-curve UI
-- device-level fan-curve capability detection
+- core safety validation
+- daemon DBus API surface
+- capability-driven UI diagnostics
 
-Note:
+Still missing:
 
-- the domain model for fan curves and validation already exists in `rog-core`
+- verified asusd fan-curve backend
+- generic hwmon curve writes, because curve point file formats are hardware-specific
+- graphical curve editor beyond the current API/diagnostic surface
 
 ### Auto mode and policy automation
 
@@ -176,11 +183,11 @@ Note:
 
 ### Aura / RGB lighting
 
-Planned but missing:
+Implemented when asusd exposes a compatible Aura/keyboard lighting DBus backend, with remaining work focused on:
 
-- provider-backed Aura lighting support
-- daemon support for RGB/effects
-- UI support beyond current keyboard brightness and mode placeholders
+- broader hardware validation
+- additional asusd interface shape coverage if real machines expose unsupported signatures
+- clearer reporting for backend-specific effects that do not map to the shared mode labels
 
 ### Persistent configuration
 
@@ -211,7 +218,7 @@ The most useful next technical priorities, based on current implementation statu
 
 1. Fan curves
 2. Auto mode / policy integration
-3. Aura / RGB lighting
+3. Broader Aura / RGB hardware validation
 4. Stronger typed daemon/UI contract
 5. Packaging and release readiness
 

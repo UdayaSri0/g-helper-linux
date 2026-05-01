@@ -191,18 +191,21 @@ Current content:
 - backend and device name
 - current brightness
 - current mode
+- current RGB colour when reported
 - availability status
 - mode combo box
 - brightness slider
-- RGB color control placeholder
+- RGB colour control
 - apply action
 - last-action status
 
 Current implementation note:
 
-- the active daemon backend is currently keyboard backlight via sysfs
-- current daemon-reported supported modes are `Off` and `Static`
-- `supports_rgb` is currently false for the implemented backend
+- the daemon prefers an asusd Aura/RGB DBus backend when introspection confirms one exists
+- the sysfs keyboard backlight backend remains the brightness-only fallback
+- sysfs daemon-reported supported modes are `Off` and `Static`
+- Aura mode choices and RGB enablement come from the daemon-reported backend capability data
+- Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
 ### Diagnostics
@@ -292,6 +295,25 @@ Current examples in the implementation include:
 - CPU write-access banner with diagnostics handoff
 - last-action status for lighting and GPU/profile actions
 
+## Fans Page
+
+The Fans page is a current UI page.
+
+- shows a styled header with backend, detected fan count, current mode, and mapping warnings
+- includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
+- includes animated fan rotors whose visual speed is scaled from live RPM and capped for readability
+- keeps per-fan telemetry visible for every detected fan, including read-only fans
+- shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
+- exposes manual percentage control only when the daemon reports writable manual percent support
+- exposes sync mode only when more than one controllable fan is detected
+- exposes time-limited full-speed boost buttons for 5, 10, and 15 minutes when boost is supported
+- always exposes Return to Auto for controllable fans
+- asks for explicit acknowledgement before first manual fan control
+- shows a disabled safe-curve preview when curves are unsupported
+- keeps raw diagnostics collapsed by default while preserving Copy fan diagnostics
+- keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
+- never writes directly to sysfs or hardware from the UI
+
 ## Planned or Missing UI Features
 
 These are not current pages or complete current UI features.
@@ -299,7 +321,6 @@ These are not current pages or complete current UI features.
 ### Planned or future pages
 
 - Profiles page
-- Fans page
 - Settings page
 
 Related note:
@@ -308,10 +329,9 @@ Related note:
 
 ### Planned or future capabilities
 
-- fan-curve editor
+- graphical fan-curve editor beyond the current validated DBus/API surface
 - auto mode / rules editor
 - exported diagnostics bundle
-- Aura / RGB lighting control
 - more specialized conflict detection and service-management UI
 
 ## Maintenance Note

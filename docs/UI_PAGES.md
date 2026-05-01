@@ -188,6 +188,7 @@ Important note:
 - current lighting backend
 - current brightness
 - current mode
+- current RGB colour when reported
 - availability status
 - last action status
 
@@ -205,11 +206,17 @@ Important note:
 - RGB support depends on `supports_rgb`
 - unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
-### Missing or planned
+### Backend behavior
 
-- no Aura / RGB runtime backend yet
-- current backend is keyboard brightness only
-- current daemon-supported modes are limited to `Off` and `Static`
+- asusd Aura/RGB is used when a supported Aura/keyboard lighting interface is exposed on system DBus
+- sysfs keyboard backlight remains available as a brightness-only fallback
+- sysfs-supported modes are limited to `Off` and `Static`
+- Aura-supported modes are not invented by the UI; they come from daemon/backend reporting
+
+### Diagnostics report
+
+- copy diagnostics includes a `Keyboard Lighting / RGB Diagnostics` section
+- the report lists sysfs LED paths, current brightness, read/write status, asusd services checked, interfaces found, RGB-looking methods/properties, fallback reasons, and recommended action text
 
 ## Diagnostics
 
@@ -283,12 +290,30 @@ Important note:
 - no general Settings page or persistent hardware/control rules yet
 - metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
+## Fans
+
+Current page.
+
+- styled Fan Control header with backend/count/mode/mapping status pills
+- large CPU/GPU temperature gauges that sit side by side on normal laptop widths and stack on narrow windows
+- operating MHz display in the CPU/GPU gauge cards when telemetry is available
+- animated fan rotors in the hero dashboard, scaled from live RPM telemetry
+- capability warning banner
+- sync toggle when multiple controllable fans exist
+- manual percentage slider when writable PWM support is confirmed
+- 5/10/15 minute boost actions when manual percentage support exists
+- Return to Auto action
+- disabled fan-curve preview when curve support is unavailable
+- individual fan cards with RPM, backend, read-only/controllable badges, endpoint details, notes, and warnings
+- copyable fan diagnostics with IDs, RPM, percentages, endpoints, notes, and warnings
+- collapsed diagnostics section by default
+- read-only telemetry remains visible when writes are unsupported or permission-denied
+
 ## Current Planned-But-Not-Implemented Pages
 
 These are not separate pages in the current UI:
 
 - Profiles
-- Fans
 - Settings
 
 Related note:

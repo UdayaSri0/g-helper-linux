@@ -39,7 +39,7 @@ Current repository note:
 
 Current repository note:
 
-- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the AppStream metadata, the `.deb`, the `.rpm`, the AppImage, and the tarball flow all agree on the `rog-helper` icon name
+- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the Fans tab symbolic icon under `crates/rog-ui/assets/icons/hicolor/scalable/actions/`, the desktop entry, the AppStream metadata, the `.deb`, the `.rpm`, the AppImage, and the tarball flow all agree on the expected icon names
 
 ## Service and Packaging Files
 
@@ -154,7 +154,7 @@ Review and explicitly record:
 
 Current repository note:
 
-- fan curves, Aura / RGB lighting, auto mode / policy integration, persistent hardware/control configuration, and broader hardware support validation are not implemented end-to-end yet
+- fan curves, auto mode / policy integration, persistent hardware/control configuration, and broader hardware support validation are not implemented end-to-end yet; Aura/RGB depends on asusd backend exposure and still needs wider model validation
 
 ## Final Sign-Off
 

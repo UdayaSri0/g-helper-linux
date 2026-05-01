@@ -39,7 +39,10 @@ This is the current design, not a placeholder.
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
 | `GetCpuDiagnostics` | none | `s` | Returns formatted text diagnostics for CPU support and state |
-| `SetLighting` | `a{sv}` | `()` | Current backend is sysfs keyboard backlight |
+| `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
+| `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
+| `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
+| `SetLighting` | `a{sv}` | `()` | Uses Aura/RGB through asusd when exposed; otherwise sysfs keyboard backlight fallback |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
 | `SetBatteryLimit` | `t` (`u64`) | `()` | Uses `asusd` when available |
@@ -49,6 +52,13 @@ This is the current design, not a placeholder.
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
+| `SetFanAuto` | `s` | `()` | Empty string means all controllable fans |
+| `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Percentage is `0..=100`; empty string or sync mode applies to all controllable fans |
+| `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Only available when writable `fanN_target` is explicitly detected |
+| `SetFanCurve` | `sa{sv}` | `()` | Validates conservative temperature/speed points before provider write |
+| `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
+| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
+| `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
 
 ## `GetCaps` Response
 
@@ -57,6 +67,13 @@ This is the current design, not a placeholder.
 - `has_profiles` -> `bool`
 - `has_fan_curves` -> `bool`
 - `has_fan_reading` -> `bool`
+- `has_fan_manual_percent` -> `bool`
+- `has_fan_manual_rpm_target` -> `bool`
+- `has_individual_fan_control` -> `bool`
+- `has_fan_sync_control` -> `bool`
+- `has_fan_boost` -> `bool`
+- `fan_count` -> `t`
+- `fan_backend` -> `s`
 - `has_charge_limit` -> `bool`
 - `has_gpu_modes` -> `bool`
 - `has_aura` -> `bool`
@@ -75,7 +92,7 @@ This is the current design, not a placeholder.
 
 Important note:
 
-- `has_aura` and `has_fan_curves` exist in the payload shape but are not currently probed to true by the daemon.
+- `has_aura` is `true` only when the daemon finds an introspectable asusd Aura/keyboard lighting interface. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
@@ -89,6 +106,10 @@ Important note:
 - `warnings` -> `as`
 - `cpu_caps` -> nested `a{sv}` CPU capability map
 - `cpu` -> nested `a{sv}` CPU telemetry map
+- `fan_caps` -> nested `a{sv}` fan capability map
+- `fan_state` -> nested `a{sv}` fan state map
+- `lighting_diagnostics_summary` -> `s`
+- `lighting_diagnostics_details` -> `s`
 
 Optional keys:
 
@@ -98,6 +119,60 @@ Optional keys:
 - `battery_limit` -> `t`
 
 This is the main fetch path used by the current UI.
+
+### Lighting map
+
+When present, `lighting` includes:
+
+- `backend` -> `s`, for example `asusd-aura` or `sysfs-led`
+- `device` -> `s`, for example `aura-dbus:<service>:<path>:<interface>` detail or the sysfs LED name
+- `brightness` -> `t`
+- `max_brightness` -> `t`
+- `mode` -> `s`, when reported
+- `supported_modes` -> `as`
+- `supports_rgb` -> `b`
+- `rgb_hex` -> optional `s` in `#RRGGBB` form
+- `can_set` / `writable` -> `b`
+- `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
+- `last_error` -> optional `s`
+- `diagnostics_summary` -> `s`
+- `diagnostics_details` -> `s`
+- `fallback_reason` -> optional `s`
+- `unavailable_reason` -> optional `s`
+- `permission_warning` -> optional `s`
+
+The diagnostics detail string is a copyable report headed `Keyboard Lighting / RGB Diagnostics`.
+It includes the selected backend, sysfs LED paths, brightness read/write state, asusd services and
+interfaces found through introspection, RGB-looking methods/properties, fallback reasons, and
+recommended next actions.
+
+### Fan state map
+
+`fan_state` includes:
+
+- `fan_caps` -> nested capability map
+- `fans` -> array of nested fan maps
+- `mode` -> `s`: `auto`, `manual_percent`, `manual_rpm_target`, `curve`, `full_speed_boost`, `read_only`, or `unsupported`
+- `sync_enabled` -> `b`
+- `last_action` -> optional `s`
+- `active_boost_fan_id` -> optional `s`
+- `active_boost_until_ms` -> optional `t`
+- `active_curve_summary` -> optional `s`
+- `warnings` -> `as`
+
+Each fan map includes:
+
+- `id`, `index`, `label`
+- optional `current_rpm`, `min_rpm`, `max_rpm`, `current_percent`
+- `controllable`
+- `supports_manual_percent`
+- `supports_manual_rpm_target`
+- `supports_curve`
+- `supports_auto`
+- `backend`
+- `endpoints`, `notes`, `warnings`
+
+Fan control methods return `InvalidArgs` for unsafe input, `NotSupported` for missing backend support, and `AccessDenied` for permission-denied sysfs writes.
 
 ## `GetTelemetry` Response
 
@@ -110,9 +185,13 @@ Current telemetry keys are grouped below.
 - `timestamp_ms`
 - `cpu_temp_c`
 - `gpu_temp_c`
+- `gpu_core_clock_mhz`
+- `gpu_memory_clock_mhz`
 - `temps_c`
 - `fans_rpm`
 - `fan_rows`
+
+`gpu_core_clock_mhz` and `gpu_memory_clock_mhz` are best-effort NVIDIA clock values from the daemon-side `nvidia-smi` provider. They are omitted when `nvidia-smi` is missing, unsupported, timed out, or the GPU is powered down.
 
 `fans_rpm` is a flattened convenience map keyed by chosen display label and only includes rows that currently report an RPM value.
 
@@ -297,10 +376,10 @@ Current accepted keys:
 
 Current behavior:
 
-- current backend is sysfs keyboard backlight only
-- mode `Off` maps brightness to `0`
-- current backend accepts `Off` and `Static`
-- RGB color is rejected by the current daemon backend
+- if Aura/RGB is exposed by asusd and `mode` or `rgb_hex` is supplied, the daemon routes that request through the Aura provider
+- if Aura brightness is not exposed, brightness can still use the sysfs keyboard backlight fallback when present
+- without Aura, the sysfs backend accepts brightness plus `Off` and `Static` only
+- `rgb_hex` without writable Aura/RGB support returns a clear `NotSupported` error
 
 ## `SetProfile`
 

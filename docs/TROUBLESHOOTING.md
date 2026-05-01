@@ -169,6 +169,85 @@ Then compare the `*_access_status` and `*_access_reason` fields with what the Da
 
 This is expected behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
 
+## Fans Visible, But Controls Disabled
+
+This is expected on many laptops. Linux often exposes `fan*_input` RPM telemetry without exposing safe writable control.
+
+Check:
+
+```bash
+cargo run -p rog-cli -- fans
+cargo run -p rog-cli -- fan-caps
+find /sys/class/hwmon -maxdepth 3 -type f \( -name "fan*_input" -o -name "fan*_label" -o -name "pwm*" -o -name "fan*_target" \) -print
+```
+
+Expected behavior:
+
+- fan rows remain visible
+- the Fans page still shows animated RPM rotors and individual fan cards for telemetry
+- manual controls are disabled unless `rog-helperd` reports writable `pwmN` plus `pwmN_enable`
+- RPM target controls are disabled unless writable `fanN_target` exists
+- Diagnostics lists endpoint paths and permission warnings
+
+## Fan RPM Appears, But Manual Control Is Unavailable
+
+`fan*_input` is normally read-only RPM telemetry. Manual percentage control needs a matching writable PWM endpoint.
+
+Common reasons:
+
+- the kernel driver exposes telemetry only
+- `pwmN` or `pwmN_enable` does not exist
+- the files exist but are not writable by the daemon user
+- firmware/BIOS owns the fan policy and ignores software control
+
+The app should degrade to read-only telemetry instead of trying unsafe writes.
+
+## GPU Clock Shows `-- MHz`
+
+The Fans page shows GPU core and memory clocks only when the daemon can read them safely. On NVIDIA systems this is best-effort `nvidia-smi` telemetry.
+
+Common reasons clocks are unavailable:
+
+- `nvidia-smi` is not installed
+- the active GPU is AMD or Intel and no clock provider is exposed yet
+- the NVIDIA GPU is powered down in hybrid/integrated mode
+- the query timed out or the driver reported the clock as unsupported
+
+The UI should show `-- MHz` and continue updating temperature and fan RPM telemetry.
+
+## Permission Denied Writing PWM or Fan Target
+
+If `fan-caps` reports permission warnings, inspect ownership:
+
+```bash
+ls -l /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null
+```
+
+Do not grant broad sysfs write access. If you choose to change local policy, grant only the specific confirmed fan-control files and restart `rog-helperd`.
+
+## asusd Present, But Fan Curves Unsupported
+
+Fan curves are hardware and asusd-interface dependent. If asusd does not expose a discoverable fan-curve API, `rog-helperd` reports curves unsupported rather than broken.
+
+Useful inspection:
+
+```bash
+busctl --system list | grep -Ei "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog" --service xyz.ljones.Asusd --path / --depth 3
+```
+
+## Firmware or BIOS Overrides Curves
+
+Some laptops accept a software fan value briefly and then firmware policy takes over. Use Auto/BIOS mode if fan behavior is inconsistent, and include `fans`, `fan-caps`, and hwmon path output in hardware validation notes.
+
+## Fan Labels Unknown
+
+If `fan*_label` is missing, the app uses `Fan 1`, `Fan 2`, and so on. It does not guess CPU/GPU mapping from position alone.
+
+## Boost Failed or Restored Auto
+
+Boost requires writable manual percentage support. It is always time-limited. If temperatures become unavailable or a critical temperature is observed during manual control, the daemon attempts to restore Auto/BIOS mode and records a warning.
+
 Typical signs:
 
 - CPU telemetry is visible
@@ -245,7 +324,7 @@ Then compare those values with the CPU page and Diagnostics text.
 
 ## Keyboard Backlight Is Visible, But Read-Only
 
-The current runtime lighting backend is keyboard backlight brightness via sysfs.
+The sysfs lighting fallback controls keyboard backlight brightness only.
 
 Typical signs:
 
@@ -264,7 +343,7 @@ Expected current behavior:
 
 - current brightness can still be shown
 - the control stays visible
-- the UI does not pretend Aura / RGB support exists
+- the UI does not enable RGB colour unless the daemon reports writable Aura/RGB support
 
 What to do:
 
@@ -272,6 +351,34 @@ What to do:
 - restart `rog-helperd` after changing local policy
 
 The repository does not currently ship a bundled udev rule or privileged helper for this path.
+
+## Keyboard RGB / Aura Diagnostics
+
+RGB colour requires an asusd Aura/keyboard lighting interface on system DBus.
+
+Check:
+
+```bash
+gdbus introspect --system --dest xyz.ljones.Asusd --object-path /xyz/ljones --recurse
+cargo run -p rog-cli -- lighting-diagnostics
+cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb"
+ls -la /sys/class/leds
+cat /sys/class/leds/asus::kbd_backlight/brightness
+cat /sys/class/leds/asus::kbd_backlight/max_brightness
+```
+
+Expected behavior:
+
+- `has_aura: true` only when an Aura/RGB provider was actually detected
+- `has_kbd_backlight: true` can still be true for brightness-only sysfs support
+- the Lighting page enables the RGB picker only when `supports_rgb` is true
+- if asusd is present but does not expose Aura/RGB, Diagnostics should say that RGB is not exposed by asusd
+- if only sysfs is available, Diagnostics should explain that the active backend only supports brightness through `/sys/class/leds/...`
+- if write access is blocked, Diagnostics should name the brightness file permission issue
+- if a potential Aura-like interface is found but unsupported, include the introspection output in a GitHub issue
+
+If RGB is unavailable, the app should keep brightness controls available when sysfs backlight support exists.
 
 ## Missing Telemetry or Limited `hwmon` Coverage
 
@@ -319,9 +426,10 @@ These commands are useful for most current troubleshooting:
 
 ```bash
 cargo run -p rog-cli -- services
-cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
+cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- lighting-diagnostics
 ```
 
 When you are doing real hardware validation instead of one-off troubleshooting, record the outputs in:

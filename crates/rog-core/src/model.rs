@@ -98,6 +98,200 @@ pub struct FanCurve {
     pub points: Vec<FanPoint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanInfo {
+    pub id: String,
+    pub index: u32,
+    pub label: String,
+    pub current_rpm: Option<u32>,
+    pub min_rpm: Option<u32>,
+    pub max_rpm: Option<u32>,
+    pub current_percent: Option<u8>,
+    pub controllable: bool,
+    pub supports_manual_percent: bool,
+    pub supports_manual_rpm_target: bool,
+    pub supports_curve: bool,
+    pub supports_auto: bool,
+    pub backend: String,
+    pub endpoints: Vec<String>,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanInfo {
+    pub fn read_only_from_telemetry(index: u32, telemetry: &FanTelemetry) -> Self {
+        Self {
+            id: format!("hwmon-fan-{index}"),
+            index,
+            label: telemetry.display_label.clone(),
+            current_rpm: telemetry.rpm,
+            min_rpm: None,
+            max_rpm: None,
+            current_percent: None,
+            controllable: false,
+            supports_manual_percent: false,
+            supports_manual_rpm_target: false,
+            supports_curve: false,
+            supports_auto: false,
+            backend: "hwmon-read-only".to_string(),
+            endpoints: vec![telemetry.input_path.clone()],
+            notes: Vec::new(),
+            warnings: vec![
+                "RPM telemetry is available, but no writable fan-control endpoint was detected."
+                    .to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FanControlMode {
+    Auto,
+    ManualPercent,
+    ManualRpmTarget,
+    Curve,
+    FullSpeedBoost,
+    Unsupported,
+    ReadOnly,
+}
+
+impl FanControlMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ManualPercent => "manual_percent",
+            Self::ManualRpmTarget => "manual_rpm_target",
+            Self::Curve => "curve",
+            Self::FullSpeedBoost => "full_speed_boost",
+            Self::Unsupported => "unsupported",
+            Self::ReadOnly => "read_only",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "bios" | "bios_default" => Self::Auto,
+            "manual_percent" | "manual" | "percent" => Self::ManualPercent,
+            "manual_rpm_target" | "rpm" | "rpm_target" => Self::ManualRpmTarget,
+            "curve" => Self::Curve,
+            "full_speed_boost" | "boost" | "max" => Self::FullSpeedBoost,
+            "read_only" | "readonly" => Self::ReadOnly,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanCaps {
+    pub has_fan_reading: bool,
+    pub has_fan_curves: bool,
+    pub has_fan_manual_percent: bool,
+    pub has_fan_manual_rpm_target: bool,
+    pub has_individual_fan_control: bool,
+    pub has_fan_sync_control: bool,
+    pub has_fan_boost: bool,
+    pub fan_count: u32,
+    pub fan_backend: String,
+    pub endpoints: Vec<String>,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanCaps {
+    pub fn from_fans(fans: &[FanInfo]) -> Self {
+        let controllable_count = fans.iter().filter(|fan| fan.controllable).count();
+        let has_fan_manual_percent = fans.iter().any(|fan| fan.supports_manual_percent);
+        let has_fan_manual_rpm_target = fans.iter().any(|fan| fan.supports_manual_rpm_target);
+        let has_fan_curves = fans.iter().any(|fan| fan.supports_curve);
+        let has_fan_reading = fans.iter().any(|fan| fan.current_rpm.is_some());
+        let fan_backend = if fans.is_empty() {
+            "unsupported".to_string()
+        } else if has_fan_curves && fans.iter().any(|fan| fan.backend.contains("asusd")) {
+            "asusd".to_string()
+        } else if controllable_count > 0 {
+            "hwmon".to_string()
+        } else {
+            "read-only".to_string()
+        };
+        let mut endpoints = Vec::new();
+        let mut notes = Vec::new();
+        let mut warnings = Vec::new();
+        for fan in fans {
+            endpoints.extend(fan.endpoints.clone());
+            notes.extend(fan.notes.clone());
+            warnings.extend(fan.warnings.clone());
+        }
+        endpoints.sort();
+        endpoints.dedup();
+        notes.sort();
+        notes.dedup();
+        warnings.sort();
+        warnings.dedup();
+
+        Self {
+            has_fan_reading,
+            has_fan_curves,
+            has_fan_manual_percent,
+            has_fan_manual_rpm_target,
+            has_individual_fan_control: controllable_count > 0,
+            has_fan_sync_control: controllable_count > 1,
+            has_fan_boost: has_fan_manual_percent,
+            fan_count: fans.len() as u32,
+            fan_backend,
+            endpoints,
+            notes,
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanState {
+    pub fans: Vec<FanInfo>,
+    pub caps: FanCaps,
+    pub mode: FanControlMode,
+    pub sync_enabled: bool,
+    pub last_action: Option<String>,
+    pub active_boost_fan_id: Option<String>,
+    pub active_boost_until_ms: Option<u64>,
+    pub active_curve_summary: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FanState {
+    pub fn from_fans(fans: Vec<FanInfo>) -> Self {
+        let caps = FanCaps::from_fans(&fans);
+        let mode = if fans.is_empty() {
+            FanControlMode::Unsupported
+        } else if caps.has_individual_fan_control {
+            FanControlMode::Auto
+        } else {
+            FanControlMode::ReadOnly
+        };
+        Self {
+            fans,
+            caps,
+            mode,
+            sync_enabled: false,
+            last_action: None,
+            active_boost_fan_id: None,
+            active_boost_until_ms: None,
+            active_curve_summary: None,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanControlRequest {
+    pub fan_id: String,
+    pub mode: FanControlMode,
+    pub speed_percent: Option<u8>,
+    pub rpm_target: Option<u32>,
+    pub curve: Option<FanCurve>,
+    pub duration_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeFloor {
     pub temp_c: u8,
@@ -117,15 +311,15 @@ pub struct FanCurvePolicy {
 impl Default for FanCurvePolicy {
     fn default() -> Self {
         Self {
-            temp_min_c: 20,
+            temp_min_c: 30,
             temp_max_c: 100,
             duty_min_percent: 0,
             duty_max_percent: 100,
             enforce_monotonic: true,
-            // Safety-first: avoid 0% fan at higher temps.
+            // Safety-first: avoid low fan duty at higher temperatures.
             safe_floor: Some(SafeFloor {
-                temp_c: 70,
-                min_duty_percent: 20,
+                temp_c: 85,
+                min_duty_percent: 70,
             }),
         }
     }
@@ -230,21 +424,640 @@ impl FanCurve {
 
         Ok(warnings)
     }
+
+    pub fn validate_safe(&self, policy: FanCurvePolicy) -> RogResult<()> {
+        validate_fan_curve_points(&self.points, policy)
+    }
+}
+
+pub fn validate_fan_percent(percent: u8) -> RogResult<()> {
+    if percent <= 100 {
+        Ok(())
+    } else {
+        Err(RogError::InvalidInput(format!(
+            "fan speed percent {percent} is outside 0..=100"
+        )))
+    }
+}
+
+pub fn validate_fan_id_exists(fan_id: &str, fans: &[FanInfo]) -> RogResult<()> {
+    if fan_id.trim().is_empty() {
+        return Ok(());
+    }
+    if fans.iter().any(|fan| fan.id == fan_id) {
+        Ok(())
+    } else {
+        Err(RogError::InvalidInput(format!("unknown fan id '{fan_id}'")))
+    }
+}
+
+pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) -> RogResult<()> {
+    if points.is_empty() {
+        return Err(RogError::InvalidInput(
+            "fan curve must not be empty".to_string(),
+        ));
+    }
+
+    let mut last_temp = None;
+    let mut last_duty = None;
+    for point in points {
+        if point.temp_c < policy.temp_min_c || point.temp_c > policy.temp_max_c {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve temperature {}C is outside {}..={}C",
+                point.temp_c, policy.temp_min_c, policy.temp_max_c
+            )));
+        }
+        if point.duty_percent < policy.duty_min_percent
+            || point.duty_percent > policy.duty_max_percent
+        {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve speed {}% is outside {}..={}%",
+                point.duty_percent, policy.duty_min_percent, policy.duty_max_percent
+            )));
+        }
+        if let Some(prev_temp) = last_temp {
+            if point.temp_c <= prev_temp {
+                return Err(RogError::InvalidInput(
+                    "fan curve temperature points must be strictly increasing".to_string(),
+                ));
+            }
+        }
+        if policy.enforce_monotonic {
+            if let Some(prev_duty) = last_duty {
+                if point.duty_percent < prev_duty {
+                    return Err(RogError::InvalidInput(
+                        "fan curve speed percentages must be non-decreasing".to_string(),
+                    ));
+                }
+            }
+        }
+        if point.temp_c >= 95 && point.duty_percent < 100 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at 100% at or above 95C".to_string(),
+            ));
+        }
+        if point.temp_c >= 90 && point.duty_percent < 90 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at least 90% at or above 90C".to_string(),
+            ));
+        }
+        if point.temp_c >= 85 && point.duty_percent < 70 {
+            return Err(RogError::InvalidInput(
+                "fan curve must run at least 70% at or above 85C".to_string(),
+            ));
+        }
+        last_temp = Some(point.temp_c);
+        last_duty = Some(point.duty_percent);
+    }
+    Ok(())
+}
+
+pub fn validate_fan_request(request: &FanControlRequest, fans: &[FanInfo]) -> RogResult<()> {
+    validate_fan_id_exists(&request.fan_id, fans)?;
+    let selected: Vec<&FanInfo> = if request.fan_id.trim().is_empty() {
+        fans.iter().collect()
+    } else {
+        fans.iter().filter(|fan| fan.id == request.fan_id).collect()
+    };
+
+    match request.mode {
+        FanControlMode::Auto => {
+            if selected.iter().any(|fan| !fan.supports_auto) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not expose Auto/BIOS restore".to_string(),
+                ));
+            }
+        }
+        FanControlMode::ManualPercent | FanControlMode::FullSpeedBoost => {
+            let percent = request.speed_percent.ok_or_else(|| {
+                RogError::InvalidInput("manual fan control requires speed_percent".to_string())
+            })?;
+            validate_fan_percent(percent)?;
+            if selected.iter().any(|fan| !fan.supports_manual_percent) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support manual percentage control"
+                        .to_string(),
+                ));
+            }
+            if matches!(request.mode, FanControlMode::FullSpeedBoost)
+                && request.duration_seconds.unwrap_or(0) == 0
+            {
+                return Err(RogError::InvalidInput(
+                    "full-speed boost must be time-limited".to_string(),
+                ));
+            }
+        }
+        FanControlMode::ManualRpmTarget => {
+            let rpm = request.rpm_target.ok_or_else(|| {
+                RogError::InvalidInput("RPM target mode requires rpm_target".to_string())
+            })?;
+            if rpm == 0 {
+                return Err(RogError::InvalidInput(
+                    "RPM target must be greater than zero".to_string(),
+                ));
+            }
+            if selected.iter().any(|fan| !fan.supports_manual_rpm_target) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support RPM target control".to_string(),
+                ));
+            }
+        }
+        FanControlMode::Curve => {
+            let curve = request.curve.as_ref().ok_or_else(|| {
+                RogError::InvalidInput("curve mode requires a fan curve".to_string())
+            })?;
+            curve.validate_safe(FanCurvePolicy::default())?;
+            if selected.iter().any(|fan| !fan.supports_curve) {
+                return Err(RogError::NotSupported(
+                    "one or more selected fans do not support fan curves".to_string(),
+                ));
+            }
+        }
+        FanControlMode::Unsupported | FanControlMode::ReadOnly => {
+            return Err(RogError::NotSupported(
+                "selected fan mode is not writable".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightingMode {
     Off,
     Static,
-    Breathing,
+    Breathe,
     Rainbow,
+    Strobe,
+    Pulse,
+    Wave,
     Other(String),
+}
+
+impl LightingMode {
+    pub fn parse_label(value: &str) -> Option<Self> {
+        let key = normalize_lighting_word(value);
+        match key.as_str() {
+            "off" | "none" => Some(Self::Off),
+            "static" | "steady" | "constant" => Some(Self::Static),
+            "breathe" | "breathing" | "breath" => Some(Self::Breathe),
+            "strobe" | "strobing" | "flash" | "flashing" => Some(Self::Strobe),
+            "rainbow" => Some(Self::Rainbow),
+            "pulse" | "pulsing" => Some(Self::Pulse),
+            "wave" | "colourwave" | "colorwave" => Some(Self::Wave),
+            _ => None,
+        }
+    }
+
+    pub fn from_backend_label(value: &str) -> Self {
+        Self::parse_label(value).unwrap_or_else(|| Self::Other(value.trim().to_string()))
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Off => "Off".to_string(),
+            Self::Static => "Static".to_string(),
+            Self::Breathe => "Breathe".to_string(),
+            Self::Rainbow => "Rainbow".to_string(),
+            Self::Strobe => "Strobe".to_string(),
+            Self::Pulse => "Pulse".to_string(),
+            Self::Wave => "Wave".to_string(),
+            Self::Other(value) => value.clone(),
+        }
+    }
+
+    pub fn same_user_mode(&self, other: &Self) -> bool {
+        normalize_lighting_word(&self.label()) == normalize_lighting_word(&other.label())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl RgbColor {
+    pub fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    pub fn parse_hex(value: &str) -> RogResult<Self> {
+        let value = value.trim();
+        let value = value.strip_prefix('#').unwrap_or(value);
+        if value.len() != 6 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(RogError::InvalidInput(format!(
+                "RGB colour '{value}' must be in #RRGGBB format"
+            )));
+        }
+
+        let r = parse_hex_byte(&value[0..2])?;
+        let g = parse_hex_byte(&value[2..4])?;
+        let b = parse_hex_byte(&value[4..6])?;
+        Ok(Self { r, g, b })
+    }
+
+    pub fn to_hex(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightingState {
-    pub brightness: u8,
-    pub mode: LightingMode,
+    pub backend: String,
+    pub device: String,
+    pub brightness: Option<u32>,
+    pub max_brightness: Option<u32>,
+    pub mode: Option<LightingMode>,
+    pub supported_modes: Vec<LightingMode>,
+    pub supports_rgb: bool,
+    pub rgb: Option<RgbColor>,
+    pub writable: bool,
+    pub status: String,
+    pub last_error: Option<String>,
+}
+
+impl LightingState {
+    pub fn mode_label(&self) -> Option<String> {
+        self.mode.as_ref().map(LightingMode::label)
+    }
+
+    pub fn supported_mode_labels(&self) -> Vec<String> {
+        self.supported_modes
+            .iter()
+            .map(LightingMode::label)
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightingDiagnostics {
+    pub keyboard_backlight_detected: bool,
+    pub keyboard_backlight_backend: Option<String>,
+    pub keyboard_backlight_device: Option<String>,
+    pub keyboard_backlight_path: Option<String>,
+    pub keyboard_backlight_brightness_path: Option<String>,
+    pub keyboard_backlight_current_brightness: Option<u32>,
+    pub keyboard_backlight_max_brightness: Option<u32>,
+    pub keyboard_backlight_readable: bool,
+    pub keyboard_backlight_writable: bool,
+
+    pub supports_brightness: bool,
+    pub supports_modes: bool,
+    pub supported_modes: Vec<String>,
+    pub active_mode: Option<String>,
+
+    pub supports_rgb: bool,
+    pub rgb_backend_detected: bool,
+    pub rgb_backend_name: Option<String>,
+    pub rgb_current_hex: Option<String>,
+
+    pub asusd_service_detected: bool,
+    pub asusd_service_name: Option<String>,
+    pub asusd_services_checked: Vec<String>,
+    pub asusd_object_paths_checked: Vec<String>,
+    pub asusd_interfaces_detected: Vec<String>,
+    pub asusd_aura_interface_detected: bool,
+    pub asusd_keyboard_interface_detected: bool,
+    pub asusd_potential_aura_interfaces: Vec<String>,
+    pub asusd_rgb_methods_detected: Vec<String>,
+    pub asusd_rgb_properties_detected: Vec<String>,
+
+    pub active_backend: String,
+    pub fallback_reason: Option<String>,
+    pub unavailable_reason: Option<String>,
+    pub permission_warning: Option<String>,
+    pub last_probe_error: Option<String>,
+    pub probe_errors: Vec<String>,
+    pub recommended_action: Option<String>,
+}
+
+impl LightingDiagnostics {
+    pub fn unknown() -> Self {
+        Self {
+            keyboard_backlight_detected: false,
+            keyboard_backlight_backend: None,
+            keyboard_backlight_device: None,
+            keyboard_backlight_path: None,
+            keyboard_backlight_brightness_path: None,
+            keyboard_backlight_current_brightness: None,
+            keyboard_backlight_max_brightness: None,
+            keyboard_backlight_readable: false,
+            keyboard_backlight_writable: false,
+            supports_brightness: false,
+            supports_modes: false,
+            supported_modes: Vec::new(),
+            active_mode: None,
+            supports_rgb: false,
+            rgb_backend_detected: false,
+            rgb_backend_name: None,
+            rgb_current_hex: None,
+            asusd_service_detected: false,
+            asusd_service_name: None,
+            asusd_services_checked: Vec::new(),
+            asusd_object_paths_checked: Vec::new(),
+            asusd_interfaces_detected: Vec::new(),
+            asusd_aura_interface_detected: false,
+            asusd_keyboard_interface_detected: false,
+            asusd_potential_aura_interfaces: Vec::new(),
+            asusd_rgb_methods_detected: Vec::new(),
+            asusd_rgb_properties_detected: Vec::new(),
+            active_backend: "none".to_string(),
+            fallback_reason: None,
+            unavailable_reason: None,
+            permission_warning: None,
+            last_probe_error: None,
+            probe_errors: Vec::new(),
+            recommended_action: None,
+        }
+    }
+
+    pub fn summary_line(&self) -> String {
+        if self.supports_rgb {
+            format!(
+                "RGB lighting is available through {}.",
+                self.rgb_backend_name
+                    .as_deref()
+                    .unwrap_or(self.active_backend.as_str())
+            )
+        } else if self.supports_brightness {
+            self.fallback_reason.clone().unwrap_or_else(|| {
+                "Keyboard brightness is available, but RGB colour control is not available."
+                    .to_string()
+            })
+        } else {
+            self.unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "No keyboard lighting backend is available.".to_string())
+        }
+    }
+
+    pub fn to_report_text(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push("Keyboard Lighting / RGB Diagnostics".to_string());
+        lines.push("===================================".to_string());
+        lines.push(String::new());
+        lines.push("Summary:".to_string());
+        lines.push(format!(
+            "- Active backend: {}",
+            display_backend_name(&self.active_backend)
+        ));
+        lines.push(format!(
+            "- Keyboard backlight detected: {}",
+            yes_no(self.keyboard_backlight_detected)
+        ));
+        lines.push(format!(
+            "- Brightness control: {}",
+            availability_text(self.supports_brightness, self.keyboard_backlight_writable)
+        ));
+        lines.push(format!(
+            "- RGB control: {}",
+            if self.supports_rgb {
+                "available"
+            } else {
+                "not available"
+            }
+        ));
+        lines.push(format!("- Reason: {}", self.summary_line()));
+        lines.push(format!(
+            "- Aura support: {}",
+            if self.rgb_backend_detected {
+                "detected"
+            } else if self.asusd_potential_aura_interfaces.is_empty() {
+                "not detected through asusd"
+            } else {
+                "potential interface detected"
+            }
+        ));
+        lines.push(format!(
+            "- asusd status: {}",
+            if self.asusd_service_detected {
+                format!(
+                    "service detected ({})",
+                    self.asusd_service_name
+                        .as_deref()
+                        .unwrap_or("name not recorded")
+                )
+            } else {
+                "service not detected".to_string()
+            }
+        ));
+        if let Some(action) = &self.recommended_action {
+            lines.push(format!("- Recommended action: {action}"));
+        }
+
+        lines.push(String::new());
+        lines.push("Sysfs Keyboard Backlight:".to_string());
+        lines.push(format!(
+            "- Device: {}",
+            opt_text(self.keyboard_backlight_device.as_deref())
+        ));
+        lines.push(format!(
+            "- Backend: {}",
+            opt_text(self.keyboard_backlight_backend.as_deref())
+        ));
+        lines.push(format!(
+            "- Path: {}",
+            opt_text(self.keyboard_backlight_path.as_deref())
+        ));
+        lines.push(format!(
+            "- Brightness path: {}",
+            opt_text(self.keyboard_backlight_brightness_path.as_deref())
+        ));
+        lines.push(format!(
+            "- Brightness: {}",
+            opt_u32(self.keyboard_backlight_current_brightness)
+        ));
+        lines.push(format!(
+            "- Max brightness: {}",
+            opt_u32(self.keyboard_backlight_max_brightness)
+        ));
+        lines.push(format!(
+            "- Readable: {}",
+            yes_no(self.keyboard_backlight_readable)
+        ));
+        lines.push(format!(
+            "- Writable: {}",
+            yes_no(self.keyboard_backlight_writable)
+        ));
+        lines.push(format!(
+            "- Supported modes: {}",
+            list_text(&self.supported_modes)
+        ));
+        lines.push(format!("- Supports RGB: {}", yes_no(false)));
+
+        lines.push(String::new());
+        lines.push("ASUS/Aura DBus Probe:".to_string());
+        lines.push(format!(
+            "- Services checked: {}",
+            list_text(&self.asusd_services_checked)
+        ));
+        lines.push(format!(
+            "- Service detected: {}",
+            if self.asusd_service_detected {
+                opt_text(self.asusd_service_name.as_deref()).to_string()
+            } else {
+                "no".to_string()
+            }
+        ));
+        lines.push(format!(
+            "- Object paths checked: {}",
+            list_text(&self.asusd_object_paths_checked)
+        ));
+        lines.push(format!(
+            "- Interfaces detected: {}",
+            list_text(&self.asusd_interfaces_detected)
+        ));
+        lines.push(format!(
+            "- Aura-like interface found: {}",
+            yes_no(
+                self.asusd_aura_interface_detected
+                    || !self.asusd_potential_aura_interfaces.is_empty()
+            )
+        ));
+        lines.push(format!(
+            "- Keyboard-like interface found: {}",
+            yes_no(self.asusd_keyboard_interface_detected)
+        ));
+        lines.push(format!(
+            "- Potential Aura interfaces: {}",
+            list_text(&self.asusd_potential_aura_interfaces)
+        ));
+        lines.push(format!(
+            "- RGB methods found: {}",
+            list_text(&self.asusd_rgb_methods_detected)
+        ));
+        lines.push(format!(
+            "- RGB properties found: {}",
+            list_text(&self.asusd_rgb_properties_detected)
+        ));
+        lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
+
+        lines.push(String::new());
+        lines.push("Decision:".to_string());
+        lines.push(format!(
+            "- has_kbd_backlight: {}",
+            yes_no(self.keyboard_backlight_detected)
+        ));
+        lines.push(format!("- has_aura: {}", yes_no(self.rgb_backend_detected)));
+        lines.push(format!("- supports_rgb: {}", yes_no(self.supports_rgb)));
+        lines.push(format!(
+            "- selected backend: {}",
+            display_backend_name(&self.active_backend)
+        ));
+        lines.push(format!(
+            "- fallback reason: {}",
+            opt_text(self.fallback_reason.as_deref())
+        ));
+        lines.push(format!(
+            "- unavailable reason: {}",
+            opt_text(self.unavailable_reason.as_deref())
+        ));
+
+        let mut warnings = Vec::new();
+        if let Some(warning) = &self.permission_warning {
+            warnings.push(warning.clone());
+        }
+        if !self.supports_rgb && self.supports_brightness {
+            warnings.push(
+                "Keyboard brightness is available through the sysfs LED backend, but RGB colour control is not available because no Aura/RGB backend was detected."
+                    .to_string(),
+            );
+        }
+        if self.asusd_service_detected && !self.rgb_backend_detected {
+            warnings.push(
+                "asusd is running, but no Aura/RGB keyboard interface was found in the detected DBus interfaces. This laptop or asusd version may not expose RGB control through DBus."
+                    .to_string(),
+            );
+        }
+        if !self.asusd_potential_aura_interfaces.is_empty() && !self.rgb_backend_detected {
+            warnings.push(
+                "Potential Aura/RGB interface detected, but rog-helper does not yet implement this interface. Please include the introspection output in a GitHub issue."
+                    .to_string(),
+            );
+        }
+        if let Some(error) = &self.last_probe_error {
+            warnings.push(format!("Last probe error: {error}"));
+        }
+        if !self.probe_errors.is_empty() {
+            warnings.extend(
+                self.probe_errors
+                    .iter()
+                    .map(|e| format!("Probe error: {e}")),
+            );
+        }
+
+        lines.push(String::new());
+        lines.push("Warnings:".to_string());
+        if warnings.is_empty() {
+            lines.push("- none".to_string());
+        } else {
+            for warning in warnings {
+                lines.push(format!("- {warning}"));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
+fn display_backend_name(value: &str) -> String {
+    match normalize_lighting_word(value).as_str() {
+        "sysfsled" => "Sysfs LED keyboard backlight".to_string(),
+        "asusdaura" => "ASUS Aura DBus".to_string(),
+        "none" | "" => "None".to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn availability_text(supported: bool, writable: bool) -> &'static str {
+    match (supported, writable) {
+        (true, true) => "available",
+        (true, false) => "read-only",
+        (false, _) => "not available",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn opt_text(value: Option<&str>) -> &str {
+    value.filter(|v| !v.trim().is_empty()).unwrap_or("(none)")
+}
+
+fn opt_u32(value: Option<u32>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
+fn list_text(values: &[String]) -> String {
+    if values.is_empty() {
+        "(none)".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn normalize_lighting_word(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn parse_hex_byte(value: &str) -> RogResult<u8> {
+    u8::from_str_radix(value, 16)
+        .map_err(|e| RogError::InvalidInput(format!("invalid RGB hex byte '{value}': {e}")))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +1069,13 @@ pub struct DeviceCaps {
     pub has_gpu_modes: bool,
     pub has_aura: bool,
     pub has_kbd_backlight: bool,
+    pub has_fan_manual_percent: bool,
+    pub has_fan_manual_rpm_target: bool,
+    pub has_individual_fan_control: bool,
+    pub has_fan_sync_control: bool,
+    pub has_fan_boost: bool,
+    pub fan_count: u32,
+    pub fan_backend: String,
     pub requires_reboot_for_gpu_switch: bool,
     pub profile_access: FeatureAvailability,
     pub charge_limit_access: FeatureAvailability,
@@ -277,6 +1097,13 @@ impl DeviceCaps {
             has_gpu_modes: false,
             has_aura: false,
             has_kbd_backlight: false,
+            has_fan_manual_percent: false,
+            has_fan_manual_rpm_target: false,
+            has_individual_fan_control: false,
+            has_fan_sync_control: false,
+            has_fan_boost: false,
+            fan_count: 0,
+            fan_backend: "unknown".to_string(),
             requires_reboot_for_gpu_switch: false,
             profile_access: FeatureAvailability::unknown(),
             charge_limit_access: FeatureAvailability::unknown(),
@@ -354,6 +1181,8 @@ pub struct TelemetrySnapshot {
 
     pub cpu_temp_c: Option<f32>,
     pub gpu_temp_c: Option<f32>,
+    pub gpu_core_clock_mhz: Option<u32>,
+    pub gpu_memory_clock_mhz: Option<u32>,
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
@@ -420,6 +1249,8 @@ impl TelemetrySnapshot {
             timestamp_ms,
             cpu_temp_c: None,
             gpu_temp_c: None,
+            gpu_core_clock_mhz: None,
+            gpu_memory_clock_mhz: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
             fan_rows: Vec::new(),
@@ -686,6 +1517,7 @@ impl CpuCaps {
 pub struct AppState {
     pub caps: DeviceCaps,
     pub telemetry: TelemetrySnapshot,
+    pub fan_state: FanState,
     pub cpu_caps: CpuCaps,
     pub cpu: CpuTelemetry,
     pub warnings: Vec<String>,
@@ -693,8 +1525,15 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(caps: DeviceCaps, telemetry: TelemetrySnapshot) -> Self {
+        let fans = telemetry
+            .fan_rows
+            .iter()
+            .enumerate()
+            .map(|(idx, fan)| FanInfo::read_only_from_telemetry((idx + 1) as u32, fan))
+            .collect::<Vec<_>>();
         Self {
             caps,
+            fan_state: FanState::from_fans(fans),
             cpu_caps: CpuCaps::unknown(),
             cpu: CpuTelemetry::empty_now(telemetry.timestamp_ms),
             telemetry,
@@ -749,8 +1588,152 @@ mod tests {
             }],
         };
         let _warnings = curve.sanitize(FanCurvePolicy::default()).unwrap();
-        assert_eq!(curve.points[0].temp_c, 20);
+        assert_eq!(curve.points[0].temp_c, 30);
         assert_eq!(curve.points[0].duty_percent, 100);
+    }
+
+    #[test]
+    fn valid_safe_fan_curve_is_accepted() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 35,
+                    duty_percent: 15,
+                },
+                FanPoint {
+                    temp_c: 75,
+                    duty_percent: 70,
+                },
+                FanPoint {
+                    temp_c: 85,
+                    duty_percent: 90,
+                },
+                FanPoint {
+                    temp_c: 90,
+                    duty_percent: 100,
+                },
+                FanPoint {
+                    temp_c: 95,
+                    duty_percent: 100,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_ok());
+    }
+
+    #[test]
+    fn empty_fan_curve_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: Vec::new(),
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn unordered_fan_curve_temperature_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 60,
+                    duty_percent: 40,
+                },
+                FanPoint {
+                    temp_c: 50,
+                    duty_percent: 50,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn unsafe_high_temperature_low_speed_curve_is_rejected() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 35,
+                    duty_percent: 20,
+                },
+                FanPoint {
+                    temp_c: 90,
+                    duty_percent: 20,
+                },
+            ],
+        };
+
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn out_of_range_percent_request_is_rejected() {
+        let fan = test_controllable_fan();
+        let request = FanControlRequest {
+            fan_id: "fan1".to_string(),
+            mode: FanControlMode::ManualPercent,
+            speed_percent: Some(101),
+            rpm_target: None,
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[fan]).is_err());
+    }
+
+    #[test]
+    fn rpm_target_rejected_when_unsupported() {
+        let fan = test_controllable_fan();
+        let request = FanControlRequest {
+            fan_id: "fan1".to_string(),
+            mode: FanControlMode::ManualRpmTarget,
+            speed_percent: None,
+            rpm_target: Some(3000),
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[fan]).is_err());
+    }
+
+    #[test]
+    fn unknown_fan_id_rejected() {
+        let request = FanControlRequest {
+            fan_id: "missing".to_string(),
+            mode: FanControlMode::Auto,
+            speed_percent: None,
+            rpm_target: None,
+            curve: None,
+            duration_seconds: None,
+        };
+
+        assert!(validate_fan_request(&request, &[]).is_err());
+    }
+
+    fn test_controllable_fan() -> FanInfo {
+        FanInfo {
+            id: "fan1".to_string(),
+            index: 1,
+            label: "Fan 1".to_string(),
+            current_rpm: Some(1000),
+            min_rpm: None,
+            max_rpm: None,
+            current_percent: None,
+            controllable: true,
+            supports_manual_percent: true,
+            supports_manual_rpm_target: false,
+            supports_curve: false,
+            supports_auto: true,
+            backend: "test".to_string(),
+            endpoints: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+        }
     }
 
     #[test]
@@ -758,5 +1741,132 @@ mod tests {
         assert_eq!(BatteryLimitPercent::clamp_default(10).0, 40);
         assert_eq!(BatteryLimitPercent::clamp_default(80).0, 80);
         assert_eq!(BatteryLimitPercent::clamp_default(150).0, 100);
+    }
+
+    #[test]
+    fn rgb_hex_parser_accepts_hash_and_plain_rrggbb() {
+        assert_eq!(
+            RgbColor::parse_hex("#1A2b3C").unwrap(),
+            RgbColor::new(26, 43, 60)
+        );
+        assert_eq!(
+            RgbColor::parse_hex("00ff7F").unwrap(),
+            RgbColor::new(0, 255, 127)
+        );
+        assert_eq!(RgbColor::new(10, 11, 12).to_hex(), "#0A0B0C");
+    }
+
+    #[test]
+    fn rgb_hex_parser_rejects_invalid_values() {
+        for value in ["", "#123", "12345G", "#00112233", "red"] {
+            assert!(
+                RgbColor::parse_hex(value).is_err(),
+                "{value} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn lighting_mode_parser_normalizes_user_facing_aliases() {
+        assert_eq!(LightingMode::parse_label("Off"), Some(LightingMode::Off));
+        assert_eq!(
+            LightingMode::parse_label("Breathing"),
+            Some(LightingMode::Breathe)
+        );
+        assert_eq!(
+            LightingMode::parse_label("colour wave"),
+            Some(LightingMode::Wave)
+        );
+        assert_eq!(
+            LightingMode::parse_label("flashing"),
+            Some(LightingMode::Strobe)
+        );
+        assert_eq!(LightingMode::parse_label("not-a-mode"), None);
+    }
+
+    #[test]
+    fn lighting_diagnostics_formats_sysfs_only_brightness_report() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.keyboard_backlight_detected = true;
+        diagnostics.keyboard_backlight_backend = Some("sysfs-led".to_string());
+        diagnostics.keyboard_backlight_device = Some("asus::kbd_backlight".to_string());
+        diagnostics.keyboard_backlight_path =
+            Some("/sys/class/leds/asus::kbd_backlight".to_string());
+        diagnostics.keyboard_backlight_brightness_path =
+            Some("/sys/class/leds/asus::kbd_backlight/brightness".to_string());
+        diagnostics.keyboard_backlight_current_brightness = Some(0);
+        diagnostics.keyboard_backlight_max_brightness = Some(3);
+        diagnostics.keyboard_backlight_readable = true;
+        diagnostics.keyboard_backlight_writable = true;
+        diagnostics.supports_brightness = true;
+        diagnostics.supports_modes = true;
+        diagnostics.supported_modes = vec!["Off".to_string(), "Static".to_string()];
+        diagnostics.active_mode = Some("Off".to_string());
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.fallback_reason = Some(
+            "Keyboard brightness is available through the sysfs LED backend, but RGB colour control is not available because no Aura/RGB backend was detected."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Active backend: Sysfs LED keyboard backlight"));
+        assert!(report.contains("RGB control: not available"));
+        assert!(report.contains("Supported modes: Off, Static"));
+        assert!(report.contains("asus::kbd_backlight"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_formats_read_only_sysfs_warning() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.keyboard_backlight_detected = true;
+        diagnostics.supports_brightness = true;
+        diagnostics.keyboard_backlight_readable = true;
+        diagnostics.keyboard_backlight_writable = false;
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.permission_warning = Some(
+            "Keyboard backlight brightness was detected, but the brightness file is not writable by the current user/session daemon."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Brightness control: read-only"));
+        assert!(report.contains("brightness file is not writable"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_explains_asusd_without_aura() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.asusd_service_detected = true;
+        diagnostics.asusd_service_name = Some("xyz.ljones.Asusd".to_string());
+        diagnostics.asusd_services_checked = vec!["xyz.ljones.Asusd".to_string()];
+        diagnostics.asusd_interfaces_detected =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Platform".to_string()];
+        diagnostics.active_backend = "sysfs-led".to_string();
+        diagnostics.supports_brightness = true;
+        diagnostics.fallback_reason = Some(
+            "Keyboard brightness is available through the sysfs LED backend, but asusd did not expose a supported Aura/RGB keyboard interface."
+                .to_string(),
+        );
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("asusd status: service detected (xyz.ljones.Asusd)"));
+        assert!(report.contains("no Aura/RGB keyboard interface was found"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_explains_potential_unimplemented_aura_interface() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.asusd_service_detected = true;
+        diagnostics.asusd_service_name = Some("xyz.ljones.Asusd".to_string());
+        diagnostics.asusd_potential_aura_interfaces =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Aura".to_string()];
+        diagnostics.asusd_aura_interface_detected = true;
+        diagnostics.asusd_rgb_methods_detected =
+            vec!["xyz.ljones.Asusd:/xyz/ljones:xyz.ljones.Aura.SetLedMode".to_string()];
+        diagnostics.active_backend = "none".to_string();
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("Potential Aura interfaces"));
+        assert!(report.contains("does not yet implement this interface"));
     }
 }

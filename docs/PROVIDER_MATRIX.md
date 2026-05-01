@@ -27,8 +27,31 @@ File: `crates/rog-providers/src/asusd.rs`
     - `org.asuslinux.Daemon` / `/org/asuslinux` / `org.asuslinux.Platform`
 - Current limitations
   - only profile and charge-limit coverage are implemented
-  - Aura / RGB and fan curves are not implemented here yet
+  - Aura / RGB is implemented in the separate `aura` provider
+  - fan curve support is modeled in the daemon/API, but this provider does not write ASUS fan curves until an asusd curve interface is discoverable and tested
+  - if asusd is present without a fan-curve interface, fan curves are reported as unsupported rather than broken
   - interface compatibility across `asusd` versions is still a live concern
+
+## `aura`
+
+File: `crates/rog-providers/src/aura.rs`
+
+- Purpose
+  - ASUS Aura/RGB keyboard lighting discovery and control through asusd DBus
+- Read / Write
+  - Read + Write when the backend exposes writable controls
+- Dependencies
+  - system DBus
+  - `asusd` service exposing an introspectable Aura/keyboard LED interface
+- External services and paths
+  - service candidates:
+    - `xyz.ljones.Asusd`
+    - `org.asuslinux.Daemon`
+  - object paths and interface names are discovered through DBus introspection
+- Current limitations
+  - no hardcoded hardware model database
+  - RGB, mode, and brightness support depend on what asusd exposes on the machine
+  - if Aura is absent or incompatible, the daemon keeps the sysfs brightness-only fallback
 
 ## `supergfx`
 
@@ -57,7 +80,8 @@ File: `crates/rog-providers/src/upower.rs`
 - Purpose
   - battery and power-source telemetry from standard Linux power services
 - Read / Write
-  - Read only
+  - Read
+  - Optional write through `rog-helperd` only when matching control files are confirmed writable
 - Dependencies
   - system DBus
   - `UPower`
@@ -83,6 +107,14 @@ File: `crates/rog-providers/src/hwmon.rs`
   - `/sys/class/hwmon`
   - `temp*_input`
   - `fan*_input`
+  - `fan*_label`
+  - `fan*_min`
+  - `fan*_max`
+  - `fan*_target`
+  - `pwm*`
+  - `pwm*_enable`
+  - `pwm*_mode`
+  - `pwm*_auto_point*`
   - optional label files
 - Current limitations
   - sensor mapping is heuristic
@@ -91,6 +123,11 @@ File: `crates/rog-providers/src/hwmon.rs`
   - fan discovery is dynamic over `fan*_input` files and may yield zero, one, or many rows depending on the platform
   - raw `fan*_label` files are optional; when missing, the daemon/UI fall back to `Fan 1`, `Fan 2`, and so on
   - a detected fan input may still have no current RPM value, which is surfaced as unavailable rather than dropped from diagnostics
+  - manual percentage control is available only when both `pwmN` and `pwmN_enable` are writable
+  - RPM target control is available only when `fanN_target` is writable
+  - generic hwmon fan curves are reported as unsupported unless the backend can prove a safe writable curve format
+  - permission-denied PWM/target paths are treated as read-only diagnostics, not fatal startup errors
+  - backend priority is: verified asusd fan curves when implemented, writable hwmon PWM/target control, read-only hwmon telemetry, then unsupported/read-only diagnostics
 
 ## `cpu`
 
@@ -135,8 +172,24 @@ File: `crates/rog-providers/src/kbd_backlight.rs`
   - `max_brightness`
 - Current limitations
   - brightness only
-  - no Aura / RGB support
+  - no RGB colour support
   - write access often depends on system-level permissions
+
+## `lighting`
+
+File: `crates/rog-providers/src/lighting.rs`
+
+- Purpose
+  - combine sysfs keyboard backlight and asusd Aura probe data into a copyable lighting diagnostics report
+- Read / Write
+  - Read only diagnostics helper
+- Dependencies
+  - `kbd_backlight`
+  - `aura`
+  - `rog-core` lighting diagnostics model
+- Current limitations
+  - it reports backend capability and probe evidence; it does not perform hardware writes itself
+  - report quality depends on what DBus introspection and sysfs permissions expose on the host
 
 ## `nvidia_smi`
 
@@ -233,8 +286,8 @@ File: `crates/rog-providers/src/traits.rs`
 
 The provider layer already covers a meaningful amount of real system integration, but it is still uneven:
 
-- profile, battery limit, GPU mode, CPU control, and multiple telemetry sources are implemented
-- Aura / RGB, fan curves, and a unified telemetry abstraction are not implemented end-to-end
+- profile, battery limit, GPU mode, Aura/RGB lighting when exposed, CPU control, and multiple telemetry sources are implemented
+- fan curves and a unified telemetry abstraction are not implemented end-to-end
 
 When updating provider-related docs, compare against:
 

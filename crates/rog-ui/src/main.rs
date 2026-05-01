@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adw::prelude::*;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk4 as gtk;
@@ -13,12 +14,17 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     dbus_keys, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind,
-    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, PowerSource, TelemetrySnapshot, TopProcessMem,
+    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanCaps, FanControlMode, FanInfo,
+    FanState, FanTelemetry, FeatureAccessState, FeatureAvailability, PowerSource, RgbColor,
+    TelemetrySnapshot, TopProcessMem,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
+
+mod fan_widgets;
+
+use fan_widgets::{CurvePreview, FanRotor, GaugeAccent, RotorStatus, TempGauge};
 
 const DAEMON_DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
@@ -39,6 +45,7 @@ const ICON_GPU: &str = "rog-gpu-symbolic";
 const ICON_BATTERY: &str = "rog-battery-symbolic";
 const ICON_RAM: &str = "rog-memory-symbolic";
 const ICON_LIGHTING: &str = "rog-lighting-symbolic";
+const ICON_FANS: &str = "rog-fan-symbolic";
 const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
 const ICON_ABOUT: &str = "rog-about-symbolic";
 
@@ -54,6 +61,16 @@ trait Daemon1 {
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
+    fn get_fan_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_fan_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_fan_curves(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn set_fan_auto(&self, fan_id: &str) -> zbus::Result<()>;
+    fn set_fan_manual_percent(&self, fan_id: &str, percent: u64) -> zbus::Result<()>;
+    fn set_fan_rpm_target(&self, fan_id: &str, rpm: u64) -> zbus::Result<()>;
+    fn set_fan_curve(&self, fan_id: &str, curve: HashMap<String, OwnedValue>) -> zbus::Result<()>;
+    fn set_fan_sync(&self, enabled: bool) -> zbus::Result<()>;
+    fn set_fan_boost(&self, fan_id: &str, percent: u64, duration_seconds: u64) -> zbus::Result<()>;
+    fn reset_fans_to_auto(&self) -> zbus::Result<()>;
     fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> zbus::Result<()>;
     fn set_profile(&self, profile: &str) -> zbus::Result<()>;
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
@@ -141,6 +158,8 @@ struct AppSettings {
     launch_on_login: bool,
     start_minimized_to_tray: bool,
     close_to_tray_hint_shown: bool,
+    fan_warning_acknowledged: bool,
+    fan_sync_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -150,6 +169,8 @@ impl Default for AppSettings {
             launch_on_login: false,
             start_minimized_to_tray: false,
             close_to_tray_hint_shown: false,
+            fan_warning_acknowledged: false,
+            fan_sync_enabled: false,
         }
     }
 }
@@ -160,6 +181,8 @@ struct AppSettingsFile {
     launch_on_login: Option<bool>,
     start_minimized_to_tray: Option<bool>,
     close_to_tray_hint_shown: Option<bool>,
+    fan_warning_acknowledged: Option<bool>,
+    fan_sync_enabled: Option<bool>,
 }
 
 impl From<&AppSettings> for AppSettingsFile {
@@ -169,6 +192,8 @@ impl From<&AppSettings> for AppSettingsFile {
             launch_on_login: Some(settings.launch_on_login),
             start_minimized_to_tray: Some(settings.start_minimized_to_tray),
             close_to_tray_hint_shown: Some(settings.close_to_tray_hint_shown),
+            fan_warning_acknowledged: Some(settings.fan_warning_acknowledged),
+            fan_sync_enabled: Some(settings.fan_sync_enabled),
         }
     }
 }
@@ -235,11 +260,13 @@ struct SharedUiState {
     gpu_mode: Option<String>,
     battery_limit: Option<u8>,
     lighting: Option<LightingInfo>,
+    fan_state: FanState,
     pending_profile: Option<String>,
     pending_gpu_mode: Option<String>,
     pending_battery_limit: Option<u8>,
     pending_cpu_actions: Vec<PendingCpuAction>,
     pending_lighting: Option<PendingLighting>,
+    pending_fan_action: Option<PendingFanAction>,
     lighting_error: Option<String>,
     action_error: Option<String>,
     update_state: UpdateState,
@@ -274,11 +301,13 @@ impl Default for SharedUiState {
             gpu_mode: None,
             battery_limit: None,
             lighting: None,
+            fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
             pending_gpu_mode: None,
             pending_battery_limit: None,
             pending_cpu_actions: Vec::new(),
             pending_lighting: None,
+            pending_fan_action: None,
             lighting_error: None,
             action_error: None,
             update_state: UpdateState::default(),
@@ -324,14 +353,61 @@ struct LightingInfo {
     can_set: bool,
     mode: String,
     supports_rgb: bool,
+    rgb_hex: Option<String>,
     supported_modes: Vec<String>,
+    status: String,
+    last_error: Option<String>,
+    diagnostics_summary: Option<String>,
+    diagnostics_details: Option<String>,
+    fallback_reason: Option<String>,
+    unavailable_reason: Option<String>,
+    permission_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct PendingLighting {
     brightness: u64,
-    mode: String,
+    mode: Option<String>,
     rgb_hex: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PendingFanAction {
+    Auto {
+        fan_id: String,
+    },
+    ManualPercent {
+        fan_id: String,
+        percent: u8,
+    },
+    Boost {
+        fan_id: String,
+        duration_seconds: u64,
+    },
+    Sync(bool),
+}
+
+#[derive(Clone)]
+struct FanVisualSlot {
+    root: gtk::Box,
+    rotor: FanRotor,
+    label: gtk::Label,
+    rpm: gtk::Label,
+    status: gtk::Label,
+}
+
+#[derive(Clone)]
+struct FanCardSlot {
+    root: gtk::Box,
+    rotor: FanRotor,
+    title: gtk::Label,
+    id: gtk::Label,
+    rpm: gtk::Label,
+    percent: gtk::Label,
+    status: gtk::Label,
+    backend: gtk::Label,
+    details: gtk::Label,
+    warning: gtk::Label,
 }
 
 #[derive(Debug, Clone)]
@@ -694,15 +770,48 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn register_icon_resources() {
-    if let Some(display) = gtk::gdk::Display::default() {
-        let theme = gtk::IconTheme::for_display(&display);
-        theme.add_resource_path(ICON_RESOURCE_PATH);
+fn register_app_icon_paths() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+
+    let icon_theme = gtk::IconTheme::for_display(&display);
+    icon_theme.add_resource_path(ICON_RESOURCE_PATH);
+
+    let mut candidate_paths = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons"),
+        PathBuf::from("/usr/share/icons"),
+        PathBuf::from("/usr/local/share/icons"),
+    ];
+
+    if let Some(appdir) = std::env::var_os("APPDIR") {
+        candidate_paths.push(PathBuf::from(appdir).join("usr/share/icons"));
+    }
+
+    for path in candidate_paths {
+        if path.is_dir() {
+            icon_theme.add_search_path(path);
+        }
+    }
+}
+
+fn warn_if_fan_icon_missing() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+
+    let icon_theme = gtk::IconTheme::for_display(&display);
+
+    if !icon_theme.has_icon(ICON_FANS) {
+        eprintln!(
+            "Warning: rog-fan-symbolic icon was not found. Check crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg and packaging icon installation."
+        );
     }
 }
 
 fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
-    register_icon_resources();
+    register_app_icon_paths();
+    warn_if_fan_icon_missing();
 
     let app_metadata = AppMetadata::detect();
     let app_settings = load_app_settings();
@@ -922,7 +1031,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if let Ok(mut st) = shared.lock() {
                 st.pending_lighting = Some(PendingLighting {
                     brightness: desired_brightness,
-                    mode: desired_mode,
+                    mode: Some(desired_mode),
                     rgb_hex: None,
                 });
                 st.lighting_error = None;
@@ -1252,7 +1361,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_page.add(&cpu_per_core_group);
 
     let cpu_adv_group = adw::PreferencesGroup::builder()
-        .title("Advanced & Access")
+        .title("Advanced &amp; Access")
         .build();
     let cpu_advanced_expander = gtk::Expander::new(Some("Logical CPU Toggles and Access Details"));
     cpu_advanced_expander.set_expanded(false);
@@ -1628,7 +1737,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     about_page.add(&about_project_group);
 
     let about_support_group = adw::PreferencesGroup::builder()
-        .title("Update & Support")
+        .title("Update &amp; Support")
         .description(format!(
             "Installed version: {}. Manual checks use the GitHub Releases API and fall back to opening the latest release page when automatic replacement is not safe for the current installation.",
             app_metadata.version
@@ -1929,6 +2038,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let lighting_backend = pref_value_row(&lighting_overview_group, "Backend", false);
     let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
     let lighting_mode = pref_value_row(&lighting_overview_group, "Mode", false);
+    let lighting_rgb_current = pref_value_row(&lighting_overview_group, "RGB Colour", false);
     lighting_page.add(&lighting_overview_group);
 
     let lighting_controls_group = adw::PreferencesGroup::builder().title("Controls").build();
@@ -1953,8 +2063,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     rgb_button.set_title("Keyboard RGB");
     rgb_button.set_sensitive(false);
     let rgb_row = adw::ActionRow::builder()
-        .title("RGB Color")
-        .subtitle("Checking whether RGB color control is available.")
+        .title("RGB Colour")
+        .subtitle("Checking whether RGB colour control is available.")
         .build();
     rgb_row.add_suffix(&rgb_button);
     rgb_row.set_activatable(false);
@@ -1977,6 +2087,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lighting_backend.set_text(&feature_value_label(&lighting_unknown));
     lighting_current.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_mode.set_text(&lighting_placeholder_value(&lighting_unknown));
+    lighting_rgb_current.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_availability.set_text(&feature_value_label(&lighting_unknown));
     lighting_last_action.set_text(&lighting_last_action_text(None, &lighting_unknown));
     brightness_row.set_subtitle(&lighting_brightness_subtitle(None, &lighting_unknown));
@@ -1991,10 +2102,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let rgb_button = rgb_button.clone();
         apply_lighting.connect_clicked(move |_| {
             let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
-            let desired_mode = mode_combo
-                .active_id()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Static".to_string());
+            let desired_mode = mode_combo.active_id().map(|s| s.to_string());
 
             let mut desired_rgb_hex = None;
             if let Ok(st) = shared.lock() {
@@ -2021,12 +2129,423 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let lighting = clamped_scroller(&lighting_page);
 
+    let fans_root = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    fans_root.add_css_class("fans-page");
+    fans_root.set_margin_top(18);
+    fans_root.set_margin_bottom(18);
+    fans_root.set_margin_start(18);
+    fans_root.set_margin_end(18);
+
+    let fans_header = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    fans_header.add_css_class("fans-header-card");
+    let fans_title = gtk::Label::new(Some("Fan Control"));
+    fans_title.set_xalign(0.0);
+    fans_title.add_css_class("title-1");
+    let fans_subtitle = gtk::Label::new(Some(
+        "Monitor cooling performance and use safe fan controls when supported.",
+    ));
+    fans_subtitle.set_xalign(0.0);
+    fans_subtitle.set_wrap(true);
+    fans_subtitle.add_css_class("dim-label");
+    let fans_pills = gtk::FlowBox::new();
+    fans_pills.set_selection_mode(gtk::SelectionMode::None);
+    fans_pills.set_min_children_per_line(1);
+    fans_pills.set_max_children_per_line(4);
+    fans_pills.set_column_spacing(8);
+    fans_pills.set_row_spacing(8);
+    let fan_backend_label = fans_status_pill("backend: checking");
+    let fan_count_label = fans_status_pill("0 fans detected");
+    let fan_mode_label = fans_status_pill("Checking mode");
+    let fan_mapping_label = fans_status_pill("Mapping OK");
+    fans_pills.insert(&fan_backend_label, -1);
+    fans_pills.insert(&fan_count_label, -1);
+    fans_pills.insert(&fan_mode_label, -1);
+    fans_pills.insert(&fan_mapping_label, -1);
+    fans_header.append(&fans_title);
+    fans_header.append(&fans_subtitle);
+    fans_header.append(&fans_pills);
+    fans_root.append(&fans_header);
+
+    let fans_banner = adw::Banner::new("Fan control is capability-dependent");
+    fans_banner.add_css_class("fans-warning-banner");
+    fans_banner.set_revealed(true);
+    fans_banner.set_button_label(Some("Open Diagnostics"));
+    fans_root.append(&fans_banner);
+    {
+        let stack = stack.clone();
+        fans_banner.connect_button_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+
+    let hero = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    hero.add_css_class("fans-hero");
+    let gauge_row = gtk::FlowBox::new();
+    gauge_row.add_css_class("fans-gauge-row");
+    gauge_row.set_selection_mode(gtk::SelectionMode::None);
+    gauge_row.set_min_children_per_line(1);
+    gauge_row.set_max_children_per_line(2);
+    gauge_row.set_column_spacing(16);
+    gauge_row.set_row_spacing(16);
+    let gpu_temp_gauge = TempGauge::new("GPU", GaugeAccent::Blue);
+    let cpu_temp_gauge = TempGauge::new("CPU", GaugeAccent::Magenta);
+    gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
+    cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
+    let gpu_gauge_card = build_fans_gauge_card(&gpu_temp_gauge);
+    let cpu_gauge_card = build_fans_gauge_card(&cpu_temp_gauge);
+    gauge_row.insert(&cpu_gauge_card, -1);
+    gauge_row.insert(&gpu_gauge_card, -1);
+    hero.append(&gauge_row);
+
+    let mode_panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    mode_panel.add_css_class("fan-control-panel");
+    mode_panel.add_css_class("fans-cooling-mode-card");
+    let mode_title = gtk::Label::new(Some("Cooling Mode"));
+    mode_title.set_xalign(0.0);
+    mode_title.add_css_class("title-3");
+    let mode_hint = gtk::Label::new(Some(
+        "Controls will be enabled automatically when a supported fan-control backend is detected.",
+    ));
+    mode_hint.set_xalign(0.0);
+    mode_hint.set_wrap(true);
+    mode_hint.add_css_class("dim-label");
+    let fan_last_action_label = gtk::Label::new(Some("No fan action applied in this session."));
+    fan_last_action_label.set_xalign(0.0);
+    fan_last_action_label.set_wrap(true);
+    fan_last_action_label.add_css_class("fan-panel-note");
+    mode_panel.append(&mode_title);
+    mode_panel.append(&mode_hint);
+    mode_panel.append(&fan_last_action_label);
+    hero.append(&mode_panel);
+
+    let hero_fans_flow = gtk::FlowBox::new();
+    hero_fans_flow.add_css_class("fans-rotor-grid");
+    hero_fans_flow.set_selection_mode(gtk::SelectionMode::None);
+    hero_fans_flow.set_min_children_per_line(1);
+    hero_fans_flow.set_max_children_per_line(4);
+    hero_fans_flow.set_column_spacing(12);
+    hero_fans_flow.set_row_spacing(12);
+    let hero_fan_slots = (0..4)
+        .map(|_| {
+            let slot = build_fan_visual_slot();
+            hero_fans_flow.insert(&slot.root, -1);
+            slot
+        })
+        .collect::<Vec<_>>();
+    hero.append(&hero_fans_flow);
+    fans_root.append(&hero);
+
+    let fans_controls = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    fans_controls.add_css_class("fan-control-panel");
+    let controls_title = gtk::Label::new(Some("Safe Controls"));
+    controls_title.set_xalign(0.0);
+    controls_title.add_css_class("title-3");
+    let controls_hint = gtk::Label::new(Some(
+        "Fan RPM telemetry is available, but manual controls need a writable fan-control endpoint confirmed by rog-helperd.",
+    ));
+    controls_hint.set_xalign(0.0);
+    controls_hint.set_wrap(true);
+    controls_hint.add_css_class("dim-label");
+    fans_controls.append(&controls_title);
+    fans_controls.append(&controls_hint);
+
+    let fan_mode_combo = gtk::ComboBoxText::new();
+    style_combo_control(&fan_mode_combo);
+    for mode in ["Auto / BIOS Default", "Manual", "Curve", "Full Speed Boost"] {
+        fan_mode_combo.append(Some(mode), mode);
+    }
+    fan_mode_combo.set_active_id(Some("Auto / BIOS Default"));
+    fan_mode_combo.set_sensitive(false);
+    fan_mode_combo.set_tooltip_text(Some(
+        "Mode selection is unavailable because no writable fan-control endpoint was confirmed.",
+    ));
+    let fan_mode_row = adw::ActionRow::builder()
+        .title("Mode")
+        .subtitle("Auto / BIOS Default is active.")
+        .build();
+    fan_mode_row.add_suffix(&fan_mode_combo);
+    fan_mode_row.set_activatable(false);
+    fans_controls.append(&fan_mode_row);
+
+    let fan_sync_switch = gtk::Switch::new();
+    fan_sync_switch.set_valign(gtk::Align::Center);
+    fan_sync_switch.set_active(app_settings.fan_sync_enabled);
+    fan_sync_switch.set_tooltip_text(Some(
+        "Sync fans is unavailable until more than one controllable fan is detected.",
+    ));
+    let fan_sync_row = adw::ActionRow::builder()
+        .title("Sync Fans")
+        .subtitle("Use one setting for every controllable fan.")
+        .build();
+    fan_sync_row.add_suffix(&fan_sync_switch);
+    fan_sync_row.set_activatable(false);
+    fans_controls.append(&fan_sync_row);
+    {
+        let shared = shared.clone();
+        fan_sync_switch.connect_state_set(move |_, enabled| {
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                settings.fan_sync_enabled = enabled;
+            }) {
+                if let Ok(mut st) = shared.lock() {
+                    st.pending_toast = Some((error, true));
+                }
+                return glib::Propagation::Stop;
+            }
+            if let Ok(mut st) = shared.lock() {
+                st.pending_fan_action = Some(PendingFanAction::Sync(enabled));
+                st.action_error = None;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+
+    let fan_manual_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 5.0);
+    style_scale_control(&fan_manual_scale);
+    fan_manual_scale.set_draw_value(true);
+    fan_manual_scale.set_value_pos(gtk::PositionType::Right);
+    fan_manual_scale.set_value(60.0);
+    fan_manual_scale.set_sensitive(false);
+    fan_manual_scale.set_tooltip_text(Some(
+        "Manual fan speed is unavailable because no writable fan-control endpoint was confirmed.",
+    ));
+    let fan_manual_apply = gtk::Button::with_label("Apply");
+    style_apply_button(&fan_manual_apply);
+    fan_manual_apply.set_sensitive(false);
+    fan_manual_apply.set_tooltip_text(Some(
+        "Manual fan speed is unavailable because no writable fan-control endpoint was confirmed.",
+    ));
+    let fan_manual_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    style_inline_control_box(&fan_manual_box);
+    fan_manual_box.append(&fan_manual_scale);
+    fan_manual_box.append(&fan_manual_apply);
+    let fan_manual_row = adw::ActionRow::builder()
+        .title("Manual Speed")
+        .subtitle("Manual percentage control is unavailable until a writable backend is detected.")
+        .build();
+    fan_manual_row.add_suffix(&fan_manual_box);
+    fan_manual_row.set_activatable(false);
+    fans_controls.append(&fan_manual_row);
+    {
+        let shared = shared.clone();
+        let fan_manual_scale = fan_manual_scale.clone();
+        fan_manual_apply.connect_clicked(move |_| {
+            let percent = fan_manual_scale.value().round().clamp(0.0, 100.0) as u8;
+            let needs_ack = shared
+                .lock()
+                .map(|st| !st.settings.fan_warning_acknowledged)
+                .unwrap_or(true);
+            if needs_ack {
+                let dialog = adw::MessageDialog::new(
+                    None::<&gtk::Window>,
+                    Some("Manual fan control"),
+                    Some("Manual fan control may increase noise, reduce cooling if configured incorrectly, or be overridden by firmware. Use Auto mode if you are unsure."),
+                );
+                dialog.add_responses(&[
+                    ("cancel", "Cancel"),
+                    ("apply", "Enable Manual Control"),
+                ]);
+                dialog.set_close_response("cancel");
+                dialog.set_default_response(Some("cancel"));
+                let shared_apply = shared.clone();
+                dialog.connect_response(Some("apply"), move |d, _| {
+                    let _ = persist_settings_change(&shared_apply, |settings| {
+                        settings.fan_warning_acknowledged = true;
+                    });
+                    if let Ok(mut st) = shared_apply.lock() {
+                        st.pending_fan_action = Some(PendingFanAction::ManualPercent {
+                            fan_id: String::new(),
+                            percent,
+                        });
+                        st.action_error = None;
+                    }
+                    d.close();
+                });
+                dialog.connect_response(Some("cancel"), |d, _| d.close());
+                dialog.present();
+            } else if let Ok(mut st) = shared.lock() {
+                st.pending_fan_action = Some(PendingFanAction::ManualPercent {
+                    fan_id: String::new(),
+                    percent,
+                });
+                st.action_error = None;
+            }
+        });
+    }
+
+    let fans_boost_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    style_inline_control_box(&fans_boost_box);
+    let fan_boost_5 = gtk::Button::with_label("5 min");
+    let fan_boost_10 = gtk::Button::with_label("10 min");
+    let fan_boost_15 = gtk::Button::with_label("15 min");
+    let fan_stop_boost = gtk::Button::with_label("Stop");
+    for button in [&fan_boost_5, &fan_boost_10, &fan_boost_15, &fan_stop_boost] {
+        style_apply_button(button);
+        button.set_sensitive(false);
+        button.set_tooltip_text(Some(
+            "Boost is unavailable because manual percentage fan control is not supported by the active backend.",
+        ));
+        fans_boost_box.append(button);
+    }
+    let fan_boost_row = adw::ActionRow::builder()
+        .title("Full Speed Boost")
+        .subtitle("Boost is time-limited and restores Auto when the timer ends.")
+        .build();
+    fan_boost_row.add_suffix(&fans_boost_box);
+    fan_boost_row.set_activatable(false);
+    fans_controls.append(&fan_boost_row);
+    for (button, duration_seconds) in [
+        (fan_boost_5.clone(), 300_u64),
+        (fan_boost_10.clone(), 600_u64),
+        (fan_boost_15.clone(), 900_u64),
+    ] {
+        let shared = shared.clone();
+        button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.pending_fan_action = Some(PendingFanAction::Boost {
+                    fan_id: String::new(),
+                    duration_seconds,
+                });
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        fan_stop_boost.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.pending_fan_action = Some(PendingFanAction::Auto {
+                    fan_id: String::new(),
+                });
+                st.action_error = None;
+            }
+        });
+    }
+
+    let fan_auto_button = gtk::Button::with_label("Return to Auto");
+    style_apply_button(&fan_auto_button);
+    fan_auto_button.set_tooltip_text(Some(
+        "Return to Auto becomes active when a controllable fan backend is detected.",
+    ));
+    let fan_copy_diag_button = gtk::Button::with_label("Copy fan diagnostics");
+    style_apply_button(&fan_copy_diag_button);
+    let fans_action_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    style_inline_control_box(&fans_action_box);
+    fans_action_box.append(&fan_auto_button);
+    fans_action_box.append(&fan_copy_diag_button);
+    let fan_auto_row = adw::ActionRow::builder()
+        .title("BIOS Default")
+        .subtitle("Return controllable fans to firmware/backend automatic mode.")
+        .build();
+    fan_auto_row.add_suffix(&fans_action_box);
+    fan_auto_row.set_activatable(false);
+    fans_controls.append(&fan_auto_row);
+    {
+        let shared = shared.clone();
+        fan_auto_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.pending_fan_action = Some(PendingFanAction::Auto {
+                    fan_id: String::new(),
+                });
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        fan_copy_diag_button.connect_clicked(move |_| {
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+            let text = shared
+                .lock()
+                .map(|st| fan_state_diagnostics_text(&st.fan_state))
+                .unwrap_or_else(|_| "Fan diagnostics unavailable".to_string());
+            display.clipboard().set_text(&text);
+        });
+    }
+    fans_root.append(&fans_controls);
+
+    let curve_card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    curve_card.add_css_class("fan-curve-card");
+    let curve_title = gtk::Label::new(Some("Fan Curve Preview"));
+    curve_title.set_xalign(0.0);
+    curve_title.add_css_class("title-3");
+    let curve_status = gtk::Label::new(Some("Fan curve editing is not available on this backend."));
+    curve_status.set_xalign(0.0);
+    curve_status.set_wrap(true);
+    curve_status.add_css_class("dim-label");
+    let curve_preview = CurvePreview::new();
+    let curve_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    curve_actions.set_halign(gtk::Align::End);
+    let curve_apply = gtk::Button::with_label("Apply curve");
+    let curve_reset = gtk::Button::with_label("Reset to Auto");
+    for button in [&curve_apply, &curve_reset] {
+        style_apply_button(button);
+        button.set_sensitive(false);
+        button.set_tooltip_text(Some(
+            "Fan curve editing is unavailable on the active fan backend.",
+        ));
+        curve_actions.append(button);
+    }
+    curve_card.append(&curve_title);
+    curve_card.append(&curve_status);
+    curve_card.append(curve_preview.widget());
+    curve_card.append(&curve_actions);
+    fans_root.append(&curve_card);
+
+    let fan_cards_title = gtk::Label::new(Some("Detected Fans"));
+    fan_cards_title.set_xalign(0.0);
+    fan_cards_title.add_css_class("title-3");
+    fans_root.append(&fan_cards_title);
+
+    let fan_cards_flow = gtk::FlowBox::new();
+    fan_cards_flow.set_selection_mode(gtk::SelectionMode::None);
+    fan_cards_flow.set_min_children_per_line(1);
+    fan_cards_flow.set_max_children_per_line(2);
+    fan_cards_flow.set_column_spacing(12);
+    fan_cards_flow.set_row_spacing(12);
+    let fan_card_slots = (0..8)
+        .map(|_| {
+            let slot = build_fan_card_slot();
+            fan_cards_flow.insert(&slot.root, -1);
+            slot
+        })
+        .collect::<Vec<_>>();
+    fans_root.append(&fan_cards_flow);
+
+    let fan_cards_buffer = gtk::TextBuffer::new(None);
+    fan_cards_buffer.set_text("Loading fan state...");
+    let fan_cards_view = gtk::TextView::with_buffer(&fan_cards_buffer);
+    fan_cards_view.set_editable(false);
+    fan_cards_view.set_cursor_visible(false);
+    fan_cards_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    fan_cards_view.add_css_class("monospace");
+    let fan_cards_scroll = gtk::ScrolledWindow::new();
+    fan_cards_scroll.set_min_content_height(260);
+    fan_cards_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    fan_cards_scroll.set_child(Some(&fan_cards_view));
+    let diagnostics_expander = gtk::Expander::new(Some("Show fan diagnostics"));
+    diagnostics_expander.add_css_class("fan-diagnostics-box");
+    diagnostics_expander.set_expanded(false);
+    diagnostics_expander.set_child(Some(&fan_cards_scroll));
+    diagnostics_expander.connect_expanded_notify(|expander| {
+        expander.set_label(Some(if expander.is_expanded() {
+            "Hide fan diagnostics"
+        } else {
+            "Show fan diagnostics"
+        }));
+    });
+    fans_root.append(&diagnostics_expander);
+
+    let fans = clamped_scroller(&fans_root);
+
     stack.add_titled_with_icon(&dash, Some("dashboard"), "Dashboard", ICON_DASHBOARD);
     stack.add_titled_with_icon(&cpu_view, Some("cpu"), "CPU", ICON_CPU);
     stack.add_titled_with_icon(&gpu, Some("gpu"), "GPU", ICON_GPU);
     stack.add_titled_with_icon(&battery, Some("battery"), "Battery", ICON_BATTERY);
     stack.add_titled_with_icon(&ram, Some("ram"), "RAM", ICON_RAM);
     stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
+    stack.add_titled_with_icon(&fans, Some("fans"), "Fans", ICON_FANS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
@@ -2124,6 +2643,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let detail_fan_rows_ref = detail_fan_rows.clone();
     let details_fan_group_ref = details_fan_group.clone();
+    let fan_animation_rotors = hero_fan_slots
+        .iter()
+        .map(|slot| slot.rotor.clone())
+        .chain(fan_card_slots.iter().map(|slot| slot.rotor.clone()))
+        .collect::<Vec<_>>();
+    let fan_animation_last = std::rc::Rc::new(std::cell::RefCell::new(SystemTime::now()));
+    {
+        let fan_animation_last = fan_animation_last.clone();
+        glib::timeout_add_local(Duration::from_millis(33), move || {
+            let now = SystemTime::now();
+            let delta = now
+                .duration_since(*fan_animation_last.borrow())
+                .unwrap_or_default()
+                .as_secs_f64()
+                .clamp(0.0, 0.10);
+            *fan_animation_last.borrow_mut() = now;
+            for rotor in &fan_animation_rotors {
+                rotor.tick(delta, false);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
@@ -2136,6 +2677,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             gpu_mode,
             battery_limit,
             lighting,
+            fan_state,
             lighting_error_txt,
             action_error_txt,
             update_state,
@@ -2171,6 +2713,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.gpu_mode.clone(),
                 st.battery_limit,
                 st.lighting.clone(),
+                st.fan_state.clone(),
                 st.lighting_error.clone(),
                 st.action_error.clone(),
                 st.update_state.clone(),
@@ -2211,22 +2754,96 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             return glib::ControlFlow::Break;
         }
 
+        fan_backend_label.set_text(&format!("backend: {}", fan_state.caps.fan_backend));
+        update_backend_pill_class(&fan_backend_label, &fan_state.caps.fan_backend);
+        let fan_word = if fan_state.caps.fan_count == 1 {
+            "fan"
+        } else {
+            "fans"
+        };
+        fan_count_label.set_text(&format!("{} {fan_word} detected", fan_state.caps.fan_count));
+        fan_mode_label.set_text(fan_mode_label_text(fan_state.mode));
+        let mapping_uncertain = fan_state.fans.iter().any(fan_mapping_uncertain);
+        fan_mapping_label.set_text(if mapping_uncertain {
+            "Mapping uncertain"
+        } else {
+            "Mapping OK"
+        });
+        fan_mapping_label.set_visible(mapping_uncertain);
+        fan_last_action_label.set_text(
+            fan_state
+                .last_action
+                .as_deref()
+                .unwrap_or("No fan action applied in this session."),
+        );
+        fan_sync_switch.set_sensitive(fan_state.caps.has_fan_sync_control);
+        if fan_sync_switch.is_active() != fan_state.sync_enabled {
+            fan_sync_switch.set_active(fan_state.sync_enabled);
+        }
+        let manual_available = fan_state.caps.has_fan_manual_percent;
+        fan_manual_scale.set_sensitive(manual_available);
+        fan_manual_apply.set_sensitive(manual_available);
+        fan_boost_5.set_sensitive(fan_state.caps.has_fan_boost);
+        fan_boost_10.set_sensitive(fan_state.caps.has_fan_boost);
+        fan_boost_15.set_sensitive(fan_state.caps.has_fan_boost);
+        fan_stop_boost.set_sensitive(matches!(fan_state.mode, FanControlMode::FullSpeedBoost));
+        fan_auto_button.set_sensitive(fan_state.caps.has_individual_fan_control);
+        fan_mode_combo.set_sensitive(
+            fan_state.caps.has_fan_manual_percent
+                || fan_state.caps.has_fan_curves
+                || fan_state.caps.has_fan_boost,
+        );
+        controls_hint.set_text(&fan_controls_hint(&fan_state));
+        curve_preview.set_enabled(fan_state.caps.has_fan_curves);
+        curve_apply.set_sensitive(fan_state.caps.has_fan_curves);
+        curve_reset.set_sensitive(fan_state.caps.has_fan_curves);
+        curve_status.set_text(if fan_state.caps.has_fan_curves {
+            "Curve editing is available for the active backend."
+        } else {
+            "Fan curve editing is not available on this backend."
+        });
+        fan_sync_row.set_subtitle(&fan_sync_subtitle(&fan_state));
+        fan_manual_row.set_subtitle(&fan_manual_subtitle(&fan_state));
+        fan_boost_row.set_subtitle(&fan_boost_subtitle(&fan_state));
+        fan_mode_row.set_subtitle(fan_mode_label_text(fan_state.mode));
+        fans_banner.set_title(&fan_banner_title(&fan_state));
+        fans_banner.set_revealed(
+            !fan_state.caps.has_individual_fan_control || !fan_state.caps.warnings.is_empty(),
+        );
+        update_fan_visual_slots(&hero_fan_slots, &fan_state.fans);
+        update_fan_card_slots(&fan_card_slots, &fan_state.fans);
+        update_diagnostics_buffer(
+            &fan_cards_buffer,
+            &fan_cards_scroll,
+            &fan_state_diagnostics_text(&fan_state),
+        );
+
         if let Some(t) = telemetry {
             if let Some(v) = t.cpu_temp_c {
                 cpu_card.set_value(format!("{v:.1}"));
                 cpu_card.set_unit(Some("°C"));
+                cpu_temp_gauge.set_temp(Some(v));
             } else {
                 cpu_card.set_value("--");
                 cpu_card.set_unit(None);
+                cpu_temp_gauge.set_temp(None);
             }
 
             if let Some(v) = t.gpu_temp_c {
                 gpu_card.set_value(format!("{v:.1}"));
                 gpu_card.set_unit(Some("°C"));
+                gpu_temp_gauge.set_temp(Some(v));
             } else {
                 gpu_card.set_value("--");
                 gpu_card.set_unit(None);
+                gpu_temp_gauge.set_temp(None);
             }
+            gpu_temp_gauge.set_speed_metrics(
+                "Core Clock",
+                t.gpu_core_clock_mhz.map(u64::from),
+                Some("Memory Clock"),
+                t.gpu_memory_clock_mhz.map(u64::from),
+            );
 
             if let Some(v) = t.battery_percent {
                 batt_card.set_value(format!("{v:.0}"));
@@ -2444,6 +3061,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 &fan_entries,
             );
             details_fan_group_ref.set_visible(true);
+        } else {
+            gpu_temp_gauge.set_temp(None);
+            gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
         }
 
         // CPU page + cards.
@@ -2480,6 +3100,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 cpu_card_clock.set_value("--");
                 cpu_card_clock.set_unit(None);
             }
+            cpu_temp_gauge.set_speed_metrics(
+                "Avg Clock",
+                cpu_data.avg_freq_mhz.map(|mhz| mhz.round().max(0.0) as u64),
+                None,
+                None,
+            );
             cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
 
             cpu_scaling_driver
@@ -2767,6 +3393,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_card_usage.set_value("--");
             cpu_card_power.set_value("--");
             cpu_card_clock.set_value("--");
+            cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
             cpu_read_only_banner.set_revealed(false);
             cpu_per_core_buffer.set_text("Logical CPU / thread telemetry unavailable.");
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
@@ -2995,11 +3622,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         details_endpoints_group.set_visible(!endpoint_entries.is_empty());
 
         // Lighting page (capability-driven).
-        lighting_availability.set_text(&feature_value_label(&caps.kbd_backlight_access));
+        lighting_availability.set_text(&lighting_availability_label(
+            lighting.as_ref(),
+            &caps.kbd_backlight_access,
+        ));
         if let Some(ref l) = lighting {
             lighting_backend.set_text(&lighting_backend_label(l));
             lighting_current.set_text(&lighting_current_label(l));
             lighting_mode.set_text(&lighting_mode_label(l));
+            lighting_rgb_current.set_text(&lighting_rgb_current_label(l));
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
             if !brightness_scale.is_focus() {
@@ -3007,7 +3638,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             let can_set = l.can_set;
             brightness_scale.set_sensitive(can_set);
-            mode_combo.set_sensitive(can_set);
             apply_lighting.set_sensitive(can_set);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
                 Some(l),
@@ -3020,9 +3650,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ));
 
             let mut modes = l.supported_modes.clone();
-            if modes.is_empty() {
+            if modes.is_empty() && l.backend.eq_ignore_ascii_case("sysfs-led") {
                 modes = vec!["Off".to_string(), "Static".to_string()];
             }
+            mode_combo.set_sensitive(can_set && !modes.is_empty());
             if !mode_combo.is_focus() {
                 let mut last = last_supported_modes.borrow_mut();
                 if *last != modes {
@@ -3033,21 +3664,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     *last = modes.clone();
                 }
 
-                let desired = modes
+                if let Some(desired) = modes
                     .iter()
                     .find(|m| m.as_str().eq_ignore_ascii_case(&l.mode))
                     .cloned()
                     .or_else(|| modes.first().cloned())
-                    .unwrap_or_else(|| "Static".to_string());
-                mode_combo.set_active_id(Some(&desired));
+                {
+                    mode_combo.set_active_id(Some(&desired));
+                } else {
+                    mode_combo.set_active_id(None);
+                }
             }
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
+            if let Some(rgba) = l
+                .rgb_hex
+                .as_deref()
+                .and_then(rgb_hex_to_rgba)
+                .filter(|_| !rgb_button.is_focus())
+            {
+                rgb_button.set_rgba(&rgba);
+            }
             rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
         } else {
             lighting_backend.set_text(&feature_value_label(&caps.kbd_backlight_access));
             lighting_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_mode.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
+            lighting_rgb_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             brightness_scale.set_range(0.0, 3.0);
             if !brightness_scale.is_focus() {
                 brightness_scale.set_value(0.0);
@@ -3248,6 +3891,27 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     }
                 }
 
+                let pending_fan_action = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_fan_action.take());
+                if let Some(action) = pending_fan_action {
+                    match apply_fan_action(action).await {
+                        Ok(()) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = None;
+                                st.pending_toast = Some(("Fan setting applied".to_string(), false));
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = Some(e.clone());
+                                st.pending_toast = Some((e, true));
+                            }
+                        }
+                    }
+                }
+
                 let pending_update_check = shared
                     .lock()
                     .ok()
@@ -3352,6 +4016,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         gpu_mode,
                         battery_limit,
                         lighting,
+                        fan_state,
                     )) => {
                         let summary = summary_from_state(&t, profile.as_deref(), gpu_mode.as_deref());
                         if let Some(h) = &tray_handle {
@@ -3383,6 +4048,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.gpu_mode = gpu_mode;
                             st.battery_limit = battery_limit;
                             st.lighting = lighting;
+                            st.fan_state = fan_state;
                             st.daemon_error = None;
                         }
                     }
@@ -3416,6 +4082,7 @@ async fn fetch_state() -> Result<
         Option<String>,
         Option<u8>,
         Option<LightingInfo>,
+        FanState,
     ),
     String,
 > {
@@ -3472,6 +4139,25 @@ async fn fetch_state() -> Result<
         .cloned()
         .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
         .and_then(lighting_from_dbus);
+    let fan_state = state
+        .get(dbus_keys::FAN_STATE_KEY)
+        .cloned()
+        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
+        .map(fan_state_from_dbus)
+        .unwrap_or_else(|| {
+            FanState::from_fans(
+                telemetry_from_dbus(telemetry_map.clone())
+                    .fan_rows
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, fan)| FanInfo::read_only_from_telemetry((idx + 1) as u32, fan))
+                    .collect(),
+            )
+        });
+    let lighting_diagnostics_details = state
+        .get("lighting_diagnostics_details")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(|v| v.to_string());
 
     let caps = caps_from_dbus(&caps_map);
     let cpu_caps = cpu_caps_from_dbus(&cpu_caps_map);
@@ -3488,6 +4174,13 @@ async fn fetch_state() -> Result<
     if !fan_text.is_empty() {
         caps_text.push_str("\n\n");
         caps_text.push_str(&fan_text);
+    }
+    if let Some(lighting) = lighting.as_ref() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(&lighting_diagnostics_text(lighting));
+    } else if let Some(details) = lighting_diagnostics_details.as_deref() {
+        caps_text.push_str("\n\n");
+        caps_text.push_str(details);
     }
     let cpu_access_text = cpu_access_report_text(&cpu_caps);
     if !cpu_access_text.is_empty() {
@@ -3512,6 +4205,7 @@ async fn fetch_state() -> Result<
         gpu_mode,
         battery_limit,
         lighting,
+        fan_state,
     ))
 }
 
@@ -3525,7 +4219,9 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
 
     let mut m = HashMap::new();
     m.insert("brightness".to_string(), OwnedValue::from(p.brightness));
-    m.insert("mode".to_string(), ov(p.mode));
+    if let Some(mode) = p.mode {
+        m.insert("mode".to_string(), ov(mode));
+    }
     if let Some(rgb) = p.rgb_hex {
         m.insert("rgb_hex".to_string(), ov(rgb));
     }
@@ -3533,6 +4229,38 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
         .set_lighting(m)
         .await
         .map_err(|e| format!("daemon SetLighting failed: {e}"))?;
+    Ok(())
+}
+
+async fn apply_fan_action(action: PendingFanAction) -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| format!("session DBus unavailable: {e}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
+
+    match action {
+        PendingFanAction::Auto { fan_id } => proxy
+            .set_fan_auto(&fan_id)
+            .await
+            .map_err(|e| format!("daemon SetFanAuto failed: {e}"))?,
+        PendingFanAction::ManualPercent { fan_id, percent } => proxy
+            .set_fan_manual_percent(&fan_id, percent as u64)
+            .await
+            .map_err(|e| format!("daemon SetFanManualPercent failed: {e}"))?,
+        PendingFanAction::Boost {
+            fan_id,
+            duration_seconds,
+        } => proxy
+            .set_fan_boost(&fan_id, 100, duration_seconds)
+            .await
+            .map_err(|e| format!("daemon SetFanBoost failed: {e}"))?,
+        PendingFanAction::Sync(enabled) => proxy
+            .set_fan_sync(enabled)
+            .await
+            .map_err(|e| format!("daemon SetFanSync failed: {e}"))?,
+    }
     Ok(())
 }
 
@@ -4279,6 +5007,13 @@ fn now_unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn format_timestamp_local(timestamp: i64) -> String {
     if let Ok(datetime) = glib::DateTime::from_unix_local(timestamp) {
         if let Ok(formatted) = datetime.format("%Y-%m-%d %H:%M:%S") {
@@ -4305,6 +5040,12 @@ fn load_app_settings() -> AppSettings {
                     }
                     if let Some(value) = file_settings.close_to_tray_hint_shown {
                         settings.close_to_tray_hint_shown = value;
+                    }
+                    if let Some(value) = file_settings.fan_warning_acknowledged {
+                        settings.fan_warning_acknowledged = value;
+                    }
+                    if let Some(value) = file_settings.fan_sync_enabled {
+                        settings.fan_sync_enabled = value;
                     }
                 }
                 Err(error) => warn!("failed to parse UI settings {}: {error}", path.display()),
@@ -4563,6 +5304,14 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     if let Some(v) = map.get("gpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
         t.gpu_temp_c = Some(v as f32);
     }
+    t.gpu_core_clock_mhz = map
+        .get("gpu_core_clock_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
+    t.gpu_memory_clock_mhz = map
+        .get("gpu_memory_clock_mhz")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
     if let Some(temps) = map
         .get("temps_c")
         .cloned()
@@ -5172,6 +5921,7 @@ fn lighting_backend_label(lighting: &LightingInfo) -> String {
     } else {
         match normalize_label(&lighting.backend).as_str() {
             "sysfsled" => "Sysfs LED backend".to_string(),
+            "asusdaura" => "ASUS Aura DBus backend".to_string(),
             _ => lighting.backend.clone(),
         }
     };
@@ -5184,7 +5934,11 @@ fn lighting_backend_label(lighting: &LightingInfo) -> String {
 }
 
 fn lighting_current_label(lighting: &LightingInfo) -> String {
-    format!("{}/{}", lighting.brightness, lighting.max_brightness)
+    if lighting.max_brightness == 0 {
+        "Brightness not reported".to_string()
+    } else {
+        format!("{}/{}", lighting.brightness, lighting.max_brightness)
+    }
 }
 
 fn lighting_mode_label(lighting: &LightingInfo) -> String {
@@ -5193,6 +5947,48 @@ fn lighting_mode_label(lighting: &LightingInfo) -> String {
     } else {
         lighting.mode.clone()
     }
+}
+
+fn lighting_rgb_current_label(lighting: &LightingInfo) -> String {
+    if lighting.supports_rgb {
+        lighting
+            .rgb_hex
+            .clone()
+            .unwrap_or_else(|| "Current RGB colour not reported".to_string())
+    } else if lighting.backend.eq_ignore_ascii_case("sysfs-led") {
+        "Unsupported by sysfs brightness backend".to_string()
+    } else if lighting.status == "rgb_not_exposed" {
+        "Not exposed by asusd".to_string()
+    } else {
+        "Unsupported by current backend".to_string()
+    }
+}
+
+fn lighting_availability_label(
+    lighting: Option<&LightingInfo>,
+    access: &FeatureAvailability,
+) -> String {
+    if let Some(lighting) = lighting {
+        if let Some(summary) = lighting.diagnostics_summary.as_deref() {
+            if !summary.trim().is_empty() && lighting.last_error.is_none() {
+                return summary.to_string();
+            }
+        }
+        if let Some(error) = &lighting.last_error {
+            return format!("backend_error ({error})");
+        }
+        return match lighting.status.as_str() {
+            "available" => "available".to_string(),
+            "rgb_not_exposed" => "available (RGB colour is not exposed by asusd)".to_string(),
+            "rgb_read_only" => "available (RGB colour is read-only)".to_string(),
+            "rgb_unsupported" => "available (brightness-only sysfs fallback)".to_string(),
+            "aura_backend_error" | "backend_error" => "temporarily_unavailable".to_string(),
+            other if !other.is_empty() => other.to_string(),
+            _ => feature_value_label(access),
+        };
+    }
+
+    feature_value_label(access)
 }
 
 fn lighting_brightness_subtitle(
@@ -5249,14 +6045,30 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
     if let Some(lighting) = lighting {
         if lighting.supports_rgb {
             if lighting.can_set {
-                "Choose an RGB color to stage and apply.".to_string()
+                "Choose an RGB colour to stage and apply.".to_string()
+            } else if let Some(warning) = lighting.permission_warning.as_deref() {
+                warning.to_string()
             } else if access.reason.is_empty() {
-                "RGB color is available, but writes are blocked for the current user.".to_string()
+                "RGB colour is available, but writes are blocked for the current user.".to_string()
             } else {
                 access.reason.clone()
             }
         } else {
-            "RGB color is not supported by the current lighting backend.".to_string()
+            if lighting.backend.eq_ignore_ascii_case("sysfs-led") {
+                lighting.fallback_reason.clone().unwrap_or_else(|| {
+                    "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+                        .to_string()
+                })
+            } else if lighting.status == "rgb_not_exposed" {
+                "asusd is available, but it does not expose a writable Aura RGB colour control."
+                    .to_string()
+            } else if let Some(error) = lighting.last_error.as_deref() {
+                format!("RGB colour is blocked by a backend error: {error}")
+            } else if let Some(reason) = lighting.unavailable_reason.as_deref() {
+                reason.to_string()
+            } else {
+                "RGB colour is not supported by the current lighting backend.".to_string()
+            }
         }
     } else {
         match access.status {
@@ -5272,18 +6084,18 @@ fn lighting_rgb_subtitle(lighting: Option<&LightingInfo>, access: &FeatureAvaila
                 }
             }
             FeatureAccessState::TemporarilyUnavailable => {
-                "Lighting backend is temporarily unavailable. RGB color cannot be changed right now."
+                "Lighting backend is temporarily unavailable. RGB colour cannot be changed right now."
                     .to_string()
             }
             FeatureAccessState::Unsupported => {
                 "Keyboard lighting is not supported on this machine.".to_string()
             }
             FeatureAccessState::Available => {
-                "Waiting for lighting backend details before enabling RGB color."
+                "Waiting for lighting backend details before enabling RGB colour."
                     .to_string()
             }
             FeatureAccessState::Unknown => {
-                "Checking whether RGB color control is available.".to_string()
+                "Checking whether RGB colour control is available.".to_string()
             }
         }
     }
@@ -5497,7 +6309,7 @@ fn troubleshooting_summary_text(
         ("Performance Profile", &caps.profile_access),
         ("Charge Limit", &caps.charge_limit_access),
         ("GPU Mode", &caps.gpu_mode_access),
-        ("Keyboard Backlight", &caps.kbd_backlight_access),
+        ("Keyboard Lighting", &caps.kbd_backlight_access),
     ] {
         if !access.is_available() && access.status != FeatureAccessState::Unknown {
             issues.push(format!(
@@ -5574,8 +6386,15 @@ fn friendly_action_error(error: &str) -> String {
         "GPU mode switching requires supergfxd. Install or start supergfxd, then retry.".to_string()
     } else if lower.contains("lighting not supported on this system") {
         "No lighting backend is available on this machine.".to_string()
-    } else if lower.contains("rgb color is not supported by the sysfs led backend") {
-        "RGB color is not supported by the current lighting backend.".to_string()
+    } else if lower.contains("rgb colour requires asus aura support")
+        || lower.contains("rgb color is not supported by the sysfs led backend")
+    {
+        "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+            .to_string()
+    } else if lower.contains("rgb colour is not exposed")
+        || lower.contains("rgb color is not exposed")
+    {
+        "asusd is available, but it does not expose a writable Aura RGB colour control.".to_string()
     } else if lower.contains("lighting mode")
         && lower.contains("not supported by the sysfs led backend")
     {
@@ -6085,7 +6904,158 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         can_set: b(&map, "can_set").unwrap_or(false),
         mode: s(&map, "mode").unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
+        rgb_hex: s(&map, "rgb_hex"),
         supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
+        status: s(&map, "status").unwrap_or_else(|| "unknown".to_string()),
+        last_error: s(&map, "last_error"),
+        diagnostics_summary: s(&map, "diagnostics_summary"),
+        diagnostics_details: s(&map, "diagnostics_details"),
+        fallback_reason: s(&map, "fallback_reason"),
+        unavailable_reason: s(&map, "unavailable_reason"),
+        permission_warning: s(&map, "permission_warning"),
+    })
+}
+
+fn fan_state_from_dbus(map: HashMap<String, OwnedValue>) -> FanState {
+    let caps = map
+        .get(dbus_keys::FAN_CAPS_KEY)
+        .cloned()
+        .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
+        .map(fan_caps_from_dbus)
+        .unwrap_or_else(|| FanCaps::from_fans(&[]));
+    let fans = map
+        .get(dbus_keys::FAN_INFOS_KEY)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(fan_info_from_dbus)
+        .collect::<Vec<_>>();
+    let mode = map
+        .get("mode")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(FanControlMode::parse)
+        .unwrap_or(FanControlMode::ReadOnly);
+    let sync_enabled = map
+        .get("sync_enabled")
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    let last_action = map
+        .get("last_action")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string());
+    let active_boost_fan_id = map
+        .get("active_boost_fan_id")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string());
+    let active_boost_until_ms = map.get("active_boost_until_ms").and_then(u64_from_value);
+    let active_curve_summary = map
+        .get("active_curve_summary")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(|value| value.to_string());
+    let warnings = map
+        .get("warnings")
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
+
+    FanState {
+        fans,
+        caps,
+        mode,
+        sync_enabled,
+        last_action,
+        active_boost_fan_id,
+        active_boost_until_ms,
+        active_curve_summary,
+        warnings,
+    }
+}
+
+fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
+    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
+        map.get(key)
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(false)
+    }
+    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> String {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        map.get(key)
+            .cloned()
+            .and_then(|value| Vec::<String>::try_from(value).ok())
+            .unwrap_or_default()
+    }
+
+    FanCaps {
+        has_fan_reading: b(&map, "has_fan_reading"),
+        has_fan_curves: b(&map, "has_fan_curves"),
+        has_fan_manual_percent: b(&map, "has_fan_manual_percent"),
+        has_fan_manual_rpm_target: b(&map, "has_fan_manual_rpm_target"),
+        has_individual_fan_control: b(&map, "has_individual_fan_control"),
+        has_fan_sync_control: b(&map, "has_fan_sync_control"),
+        has_fan_boost: b(&map, "has_fan_boost"),
+        fan_count: map
+            .get("fan_count")
+            .and_then(u64_from_value)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0),
+        fan_backend: s(&map, "fan_backend"),
+        endpoints: vec_string(&map, "endpoints"),
+        notes: vec_string(&map, "notes"),
+        warnings: vec_string(&map, "warnings"),
+    }
+}
+
+fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
+    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .map(|value| value.to_string())
+    }
+    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
+        map.get(key)
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(false)
+    }
+    fn u32v(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
+        map.get(key)
+            .and_then(u64_from_value)
+            .and_then(|value| u32::try_from(value).ok())
+    }
+    fn u8v(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
+        map.get(key)
+            .and_then(u64_from_value)
+            .and_then(|value| u8::try_from(value).ok())
+    }
+    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        map.get(key)
+            .cloned()
+            .and_then(|value| Vec::<String>::try_from(value).ok())
+            .unwrap_or_default()
+    }
+
+    Some(FanInfo {
+        id: s(&map, dbus_keys::FAN_INFO_ID_KEY)?,
+        index: u32v(&map, dbus_keys::FAN_INFO_INDEX_KEY).unwrap_or(0),
+        label: s(&map, dbus_keys::FAN_INFO_LABEL_KEY)?,
+        current_rpm: u32v(&map, dbus_keys::FAN_INFO_CURRENT_RPM_KEY),
+        min_rpm: u32v(&map, dbus_keys::FAN_INFO_MIN_RPM_KEY),
+        max_rpm: u32v(&map, dbus_keys::FAN_INFO_MAX_RPM_KEY),
+        current_percent: u8v(&map, dbus_keys::FAN_INFO_CURRENT_PERCENT_KEY),
+        controllable: b(&map, dbus_keys::FAN_INFO_CONTROLLABLE_KEY),
+        supports_manual_percent: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_PERCENT_KEY),
+        supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
+        supports_curve: b(&map, dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY),
+        supports_auto: b(&map, dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY),
+        backend: s(&map, dbus_keys::FAN_INFO_BACKEND_KEY).unwrap_or_else(|| "unknown".to_string()),
+        endpoints: vec_string(&map, dbus_keys::FAN_INFO_ENDPOINTS_KEY),
+        notes: vec_string(&map, dbus_keys::FAN_INFO_NOTES_KEY),
+        warnings: vec_string(&map, dbus_keys::FAN_INFO_WARNINGS_KEY),
     })
 }
 
@@ -6137,6 +7107,114 @@ fn install_css() {
 }
 .cpu-toggle-title { font-weight: 600; }
 .cpu-toggle-subtitle { opacity: 0.85; }
+.fans-page { background: transparent; }
+.fans-header-card {
+  padding: 18px;
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, alpha(#00a7ff, 0.20), alpha(#ff00b8, 0.12)),
+    alpha(currentColor, 0.035);
+  box-shadow: 0 0 28px alpha(#00a7ff, 0.12);
+}
+.fans-hero {
+  padding: 16px;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 20% 20%, alpha(#00a7ff, 0.14), transparent 38%),
+    radial-gradient(circle at 82% 18%, alpha(#ff00b8, 0.12), transparent 42%),
+    alpha(currentColor, 0.045);
+}
+.fans-performance-dashboard,
+.fans-gauge-row,
+.fans-rotor-grid {
+  background: transparent;
+}
+.fans-gauge-card {
+  padding: 14px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 12%, alpha(#00a7ff, 0.12), transparent 46%),
+    alpha(currentColor, 0.040);
+  border: 1px solid alpha(currentColor, 0.10);
+}
+.fans-gauge-card-large {
+  min-width: 300px;
+}
+.fans-cooling-mode-card {
+  margin-top: 2px;
+}
+.fans-status-pill {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.10);
+  color: alpha(currentColor, 0.88);
+  font-weight: 600;
+}
+.fans-status-pill-read-only {
+  background: alpha(#7aa5c9, 0.18);
+  color: #8fc5ef;
+}
+.fans-status-pill-controllable {
+  background: alpha(#00e0a4, 0.18);
+  color: #54f0c8;
+}
+.fans-status-pill-warning {
+  background: alpha(#ffb13b, 0.20);
+  color: #ffc46b;
+}
+.fans-status-pill-error {
+  background: alpha(#ff4c5b, 0.18);
+  color: #ff7a84;
+}
+.fans-warning-banner { border-radius: 12px; }
+.fan-visual-card,
+.fan-card,
+.fan-control-panel,
+.fan-curve-card,
+.fan-diagnostics-box {
+  padding: 14px;
+  border-radius: 12px;
+  background: alpha(currentColor, 0.045);
+  border: 1px solid alpha(currentColor, 0.10);
+}
+.fan-visual-card {
+  background:
+    radial-gradient(circle at 50% 16%, alpha(#00a7ff, 0.13), transparent 42%),
+    alpha(currentColor, 0.040);
+}
+.fan-rotor-card {
+  min-width: 150px;
+}
+.fan-card-read-only {
+  border-color: alpha(#7aa5c9, 0.18);
+}
+.fan-card-controllable {
+  border-color: alpha(#00e0a4, 0.30);
+  box-shadow: 0 0 18px alpha(#00e0a4, 0.10);
+}
+.fan-rpm-large {
+  font-size: 22px;
+  font-weight: 700;
+}
+.fan-rpm-label {
+  font-weight: 600;
+}
+.fan-panel-note {
+  padding: 8px;
+  border-radius: 8px;
+  background: alpha(currentColor, 0.06);
+}
+.fan-warning-text {
+  padding: 8px;
+  border-radius: 8px;
+  background: alpha(#ffb13b, 0.12);
+  color: #ffc46b;
+}
+.fan-rotor-widget,
+.fan-gauge-widget,
+.fan-curve-widget {
+  background: transparent;
+}
 "#;
 
     let provider = gtk::CssProvider::new();
@@ -6213,6 +7291,16 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     let g = to_u8(rgba.green());
     let b = to_u8(rgba.blue());
     format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+fn rgb_hex_to_rgba(value: &str) -> Option<gtk::gdk::RGBA> {
+    let rgb = RgbColor::parse_hex(value).ok()?;
+    Some(gtk::gdk::RGBA::new(
+        rgb.r as f32 / 255.0,
+        rgb.g as f32 / 255.0,
+        rgb.b as f32 / 255.0,
+        1.0,
+    ))
 }
 
 fn cpu_path_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<CpuPathAccess> {
@@ -6330,6 +7418,18 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
             .and_then(|v| Vec::<String>::try_from(v).ok())
             .unwrap_or_default()
     }
+    fn u32v(map: &HashMap<String, OwnedValue>, key: &str) -> u32 {
+        map.get(key)
+            .and_then(u64_from_value)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0)
+    }
+    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> String {
+        map.get(key)
+            .and_then(|v| <&str>::try_from(v).ok())
+            .unwrap_or_default()
+            .to_string()
+    }
 
     DeviceCaps {
         has_profiles: b(map, "has_profiles"),
@@ -6339,6 +7439,13 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
         has_gpu_modes: b(map, "has_gpu_modes"),
         has_aura: b(map, "has_aura"),
         has_kbd_backlight: b(map, "has_kbd_backlight"),
+        has_fan_manual_percent: b(map, "has_fan_manual_percent"),
+        has_fan_manual_rpm_target: b(map, "has_fan_manual_rpm_target"),
+        has_individual_fan_control: b(map, "has_individual_fan_control"),
+        has_fan_sync_control: b(map, "has_fan_sync_control"),
+        has_fan_boost: b(map, "has_fan_boost"),
+        fan_count: u32v(map, "fan_count"),
+        fan_backend: s(map, "fan_backend"),
         requires_reboot_for_gpu_switch: b(map, "requires_reboot_for_gpu_switch"),
         profile_access: feature_access_from_dbus(map, dbus_keys::PROFILE_ACCESS_PREFIX),
         charge_limit_access: feature_access_from_dbus(map, dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
@@ -6397,6 +7504,17 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
         ("has_profiles", b(&map, "has_profiles")),
         ("has_fan_curves", b(&map, "has_fan_curves")),
         ("has_fan_reading", b(&map, "has_fan_reading")),
+        ("has_fan_manual_percent", b(&map, "has_fan_manual_percent")),
+        (
+            "has_fan_manual_rpm_target",
+            b(&map, "has_fan_manual_rpm_target"),
+        ),
+        (
+            "has_individual_fan_control",
+            b(&map, "has_individual_fan_control"),
+        ),
+        ("has_fan_sync_control", b(&map, "has_fan_sync_control")),
+        ("has_fan_boost", b(&map, "has_fan_boost")),
         ("has_charge_limit", b(&map, "has_charge_limit")),
         ("has_gpu_modes", b(&map, "has_gpu_modes")),
         ("has_aura", b(&map, "has_aura")),
@@ -6410,6 +7528,9 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "(n/a)".to_string());
         lines.push(format!("  {k}: {s}"));
+    }
+    if let Some(backend) = s(&map, "fan_backend") {
+        lines.push(format!("  fan_backend: {backend}"));
     }
 
     lines.push("".to_string());
@@ -6495,6 +7616,490 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
         ));
     }
 
+    lines.join("\n")
+}
+
+fn fan_state_diagnostics_text(state: &FanState) -> String {
+    let mut lines = Vec::new();
+    lines.push("Fan Control Diagnostics".to_string());
+    lines.push("=======================".to_string());
+    lines.push(format!("backend: {}", state.caps.fan_backend));
+    lines.push(format!("fan_count: {}", state.caps.fan_count));
+    lines.push(format!("mode: {}", fan_mode_label_text(state.mode)));
+    lines.push(format!("sync_enabled: {}", state.sync_enabled));
+    lines.push(format!(
+        "manual_percent: {}",
+        state.caps.has_fan_manual_percent
+    ));
+    lines.push(format!(
+        "manual_rpm_target: {}",
+        state.caps.has_fan_manual_rpm_target
+    ));
+    lines.push(format!("curves: {}", state.caps.has_fan_curves));
+    lines.push(format!("boost: {}", state.caps.has_fan_boost));
+    if let Some(until) = state.active_boost_until_ms {
+        let remaining = until.saturating_sub(now_ms()) / 1000;
+        lines.push(format!("boost_remaining_seconds: {remaining}"));
+    }
+    if let Some(action) = &state.last_action {
+        lines.push(format!("last_action: {action}"));
+    }
+
+    lines.push(String::new());
+    lines.push("Fans".to_string());
+    lines.push("----".to_string());
+    if state.fans.is_empty() {
+        lines.push("No fan sensors are exposed by the active backend.".to_string());
+    }
+    for fan in &state.fans {
+        lines.push(format!(
+            "{} [{}]: {}",
+            fan.label,
+            fan.id,
+            fan.current_rpm
+                .map(|rpm| format!("{rpm} rpm"))
+                .unwrap_or_else(|| "RPM unavailable".to_string())
+        ));
+        lines.push(format!(
+            "  percent: {}",
+            fan.current_percent
+                .map(|percent| format!("{percent}%"))
+                .unwrap_or_else(|| "(not reported)".to_string())
+        ));
+        lines.push(format!(
+            "  backend: {}; controllable: {}; manual_percent: {}; rpm_target: {}; curve: {}; auto: {}",
+            fan.backend,
+            fan.controllable,
+            fan.supports_manual_percent,
+            fan.supports_manual_rpm_target,
+            fan.supports_curve,
+            fan.supports_auto
+        ));
+        if !fan.endpoints.is_empty() {
+            lines.push(format!("  endpoints: {}", fan.endpoints.join(", ")));
+        }
+        for note in &fan.notes {
+            lines.push(format!("  note: {note}"));
+        }
+        for warning in &fan.warnings {
+            lines.push(format!("  warning: {warning}"));
+        }
+    }
+    if !state.caps.warnings.is_empty() {
+        lines.push(String::new());
+        lines.push("Warnings".to_string());
+        lines.push("--------".to_string());
+        for warning in &state.caps.warnings {
+            lines.push(format!("- {warning}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn fan_mode_label_text(mode: FanControlMode) -> &'static str {
+    match mode {
+        FanControlMode::Auto => "Auto / BIOS Default",
+        FanControlMode::ManualPercent => "Manual Percentage",
+        FanControlMode::ManualRpmTarget => "Manual RPM Target",
+        FanControlMode::Curve => "Custom Curve",
+        FanControlMode::FullSpeedBoost => "Full Speed Boost",
+        FanControlMode::Unsupported => "Unsupported",
+        FanControlMode::ReadOnly => "Read-only",
+    }
+}
+
+fn fan_banner_title(state: &FanState) -> String {
+    if state.fans.is_empty() {
+        "No fan telemetry exposed by the current backend".to_string()
+    } else if !state.caps.has_individual_fan_control {
+        "Fan RPM telemetry is available, but controls are read-only".to_string()
+    } else if !state.caps.warnings.is_empty() {
+        "Some fan endpoints are read-only or uncertain".to_string()
+    } else {
+        "Fan controls available for supported hardware".to_string()
+    }
+}
+
+fn fan_sync_subtitle(state: &FanState) -> String {
+    if state.caps.has_fan_sync_control {
+        "One manual percentage or boost action applies to all controllable fans; read-only fans stay visible.".to_string()
+    } else if state.caps.fan_count <= 1 {
+        "Sync is useful only when more than one controllable fan is detected.".to_string()
+    } else {
+        "No multiple writable fan controls were confirmed by the daemon.".to_string()
+    }
+}
+
+fn fan_manual_subtitle(state: &FanState) -> String {
+    if state.caps.has_fan_manual_percent {
+        "Set a percentage duty value. Current RPM is telemetry, not a promised target.".to_string()
+    } else if state.caps.has_fan_reading {
+        "RPM telemetry is available, but no writable PWM control was confirmed.".to_string()
+    } else {
+        "No fan RPM or writable PWM endpoint is exposed by the active backend.".to_string()
+    }
+}
+
+fn fan_boost_subtitle(state: &FanState) -> String {
+    if let Some(until) = state.active_boost_until_ms {
+        let remaining = until.saturating_sub(now_ms()) / 1000;
+        return format!("Boost active; about {remaining}s remaining before Auto restore.");
+    }
+    if state.caps.has_fan_boost {
+        "Temporarily set controllable fans to 100%, then restore Auto/BIOS mode.".to_string()
+    } else {
+        "Boost needs writable manual percentage fan control.".to_string()
+    }
+}
+
+fn fans_status_pill(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("fans-status-pill");
+    label.set_xalign(0.5);
+    label.set_wrap(false);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label
+}
+
+fn build_fans_gauge_card(gauge: &TempGauge) -> gtk::Box {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("fans-gauge-card");
+    root.add_css_class("fans-gauge-card-large");
+    root.set_hexpand(true);
+    root.set_size_request(300, -1);
+    root.append(gauge.widget());
+    root
+}
+
+fn build_fan_visual_slot() -> FanVisualSlot {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    root.add_css_class("fan-visual-card");
+    root.add_css_class("fan-rotor-card");
+    root.set_hexpand(true);
+    root.set_size_request(150, -1);
+
+    let rotor = FanRotor::new(false);
+    let label = gtk::Label::new(Some("Fan"));
+    label.add_css_class("fan-rpm-label");
+    label.set_xalign(0.5);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let rpm = gtk::Label::new(Some("-- RPM"));
+    rpm.add_css_class("fan-rpm-large");
+    rpm.set_xalign(0.5);
+    let status = gtk::Label::new(Some("Telemetry"));
+    status.add_css_class("fans-status-pill");
+    status.set_xalign(0.5);
+
+    root.append(rotor.widget());
+    root.append(&rpm);
+    root.append(&label);
+    root.append(&status);
+
+    FanVisualSlot {
+        root,
+        rotor,
+        label,
+        rpm,
+        status,
+    }
+}
+
+fn build_fan_card_slot() -> FanCardSlot {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.add_css_class("fan-card");
+    root.set_hexpand(true);
+    root.set_size_request(320, -1);
+
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let rotor = FanRotor::new(true);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    text.set_hexpand(true);
+
+    let title = gtk::Label::new(Some("Fan"));
+    title.add_css_class("title-3");
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let id = gtk::Label::new(Some("hwmon"));
+    id.add_css_class("dim-label");
+    id.add_css_class("monospace");
+    id.set_xalign(0.0);
+    id.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let rpm = gtk::Label::new(Some("-- RPM"));
+    rpm.add_css_class("fan-rpm-large");
+    rpm.set_xalign(0.0);
+    let percent = gtk::Label::new(Some("Fan speed percentage not reported by backend"));
+    percent.add_css_class("dim-label");
+    percent.set_xalign(0.0);
+    percent.set_wrap(true);
+    let status = gtk::Label::new(Some("Telemetry only"));
+    status.add_css_class("fans-status-pill");
+    status.set_xalign(0.0);
+    let backend = gtk::Label::new(Some("backend"));
+    backend.add_css_class("dim-label");
+    backend.set_xalign(0.0);
+    backend.set_wrap(true);
+
+    text.append(&title);
+    text.append(&id);
+    text.append(&rpm);
+    text.append(&percent);
+    text.append(&status);
+    text.append(&backend);
+    top.append(rotor.widget());
+    top.append(&text);
+
+    let details = gtk::Label::new(Some(""));
+    details.add_css_class("dim-label");
+    details.add_css_class("monospace");
+    details.set_xalign(0.0);
+    details.set_wrap(true);
+    let details_expander = gtk::Expander::new(Some("Endpoint details"));
+    details_expander.set_expanded(false);
+    details_expander.set_child(Some(&details));
+
+    let warning = gtk::Label::new(Some(""));
+    warning.add_css_class("fan-warning-text");
+    warning.set_xalign(0.0);
+    warning.set_wrap(true);
+    warning.set_visible(false);
+
+    root.append(&top);
+    root.append(&warning);
+    root.append(&details_expander);
+    root.set_visible(false);
+
+    FanCardSlot {
+        root,
+        rotor,
+        title,
+        id,
+        rpm,
+        percent,
+        status,
+        backend,
+        details,
+        warning,
+    }
+}
+
+fn update_fan_visual_slots(slots: &[FanVisualSlot], fans: &[FanInfo]) {
+    for (idx, slot) in slots.iter().enumerate() {
+        if let Some(fan) = fans.get(idx) {
+            slot.root.set_visible(true);
+            slot.label.set_text(&fan.label);
+            slot.rpm.set_text(&fan_rpm_text(fan.current_rpm));
+            slot.status.set_text(fan_status_text(fan));
+            update_status_pill_class(&slot.status, fan);
+            slot.rotor.set_state(fan.current_rpm, rotor_status(fan));
+            slot.root.set_tooltip_text(Some(&fan_card_tooltip(fan)));
+        } else {
+            slot.root.set_visible(false);
+            slot.rotor.set_state(None, RotorStatus::ReadOnly);
+        }
+    }
+}
+
+fn update_fan_card_slots(slots: &[FanCardSlot], fans: &[FanInfo]) {
+    for (idx, slot) in slots.iter().enumerate() {
+        if let Some(fan) = fans.get(idx) {
+            slot.root.set_visible(true);
+            slot.title.set_text(&fan.label);
+            slot.id.set_text(&fan.id);
+            slot.rpm.set_text(&fan_rpm_text(fan.current_rpm));
+            slot.percent.set_text(
+                &fan.current_percent
+                    .map(|percent| format!("Backend-reported speed: {percent}%"))
+                    .unwrap_or_else(|| "Fan speed percentage not reported by backend".to_string()),
+            );
+            slot.status.set_text(fan_status_text(fan));
+            update_status_pill_class(&slot.status, fan);
+            slot.backend.set_text(&format!(
+                "{} | {}",
+                fan.backend,
+                if fan.controllable {
+                    "control endpoint writable"
+                } else {
+                    "control endpoint not writable"
+                }
+            ));
+            slot.details.set_text(&fan_endpoint_details(fan));
+            let warning_text = fan_warning_text(fan);
+            slot.warning.set_text(&warning_text);
+            slot.warning.set_visible(!warning_text.is_empty());
+            slot.rotor.set_state(fan.current_rpm, rotor_status(fan));
+            slot.root.set_tooltip_text(Some(&fan_card_tooltip(fan)));
+            slot.root.remove_css_class("fan-card-read-only");
+            slot.root.remove_css_class("fan-card-controllable");
+            if fan.controllable {
+                slot.root.add_css_class("fan-card-controllable");
+            } else {
+                slot.root.add_css_class("fan-card-read-only");
+            }
+        } else {
+            slot.root.set_visible(false);
+            slot.rotor.set_state(None, RotorStatus::ReadOnly);
+        }
+    }
+}
+
+fn fan_rpm_text(rpm: Option<u32>) -> String {
+    rpm.map(|rpm| format!("{rpm} RPM"))
+        .unwrap_or_else(|| "-- RPM".to_string())
+}
+
+fn fan_status_text(fan: &FanInfo) -> &'static str {
+    if fan_mapping_uncertain(fan) {
+        "Mapping uncertain"
+    } else if fan.controllable {
+        "Controllable"
+    } else if fan.current_rpm.is_some() {
+        "Telemetry only"
+    } else {
+        "Unavailable"
+    }
+}
+
+fn rotor_status(fan: &FanInfo) -> RotorStatus {
+    if fan.current_rpm.is_none() {
+        RotorStatus::Error
+    } else if fan_mapping_uncertain(fan) {
+        RotorStatus::Warning
+    } else if fan.controllable {
+        RotorStatus::Controllable
+    } else if fan.backend.contains("read-only") {
+        RotorStatus::ReadOnly
+    } else {
+        RotorStatus::Telemetry
+    }
+}
+
+fn fan_mapping_uncertain(fan: &FanInfo) -> bool {
+    fan.warnings
+        .iter()
+        .any(|warning| warning.to_ascii_lowercase().contains("mapping"))
+}
+
+fn fan_warning_text(fan: &FanInfo) -> String {
+    fan.warnings
+        .iter()
+        .chain(fan.notes.iter())
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn fan_endpoint_details(fan: &FanInfo) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("id: {}", fan.id));
+    lines.push(format!("backend: {}", fan.backend));
+    lines.push(format!(
+        "manual_percent: {}; rpm_target: {}; curve: {}; auto: {}",
+        fan.supports_manual_percent,
+        fan.supports_manual_rpm_target,
+        fan.supports_curve,
+        fan.supports_auto
+    ));
+    lines.push(format!(
+        "percent: {}",
+        fan.current_percent
+            .map(|percent| format!("{percent}%"))
+            .unwrap_or_else(|| "not reported".to_string())
+    ));
+    if !fan.endpoints.is_empty() {
+        lines.push("endpoints:".to_string());
+        lines.extend(fan.endpoints.iter().map(|endpoint| format!("  {endpoint}")));
+    }
+    lines.join("\n")
+}
+
+fn fan_card_tooltip(fan: &FanInfo) -> String {
+    if fan.controllable {
+        format!("{} is controllable through {}.", fan.label, fan.backend)
+    } else {
+        format!(
+            "{} is read-only. Fan RPM telemetry is available, but no writable fan-control endpoint was confirmed.",
+            fan.label
+        )
+    }
+}
+
+fn update_status_pill_class(label: &gtk::Label, fan: &FanInfo) {
+    label.remove_css_class("fans-status-pill-read-only");
+    label.remove_css_class("fans-status-pill-controllable");
+    label.remove_css_class("fans-status-pill-warning");
+    label.remove_css_class("fans-status-pill-error");
+    if fan.current_rpm.is_none() {
+        label.add_css_class("fans-status-pill-error");
+    } else if fan_mapping_uncertain(fan) {
+        label.add_css_class("fans-status-pill-warning");
+    } else if fan.controllable {
+        label.add_css_class("fans-status-pill-controllable");
+    } else {
+        label.add_css_class("fans-status-pill-read-only");
+    }
+}
+
+fn update_backend_pill_class(label: &gtk::Label, backend: &str) {
+    label.remove_css_class("fans-status-pill-read-only");
+    label.remove_css_class("fans-status-pill-controllable");
+    label.remove_css_class("fans-status-pill-error");
+    let backend = backend.to_ascii_lowercase();
+    if backend.contains("read") {
+        label.add_css_class("fans-status-pill-read-only");
+    } else if backend.contains("unsupported") {
+        label.add_css_class("fans-status-pill-error");
+    } else {
+        label.add_css_class("fans-status-pill-controllable");
+    }
+}
+
+fn fan_controls_hint(state: &FanState) -> String {
+    if state.caps.has_fan_manual_percent || state.caps.has_fan_boost || state.caps.has_fan_curves {
+        "Writable fan-control support was detected. Use these controls carefully; Auto/BIOS restore remains available.".to_string()
+    } else if state.caps.has_fan_reading {
+        "Fan RPM telemetry is available, but no writable fan-control endpoint was confirmed. Controls will be enabled automatically when a supported backend is detected.".to_string()
+    } else {
+        "No fan telemetry or writable fan-control backend is exposed by the current system."
+            .to_string()
+    }
+}
+
+fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
+    if let Some(details) = lighting.diagnostics_details.as_deref() {
+        if !details.trim().is_empty() {
+            return details.to_string();
+        }
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Lighting Diagnostics".to_string());
+    lines.push("====================".to_string());
+    lines.push(format!("backend: {}", lighting.backend));
+    lines.push(format!("device: {}", lighting.device));
+    lines.push(format!(
+        "brightness: {}/{}",
+        lighting.brightness, lighting.max_brightness
+    ));
+    lines.push(format!("mode: {}", lighting.mode));
+    lines.push(format!(
+        "supported_modes: {}",
+        if lighting.supported_modes.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            lighting.supported_modes.join(", ")
+        }
+    ));
+    lines.push(format!("supports_rgb: {}", lighting.supports_rgb));
+    lines.push(format!(
+        "rgb_hex: {}",
+        lighting.rgb_hex.as_deref().unwrap_or("(not reported)")
+    ));
+    lines.push(format!("writable: {}", lighting.can_set));
+    lines.push(format!("status: {}", lighting.status));
+    if let Some(error) = &lighting.last_error {
+        lines.push(format!("last_error: {error}"));
+    }
     lines.join("\n")
 }
 
@@ -6607,6 +8212,11 @@ mod tests {
 
         let mut map = HashMap::new();
         map.insert("timestamp_ms".to_string(), OwnedValue::from(10_u64));
+        map.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(2100_u64));
+        map.insert(
+            "gpu_memory_clock_mhz".to_string(),
+            OwnedValue::from(7000_u64),
+        );
         map.insert(
             dbus_keys::TELEMETRY_FAN_ROWS_KEY.to_string(),
             ov(vec![fan_row]),
@@ -6621,6 +8231,8 @@ mod tests {
         assert_eq!(fan.raw_label.as_deref(), Some("gpu"));
         assert_eq!(fan.display_label, "GPU Fan");
         assert_eq!(fan.rpm, Some(2875));
+        assert_eq!(telemetry.gpu_core_clock_mhz, Some(2100));
+        assert_eq!(telemetry.gpu_memory_clock_mhz, Some(7000));
     }
 
     #[test]

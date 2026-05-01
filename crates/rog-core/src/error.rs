@@ -14,6 +14,8 @@ pub enum RogError {
     InvalidInput(String),
     #[error("transient failure: {0}")]
     TransientFailure(String),
+    #[error("temporarily unavailable: {0}")]
+    TemporarilyUnavailable(String),
     #[error("unexpected error: {0}")]
     Unexpected(String),
 }

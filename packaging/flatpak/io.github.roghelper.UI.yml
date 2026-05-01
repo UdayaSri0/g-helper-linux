@@ -61,6 +61,7 @@ modules:
             "packaging/desktop/icons/hicolor/${size}x${size}/apps/rog-helper.png" \
             "/app/share/icons/hicolor/${size}x${size}/apps/io.github.roghelper.UI.png"
         done
+      - install -Dm0644 crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg /app/share/icons/hicolor/scalable/actions/rog-fan-symbolic.svg
       - |
         sed 's#rog-helperd#/app/bin/rog-helperd#g' \
           packaging/dbus-session/io.github.roghelper.Daemon.service \
