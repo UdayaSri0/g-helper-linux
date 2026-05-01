@@ -44,6 +44,7 @@ cp -a usr %{buildroot}/
 %{_datadir}/icons/hicolor/128x128/apps/rog-helper.png
 %{_datadir}/icons/hicolor/256x256/apps/rog-helper.png
 %{_datadir}/icons/hicolor/512x512/apps/rog-helper.png
+%{_datadir}/icons/hicolor/scalable/actions/rog-fan-symbolic.svg
 %{_datadir}/metainfo/io.github.roghelper.UI.metainfo.xml
 %{_datadir}/pixmaps/rog-helper.png
 /usr/lib/systemd/user/rog-helperd.service

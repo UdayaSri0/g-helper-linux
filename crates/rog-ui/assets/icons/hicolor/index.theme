@@ -1,0 +1,11 @@
+[Icon Theme]
+Name=rog-helper-local
+Comment=Local rog-helper development icons
+Directories=scalable/actions
+
+[scalable/actions]
+Size=16
+Type=Scalable
+Context=Actions
+MinSize=16
+MaxSize=128

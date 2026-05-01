@@ -39,7 +39,7 @@ Current repository note:
 
 Current repository note:
 
-- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the desktop entry, the AppStream metadata, the `.deb`, the `.rpm`, the AppImage, and the tarball flow all agree on the `rog-helper` icon name
+- `assets/logo.png` is the master logo source, and the generated hicolor icon set is produced into `packaging/desktop/icons/hicolor/`; release review should verify that those icons, the Fans tab symbolic icon under `crates/rog-ui/assets/icons/hicolor/scalable/actions/`, the desktop entry, the AppStream metadata, the `.deb`, the `.rpm`, the AppImage, and the tarball flow all agree on the expected icon names
 
 ## Service and Packaging Files
 

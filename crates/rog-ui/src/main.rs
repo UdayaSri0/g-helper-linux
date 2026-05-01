@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adw::prelude::*;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk4 as gtk;
@@ -44,7 +45,7 @@ const ICON_GPU: &str = "rog-gpu-symbolic";
 const ICON_BATTERY: &str = "rog-battery-symbolic";
 const ICON_RAM: &str = "rog-memory-symbolic";
 const ICON_LIGHTING: &str = "rog-lighting-symbolic";
-const ICON_FANS: &str = "utilities-system-monitor-symbolic";
+const ICON_FANS: &str = "rog-fan-symbolic";
 const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
 const ICON_ABOUT: &str = "rog-about-symbolic";
 
@@ -769,15 +770,48 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn register_icon_resources() {
-    if let Some(display) = gtk::gdk::Display::default() {
-        let theme = gtk::IconTheme::for_display(&display);
-        theme.add_resource_path(ICON_RESOURCE_PATH);
+fn register_app_icon_paths() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+
+    let icon_theme = gtk::IconTheme::for_display(&display);
+    icon_theme.add_resource_path(ICON_RESOURCE_PATH);
+
+    let mut candidate_paths = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons"),
+        PathBuf::from("/usr/share/icons"),
+        PathBuf::from("/usr/local/share/icons"),
+    ];
+
+    if let Some(appdir) = std::env::var_os("APPDIR") {
+        candidate_paths.push(PathBuf::from(appdir).join("usr/share/icons"));
+    }
+
+    for path in candidate_paths {
+        if path.is_dir() {
+            icon_theme.add_search_path(path);
+        }
+    }
+}
+
+fn warn_if_fan_icon_missing() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+
+    let icon_theme = gtk::IconTheme::for_display(&display);
+
+    if !icon_theme.has_icon(ICON_FANS) {
+        eprintln!(
+            "Warning: rog-fan-symbolic icon was not found. Check crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg and packaging icon installation."
+        );
     }
 }
 
 fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
-    register_icon_resources();
+    register_app_icon_paths();
+    warn_if_fan_icon_missing();
 
     let app_metadata = AppMetadata::detect();
     let app_settings = load_app_settings();
@@ -2159,8 +2193,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
     let gpu_gauge_card = build_fans_gauge_card(&gpu_temp_gauge);
     let cpu_gauge_card = build_fans_gauge_card(&cpu_temp_gauge);
-    gauge_row.insert(&gpu_gauge_card, -1);
     gauge_row.insert(&cpu_gauge_card, -1);
+    gauge_row.insert(&gpu_gauge_card, -1);
     hero.append(&gauge_row);
 
     let mode_panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
