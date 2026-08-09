@@ -689,10 +689,9 @@ impl CpuTelemetryProvider {
 
         let delta_energy_uj = if energy_uj >= prev.energy_uj {
             energy_uj - prev.energy_uj
-        } else if let Some(max) = prev.max_energy_range_uj {
-            (max.saturating_sub(prev.energy_uj)).saturating_add(energy_uj)
         } else {
-            return None;
+            let max = prev.max_energy_range_uj?;
+            (max.saturating_sub(prev.energy_uj)).saturating_add(energy_uj)
         };
 
         let watts = (delta_energy_uj as f64 / 1_000_000.0) / dt_s;

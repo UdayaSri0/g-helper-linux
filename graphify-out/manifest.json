@@ -50,8 +50,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/cpu.rs": {
-    "mtime": 1785237171.67851,
-    "ast_hash": "0fea37b9cd4a6175ec61df6d11c74b1e",
+    "mtime": 1786256044.9182003,
+    "ast_hash": "f21b0e63106d1a0f9f474a9a764362f7",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/dbus.rs": {

@@ -1,16 +1,16 @@
-# Graph Report - g-helper-linux  (2026-08-08)
+# Graph Report - g-helper-linux  (2026-08-09)
 
 ## Corpus Check
-- 73 files · ~141,048 words
+- 73 files · ~141,042 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1568 nodes · 3737 edges · 75 communities (71 shown, 4 thin omitted)
+- 1568 nodes · 3737 edges · 76 communities (72 shown, 4 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 14 edges (avg confidence: 0.67)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `be774af9`
+- Built from commit: `2f300285`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -22,10 +22,10 @@
 - rog-cli/src/main.rs
 - cpu.rs
 - AsusdPlatformProvider
-- build_ui
+- rog-ui/src/main.rs
 - String
 - UI Pages
-- rog-ui/src/main.rs
+- detect_update_capability
 - fan_widgets.rs
 - power_supply.rs
 - SupergfxProvider
@@ -34,10 +34,10 @@
 - DBus API
 - Codex Prompt: Redesign Fans Page UI with RPM Gauges, Animated Fan Rotors, Individual Fan Cards, and Safe Control UX
 - Required UI changes
-- .from
+- Result
 - .unknown
 - Troubleshooting
-- Vec
+- RogTray
 - Option
 - rog-helper
 - model.rs
@@ -86,6 +86,7 @@
 - mod.rs
 - LightingDiagnostics
 - build_shell
+- fetch_state
 
 ## God Nodes (most connected - your core abstractions)
 1. `build_ui()` - 89 edges
@@ -114,7 +115,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (75 total, 4 thin omitted)
+## Communities (76 total, 4 thin omitted)
 
 ### Community 0 - "rog-daemon/src/main.rs"
 Cohesion: 0.07
@@ -144,21 +145,21 @@ Nodes (47): BoostPath, can_read(), choose_best_token(), collect_epp_values(), co
 Cohesion: 0.09
 Nodes (39): Cow, RogError, Into, Self, String, ValidationWarning, PerformanceProfile, map_rog_error_to_fdo() (+31 more)
 
-### Community 7 - "build_ui"
-Cohesion: 0.08
-Nodes (41): Application, Button, ComboBoxText, FeatureAvailability, build_ui(), cpu_power_preset_summary(), cpu_toggle_dialog_body(), cpu_toggle_dialog_title() (+33 more)
+### Community 7 - "rog-ui/src/main.rs"
+Cohesion: 0.07
+Nodes (63): Application, Button, ComboBoxText, FeatureAvailability, build_fan_card_slot(), build_fan_visual_slot(), build_fans_gauge_card(), build_ui() (+55 more)
 
 ### Community 8 - "String"
 Cohesion: 0.12
-Nodes (41): CpuCaps, DeviceCaps, caps_from_dbus(), caps_text_from_dbus(), combined_asusd_issue(), cpu_access_report_text(), cpu_banner_title(), cpu_caps_from_dbus() (+33 more)
+Nodes (29): CpuCaps, DeviceCaps, combined_asusd_issue(), cpu_access_report_text(), cpu_banner_title(), cpu_control_subtitle(), cpu_diagnostics_text(), cpu_has_access_issue() (+21 more)
 
 ### Community 9 - "UI Pages"
 Cohesion: 0.05
 Nodes (44): About, Backend behavior, Battery, Capability dependencies, Capability dependencies, Capability dependencies, Capability dependencies, Capability dependencies (+36 more)
 
-### Community 10 - "rog-ui/src/main.rs"
-Cohesion: 0.09
-Nodes (37): build_fan_card_slot(), build_fan_visual_slot(), build_fans_gauge_card(), can_stage_update_in_dir(), Daemon1, detect_update_capability(), fan_boost_subtitle(), fan_state_diagnostics_text() (+29 more)
+### Community 10 - "detect_update_capability"
+Cohesion: 0.33
+Nodes (9): can_stage_update_in_dir(), detect_update_capability(), GithubReleaseAssetResponse, matching_release_asset(), ReleaseAsset, Path, supported_update_target_path(), temp_update_path() (+1 more)
 
 ### Community 11 - "fan_widgets.rs"
 Cohesion: 0.12
@@ -173,8 +174,8 @@ Cohesion: 0.17
 Nodes (23): action_name_from_u32(), map_dbus_error(), mode_id_from_text(), mode_name_from_text(), mode_name_from_u32(), mode_name_from_value(), normalize_word(), owned_from_string() (+15 more)
 
 ### Community 14 - "SharedUiState"
-Cohesion: 0.08
-Nodes (42): Client, apply_battery_limit(), apply_cpu_actions(), apply_fan_action(), apply_gpu_mode(), apply_profile(), apply_update_action(), AppMetadata (+34 more)
+Cohesion: 0.11
+Nodes (29): Client, apply_battery_limit(), apply_cpu_actions(), apply_fan_action(), apply_gpu_mode(), apply_profile(), apply_update_action(), AppMetadata (+21 more)
 
 ### Community 15 - "memory.rs"
 Cohesion: 0.15
@@ -192,9 +193,9 @@ Nodes (28): 1. Top header, 2. Hero dashboard, 3. Animated fan rotor widget, 4. C
 Cohesion: 0.08
 Nodes (25): 10. State parsing and telemetry extension, 1. Make CPU/GPU gauges bigger, 2. Put CPU and GPU gauges side by side, 3. Add operating speed / MHz display, 4. Add richer gauge card content, 5. Improve gauge drawing, 6. Reposition the Cooling Mode card, 7. Clean up fan rotor cards if needed (+17 more)
 
-### Community 19 - ".from"
-Cohesion: 0.10
-Nodes (17): apply_lighting(), AppSettingsFile, caps_from_dbus_parses_feature_access_status_and_reason_keys(), cpu_caps_from_dbus_parses_structured_control_access_rows(), cpu_telemetry_from_dbus_supports_logical_cpu_id_and_core_id_alias(), detect_maintainer_name(), gpu_mode_to_dropdown_index(), ov() (+9 more)
+### Community 19 - "Result"
+Cohesion: 0.13
+Nodes (22): apply_lighting(), AppSettings, AppSettingsFile, autostart_desktop_entry(), autostart_enabled(), autostart_entry_supports_minimized_launch(), autostart_file_path(), CloseBehavior (+14 more)
 
 ### Community 20 - ".unknown"
 Cohesion: 0.43
@@ -204,13 +205,13 @@ Nodes (4): lighting_diagnostics_explains_asusd_without_aura(), lighting_diagnost
 Cohesion: 0.09
 Nodes (22): asusd Present, But Fan Curves Unsupported, Battery, Profile, or GPU Controls Still Unavailable, Boost Failed or Restored Auto, `Cargo.lock` parse error (`version = 4`), CPU Counts Look Wrong On A Hybrid CPU, CPU Telemetry Works, But CPU Controls Are Read-Only, Daemon Not Running, Diagnostics Commands (+14 more)
 
-### Community 22 - "Vec"
-Cohesion: 0.27
-Nodes (11): ActionRow, append_detail_row(), build_detail_rows(), DetailRow, GithubReleaseResponse, pref_value_row(), push_history(), PreferencesGroup (+3 more)
+### Community 22 - "RogTray"
+Cohesion: 0.13
+Nodes (16): ActionRow, append_detail_row(), build_detail_rows(), DetailRow, GithubReleaseResponse, gpu_mode_to_dropdown_index(), pref_value_row(), push_history() (+8 more)
 
 ### Community 23 - "Option"
-Cohesion: 0.13
-Nodes (22): canonicalize_git_remote_url(), check_for_updates(), compare_versions(), detect_git_remote_repository_url(), detect_repository_url(), fan_rpm_text(), format_bool_opt(), format_bytes_gib_opt() (+14 more)
+Cohesion: 0.16
+Nodes (18): canonicalize_git_remote_url(), compare_versions(), detect_git_remote_repository_url(), detect_repository_url(), fan_rpm_text(), format_bool_opt(), format_bytes_gib_opt(), format_bytes_mib_opt() (+10 more)
 
 ### Community 24 - "rog-helper"
 Cohesion: 0.10
@@ -384,6 +385,10 @@ Nodes (5): LightingDiagnostics, build_lighting_diagnostics(), recommended_action
 Cohesion: 0.40
 Nodes (5): build_shell(), NavigationItem, Label, ToolbarView, ViewStack
 
+### Community 75 - "fetch_state"
+Cohesion: 0.16
+Nodes (25): caps_from_dbus(), caps_from_dbus_parses_feature_access_status_and_reason_keys(), caps_text_from_dbus(), cpu_caps_from_dbus(), cpu_caps_from_dbus_parses_structured_control_access_rows(), cpu_control_access_from_dbus(), cpu_path_access_from_dbus(), cpu_telemetry_from_dbus() (+17 more)
+
 ## Knowledge Gaps
 - **398 isolated node(s):** `LightingProvider`, `TelemetryProvider`, `Daemon1`, `rog-helper-apprun-hook.sh script`, `PATH` (+393 more)
   These have ≤1 connection - possible missing edges or undocumented components.
@@ -396,7 +401,7 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.036) - this node is a cross-community bridge._
 - **Why does `RogHelperDaemon` connect `rog-daemon/src/main.rs` to `aura.rs`, `hwmon.rs`, `rog-cli/src/main.rs`, `cpu.rs`, `AsusdPlatformProvider`, `SupergfxProvider`, `Self`?**
   _High betweenness centrality (0.033) - this node is a cross-community bridge._
-- **Why does `FanInfo` connect `FanInfo` to `rog-daemon/src/main.rs`, `String`, `hwmon.rs`, `rog-cli/src/main.rs`, `String`, `model.rs`?**
+- **Why does `FanInfo` connect `FanInfo` to `rog-daemon/src/main.rs`, `String`, `hwmon.rs`, `rog-cli/src/main.rs`, `fetch_state`, `model.rs`?**
   _High betweenness centrality (0.033) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `build_ui()` (e.g. with `page_container()` and `page_header()`) actually correct?**
   _`build_ui()` has 3 INFERRED edges - model-reasoned connections that need verification._

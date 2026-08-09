@@ -1199,7 +1199,7 @@
       "_origin": "ast",
       "id": "crates_rog_core_src_model_featureavailability",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "featureavailability"
     },
     {
@@ -1243,7 +1243,7 @@
       "_origin": "ast",
       "id": "crates_rog_core_src_model_featureavailability_is_available",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": ".is_available()"
     },
     {
@@ -4605,7 +4605,7 @@
       "label": "cpu_status()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L707",
+      "source_location": "L706",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_cpu_status",
       "community": 5,
@@ -4616,7 +4616,7 @@
       "label": "detect_boost_path()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L721",
+      "source_location": "L720",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_detect_boost_path",
       "community": 5,
@@ -4627,7 +4627,7 @@
       "label": "read_boost_state()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L740",
+      "source_location": "L739",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_boost_state",
       "community": 5,
@@ -4638,7 +4638,7 @@
       "label": "detect_package_energy_path()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L751",
+      "source_location": "L750",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_detect_package_energy_path",
       "community": 5,
@@ -4649,7 +4649,7 @@
       "label": "read_policies()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L783",
+      "source_location": "L782",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_policies",
       "community": 5,
@@ -4660,7 +4660,7 @@
       "label": "read_proc_stat()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L838",
+      "source_location": "L837",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_proc_stat",
       "community": 5,
@@ -4671,7 +4671,7 @@
       "label": "parse_cpu_times()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L871",
+      "source_location": "L870",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_parse_cpu_times",
       "community": 5,
@@ -4682,7 +4682,7 @@
       "label": "usage_from_delta()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L884",
+      "source_location": "L883",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_usage_from_delta",
       "community": 5,
@@ -4693,7 +4693,7 @@
       "label": "read_core_ids()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L894",
+      "source_location": "L893",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_core_ids",
       "community": 5,
@@ -4704,7 +4704,7 @@
       "label": "read_cpu_topology()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L916",
+      "source_location": "L915",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_cpu_topology",
       "community": 5,
@@ -4715,7 +4715,7 @@
       "label": "physical_core_indices()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L948",
+      "source_location": "L947",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_physical_core_indices",
       "community": 5,
@@ -4726,7 +4726,7 @@
       "label": "count_physical_cores()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L969",
+      "source_location": "L968",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_count_physical_cores",
       "community": 5,
@@ -4737,7 +4737,7 @@
       "label": "read_core_online()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L978",
+      "source_location": "L977",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_core_online",
       "community": 5,
@@ -4748,7 +4748,7 @@
       "label": "read_cpu_list()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L988",
+      "source_location": "L987",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_cpu_list",
       "community": 5,
@@ -4770,7 +4770,7 @@
       "label": "read_space_split()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_space_split",
       "community": 5,
@@ -4781,7 +4781,7 @@
       "label": "collect_governors()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1029",
+      "source_location": "L1028",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_collect_governors",
       "community": 5,
@@ -4792,7 +4792,7 @@
       "label": "collect_epp_values()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1042",
+      "source_location": "L1041",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_collect_epp_values",
       "community": 5,
@@ -4803,7 +4803,7 @@
       "label": "choose_best_token()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1055",
+      "source_location": "L1054",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_choose_best_token",
       "community": 5,
@@ -4814,7 +4814,7 @@
       "label": "normalize_token()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1072",
+      "source_location": "L1071",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_normalize_token",
       "community": 5,
@@ -4825,7 +4825,7 @@
       "label": "read_trimmed()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1080",
+      "source_location": "L1079",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_trimmed",
       "community": 5,
@@ -4836,7 +4836,7 @@
       "label": "read_u64()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1086",
+      "source_location": "L1085",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_read_u64",
       "community": 5,
@@ -4847,7 +4847,7 @@
       "label": "khz_to_mhz_u32()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1093",
+      "source_location": "L1092",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_khz_to_mhz_u32",
       "community": 5,
@@ -4858,7 +4858,7 @@
       "label": "power_mode_access()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1097",
+      "source_location": "L1096",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_power_mode_access",
       "community": 5,
@@ -4869,7 +4869,7 @@
       "label": "control_access_from_paths()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_control_access_from_paths",
       "community": 5,
@@ -4880,7 +4880,7 @@
       "label": "probe_path_accesses()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1203",
+      "source_location": "L1202",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_probe_path_accesses",
       "community": 5,
@@ -4891,7 +4891,7 @@
       "label": "can_read()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1220",
+      "source_location": "L1219",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_can_read",
       "community": 5,
@@ -4902,7 +4902,7 @@
       "label": "is_writable()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1224",
+      "source_location": "L1223",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_is_writable",
       "community": 5,
@@ -4913,7 +4913,7 @@
       "label": "write_sysfs()",
       "file_type": "code",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1228",
+      "source_location": "L1227",
       "_origin": "ast",
       "id": "crates_rog_providers_src_cpu_write_sysfs",
       "community": 5,
@@ -7897,7 +7897,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "rog-ui/src/main.rs"
     },
@@ -7908,7 +7908,7 @@
       "source_location": "L62",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_daemon1",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "daemon1"
     },
@@ -7952,8 +7952,8 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_appmetadata_detect",
-      "community": 19,
-      "community_name": ".from",
+      "community": 8,
+      "community_name": "String",
       "norm_label": ".detect()"
     },
     {
@@ -7964,7 +7964,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_self",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "self"
     },
     {
@@ -7974,8 +7974,8 @@
       "source_location": "L139",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_closebehavior",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "closebehavior"
     },
     {
@@ -7985,8 +7985,8 @@
       "source_location": "L145",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_closebehavior_from_id",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": ".from_id()"
     },
     {
@@ -7996,8 +7996,8 @@
       "source_location": "L152",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_closebehavior_id",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": ".id()"
     },
     {
@@ -8007,8 +8007,8 @@
       "source_location": "L161",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_appsettings",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "appsettings"
     },
     {
@@ -8030,7 +8030,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_appsettings_default",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": ".default()"
     },
     {
@@ -8041,7 +8041,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_appsettingsfile",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "appsettingsfile"
     },
     {
@@ -8052,7 +8052,7 @@
       "_origin": "ast",
       "id": "from",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "from"
     },
     {
@@ -8063,7 +8063,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_appsettingsfile_from",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": ".from()"
     },
     {
@@ -8074,7 +8074,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_releaseasset",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "releaseasset"
     },
     {
@@ -8096,7 +8096,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_updatestate_default",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": ".default()"
     },
     {
@@ -8129,7 +8129,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_vec",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "vec"
     },
     {
@@ -8139,8 +8139,8 @@
       "source_location": "L294",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_shareduistate_default",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": ".default()"
     },
     {
@@ -8162,7 +8162,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lightinginfo",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lightinginfo"
     },
     {
@@ -8173,7 +8173,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_pendinglighting",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "pendinglighting"
     },
     {
@@ -8194,7 +8194,7 @@
       "source_location": "L396",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fanvisualslot",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "fanvisualslot"
     },
@@ -8205,7 +8205,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_box",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "box"
     },
@@ -8216,7 +8216,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_label",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "label"
     },
@@ -8227,7 +8227,7 @@
       "source_location": "L405",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fancardslot",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "fancardslot"
     },
@@ -8239,7 +8239,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_detailrow",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "detailrow"
     },
     {
@@ -8250,7 +8250,7 @@
       "_origin": "ast",
       "id": "actionrow",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "actionrow"
     },
     {
@@ -8260,8 +8260,8 @@
       "source_location": "L425",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": "rogtray"
     },
     {
@@ -8293,8 +8293,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "tray",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": "tray"
     },
     {
@@ -8304,8 +8304,8 @@
       "source_location": "L431",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_id",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": ".id()"
     },
     {
@@ -8316,7 +8316,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_title",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": ".title()"
     },
     {
@@ -8326,8 +8326,8 @@
       "source_location": "L439",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_icon_name",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": ".icon_name()"
     },
     {
@@ -8337,8 +8337,8 @@
       "source_location": "L443",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_tool_tip",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": ".tool_tip()"
     },
     {
@@ -8348,8 +8348,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "tooltip",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": "tooltip"
     },
     {
@@ -8359,8 +8359,8 @@
       "source_location": "L451",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_activate",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": ".activate()"
     },
     {
@@ -8370,8 +8370,8 @@
       "source_location": "L457",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rogtray_menu",
-      "community": 19,
-      "community_name": ".from",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": ".menu()"
     },
     {
@@ -8381,8 +8381,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "menuitem",
-      "community": 19,
-      "community_name": ".from",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": "menuitem"
     },
     {
@@ -8392,8 +8392,8 @@
       "source_location": "L623",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_main",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "main()"
     },
     {
@@ -8403,8 +8403,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_result",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "result"
     },
     {
@@ -8415,7 +8415,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_register_app_icon_paths",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "register_app_icon_paths()"
     },
     {
@@ -8425,8 +8425,8 @@
       "source_location": "L702",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_warn_if_fan_icon_missing",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "warn_if_fan_icon_missing()"
     },
     {
@@ -8437,7 +8437,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_build_ui",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "build_ui()"
     },
     {
@@ -8448,7 +8448,7 @@
       "_origin": "ast",
       "id": "application",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "application"
     },
     {
@@ -8469,8 +8469,8 @@
       "source_location": "L4381",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fetch_state",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fetch_state()"
     },
     {
@@ -8481,7 +8481,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_apply_lighting",
       "community": 19,
-      "community_name": ".from",
+      "community_name": "Result",
       "norm_label": "apply_lighting()"
     },
     {
@@ -8558,7 +8558,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_githubreleaseresponse",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "githubreleaseresponse"
     },
     {
@@ -8569,7 +8569,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_githubreleaseassetresponse",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "githubreleaseassetresponse"
     },
     {
@@ -8580,7 +8580,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_updatecapability",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "updatecapability"
     },
     {
@@ -8590,8 +8590,8 @@
       "source_location": "L4707",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_check_for_updates",
-      "community": 23,
-      "community_name": "Option",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "check_for_updates()"
     },
     {
@@ -8612,8 +8612,8 @@
       "source_location": "L4834",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_update_check_failed_state",
-      "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "update_check_failed_state()"
     },
     {
@@ -8657,7 +8657,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_detect_update_capability",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "detect_update_capability()"
     },
     {
@@ -8668,7 +8668,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_supported_update_target_path",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "supported_update_target_path()"
     },
     {
@@ -8678,8 +8678,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_pathbuf",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "pathbuf"
     },
     {
@@ -8690,7 +8690,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_matching_release_asset",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "matching_release_asset()"
     },
     {
@@ -8701,7 +8701,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_can_stage_update_in_dir",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "can_stage_update_in_dir()"
     },
     {
@@ -8712,7 +8712,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_path",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "path"
     },
     {
@@ -8723,7 +8723,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_temp_update_path",
       "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community_name": "detect_update_capability",
       "norm_label": "temp_update_path()"
     },
     {
@@ -8733,8 +8733,8 @@
       "source_location": "L5130",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_package_value",
-      "community": 19,
-      "community_name": ".from",
+      "community": 8,
+      "community_name": "String",
       "norm_label": "package_value()"
     },
     {
@@ -8744,8 +8744,8 @@
       "source_location": "L5139",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_package_authors",
-      "community": 19,
-      "community_name": ".from",
+      "community": 8,
+      "community_name": "String",
       "norm_label": "package_authors()"
     },
     {
@@ -8788,8 +8788,8 @@
       "source_location": "L5198",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_github_repo_from_url",
-      "community": 23,
-      "community_name": "Option",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "github_repo_from_url()"
     },
     {
@@ -8799,8 +8799,8 @@
       "source_location": "L5210",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_detect_maintainer_name",
-      "community": 19,
-      "community_name": ".from",
+      "community": 8,
+      "community_name": "String",
       "norm_label": "detect_maintainer_name()"
     },
     {
@@ -8810,8 +8810,8 @@
       "source_location": "L5237",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_release_notes_preview_text",
-      "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community": 8,
+      "community_name": "String",
       "norm_label": "release_notes_preview_text()"
     },
     {
@@ -8821,8 +8821,8 @@
       "source_location": "L5248",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_trim_release_notes",
-      "community": 23,
-      "community_name": "Option",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "trim_release_notes()"
     },
     {
@@ -8832,8 +8832,8 @@
       "source_location": "L5259",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_truncate_text",
-      "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community": 8,
+      "community_name": "String",
       "norm_label": "truncate_text()"
     },
     {
@@ -8887,8 +8887,8 @@
       "source_location": "L5311",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_now_unix_timestamp",
-      "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "now_unix_timestamp()"
     },
     {
@@ -8898,7 +8898,7 @@
       "source_location": "L5318",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_now_ms",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "now_ms()"
     },
@@ -8920,8 +8920,8 @@
       "source_location": "L5334",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_load_app_settings",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "load_app_settings()"
     },
     {
@@ -8953,8 +8953,8 @@
       "source_location": "L5395",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_save_app_settings",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "save_app_settings()"
     },
     {
@@ -8964,8 +8964,8 @@
       "source_location": "L5411",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_settings_file_path",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "settings_file_path()"
     },
     {
@@ -8975,8 +8975,8 @@
       "source_location": "L5417",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_autostart_file_path",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "autostart_file_path()"
     },
     {
@@ -8986,8 +8986,8 @@
       "source_location": "L5423",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_xdg_config_home",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "xdg_config_home()"
     },
     {
@@ -8997,8 +8997,8 @@
       "source_location": "L5436",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_autostart_enabled",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "autostart_enabled()"
     },
     {
@@ -9008,8 +9008,8 @@
       "source_location": "L5457",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_key_value_is",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "key_value_is()"
     },
     {
@@ -9019,8 +9019,8 @@
       "source_location": "L5465",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_sync_autostart",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "sync_autostart()"
     },
     {
@@ -9030,8 +9030,8 @@
       "source_location": "L5485",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_autostart_desktop_entry",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "autostart_desktop_entry()"
     },
     {
@@ -9052,8 +9052,8 @@
       "source_location": "L5523",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_friendly_update_error",
-      "community": 10,
-      "community_name": "rog-ui/src/main.rs",
+      "community": 14,
+      "community_name": "SharedUiState",
       "norm_label": "friendly_update_error()"
     },
     {
@@ -9063,8 +9063,8 @@
       "source_location": "L5542",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_ov",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "ov()"
     },
     {
@@ -9074,8 +9074,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_t",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "t"
     },
     {
@@ -9085,8 +9085,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_ownedvalue",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "ownedvalue"
     },
     {
@@ -9096,7 +9096,7 @@
       "source_location": "L5549",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_summary_from_state",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "summary_from_state()"
     },
@@ -9107,7 +9107,7 @@
       "source_location": "L5580",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_power_source_label",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "power_source_label()"
     },
@@ -9119,7 +9119,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_push_history",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "push_history()"
     },
     {
@@ -9129,8 +9129,8 @@
       "source_location": "L5601",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_telemetry_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "telemetry_from_dbus()"
     },
     {
@@ -9140,8 +9140,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_hashmap",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "hashmap"
     },
     {
@@ -9151,8 +9151,8 @@
       "source_location": "L5870",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_telemetry_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_telemetry_from_dbus()"
     },
     {
@@ -9162,8 +9162,8 @@
       "source_location": "L5976",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_u64_from_value",
-      "community": 23,
-      "community_name": "Option",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "u64_from_value()"
     },
     {
@@ -9174,7 +9174,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_format_battery_state",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "format_battery_state()"
     },
     {
@@ -9328,7 +9328,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_feature_status_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "feature_status_label()"
     },
     {
@@ -9339,7 +9339,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_feature_control_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "feature_control_subtitle()"
     },
     {
@@ -9350,7 +9350,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_feature_value_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "feature_value_label()"
     },
     {
@@ -9361,7 +9361,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_feature_state_value",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "feature_state_value()"
     },
     {
@@ -9372,7 +9372,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_placeholder_value",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_placeholder_value()"
     },
     {
@@ -9383,7 +9383,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_backend_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_backend_label()"
     },
     {
@@ -9394,7 +9394,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_current_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_current_label()"
     },
     {
@@ -9405,7 +9405,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_mode_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_mode_label()"
     },
     {
@@ -9416,7 +9416,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_rgb_current_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_rgb_current_label()"
     },
     {
@@ -9427,7 +9427,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_availability_label",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_availability_label()"
     },
     {
@@ -9438,7 +9438,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_brightness_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_brightness_subtitle()"
     },
     {
@@ -9449,7 +9449,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_mode_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_mode_subtitle()"
     },
     {
@@ -9460,7 +9460,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_apply_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_apply_subtitle()"
     },
     {
@@ -9471,7 +9471,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_rgb_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_rgb_subtitle()"
     },
     {
@@ -9482,7 +9482,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_last_action_text",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "lighting_last_action_text()"
     },
     {
@@ -9559,7 +9559,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_friendly_action_error",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "friendly_action_error()"
     },
     {
@@ -9613,7 +9613,7 @@
       "source_location": "L6897",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_normalize_label",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "normalize_label()"
     },
@@ -9625,7 +9625,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_is_placeholder_text",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "is_placeholder_text()"
     },
     {
@@ -9635,7 +9635,7 @@
       "source_location": "L6909",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_profile_name_is",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "profile_name_is()"
     },
@@ -9646,7 +9646,7 @@
       "source_location": "L6913",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_tray_profile_index_from_text",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "tray_profile_index_from_text()"
     },
@@ -9657,8 +9657,8 @@
       "source_location": "L6923",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_gpu_mode_to_dropdown_index",
-      "community": 19,
-      "community_name": ".from",
+      "community": 22,
+      "community_name": "RogTray",
       "norm_label": "gpu_mode_to_dropdown_index()"
     },
     {
@@ -9669,7 +9669,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_pref_value_row",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "pref_value_row()"
     },
     {
@@ -9680,7 +9680,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rs_preferencesgroup",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "preferencesgroup"
     },
     {
@@ -9690,7 +9690,7 @@
       "source_location": "L6954",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_linked_toggle_row",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_linked_toggle_row()"
     },
@@ -9702,7 +9702,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_dropdown_control",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_dropdown_control()"
     },
     {
@@ -9713,7 +9713,7 @@
       "_origin": "ast",
       "id": "dropdown",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "dropdown"
     },
     {
@@ -9724,7 +9724,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_apply_button",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_apply_button()"
     },
     {
@@ -9735,7 +9735,7 @@
       "_origin": "ast",
       "id": "button",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "button"
     },
     {
@@ -9745,7 +9745,7 @@
       "source_location": "L6973",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_inline_control_box",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_inline_control_box()"
     },
@@ -9757,7 +9757,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_spin_control",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_spin_control()"
     },
     {
@@ -9768,7 +9768,7 @@
       "_origin": "ast",
       "id": "spinbutton",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "spinbutton"
     },
     {
@@ -9779,7 +9779,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_scale_control",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_scale_control()"
     },
     {
@@ -9790,7 +9790,7 @@
       "_origin": "ast",
       "id": "scale",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "scale"
     },
     {
@@ -9801,7 +9801,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_style_combo_control",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "style_combo_control()"
     },
     {
@@ -9812,7 +9812,7 @@
       "_origin": "ast",
       "id": "comboboxtext",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "comboboxtext"
     },
     {
@@ -9834,7 +9834,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_power_preset_summary",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "cpu_power_preset_summary()"
     },
     {
@@ -9889,7 +9889,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_toggle_dialog_title",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "cpu_toggle_dialog_title()"
     },
     {
@@ -9900,7 +9900,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_toggle_dialog_body",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "cpu_toggle_dialog_body()"
     },
     {
@@ -9911,7 +9911,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_build_detail_rows",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "build_detail_rows()"
     },
     {
@@ -9922,7 +9922,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_update_detail_rows",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "update_detail_rows()"
     },
     {
@@ -9933,7 +9933,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_append_detail_row",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "append_detail_row()"
     },
     {
@@ -9944,7 +9944,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_update_detail_rows_dynamic",
       "community": 22,
-      "community_name": "Vec",
+      "community_name": "RogTray",
       "norm_label": "update_detail_rows_dynamic()"
     },
     {
@@ -9954,8 +9954,8 @@
       "source_location": "L7185",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "lighting_from_dbus()"
     },
     {
@@ -9965,8 +9965,8 @@
       "source_location": "L7227",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_state_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fan_state_from_dbus()"
     },
     {
@@ -9976,8 +9976,8 @@
       "source_location": "L7283",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_caps_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fan_caps_from_dbus()"
     },
     {
@@ -9987,8 +9987,8 @@
       "source_location": "L7322",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_info_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fan_info_from_dbus()"
     },
     {
@@ -9998,8 +9998,8 @@
       "source_location": "L7370",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_row_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fan_row_from_dbus()"
     },
     {
@@ -10097,7 +10097,7 @@
       "source_location": "L7458",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rgba_to_hex",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "rgba_to_hex()"
     },
@@ -10108,7 +10108,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "rgba",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "rgba"
     },
@@ -10119,7 +10119,7 @@
       "source_location": "L7468",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_rgb_hex_to_rgba",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "rgb_hex_to_rgba()"
     },
@@ -10130,8 +10130,8 @@
       "source_location": "L7478",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_path_access_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_path_access_from_dbus()"
     },
     {
@@ -10141,8 +10141,8 @@
       "source_location": "L7499",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_control_access_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_control_access_from_dbus()"
     },
     {
@@ -10152,8 +10152,8 @@
       "source_location": "L7531",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_caps_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_caps_from_dbus()"
     },
     {
@@ -10163,8 +10163,8 @@
       "source_location": "L7581",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_caps_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "caps_from_dbus()"
     },
     {
@@ -10174,8 +10174,8 @@
       "source_location": "L7631",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_feature_access_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "feature_access_from_dbus()"
     },
     {
@@ -10185,8 +10185,8 @@
       "source_location": "L7652",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_caps_text_from_dbus",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "caps_text_from_dbus()"
     },
     {
@@ -10196,8 +10196,8 @@
       "source_location": "L7742",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_diagnostics_text",
-      "community": 8,
-      "community_name": "String",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "fan_diagnostics_text()"
     },
     {
@@ -10207,7 +10207,7 @@
       "source_location": "L7794",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_state_diagnostics_text",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_state_diagnostics_text()"
     },
@@ -10219,7 +10219,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_mode_label_text",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_mode_label_text()"
     },
     {
@@ -10230,7 +10230,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_banner_title",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_banner_title()"
     },
     {
@@ -10241,7 +10241,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_sync_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_sync_subtitle()"
     },
     {
@@ -10252,7 +10252,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_manual_subtitle",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_manual_subtitle()"
     },
     {
@@ -10262,7 +10262,7 @@
       "source_location": "L7915",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_boost_subtitle",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_boost_subtitle()"
     },
@@ -10273,7 +10273,7 @@
       "source_location": "L7927",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fans_status_pill",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "fans_status_pill()"
     },
@@ -10284,7 +10284,7 @@
       "source_location": "L7936",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_build_fans_gauge_card",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "build_fans_gauge_card()"
     },
@@ -10295,7 +10295,7 @@
       "source_location": "L7946",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_build_fan_visual_slot",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "build_fan_visual_slot()"
     },
@@ -10306,7 +10306,7 @@
       "source_location": "L7979",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_build_fan_card_slot",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "build_fan_card_slot()"
     },
@@ -10427,7 +10427,7 @@
       "source_location": "L8215",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_update_backend_pill_class",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "update_backend_pill_class()"
     },
@@ -10439,7 +10439,7 @@
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_fan_controls_hint",
       "community": 7,
-      "community_name": "build_ui",
+      "community_name": "rog-ui/src/main.rs",
       "norm_label": "fan_controls_hint()"
     },
     {
@@ -10449,8 +10449,8 @@
       "source_location": "L8240",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_lighting_diagnostics_text",
-      "community": 7,
-      "community_name": "build_ui",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "lighting_diagnostics_text()"
     },
     {
@@ -10460,7 +10460,7 @@
       "source_location": "L8278",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_text_or_unknown",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "text_or_unknown()"
     },
@@ -10471,8 +10471,8 @@
       "source_location": "L8298",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_caps_from_dbus_parses_feature_access_status_and_reason_keys",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "caps_from_dbus_parses_feature_access_status_and_reason_keys()"
     },
     {
@@ -10482,8 +10482,8 @@
       "source_location": "L8358",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_telemetry_from_dbus_parses_structured_fan_rows",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "telemetry_from_dbus_parses_structured_fan_rows()"
     },
     {
@@ -10493,8 +10493,8 @@
       "source_location": "L8411",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_caps_from_dbus_parses_structured_control_access_rows",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_caps_from_dbus_parses_structured_control_access_rows()"
     },
     {
@@ -10504,8 +10504,8 @@
       "source_location": "L8472",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_cpu_telemetry_from_dbus_supports_logical_cpu_id_and_core_id_alias",
-      "community": 19,
-      "community_name": ".from",
+      "community": 75,
+      "community_name": "fetch_state",
       "norm_label": "cpu_telemetry_from_dbus_supports_logical_cpu_id_and_core_id_alias()"
     },
     {
@@ -10526,7 +10526,7 @@
       "source_location": "L8515",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_github_repo_from_url_supports_https_and_ssh_forms",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "github_repo_from_url_supports_https_and_ssh_forms()"
     },
@@ -10537,7 +10537,7 @@
       "source_location": "L8527",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_summary_from_state_includes_tray_hover_fields",
-      "community": 10,
+      "community": 7,
       "community_name": "rog-ui/src/main.rs",
       "norm_label": "summary_from_state_includes_tray_hover_fields()"
     },
@@ -10548,8 +10548,8 @@
       "source_location": "L8541",
       "_origin": "ast",
       "id": "crates_rog_ui_src_main_autostart_entry_supports_minimized_launch",
-      "community": 14,
-      "community_name": "SharedUiState",
+      "community": 19,
+      "community_name": "Result",
       "norm_label": "autostart_entry_supports_minimized_launch()"
     },
     {
@@ -23953,7 +23953,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -24070,7 +24070,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -24130,7 +24130,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1203",
+      "source_location": "L1202",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -24190,7 +24190,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -24202,7 +24202,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1097",
+      "source_location": "L1096",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -33837,7 +33837,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1220",
+      "source_location": "L1219",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33848,7 +33848,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1055",
+      "source_location": "L1054",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33859,7 +33859,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1042",
+      "source_location": "L1041",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33870,7 +33870,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1029",
+      "source_location": "L1028",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33881,7 +33881,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33892,7 +33892,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L969",
+      "source_location": "L968",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33903,7 +33903,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L707",
+      "source_location": "L706",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33947,7 +33947,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L721",
+      "source_location": "L720",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33958,7 +33958,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L751",
+      "source_location": "L750",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33980,7 +33980,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1224",
+      "source_location": "L1223",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -33991,7 +33991,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1093",
+      "source_location": "L1092",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34002,7 +34002,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1072",
+      "source_location": "L1071",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34024,7 +34024,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L871",
+      "source_location": "L870",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34035,7 +34035,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L948",
+      "source_location": "L947",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34057,7 +34057,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1097",
+      "source_location": "L1096",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34068,7 +34068,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1203",
+      "source_location": "L1202",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34079,7 +34079,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L740",
+      "source_location": "L739",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34090,7 +34090,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L894",
+      "source_location": "L893",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34101,7 +34101,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L978",
+      "source_location": "L977",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34112,7 +34112,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L988",
+      "source_location": "L987",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34123,7 +34123,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L916",
+      "source_location": "L915",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34134,7 +34134,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L783",
+      "source_location": "L782",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34145,7 +34145,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L838",
+      "source_location": "L837",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34156,7 +34156,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34167,7 +34167,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1080",
+      "source_location": "L1079",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34178,7 +34178,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1086",
+      "source_location": "L1085",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34201,7 +34201,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L884",
+      "source_location": "L883",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34223,7 +34223,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1228",
+      "source_location": "L1227",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu",
@@ -34427,7 +34427,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1055",
+      "source_location": "L1054",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34439,7 +34439,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L969",
+      "source_location": "L968",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34451,7 +34451,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L707",
+      "source_location": "L706",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34511,7 +34511,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L721",
+      "source_location": "L720",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34523,7 +34523,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L751",
+      "source_location": "L750",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34535,7 +34535,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1093",
+      "source_location": "L1092",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34559,7 +34559,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L871",
+      "source_location": "L870",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34583,7 +34583,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L740",
+      "source_location": "L739",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34595,7 +34595,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L978",
+      "source_location": "L977",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34607,7 +34607,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L884",
+      "source_location": "L883",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34631,7 +34631,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1042",
+      "source_location": "L1041",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -34643,7 +34643,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1029",
+      "source_location": "L1028",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -34691,7 +34691,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L783",
+      "source_location": "L782",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34715,7 +34715,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34727,7 +34727,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L751",
+      "source_location": "L750",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34739,7 +34739,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1203",
+      "source_location": "L1202",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34751,7 +34751,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1042",
+      "source_location": "L1041",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34763,7 +34763,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1029",
+      "source_location": "L1028",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34775,7 +34775,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -34799,7 +34799,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1203",
+      "source_location": "L1202",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34811,7 +34811,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L894",
+      "source_location": "L893",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34823,7 +34823,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L988",
+      "source_location": "L987",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34835,7 +34835,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L783",
+      "source_location": "L782",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34847,7 +34847,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34859,7 +34859,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1055",
+      "source_location": "L1054",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34871,7 +34871,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1042",
+      "source_location": "L1041",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34883,7 +34883,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1029",
+      "source_location": "L1028",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34895,7 +34895,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1160",
+      "source_location": "L1159",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -34907,7 +34907,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L707",
+      "source_location": "L706",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34919,7 +34919,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1072",
+      "source_location": "L1071",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -34931,7 +34931,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34943,7 +34943,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1080",
+      "source_location": "L1079",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34955,7 +34955,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L721",
+      "source_location": "L720",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34967,7 +34967,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L871",
+      "source_location": "L870",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -34979,7 +34979,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L884",
+      "source_location": "L883",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35003,7 +35003,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L838",
+      "source_location": "L837",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -35027,7 +35027,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L969",
+      "source_location": "L968",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35039,7 +35039,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L948",
+      "source_location": "L947",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35051,7 +35051,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L916",
+      "source_location": "L915",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35063,7 +35063,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L969",
+      "source_location": "L968",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -35075,7 +35075,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L948",
+      "source_location": "L947",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -35087,7 +35087,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L916",
+      "source_location": "L915",
       "weight": 1.0,
       "context": "generic_arg",
       "_origin": "ast",
@@ -35423,7 +35423,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L988",
+      "source_location": "L987",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35435,7 +35435,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L838",
+      "source_location": "L837",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35447,7 +35447,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35459,7 +35459,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1080",
+      "source_location": "L1079",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35471,7 +35471,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1086",
+      "source_location": "L1085",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35483,7 +35483,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1228",
+      "source_location": "L1227",
       "weight": 1.0,
       "context": "return_type",
       "_origin": "ast",
@@ -35748,7 +35748,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L741",
+      "source_location": "L740",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_boost_state",
@@ -35760,7 +35760,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L779",
+      "source_location": "L778",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_detect_package_energy_path",
@@ -35772,7 +35772,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L799",
+      "source_location": "L798",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_policies",
@@ -35784,7 +35784,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L807",
+      "source_location": "L806",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_policies",
@@ -35796,7 +35796,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L805",
+      "source_location": "L804",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_policies",
@@ -35808,7 +35808,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L800",
+      "source_location": "L799",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_policies",
@@ -35820,7 +35820,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L846",
+      "source_location": "L845",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_proc_stat",
@@ -35832,7 +35832,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L929",
+      "source_location": "L928",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_cpu_topology",
@@ -35844,7 +35844,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L919",
+      "source_location": "L918",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_cpu_topology",
@@ -35856,7 +35856,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L970",
+      "source_location": "L969",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_count_physical_cores",
@@ -35868,7 +35868,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L984",
+      "source_location": "L983",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_core_online",
@@ -35880,7 +35880,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L989",
+      "source_location": "L988",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_cpu_list",
@@ -35891,7 +35891,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L988",
+      "source_location": "L987",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35903,7 +35903,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1220",
+      "source_location": "L1219",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35915,7 +35915,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1224",
+      "source_location": "L1223",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35927,7 +35927,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1017",
+      "source_location": "L1016",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35939,7 +35939,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1080",
+      "source_location": "L1079",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35951,7 +35951,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1086",
+      "source_location": "L1085",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35963,7 +35963,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1228",
+      "source_location": "L1227",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -35976,7 +35976,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1018",
+      "source_location": "L1017",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_space_split",
@@ -35988,7 +35988,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1061",
+      "source_location": "L1060",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_choose_best_token",
@@ -36000,7 +36000,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1087",
+      "source_location": "L1086",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_read_u64",
@@ -36012,7 +36012,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1109",
+      "source_location": "L1108",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_power_mode_access",
@@ -36024,7 +36024,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1166",
+      "source_location": "L1165",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_control_access_from_paths",
@@ -36036,7 +36036,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1213",
+      "source_location": "L1212",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_probe_path_accesses",
@@ -36048,7 +36048,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/rog-providers/src/cpu.rs",
-      "source_location": "L1214",
+      "source_location": "L1213",
       "weight": 1.0,
       "_origin": "ast",
       "source": "crates_rog_providers_src_cpu_probe_path_accesses",
@@ -61036,5 +61036,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "be774af962d930a245c9e2bceb5e298393229a0c"
+  "built_at_commit": "2f300285a859e6fab986d6313d06e1542efc1c87"
 }

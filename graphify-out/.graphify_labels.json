@@ -6,10 +6,10 @@
   "4": "rog-cli/src/main.rs",
   "5": "cpu.rs",
   "6": "AsusdPlatformProvider",
-  "7": "build_ui",
+  "7": "rog-ui/src/main.rs",
   "8": "String",
   "9": "UI Pages",
-  "10": "rog-ui/src/main.rs",
+  "10": "detect_update_capability",
   "11": "fan_widgets.rs",
   "12": "power_supply.rs",
   "13": "SupergfxProvider",
@@ -18,10 +18,10 @@
   "16": "DBus API",
   "17": "Codex Prompt: Redesign Fans Page UI with RPM Gauges, Animated Fan Rotors, Individual Fan Cards, and Safe Control UX",
   "18": "Required UI changes",
-  "19": ".from",
+  "19": "Result",
   "20": ".unknown",
   "21": "Troubleshooting",
-  "22": "Vec",
+  "22": "RogTray",
   "23": "Option",
   "24": "rog-helper",
   "25": "model.rs",
@@ -73,5 +73,6 @@
   "71": "mod.rs",
   "72": "LightingDiagnostics",
   "73": "build_shell",
-  "74": "theme.rs"
+  "74": "theme.rs",
+  "75": "fetch_state"
 }
