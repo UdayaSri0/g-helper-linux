@@ -217,7 +217,7 @@ The current architecture has several known limitations:
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
 - Fan curve support is modeled but not implemented end-to-end
 - Aura/RGB lighting depends on asusd exposing a compatible introspectable backend and still needs broad hardware validation
-- The daemon and UI each live mostly in a single large source file
+- The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, and fan drawing are separate modules
 - The UI and daemon duplicate some formatting and payload-shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model
 - Typed shared DBus payloads are not yet in place

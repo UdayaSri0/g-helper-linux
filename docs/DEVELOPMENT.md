@@ -89,13 +89,17 @@ Focus here when working on:
 - daemon payload decoding
 - action flows and UX
 
-Key file:
+Key files:
 
 - `crates/rog-ui/src/main.rs`
+- `crates/rog-ui/src/shell.rs`
+- `crates/rog-ui/src/theme.rs`
+- `crates/rog-ui/src/widgets/mod.rs`
+- `crates/rog-ui/src/fan_widgets.rs`
 
 Important current note:
 
-- most of the UI is also in a single source file
+- state decoding, background actions, refresh wiring, and most page construction remain in `main.rs`; the desktop shell, design system, reusable cards/headers/graphs, and fan drawing are separated
 
 ### `rog-cli`
 

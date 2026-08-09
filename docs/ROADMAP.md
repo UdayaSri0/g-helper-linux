@@ -67,8 +67,9 @@ The UI currently ships these pages:
 - CPU
 - GPU
 - Battery
-- RAM
+- Memory
 - Lighting
+- Cooling
 - Diagnostics
 - About
 
@@ -121,7 +122,7 @@ Still evolving:
 
 - permissions model for write access
 - UX around partial or read-only control availability
-- cleanup and maintainability of current single-file UI and daemon handling
+- continued extraction of page constructors from the UI bootstrap; shell, theme, reusable widgets, and fan drawing are already separate modules
 
 ### Diagnostics
 

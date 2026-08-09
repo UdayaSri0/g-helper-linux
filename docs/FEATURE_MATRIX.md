@@ -8,18 +8,18 @@ This matrix reflects the current implementation in the repository today. It is b
 | Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Useful for service, DBus, sensor, capability, and dedicated keyboard lighting/RGB inspection |
 | Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | Fan capability keys now include reading, manual percent, RPM target, curves, sync, boost, count, and backend; writable support is still hardware/backend-dependent |
 | Performance profile | `asusd` | Read + Write | Implemented | Requires `asusd`; UI exposes quick actions and GPU-page controls |
-| Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; current UI control lives on Dashboard |
+| Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; available on Battery with a Dashboard quick control |
 | GPU mode | `supergfxd` | Read + Write | Implemented | Requires `supergfxd`; current safety model is hint-based rather than a full busy-state system |
 | Keyboard backlight brightness | sysfs LED backend (`kbd_backlight`) | Read + Write | Implemented | Writable only if the current user can write the LED `brightness` file |
 | Lighting mode | sysfs LED backend or asusd Aura DBus | Read + Write | Partial | Sysfs supports `Off` and `Static`; Aura mode choices come only from the probed backend |
 | Aura / RGB lighting | asusd Aura DBus provider | Read + Write | Implemented, hardware-dependent | Requires an introspectable Aura/keyboard lighting interface from `asusd`; degrades to sysfs brightness-only when Aura/RGB is not exposed |
-| Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; Fans page shows animated RPM rotors, circular temperature gauges, individual cards, and collapsed diagnostics while keeping read-only fans visible |
+| Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; Cooling shows animated RPM rotors, circular temperature gauges, individual cards, and collapsed diagnostics while keeping read-only fans visible |
 | Fan manual percent control | `hwmon` PWM via daemon | Write | Implemented, hardware-dependent | Enabled only when matching `pwmN` and `pwmN_enable` are writable by `rog-helperd`; UI uses percentages and provider converts to PWM |
 | Fan RPM target | `hwmon` `fanN_target` via daemon | Write | Optional/backend-dependent | Hidden/disabled unless a writable `fanN_target` endpoint is explicitly detected |
 | Fan curves | asusd/hwmon capability model | Read + Write | Partial/backend-dependent | Core validation, DBus API, and UI surface exist; generic hwmon curve writes stay disabled unless a backend can prove the curve format is safe |
 | Sync fan control | daemon fan state | Write | Implemented when possible | Available when more than one controllable fan is detected; read-only fans remain visible |
 | Boost mode | daemon + writable manual percent backend | Write | Implemented | Time-limited full-speed boost restores Auto/BIOS mode after timeout |
-| CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, physical-core/logical-thread counts, and per-logical-CPU state |
+| CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, native cached-history graphs, physical-core/logical-thread counts, and per-logical-CPU state |
 | CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support; daemon reports per-control access state, blocked paths, and suggested checks |
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |

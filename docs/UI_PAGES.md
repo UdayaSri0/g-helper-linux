@@ -1,6 +1,8 @@
 # UI Pages
 
-This document describes the current pages implemented in `crates/rog-ui/src/main.rs`.
+This document describes the current pages implemented in `crates/rog-ui/src/`.
+
+All nine pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, neutral card surfaces, spacing, and capability-state language.
 
 For each page, it lists:
 
@@ -18,6 +20,7 @@ For each page, it lists:
 - battery percentage
 - power source
 - fan summary
+- memory usage
 - NVMe temperature when detected
 - warning banner and warning summary
 - expandable detail groups for temperatures, fans, and endpoint samples
@@ -56,6 +59,7 @@ Current behavior:
 - CPU usage
 - CPU package power when available
 - average clock
+- native CPU usage and temperature history graphs backed by existing cached samples
 - CPU access-status banner when writes are blocked or partially unavailable
 - scaling driver
 - physical core count
@@ -91,7 +95,7 @@ Current behavior:
 ### Missing or planned
 
 - no persistent CPU profile storage
-- no graph widgets yet even though history buffers are collected
+- no clock or package-power history graph yet
 - no specialized per-vendor CPU policy backend
 
 ## GPU
@@ -100,6 +104,8 @@ Current behavior:
 
 - current ASUS performance profile
 - current GPU mode
+- GPU temperature when available
+- responsive overview cards for temperature, mode, and profile
 - GPU switch hint
 - support/status summary
 
@@ -141,31 +147,27 @@ Current behavior:
 
 ### What it supports
 
-- currently telemetry only
+- battery charge-limit changes through the existing daemon/asusd path
 
 ### Capability dependencies
 
 - telemetry is best-effort and depends on `UPower` plus sysfs fallback
+- charge-limit write access depends on daemon-reported `charge_limit_access`
 
 ### Missing or planned
 
-- no charge-limit setter on this page yet
 - no battery presets or tradeoff explainer on this page yet
 
-Important note:
-
-- charge-limit control currently lives on the Dashboard
-
-## RAM
+## Memory
 
 ### What it shows
 
 - total, used, available, free, cached, buffers, shared, and anonymous memory
+- prominent usage progress display with used, available, and total values
 - swap totals and activity
 - zram usage
 - zswap state
-- PSI memory pressure
-- advanced memory breakdown
+- PSI memory pressure and advanced kernel breakdown in a collapsed Advanced section
 - top memory users
 
 ### What it supports
@@ -197,7 +199,7 @@ Important note:
 - mode selection
 - brightness change
 - apply action
-- RGB picker with capability-aware disabled-state messaging
+- RGB picker only when the daemon reports `supports_rgb`
 
 ### Capability dependencies
 
@@ -223,6 +225,7 @@ Important note:
 ### What it shows
 
 - troubleshooting summary for current support and permission blockers
+- overview cards for daemon connection, available control groups, and warning count
 - daemon endpoint summary
 - capability matrix
 - structured feature-access status and reason fields
@@ -290,14 +293,14 @@ Important note:
 - no general Settings page or persistent hardware/control rules yet
 - metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
-## Fans
+## Cooling
 
-Current page.
+Current page. The internal page identifier remains `fans` for compatibility.
 
-- styled Fan Control header with backend/count/mode/mapping status pills
+- restrained Cooling header with backend/count/mode/mapping status pills
 - large CPU/GPU temperature gauges that sit side by side on normal laptop widths and stack on narrow windows
 - operating MHz display in the CPU/GPU gauge cards when telemetry is available
-- animated fan rotors in the hero dashboard, scaled from live RPM telemetry
+- animated fan rotors in the hero dashboard, scaled from live RPM telemetry and limited to 20 FPS
 - capability warning banner
 - sync toggle when multiple controllable fans exist
 - manual percentage slider when writable PWM support is confirmed

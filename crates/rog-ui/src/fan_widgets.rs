@@ -229,7 +229,7 @@ fn draw_fan_rotor(ctx: &Context, width: f64, height: f64, state: &FanRotorState)
     };
 
     ctx.save().ok();
-    radial_glow(ctx, cx, cy, radius * 1.38, (r, g, b), 0.10 * alpha);
+    radial_glow(ctx, cx, cy, radius * 1.28, (r, g, b), 0.045 * alpha);
 
     ctx.set_line_width((size * 0.035).max(3.0));
     ctx.set_source_rgba(r, g, b, 0.85 * alpha);
@@ -291,7 +291,7 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
     let end = 2.22 * PI;
     let range = end - start;
 
-    radial_glow(ctx, cx, cy, radius * 1.45, (r, g, b), 0.11);
+    radial_glow(ctx, cx, cy, radius * 1.30, (r, g, b), 0.045);
 
     ctx.set_line_width((size * 0.042).max(5.0));
     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.12);
@@ -416,15 +416,15 @@ fn draw_curve_preview(ctx: &Context, width: f64, height: f64, state: &CurvePrevi
             ctx.line_to(point.0, point.1);
         }
         ctx.set_line_width(3.0);
-        ctx.set_source_rgba(0.0, 0.68, 1.0, 0.35 * alpha);
+        ctx.set_source_rgba(0.30, 0.64, 1.0, 0.35 * alpha);
         ctx.stroke_preserve().ok();
-        ctx.set_source_rgba(1.0, 0.0, 0.72, 0.85 * alpha);
+        ctx.set_source_rgba(0.30, 0.64, 1.0, 0.85 * alpha);
         ctx.stroke().ok();
 
         for (temp, speed) in &state.points {
             let (x, y) = to_xy(*temp, *speed);
             ctx.arc(x, y, 4.0, 0.0, 2.0 * PI);
-            ctx.set_source_rgba(1.0, 0.0, 0.72, alpha);
+            ctx.set_source_rgba(0.30, 0.64, 1.0, alpha);
             ctx.fill().ok();
         }
     }
@@ -469,8 +469,8 @@ fn gauge_color(accent: GaugeAccent, temp: Option<f32>) -> Color {
         }
     }
     match accent {
-        GaugeAccent::Blue => (0.0, 0.68, 1.0),
-        GaugeAccent::Magenta => (1.0, 0.0, 0.72),
+        GaugeAccent::Blue => (0.30, 0.64, 1.0),
+        GaugeAccent::Magenta => (0.24, 0.76, 0.67),
     }
 }
 

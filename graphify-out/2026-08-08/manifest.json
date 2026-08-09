@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1786207994.9931931,
-    "ast_hash": "d78410a2011c52cf82463f2882d599cf",
+    "mtime": 1786207660.5804355,
+    "ast_hash": "43a78767f273ea5acfe3eff9d38cbfa1",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {

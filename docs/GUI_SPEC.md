@@ -1,6 +1,6 @@
 # GUI Spec
 
-This document describes the current GUI as implemented in `crates/rog-ui/src/main.rs`. Planned features that are not yet in the UI are called out separately so this file can serve both as a current UI reference and as a guide for future work.
+This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope
 
@@ -15,8 +15,12 @@ The current top-level structure uses:
 
 - `adw::ToolbarView`
 - `adw::ViewStack`
-- `adw::ViewSwitcher`
 - `adw::ToastOverlay`
+- a persistent 210 px left navigation sidebar with symbolic icons and selection state
+- a compact header with application identity and daemon connection status
+- vertically scrollable page containers clamped at 1260 px
+
+The default window is 1180 x 800 with a 900 x 650 minimum. Flow-box metric grids reflow as space changes; tested layouts include 1000 x 700 and wide desktop sizes.
 
 The implemented page set is:
 
@@ -24,10 +28,11 @@ The implemented page set is:
 2. CPU
 3. GPU
 4. Battery
-5. RAM
+5. Memory
 6. Lighting
-7. Diagnostics
-8. About
+7. Cooling
+8. Diagnostics
+9. About
 
 The tray menu currently supports:
 
@@ -63,7 +68,8 @@ Purpose:
 
 Current content:
 
-- metric cards for CPU temperature, GPU temperature, battery, power source, fans, and NVMe temperature when available
+- a two-card primary telemetry area for CPU and GPU
+- secondary cards for battery, cooling, memory, power source, and NVMe temperature when available
 - warning banner and warning summary area
 - quick actions for:
   - performance profile
@@ -90,6 +96,7 @@ Purpose:
 Current content:
 
 - overview cards for temperature, usage, package power, and average clock
+- native Cairo history graphs for CPU usage and temperature, fed from existing cached history buffers
 - CPU access-status banner when writes are blocked or partially unavailable
 - quick controls for:
   - turbo boost
@@ -149,6 +156,8 @@ Purpose:
 
 Current content:
 
+- large charge card with state, time estimate, and progress bar
+- capability-gated battery charge-limit control
 - charge percentage
 - battery state
 - power source
@@ -160,12 +169,9 @@ Current content:
 - battery health
 - cycle count
 
-Important note:
+The Dashboard retains a charge-limit quick control, while Battery is the full-control location. Both use the existing daemon action path.
 
-- the current Battery page is telemetry-focused
-- the current battery charge-limit control is on the Dashboard, not on this page
-
-### RAM
+### Memory
 
 Purpose:
 
@@ -173,11 +179,11 @@ Purpose:
 
 Current content:
 
+- prominent memory-used card and progress bar with used, available, and total values
 - total, used, available, free, cached, buffers, shared, and anonymous memory
 - swap totals and activity
 - zram and zswap state
-- PSI memory pressure metrics
-- advanced memory breakdown
+- PSI memory pressure metrics and the detailed kernel memory breakdown in a collapsed Advanced section
 - top memory users with copy-to-clipboard support
 
 ### Lighting
@@ -195,7 +201,7 @@ Current content:
 - availability status
 - mode combo box
 - brightness slider
-- RGB colour control
+- RGB colour control only when `supports_rgb` is reported
 - apply action
 - last-action status
 
@@ -216,6 +222,7 @@ Purpose:
 
 Current content:
 
+- overview cards for daemon state, available control groups, and warning count
 - troubleshooting summary for the current machine state
 - session daemon endpoint summary
 - capability flags
@@ -295,13 +302,13 @@ Current examples in the implementation include:
 - CPU write-access banner with diagnostics handoff
 - last-action status for lighting and GPU/profile actions
 
-## Fans Page
+## Cooling Page
 
-The Fans page is a current UI page.
+Cooling is the user-facing name of the existing internal `fans` page and backend API surface.
 
-- shows a styled header with backend, detected fan count, current mode, and mapping warnings
+- shows a neutral raised header with backend, detected fan count, current mode, and mapping warnings
 - includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
-- includes animated fan rotors whose visual speed is scaled from live RPM and capped for readability
+- includes animated fan rotors whose visual speed is scaled from live RPM, capped for readability, and refreshed at 20 FPS
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support
@@ -336,4 +343,4 @@ Related note:
 
 ## Maintenance Note
 
-This file is intended to describe the real current UI. If the implementation in `crates/rog-ui/src/main.rs` changes, update this document at the same time rather than leaving planned and current behavior mixed together.
+This file is intended to describe the real current UI. If `crates/rog-ui/src/` changes, update this document at the same time rather than leaving planned and current behavior mixed together.
