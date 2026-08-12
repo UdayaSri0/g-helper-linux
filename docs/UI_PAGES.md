@@ -15,16 +15,16 @@ For each page, it lists:
 
 ### What it shows
 
-- CPU temperature
-- cached 60-second CPU utilisation sparkline
-- GPU temperature
-- battery percentage
-- power source
-- fan summary
-- memory usage
-- NVMe temperature when detected
-- warning banner and warning summary
-- expandable detail groups for temperatures, fans, and endpoint samples
+- CPU hero with temperature, utilisation, average clock, status, and cached 60-second utilisation sparkline
+- GPU hero with temperature, telemetry availability, current mode, and real clocks when reported
+- System State hero with power, battery, connection, control availability, and setup-issue count
+- Current System Mode strip for known power, profile, GPU mode, cooling mode, and battery state
+- compact battery, cooling, memory, power, and conditional NVMe cards
+- Cooling Snapshot with a three-temperature strip and up to four static live-RPM fan rows
+- compact CPU usage/temperature, GPU temperature, and memory history trends
+- System Health summary for daemon/dependency/CPU/Lighting/fan/warning state with semantic indicators and a standard Diagnostics action
+- compact warning notification and warning summary
+- collapsed Advanced Sensor Details for raw temperatures, fans, and endpoint samples
 
 ### What it supports
 
@@ -32,6 +32,7 @@ For each page, it lists:
 - GPU mode quick action
 - battery charge-limit apply action
 - keyboard backlight brightness apply action
+- keyboard and pointer navigation from CPU, GPU, Battery, Cooling, and Memory cards to their detailed pages
 
 ### Capability dependencies
 
@@ -43,13 +44,18 @@ For each page, it lists:
 
 Current behavior:
 
-- disabled quick actions explain whether the block is caused by a missing backend, unsupported hardware, temporary backend unavailability, or permissions
-- quick-action controls use consistent inline spacing and compact apply buttons so enabled and disabled states read cleanly on first launch
+- disabled quick actions remain capability-driven; missing `asusd`/`supergfxd` guidance is consolidated into one dependency hint
+- Quick Performance uses a two-column dashboard tile grid where space permits and wraps without changing capability gating
+- System Overview uses five columns at wide widths and an intentional 3+2 arrangement below its wide breakpoint; it never falls into a 4+1 layout
+- Cooling Snapshot is content-driven and ends directly after its last detected fan row
+- Current System Mode uses five columns when wide and 3+2 packing at medium widths
+- CPU, GPU-temperature, and memory histories are bounded to 60 cached samples and never poll from a draw callback
+- highly prominent warning styling is reserved for daemon disconnection; optional capability gaps use compact warning language
 
 ### Missing or planned
 
-- no fan-curve controls yet
-- no standalone auto-mode controls yet
+- Dashboard intentionally does not duplicate Cooling fan curves or other detailed-page controls
+- GPU utilisation, VRAM use, SMART health, and other unreported metrics remain absent rather than simulated
 - no richer profile rules editor yet
 
 ## CPU

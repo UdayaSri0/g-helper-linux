@@ -8,6 +8,7 @@ use gtk4 as gtk;
 #[derive(Debug, Clone)]
 pub struct MetricCard {
     root: gtk::Box,
+    icon: gtk::Image,
     value_label: gtk::Label,
     unit_label: gtk::Label,
     subtitle_label: gtk::Label,
@@ -21,9 +22,19 @@ impl MetricCard {
         root.set_hexpand(true);
         root.set_size_request(180, -1);
 
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+        let icon = gtk::Image::new();
+        icon.set_pixel_size(16);
+        icon.add_css_class("metric-card-icon");
+        icon.set_visible(false);
+
         let title_label = gtk::Label::new(Some(title));
         title_label.set_xalign(0.0);
+        title_label.set_hexpand(true);
         title_label.add_css_class("metric-card-title");
+        heading.append(&icon);
+        heading.append(&title_label);
 
         let value_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         value_row.set_halign(gtk::Align::Start);
@@ -44,6 +55,8 @@ impl MetricCard {
         let subtitle_label = gtk::Label::new(None);
         subtitle_label.set_xalign(0.0);
         subtitle_label.set_wrap(true);
+        subtitle_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        subtitle_label.set_max_width_chars(32);
         subtitle_label.add_css_class("metric-subtitle");
         subtitle_label.set_visible(false);
 
@@ -53,13 +66,14 @@ impl MetricCard {
         chip_label.add_css_class("status-chip");
         chip_label.set_visible(false);
 
-        root.append(&title_label);
+        root.append(&heading);
         root.append(&value_row);
         root.append(&subtitle_label);
         root.append(&chip_label);
 
         Self {
             root,
+            icon,
             value_label,
             unit_label,
             subtitle_label,
@@ -73,6 +87,11 @@ impl MetricCard {
 
     pub fn add_css_class(&self, class: &str) {
         self.root.add_css_class(class);
+    }
+
+    pub fn set_icon_name(&self, icon_name: &str) {
+        self.icon.set_icon_name(Some(icon_name));
+        self.icon.set_visible(true);
     }
 
     pub fn set_value(&self, value: impl AsRef<str>) {
@@ -97,6 +116,10 @@ impl MetricCard {
             self.subtitle_label.set_text("");
             self.subtitle_label.set_visible(false);
         }
+    }
+
+    pub fn set_subtitle_width_chars(&self, width_chars: i32) {
+        self.subtitle_label.set_max_width_chars(width_chars);
     }
 
     pub fn set_status_chip(&self, chip_text: Option<&str>) {

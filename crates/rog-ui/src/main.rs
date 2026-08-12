@@ -50,6 +50,8 @@ const ICON_CPU: &str = "rog-cpu-symbolic";
 const ICON_GPU: &str = "rog-gpu-symbolic";
 const ICON_BATTERY: &str = "rog-battery-symbolic";
 const ICON_RAM: &str = "rog-memory-symbolic";
+const ICON_STORAGE: &str = "rog-storage-symbolic";
+const ICON_POWER: &str = "rog-power-symbolic";
 const ICON_LIGHTING: &str = "rog-lighting-symbolic";
 const ICON_FANS: &str = "rog-fan-symbolic";
 const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
@@ -257,6 +259,8 @@ struct SharedUiState {
     cpu_usage_history: Vec<f32>,
     cpu_temp_history: Vec<f32>,
     cpu_power_history: Vec<f32>,
+    gpu_temp_history: Vec<f32>,
+    memory_usage_history: Vec<f32>,
     caps: DeviceCaps,
     caps_text: String,
     warnings: Vec<String>,
@@ -298,6 +302,8 @@ impl Default for SharedUiState {
             cpu_usage_history: Vec::new(),
             cpu_temp_history: Vec::new(),
             cpu_power_history: Vec::new(),
+            gpu_temp_history: Vec::new(),
+            memory_usage_history: Vec::new(),
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
             warnings: Vec::new(),
@@ -418,6 +424,48 @@ struct FanCardSlot {
 struct DetailRow {
     row: adw::ActionRow,
     value_label: gtk::Label,
+}
+
+#[derive(Clone)]
+struct DashboardControlTile {
+    root: gtk::Box,
+    subtitle: gtk::Label,
+}
+
+impl DashboardControlTile {
+    fn new(title: &str, control: &impl IsA<gtk::Widget>) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        root.add_css_class("dashboard-control-tile");
+        root.set_hexpand(true);
+
+        let title = gtk::Label::new(Some(title));
+        title.set_xalign(0.0);
+        title.add_css_class("dashboard-control-title");
+
+        let subtitle = gtk::Label::new(Some("Checking support…"));
+        subtitle.set_xalign(0.0);
+        subtitle.set_wrap(true);
+        subtitle.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        subtitle.add_css_class("dashboard-control-subtitle");
+
+        root.append(&title);
+        root.append(&subtitle);
+        root.append(control);
+
+        Self { root, subtitle }
+    }
+
+    fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    fn set_subtitle(&self, subtitle: &str) {
+        self.subtitle.set_text(subtitle);
+    }
+
+    fn set_visible(&self, visible: bool) {
+        self.root.set_visible(visible);
+    }
 }
 
 #[derive(Debug)]
@@ -731,15 +779,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let stack = adw::ViewStack::new();
     stack.set_vexpand(true);
 
-    let cpu_card = MetricCard::new("CPU Temperature");
-    let gpu_card = MetricCard::new("GPU Temperature");
+    let cpu_card = MetricCard::new("CPU");
+    let gpu_card = MetricCard::new("GPU");
+    let system_card = MetricCard::new("System State");
     let batt_card = MetricCard::new("Battery");
-    let power_card = MetricCard::new("Power Source");
+    let power_card = MetricCard::new("Power");
     let fans_card = MetricCard::new("Cooling");
     let memory_card = MetricCard::new("Memory");
-    let nvme_card = MetricCard::new("NVMe Temperature");
+    let nvme_card = MetricCard::new("NVMe");
     cpu_card.add_css_class("metric-card-primary");
     gpu_card.add_css_class("metric-card-primary");
+    system_card.add_css_class("metric-card-primary");
+    cpu_card.set_icon_name(ICON_CPU);
+    gpu_card.set_icon_name(ICON_GPU);
+    system_card.set_icon_name(ICON_DIAGNOSTICS);
+    batt_card.set_icon_name(ICON_BATTERY);
+    power_card.set_icon_name(ICON_POWER);
+    fans_card.set_icon_name(ICON_FANS);
+    memory_card.set_icon_name(ICON_RAM);
+    nvme_card.set_icon_name(ICON_STORAGE);
     for card in [
         &batt_card,
         &power_card,
@@ -748,6 +806,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         &nvme_card,
     ] {
         card.add_css_class("metric-card-compact");
+        card.add_css_class("dashboard-secondary-card");
+        card.set_subtitle_width_chars(22);
     }
     let dashboard_cpu_sparkline = Sparkline::new((0.30, 0.64, 1.0));
     dashboard_cpu_sparkline
@@ -755,28 +815,93 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         .set_tooltip_text(Some("CPU utilisation over the last 60 seconds"));
     cpu_card.widget().append(dashboard_cpu_sparkline.widget());
 
+    let system_state_details = gtk::Label::new(Some("Controls  —  ·  Setup  —"));
+    system_state_details.set_xalign(0.0);
+    system_state_details.set_wrap(true);
+    system_state_details.add_css_class("dashboard-system-details");
+    system_card.widget().append(&system_state_details);
+    let system_review_button = gtk::Button::with_label("Review Diagnostics");
+    system_review_button.add_css_class("flat");
+    system_review_button.set_halign(gtk::Align::Start);
+    system_review_button.update_property(&[gtk::accessible::Property::Label(
+        "Review system health in Diagnostics",
+    )]);
+    {
+        let stack = stack.clone();
+        system_review_button.connect_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+    system_card.widget().append(&system_review_button);
+
     let primary_metrics_grid = gtk::FlowBox::new();
     primary_metrics_grid.set_selection_mode(gtk::SelectionMode::None);
     primary_metrics_grid.set_min_children_per_line(1);
-    primary_metrics_grid.set_max_children_per_line(2);
+    primary_metrics_grid.set_max_children_per_line(3);
     primary_metrics_grid.set_row_spacing(16);
     primary_metrics_grid.set_column_spacing(16);
     primary_metrics_grid.set_homogeneous(true);
-    primary_metrics_grid.insert(cpu_card.widget(), -1);
-    primary_metrics_grid.insert(gpu_card.widget(), -1);
+    primary_metrics_grid.insert(
+        &dashboard_nav_card(&cpu_card, &stack, "cpu", "Open the CPU page"),
+        -1,
+    );
+    primary_metrics_grid.insert(
+        &dashboard_nav_card(&gpu_card, &stack, "gpu", "Open the GPU page"),
+        -1,
+    );
+    primary_metrics_grid.insert(system_card.widget(), -1);
 
     let secondary_metrics_grid = gtk::FlowBox::new();
     secondary_metrics_grid.set_selection_mode(gtk::SelectionMode::None);
     secondary_metrics_grid.set_min_children_per_line(1);
-    secondary_metrics_grid.set_max_children_per_line(4);
+    secondary_metrics_grid.set_max_children_per_line(5);
     secondary_metrics_grid.set_row_spacing(16);
     secondary_metrics_grid.set_column_spacing(16);
     secondary_metrics_grid.set_homogeneous(true);
-    secondary_metrics_grid.insert(batt_card.widget(), -1);
-    secondary_metrics_grid.insert(fans_card.widget(), -1);
-    secondary_metrics_grid.insert(memory_card.widget(), -1);
+    secondary_metrics_grid.insert(
+        &dashboard_nav_card(&batt_card, &stack, "battery", "Open the Battery page"),
+        -1,
+    );
+    secondary_metrics_grid.insert(
+        &dashboard_nav_card(&fans_card, &stack, "fans", "Open the Cooling page"),
+        -1,
+    );
+    secondary_metrics_grid.insert(
+        &dashboard_nav_card(&memory_card, &stack, "ram", "Open the Memory page"),
+        -1,
+    );
     secondary_metrics_grid.insert(power_card.widget(), -1);
     secondary_metrics_grid.insert(nvme_card.widget(), -1);
+
+    let current_mode_strip = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    current_mode_strip.add_css_class("surface-card");
+    current_mode_strip.add_css_class("dashboard-mode-strip");
+    let current_mode_title = gtk::Label::new(Some("Current System Mode"));
+    current_mode_title.set_xalign(0.0);
+    current_mode_title.add_css_class("dashboard-panel-title");
+    current_mode_strip.append(&current_mode_title);
+    let current_mode_flow = gtk::FlowBox::new();
+    current_mode_flow.set_selection_mode(gtk::SelectionMode::None);
+    current_mode_flow.set_min_children_per_line(1);
+    current_mode_flow.set_max_children_per_line(5);
+    current_mode_flow.set_column_spacing(8);
+    current_mode_flow.set_row_spacing(8);
+    current_mode_flow.set_homogeneous(true);
+    let (mode_power_item, mode_power) = dashboard_mode_item("Power");
+    let (mode_profile_item, mode_profile) = dashboard_mode_item("Profile");
+    let (mode_gpu_item, mode_gpu) = dashboard_mode_item("GPU Mode");
+    let (mode_cooling_item, mode_cooling) = dashboard_mode_item("Cooling");
+    let (mode_battery_item, mode_battery) = dashboard_mode_item("Battery");
+    for item in [
+        &mode_power_item,
+        &mode_profile_item,
+        &mode_gpu_item,
+        &mode_cooling_item,
+        &mode_battery_item,
+    ] {
+        current_mode_flow.insert(item, -1);
+    }
+    current_mode_strip.append(&current_mode_flow);
 
     let warning_banner = adw::Banner::new("Some controls need attention");
     warning_banner.add_css_class("dashboard-warning");
@@ -800,7 +925,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     warning_area.append(&open_diagnostics_button);
     warning_area.set_visible(false);
 
-    let primary_title = gtk::Label::new(Some("Primary Telemetry"));
+    let primary_title = gtk::Label::new(Some("At a Glance"));
     primary_title.set_xalign(0.0);
     primary_title.add_css_class("title-3");
 
@@ -808,13 +933,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     secondary_title.set_xalign(0.0);
     secondary_title.add_css_class("title-3");
 
-    let quick_actions_title = gtk::Label::new(Some("Quick Controls"));
-    quick_actions_title.set_xalign(0.0);
-    quick_actions_title.add_css_class("title-3");
-
-    let quick_actions_group = adw::PreferencesGroup::builder()
-        .description("Controls stay visible when unavailable so the reason is easy to inspect.")
-        .build();
+    let quick_dependency_hint = gtk::Label::new(None);
+    quick_dependency_hint.set_xalign(0.0);
+    quick_dependency_hint.set_wrap(true);
+    quick_dependency_hint.add_css_class("dashboard-dependency-hint");
+    quick_dependency_hint.set_visible(false);
 
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     style_linked_toggle_row(&profile_buttons);
@@ -828,13 +951,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     profile_buttons.append(&profile_balanced);
     profile_buttons.append(&profile_turbo);
 
-    let profile_row = adw::ActionRow::builder()
-        .title("Performance Profile")
-        .subtitle("Checking support...")
-        .build();
-    profile_row.add_suffix(&profile_buttons);
-    profile_row.set_activatable(false);
-    quick_actions_group.add(&profile_row);
+    profile_buttons.set_halign(gtk::Align::Start);
+    let profile_row = DashboardControlTile::new("Performance Profile", &profile_buttons);
 
     {
         let shared = shared.clone();
@@ -876,20 +994,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
     style_dropdown_control(&gpu_mode_dropdown);
+    gpu_mode_dropdown.set_size_request(154, -1);
     gpu_mode_dropdown.set_sensitive(false);
     let gpu_apply_button = gtk::Button::with_label("Apply");
     style_apply_button(&gpu_apply_button);
+    gpu_apply_button.set_size_request(82, -1);
     gpu_apply_button.set_sensitive(false);
     style_inline_control_box(&gpu_control_box);
     gpu_control_box.append(&gpu_mode_dropdown);
     gpu_control_box.append(&gpu_apply_button);
-    let gpu_mode_row = adw::ActionRow::builder()
-        .title("GPU Mode")
-        .subtitle("Checking support...")
-        .build();
-    gpu_mode_row.add_suffix(&gpu_control_box);
-    gpu_mode_row.set_activatable(false);
-    quick_actions_group.add(&gpu_mode_row);
+    gpu_control_box.set_halign(gtk::Align::Fill);
+    let gpu_mode_row = DashboardControlTile::new("GPU Mode", &gpu_control_box);
     {
         let shared = shared.clone();
         let gpu_mode_dropdown = gpu_mode_dropdown.clone();
@@ -914,17 +1029,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     charge_limit_spin.set_numeric(true);
     let charge_apply_button = gtk::Button::with_label("Apply");
     style_apply_button(&charge_apply_button);
+    charge_apply_button.set_size_request(82, -1);
     charge_apply_button.set_sensitive(false);
     style_inline_control_box(&charge_limit_box);
     charge_limit_box.append(&charge_limit_spin);
     charge_limit_box.append(&charge_apply_button);
-    let charge_limit_row = adw::ActionRow::builder()
-        .title("Charge Limit")
-        .subtitle("Checking support...")
-        .build();
-    charge_limit_row.add_suffix(&charge_limit_box);
-    charge_limit_row.set_activatable(false);
-    quick_actions_group.add(&charge_limit_row);
+    charge_limit_box.set_halign(gtk::Align::Start);
+    let charge_limit_row = DashboardControlTile::new("Charge Limit", &charge_limit_box);
     {
         let shared = shared.clone();
         let charge_limit_spin = charge_limit_spin.clone();
@@ -944,18 +1055,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     kbd_brightness_spin.set_numeric(true);
     let kbd_apply_button = gtk::Button::with_label("Apply");
     style_apply_button(&kbd_apply_button);
+    kbd_apply_button.set_size_request(82, -1);
     kbd_apply_button.set_sensitive(false);
     style_inline_control_box(&kbd_control_box);
     kbd_control_box.append(&kbd_brightness_spin);
     kbd_control_box.append(&kbd_apply_button);
 
-    let kbd_backlight_row = adw::ActionRow::builder()
-        .title("Keyboard Backlight")
-        .subtitle("Checking support...")
-        .build();
-    kbd_backlight_row.add_suffix(&kbd_control_box);
-    kbd_backlight_row.set_activatable(false);
-    quick_actions_group.add(&kbd_backlight_row);
+    kbd_control_box.set_halign(gtk::Align::Start);
+    let kbd_backlight_row = DashboardControlTile::new("Keyboard Brightness", &kbd_control_box);
 
     {
         let shared = shared.clone();
@@ -978,6 +1085,159 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         });
     }
 
+    let (quick_performance_panel, quick_performance_body) =
+        dashboard_panel("Quick Performance", ICON_DASHBOARD);
+    quick_performance_panel.add_css_class("dashboard-quick-panel");
+    quick_performance_body.append(&quick_dependency_hint);
+    let quick_performance_grid = gtk::FlowBox::new();
+    quick_performance_grid.set_selection_mode(gtk::SelectionMode::None);
+    quick_performance_grid.set_min_children_per_line(1);
+    quick_performance_grid.set_max_children_per_line(2);
+    quick_performance_grid.set_row_spacing(10);
+    quick_performance_grid.set_column_spacing(10);
+    quick_performance_grid.set_homogeneous(true);
+    for tile in [
+        &profile_row,
+        &gpu_mode_row,
+        &charge_limit_row,
+        &kbd_backlight_row,
+    ] {
+        quick_performance_grid.insert(tile.widget(), -1);
+    }
+    quick_performance_body.append(&quick_performance_grid);
+
+    let (cooling_snapshot_panel, cooling_snapshot_body) =
+        dashboard_panel("Cooling Snapshot", ICON_FANS);
+    cooling_snapshot_panel.add_css_class("dashboard-cooling-panel");
+    let thermal_strip = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    thermal_strip.add_css_class("dashboard-thermal-strip");
+    thermal_strip.set_homogeneous(true);
+    let thermal_cpu = gtk::Label::new(Some("CPU  —"));
+    let thermal_gpu = gtk::Label::new(Some("GPU  —"));
+    let thermal_nvme = gtk::Label::new(Some("NVMe  —"));
+    for label in [&thermal_cpu, &thermal_gpu, &thermal_nvme] {
+        label.add_css_class("dashboard-thermal-value");
+        thermal_strip.append(label);
+    }
+    cooling_snapshot_body.append(&thermal_strip);
+    let cooling_empty_hint = gtk::Label::new(Some("Waiting for fan telemetry…"));
+    cooling_empty_hint.set_xalign(0.0);
+    cooling_empty_hint.add_css_class("dim-label");
+    cooling_snapshot_body.append(&cooling_empty_hint);
+    let dashboard_fan_rows = (0..4)
+        .map(|_| {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            row.add_css_class("dashboard-fan-row");
+            row.set_visible(false);
+            let icon = gtk::Image::from_icon_name(ICON_FANS);
+            icon.set_pixel_size(15);
+            icon.add_css_class("dashboard-fan-icon");
+            let title = gtk::Label::new(None);
+            title.set_xalign(0.0);
+            title.set_hexpand(true);
+            let rpm = gtk::Label::new(None);
+            rpm.set_xalign(1.0);
+            rpm.add_css_class("monospace");
+            let state = gtk::Label::new(Some("●"));
+            state.add_css_class("dashboard-fan-dot");
+            row.append(&icon);
+            row.append(&title);
+            row.append(&rpm);
+            row.append(&state);
+            cooling_snapshot_body.append(&row);
+            (row, title, rpm, state)
+        })
+        .collect::<Vec<_>>();
+
+    let cockpit_middle_grid = gtk::FlowBox::new();
+    cockpit_middle_grid.set_selection_mode(gtk::SelectionMode::None);
+    cockpit_middle_grid.set_min_children_per_line(1);
+    cockpit_middle_grid.set_max_children_per_line(2);
+    cockpit_middle_grid.set_row_spacing(16);
+    cockpit_middle_grid.set_column_spacing(16);
+    cockpit_middle_grid.set_homogeneous(false);
+    cockpit_middle_grid.insert(&quick_performance_panel, -1);
+    cockpit_middle_grid.insert(&cooling_snapshot_panel, -1);
+
+    let (live_performance_panel, live_performance_body) =
+        dashboard_panel("Live Performance", ICON_CPU);
+    let live_performance_grid = gtk::FlowBox::new();
+    live_performance_grid.set_selection_mode(gtk::SelectionMode::None);
+    live_performance_grid.set_min_children_per_line(1);
+    live_performance_grid.set_max_children_per_line(2);
+    live_performance_grid.set_row_spacing(10);
+    live_performance_grid.set_column_spacing(10);
+    live_performance_grid.set_homogeneous(true);
+    let live_cpu_usage_card = MetricCard::new("CPU Usage");
+    let live_cpu_temp_card = MetricCard::new("CPU Temperature");
+    let live_gpu_temp_card = MetricCard::new("GPU Temperature");
+    let live_memory_card = MetricCard::new("Memory Usage");
+    let live_cpu_usage_sparkline = Sparkline::new((0.30, 0.64, 1.0));
+    let live_cpu_temp_sparkline = Sparkline::new((0.24, 0.76, 0.67));
+    let live_gpu_temp_sparkline = Sparkline::new((0.68, 0.48, 0.96));
+    let live_memory_sparkline = Sparkline::new((0.93, 0.62, 0.25));
+    for (card, sparkline) in [
+        (&live_cpu_usage_card, &live_cpu_usage_sparkline),
+        (&live_cpu_temp_card, &live_cpu_temp_sparkline),
+        (&live_gpu_temp_card, &live_gpu_temp_sparkline),
+        (&live_memory_card, &live_memory_sparkline),
+    ] {
+        card.add_css_class("dashboard-trend-card");
+        sparkline.widget().set_content_height(42);
+        card.widget().append(sparkline.widget());
+        live_performance_grid.insert(card.widget(), -1);
+    }
+    live_performance_body.append(&live_performance_grid);
+
+    let (system_health_panel, system_health_body) =
+        dashboard_panel("System Health", ICON_DIAGNOSTICS);
+    let (health_daemon_row, health_daemon_indicator, health_daemon) =
+        dashboard_status_row("rog-helperd");
+    let (health_asusd_row, health_asusd_indicator, health_asusd) = dashboard_status_row("asusd");
+    let (health_supergfxd_row, health_supergfxd_indicator, health_supergfxd) =
+        dashboard_status_row("supergfxd");
+    let (health_cpu_row, health_cpu_indicator, health_cpu) = dashboard_status_row("CPU controls");
+    let (health_lighting_row, health_lighting_indicator, health_lighting) =
+        dashboard_status_row("Lighting");
+    let (health_fans_row, health_fans_indicator, health_fans) = dashboard_status_row("Fan control");
+    let (health_warnings_row, health_warnings_indicator, health_warnings) =
+        dashboard_status_row("Warnings");
+    for row in [
+        &health_daemon_row,
+        &health_asusd_row,
+        &health_supergfxd_row,
+        &health_cpu_row,
+        &health_lighting_row,
+        &health_fans_row,
+        &health_warnings_row,
+    ] {
+        system_health_body.append(row);
+    }
+    let health_review_button = gtk::Button::with_label("Open Diagnostics");
+    health_review_button.add_css_class("suggested-action");
+    health_review_button.add_css_class("pill");
+    health_review_button.set_halign(gtk::Align::Start);
+    health_review_button.update_property(&[gtk::accessible::Property::Label(
+        "Open Diagnostics for system health details",
+    )]);
+    {
+        let stack = stack.clone();
+        health_review_button.connect_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+    system_health_body.append(&health_review_button);
+
+    let cockpit_lower_grid = gtk::FlowBox::new();
+    cockpit_lower_grid.set_selection_mode(gtk::SelectionMode::None);
+    cockpit_lower_grid.set_min_children_per_line(1);
+    cockpit_lower_grid.set_max_children_per_line(2);
+    cockpit_lower_grid.set_row_spacing(16);
+    cockpit_lower_grid.set_column_spacing(16);
+    cockpit_lower_grid.set_homogeneous(false);
+    cockpit_lower_grid.insert(&live_performance_panel, -1);
+    cockpit_lower_grid.insert(&system_health_panel, -1);
+
     let details_temp_group = adw::PreferencesGroup::builder()
         .title("Temperatures")
         .build();
@@ -995,7 +1255,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     details_box.append(&details_fan_group);
     details_box.append(&details_endpoints_group);
 
-    let details_expander = gtk::Expander::new(Some("Details"));
+    let details_expander = gtk::Expander::new(Some("Advanced Sensor Details"));
     details_expander.set_expanded(false);
     details_expander.set_child(Some(&details_box));
 
@@ -1011,15 +1271,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     dash_root.set_margin_end(24);
     dash_root.append(&page_header(
         "Dashboard",
-        "System overview, live telemetry, and frequently used controls.",
+        "Live system status and performance controls.",
     ));
     dash_root.append(&warning_area);
     dash_root.append(&primary_title);
     dash_root.append(&primary_metrics_grid);
+    dash_root.append(&current_mode_strip);
     dash_root.append(&secondary_title);
     dash_root.append(&secondary_metrics_grid);
-    dash_root.append(&quick_actions_title);
-    dash_root.append(&quick_actions_group);
+    dash_root.append(&cockpit_middle_grid);
+    dash_root.append(&cockpit_lower_grid);
     dash_root.append(&details_expander);
     dash_root.append(&status_label);
 
@@ -2972,6 +3233,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_caps,
             cpu_usage_history,
             cpu_temp_history,
+            gpu_temp_history,
+            memory_usage_history,
             caps,
             caps_text,
             warnings,
@@ -3010,6 +3273,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.cpu_caps.clone(),
                 st.cpu_usage_history.clone(),
                 st.cpu_temp_history.clone(),
+                st.gpu_temp_history.clone(),
+                st.memory_usage_history.clone(),
                 st.caps.clone(),
                 st.caps_text.clone(),
                 st.warnings.clone(),
@@ -3058,9 +3323,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             return glib::ControlFlow::Break;
         }
 
+        update_dashboard_flow_layout(&secondary_metrics_grid, &current_mode_flow);
         cpu_usage_graph.set_samples(&cpu_usage_history);
         cpu_temp_graph.set_samples(&cpu_temp_history);
         dashboard_cpu_sparkline.set_samples(&cpu_usage_history);
+        live_cpu_usage_sparkline.set_samples(&cpu_usage_history);
+        live_cpu_temp_sparkline.set_samples(&cpu_temp_history);
+        live_gpu_temp_sparkline.set_samples(&gpu_temp_history);
+        live_memory_sparkline.set_samples(&memory_usage_history);
 
         connection_status.remove_css_class("connected");
         connection_status.remove_css_class("disconnected");
@@ -3098,6 +3368,150 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .iter()
                 .filter(|control| control.status.is_writable())
                 .count();
+        if daemon_error.is_some() {
+            system_card.set_status_chip(Some("Daemon disconnected"));
+            set_dashboard_status(
+                &health_daemon_indicator,
+                &health_daemon,
+                "Disconnected",
+                "status-error",
+            );
+        } else if state_received {
+            system_card.set_status_chip(Some("Daemon connected"));
+            set_dashboard_status(
+                &health_daemon_indicator,
+                &health_daemon,
+                "Connected",
+                "status-ok",
+            );
+        } else {
+            system_card.set_status_chip(Some("Connecting"));
+            set_dashboard_status(
+                &health_daemon_indicator,
+                &health_daemon,
+                "Connecting",
+                "status-info",
+            );
+        }
+
+        let asusd_available =
+            caps.profile_access.is_available() || caps.charge_limit_access.is_available();
+        let asusd_missing = [caps.profile_access.status, caps.charge_limit_access.status]
+            .into_iter()
+            .any(|status| status == FeatureAccessState::MissingBackend);
+        if asusd_available {
+            set_dashboard_status(
+                &health_asusd_indicator,
+                &health_asusd,
+                "Available",
+                "status-ok",
+            );
+        } else if asusd_missing {
+            set_dashboard_status(
+                &health_asusd_indicator,
+                &health_asusd,
+                "Missing",
+                "status-warning",
+            );
+        } else {
+            set_dashboard_status(
+                &health_asusd_indicator,
+                &health_asusd,
+                "Unavailable",
+                "status-info",
+            );
+        }
+        if caps.gpu_mode_access.is_available() {
+            set_dashboard_status(
+                &health_supergfxd_indicator,
+                &health_supergfxd,
+                "Available",
+                "status-ok",
+            );
+        } else if caps.gpu_mode_access.status == FeatureAccessState::MissingBackend {
+            set_dashboard_status(
+                &health_supergfxd_indicator,
+                &health_supergfxd,
+                "Missing",
+                "status-warning",
+            );
+        } else {
+            set_dashboard_status(
+                &health_supergfxd_indicator,
+                &health_supergfxd,
+                "Unavailable",
+                "status-info",
+            );
+        }
+
+        let writable_cpu_controls = cpu_caps
+            .control_access
+            .iter()
+            .filter(|control| control.status.is_writable())
+            .count();
+        if writable_cpu_controls > 0 {
+            set_dashboard_status(
+                &health_cpu_indicator,
+                &health_cpu,
+                &format!("{writable_cpu_controls} writable"),
+                "status-ok",
+            );
+        } else {
+            set_dashboard_status(
+                &health_cpu_indicator,
+                &health_cpu,
+                "Read-only",
+                "status-info",
+            );
+        }
+        match caps.kbd_backlight_access.status {
+            FeatureAccessState::Available => set_dashboard_status(
+                &health_lighting_indicator,
+                &health_lighting,
+                "Available",
+                "status-ok",
+            ),
+            FeatureAccessState::PermissionDenied => set_dashboard_status(
+                &health_lighting_indicator,
+                &health_lighting,
+                "Read-only",
+                "status-info",
+            ),
+            FeatureAccessState::MissingBackend => set_dashboard_status(
+                &health_lighting_indicator,
+                &health_lighting,
+                "Missing backend",
+                "status-warning",
+            ),
+            _ => set_dashboard_status(
+                &health_lighting_indicator,
+                &health_lighting,
+                "Unavailable",
+                "status-info",
+            ),
+        }
+        if fan_state.caps.has_individual_fan_control {
+            set_dashboard_status(
+                &health_fans_indicator,
+                &health_fans,
+                "Available",
+                "status-ok",
+            );
+        } else if !fan_state.fans.is_empty() {
+            set_dashboard_status(
+                &health_fans_indicator,
+                &health_fans,
+                "Telemetry only",
+                "status-info",
+            );
+        } else {
+            set_dashboard_status(
+                &health_fans_indicator,
+                &health_fans,
+                "Unavailable",
+                "status-info",
+            );
+        }
         diag_capabilities_card.set_value(available_controls.to_string());
         diag_capabilities_card.set_subtitle(Some("Capability-gated control groups"));
         diag_warnings_card.set_value(warnings.len().to_string());
@@ -3124,11 +3538,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         diag_capability_gpu.set_text(&feature_value_label(&caps.gpu_mode_access));
         diag_capability_charge.set_text(&feature_value_label(&caps.charge_limit_access));
         diag_capability_lighting.set_text(&feature_value_label(&caps.kbd_backlight_access));
-        let writable_cpu_controls = cpu_caps
-            .control_access
-            .iter()
-            .filter(|control| control.status.is_writable())
-            .count();
         diag_permission_cpu.set_text(&format!("{writable_cpu_controls} writable controls"));
         diag_permission_lighting.set_text(&feature_value_label(&caps.kbd_backlight_access));
         diag_permission_fans.set_text(if fan_state.caps.has_individual_fan_control {
@@ -3153,6 +3562,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         };
         fan_count_label.set_text(&format!("{} {fan_word} detected", fan_state.caps.fan_count));
         fan_mode_label.set_text(fan_mode_label_text(fan_state.mode));
+        mode_profile.set_text(profile.as_deref().unwrap_or("—"));
+        mode_gpu.set_text(gpu_mode.as_deref().unwrap_or("—"));
+        mode_cooling.set_text(match fan_state.mode {
+            FanControlMode::Auto => "BIOS Auto",
+            FanControlMode::Unsupported => "—",
+            mode => fan_mode_label_text(mode),
+        });
         let mapping_uncertain = fan_state.fans.iter().any(fan_mapping_uncertain);
         fan_mapping_label.set_text(if mapping_uncertain {
             "Mapping uncertain"
@@ -3233,23 +3649,18 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 cpu_card.set_value(format!("{v:.1}"));
                 cpu_card.set_unit(Some("°C"));
                 cpu_temp_gauge.set_temp(Some(v));
+                live_cpu_temp_card.set_value(format!("{v:.1}"));
+                live_cpu_temp_card.set_unit(Some("°C"));
+                thermal_cpu.set_text(&format!("CPU  {v:.0}°C"));
             } else {
                 cpu_card.set_value("--");
                 cpu_card.set_unit(None);
                 cpu_temp_gauge.set_temp(None);
+                live_cpu_temp_card.set_value("—");
+                live_cpu_temp_card.set_unit(None);
+                thermal_cpu.set_text("CPU  —");
             }
-            cpu_card.set_subtitle(
-                cpu.as_ref()
-                    .and_then(|cpu| {
-                        cpu.usage_percent.map(|usage| {
-                            format!(
-                                "{usage:.0}% utilisation · {:.2} GHz",
-                                cpu.avg_freq_mhz.unwrap_or(0.0) / 1000.0
-                            )
-                        })
-                    })
-                    .as_deref(),
-            );
+            cpu_card.set_subtitle(cpu.as_ref().map(cpu_dashboard_summary).as_deref());
 
             if let Some(v) = t.gpu_temp_c {
                 gpu_card.set_value(format!("{v:.1}"));
@@ -3258,7 +3669,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_page_temp_card.set_value(format!("{v:.1}"));
                 gpu_page_temp_card.set_unit(Some("°C"));
                 gpu_page_temp_card.set_status_chip(Some("Telemetry available"));
-                gpu_card.set_subtitle(Some("Temperature available"));
+                gpu_card.set_status_chip(Some("Telemetry available"));
+                live_gpu_temp_card.set_value(format!("{v:.1}"));
+                live_gpu_temp_card.set_unit(Some("°C"));
+                thermal_gpu.set_text(&format!("GPU  {v:.0}°C"));
             } else {
                 gpu_card.set_value("--");
                 gpu_card.set_unit(None);
@@ -3266,13 +3680,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_page_temp_card.set_value("—");
                 gpu_page_temp_card.set_unit(None);
                 gpu_page_temp_card.set_status_chip(Some("Telemetry unavailable"));
-                gpu_card.set_subtitle(Some("Temperature unavailable"));
+                gpu_card.set_status_chip(Some("Telemetry unavailable"));
+                live_gpu_temp_card.set_value("—");
+                live_gpu_temp_card.set_unit(None);
+                thermal_gpu.set_text("GPU  —");
             }
-            gpu_card.set_status_chip(Some(if gpu_mode.is_some() {
-                "GPU mode available"
-            } else {
-                "GPU mode unavailable"
-            }));
+            gpu_card.set_subtitle(Some(&gpu_dashboard_summary(&t, gpu_mode.as_deref())));
             gpu_temp_gauge.set_speed_metrics(
                 "Core Clock",
                 t.gpu_core_clock_mhz.map(u64::from),
@@ -3297,6 +3710,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 BatteryState::PendingDischarge => "Pending Discharge".to_string(),
                 BatteryState::NotCharging => "Not Charging".to_string(),
             });
+            mode_power.set_text(match t.power_source {
+                Some(PowerSource::Ac) => "AC",
+                Some(PowerSource::Battery) => "Battery",
+                None => "—",
+            });
+            mode_battery.set_text(battery_chip.as_deref().unwrap_or("—"));
             batt_card.set_status_chip(battery_chip.as_deref());
             battery_hero_card.set_status_chip(battery_chip.as_deref());
             if let Some(v) = t.battery_percent {
@@ -3329,18 +3748,59 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or_else(|| battery_source.to_string());
             battery_hero_card.set_subtitle(Some(&battery_hero_subtitle));
 
+            let mut battery_summary = Vec::new();
+            if let Some(state) = battery_chip.as_deref() {
+                battery_summary.push(state.to_string());
+            }
+            if let Some(health) = t.battery_health_percent {
+                battery_summary.push(format!("{health:.0}% health"));
+            }
+            if let Some(time) = battery_time.as_deref() {
+                battery_summary.push(time.to_string());
+            }
+            let battery_summary =
+                (!battery_summary.is_empty()).then(|| battery_summary.join(" · "));
+            batt_card.set_subtitle(battery_summary.as_deref());
+
+            system_card.set_value(match t.power_source {
+                Some(PowerSource::Ac) => "AC Power",
+                Some(PowerSource::Battery) => "Battery",
+                None => "System",
+            });
+            system_card.set_unit(None);
+            let system_battery = match (t.battery_percent, battery_chip.as_deref()) {
+                (Some(percent), Some(state)) => format!("Battery {percent:.0}% · {state}"),
+                (Some(percent), None) => format!("Battery {percent:.0}%"),
+                (None, Some(state)) => format!("Battery · {state}"),
+                (None, None) => "Battery state unavailable".to_string(),
+            };
+            system_card.set_subtitle(Some(&system_battery));
+
             power_card.set_value(match t.power_source {
                 Some(PowerSource::Ac) => "AC".to_string(),
                 Some(PowerSource::Battery) => "Battery".to_string(),
                 None => "--".to_string(),
             });
             power_card.set_unit(None);
+            let power_summary = match (t.power_source, t.battery_charge_power_w) {
+                (Some(PowerSource::Ac), Some(watts)) => {
+                    // This is the daemon's measured battery charge input, not an inferred draw.
+                    format!("{watts:.1} W input")
+                }
+                (Some(PowerSource::Ac), None) => "Connected".to_string(),
+                (Some(PowerSource::Battery), _) => "Discharging".to_string(),
+                (None, _) => "Source unavailable".to_string(),
+            };
+            power_card.set_subtitle(Some(&power_summary));
 
             if let Some(percent) = t.mem_used_percent {
                 memory_card.set_value(format!("{percent:.0}"));
                 memory_card.set_unit(Some("%"));
-                memory_card
-                    .set_subtitle(Some(&format_used_ram(t.mem_used_bytes, t.mem_used_percent)));
+                memory_card.set_subtitle(Some(&format!(
+                    "{} / {}",
+                    format_bytes_gib_opt(t.mem_used_bytes),
+                    format_bytes_gib_opt(t.mem_total_bytes)
+                )));
                 memory_hero_card.set_value(format!("{percent:.0}"));
                 memory_hero_card.set_unit(Some("% used"));
                 memory_hero_card.set_subtitle(Some(&format!(
@@ -3349,6 +3809,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     format_bytes_gib_opt(t.mem_total_bytes),
                 )));
                 memory_progress.set_fraction((percent as f64 / 100.0).clamp(0.0, 1.0));
+                live_memory_card.set_value(format!("{percent:.0}"));
+                live_memory_card.set_unit(Some("%"));
             } else {
                 memory_card.set_value("—");
                 memory_card.set_unit(None);
@@ -3357,6 +3819,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 memory_hero_card.set_unit(None);
                 memory_hero_card.set_subtitle(Some("Memory telemetry unavailable"));
                 memory_progress.set_fraction(0.0);
+                live_memory_card.set_value("—");
+                live_memory_card.set_unit(None);
             }
 
             if t.fan_rows.is_empty() {
@@ -3368,7 +3832,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 let max_rpm = t.fan_rows.iter().filter_map(|fan| fan.rpm).max();
                 if let Some(max_rpm) = max_rpm {
                     fans_card.set_value(max_rpm.to_string());
-                    fans_card.set_unit(Some("rpm"));
+                    fans_card.set_unit(Some("RPM"));
                 } else {
                     fans_card.set_value("--");
                     fans_card.set_unit(None);
@@ -3381,6 +3845,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     fans_card.set_subtitle(Some(&format!(
                         "{reporting_count} of {count} {fan_word} reporting"
                     )));
+                }
+            }
+            cooling_empty_hint.set_visible(t.fan_rows.is_empty());
+            for (index, (row, title, rpm, state)) in dashboard_fan_rows.iter().enumerate() {
+                if let Some(fan) = t.fan_rows.get(index) {
+                    title.set_text(&fan.display_label);
+                    if let Some(value) = fan.rpm {
+                        rpm.set_text(&format!("{value} RPM"));
+                        set_dashboard_status(state, state, "●", "status-ok");
+                    } else {
+                        rpm.set_text("Unavailable");
+                        set_dashboard_status(state, state, "●", "status-info");
+                    }
+                    row.set_visible(true);
+                } else {
+                    row.set_visible(false);
                 }
             }
 
@@ -3399,10 +3879,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 nvme_card.widget().set_visible(true);
                 nvme_card.set_value(format!("{v:.1}"));
                 nvme_card.set_unit(Some("°C"));
+                nvme_card.set_subtitle(Some("Temperature"));
+                thermal_nvme.set_text(&format!("NVMe  {v:.0}°C"));
             } else {
                 nvme_card.widget().set_visible(false);
                 nvme_card.set_value("--");
                 nvme_card.set_unit(None);
+                thermal_nvme.set_text("NVMe  —");
             }
 
             battery_health_card.set_value(
@@ -3555,6 +4038,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             diag_sensor_battery.set_text("Waiting for telemetry");
             gpu_temp_gauge.set_temp(None);
             gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
+            cpu_card.set_value("—");
+            cpu_card.set_unit(None);
+            cpu_card.set_subtitle(Some("Waiting for telemetry"));
+            gpu_card.set_value("—");
+            gpu_card.set_unit(None);
+            gpu_card.set_subtitle(Some("Waiting for telemetry"));
+            gpu_card.set_status_chip(Some("Pending"));
+            batt_card.set_value("—");
+            batt_card.set_unit(None);
+            batt_card.set_subtitle(Some("Waiting for telemetry"));
+            power_card.set_value("—");
+            power_card.set_subtitle(Some("Waiting for telemetry"));
+            fans_card.set_value("—");
+            fans_card.set_unit(None);
+            fans_card.set_subtitle(Some("Waiting for telemetry"));
+            nvme_card.widget().set_visible(false);
+            mode_power.set_text("—");
+            mode_battery.set_text("—");
+            system_card.set_value("Connecting");
+            system_card.set_subtitle(Some("Waiting for system state"));
+            thermal_cpu.set_text("CPU  —");
+            thermal_gpu.set_text("GPU  —");
+            thermal_nvme.set_text("NVMe  —");
+            cooling_empty_hint.set_visible(true);
+            for (row, _, _, _) in &dashboard_fan_rows {
+                row.set_visible(false);
+            }
             gpu_page_temp_card.set_value("—");
             gpu_page_temp_card.set_unit(None);
             battery_hero_card.set_value("—");
@@ -3567,6 +4077,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             memory_hero_card.set_unit(None);
             memory_hero_card.set_subtitle(Some("Memory telemetry unavailable"));
             memory_progress.set_fraction(0.0);
+            live_cpu_temp_card.set_value("—");
+            live_cpu_temp_card.set_unit(None);
+            live_gpu_temp_card.set_value("—");
+            live_gpu_temp_card.set_unit(None);
+            live_memory_card.set_value("—");
+            live_memory_card.set_unit(None);
         }
 
         // CPU page + cards.
@@ -3581,9 +4097,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if let Some(v) = cpu_data.usage_percent {
                 cpu_card_usage.set_value(format!("{v:.0}"));
                 cpu_card_usage.set_unit(Some("%"));
+                live_cpu_usage_card.set_value(format!("{v:.0}"));
+                live_cpu_usage_card.set_unit(Some("%"));
             } else {
                 cpu_card_usage.set_value("--");
                 cpu_card_usage.set_unit(None);
+                live_cpu_usage_card.set_value("—");
+                live_cpu_usage_card.set_unit(None);
             }
             if let Some(v) = cpu_data.package_power_w {
                 cpu_card_power.widget().set_visible(true);
@@ -3610,6 +4130,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 None,
             );
             cpu_card_temp.set_status_chip(cpu_data.status.as_deref());
+            cpu_card.set_status_chip(cpu_data.status.as_deref().or(Some("Telemetry available")));
 
             cpu_scaling_driver
                 .set_text(cpu_caps.scaling_driver.as_deref().unwrap_or("Not detected"));
@@ -3896,6 +4417,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_card_usage.set_value("--");
             cpu_card_power.set_value("--");
             cpu_card_clock.set_value("--");
+            cpu_card.set_status_chip(Some("Telemetry unavailable"));
+            live_cpu_usage_card.set_value("—");
+            live_cpu_usage_card.set_unit(None);
             cpu_temp_gauge.set_speed_metrics("Avg Clock", None, None, None);
             cpu_read_only_banner.set_revealed(false);
             cpu_per_core_buffer.set_text("Logical CPU / thread telemetry unavailable.");
@@ -3927,22 +4451,68 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let gpu_mode_read_failed = warning_detail(&warnings, "GPU mode read failed: ");
         let charge_limit_read_failed = warning_detail(&warnings, "charge limit read failed: ");
 
-        if !support_messages.is_empty() {
+        let missing_services = usize::from(asusd_missing)
+            + usize::from(caps.gpu_mode_access.status == FeatureAccessState::MissingBackend);
+        let control_state = if available_controls > 0 {
+            format!("{available_controls} available")
+        } else {
+            "Read-only".to_string()
+        };
+        system_state_details.set_text(&format!(
+            "Controls  {control_state}  ·  Setup issues  {missing_services}"
+        ));
+
+        let health_warning_count = support_messages.len() + warnings.len();
+        if health_warning_count == 0 {
+            set_dashboard_status(
+                &health_warnings_indicator,
+                &health_warnings,
+                "None",
+                "status-ok",
+            );
+        } else {
+            set_dashboard_status(
+                &health_warnings_indicator,
+                &health_warnings,
+                &health_warning_count.to_string(),
+                "status-warning",
+            );
+        }
+
+        let mut dependency_hints = Vec::new();
+        if asusd_missing {
+            dependency_hints.push("Performance profiles and charge-limit control require asusd.");
+        }
+        if caps.gpu_mode_access.status == FeatureAccessState::MissingBackend {
+            dependency_hints.push("GPU mode control requires supergfxd.");
+        }
+        quick_dependency_hint.set_text(&dependency_hints.join(" "));
+        quick_dependency_hint.set_visible(!dependency_hints.is_empty());
+
+        if daemon_error.is_some() {
             warning_banner.remove_css_class("warning-info");
             warning_banner.remove_css_class("warning-warning");
             warning_banner.remove_css_class("warning-error");
-            warning_banner.add_css_class(if daemon_error.is_some() {
-                "warning-error"
-            } else {
-                "warning-warning"
-            });
-            warning_banner.set_title(&support_banner_title(&caps, &cpu_caps));
+            warning_banner.add_css_class("warning-error");
+            warning_banner.set_title("rog-helperd is disconnected");
             warning_banner.set_button_label(Some("Open Diagnostics"));
-            warning_subtitle.set_text(if support_messages.len() == 1 {
-                &support_messages[0]
-            } else {
-                "Open Diagnostics for the affected capabilities, dependencies, and permission details."
-            });
+            warning_subtitle.set_text("Live telemetry and controls are currently unavailable.");
+            warning_subtitle.set_visible(true);
+            warning_banner.set_revealed(true);
+            warning_area.set_visible(true);
+            open_diagnostics_button.set_visible(false);
+        } else if !support_messages.is_empty() {
+            warning_banner.remove_css_class("warning-info");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class("warning-warning");
+            warning_banner.set_title(&format!(
+                "{} control areas need setup",
+                support_messages.len()
+            ));
+            warning_banner.set_button_label(Some("Review"));
+            warning_subtitle.set_text(
+                "Telemetry is still available. Review optional dependencies and permissions in Diagnostics.",
+            );
             warning_subtitle.set_visible(true);
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
@@ -4022,7 +4592,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             gpu_page_profile_row.set_subtitle("Apply profile through daemon");
         } else {
-            profile_row.set_subtitle(&feature_control_subtitle(
+            profile_row.set_subtitle(&dashboard_control_subtitle(
                 &caps.profile_access,
                 "Quiet / Balanced / Turbo",
             ));
@@ -4079,7 +4649,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             gpu_mode_dropdown.set_sensitive(false);
             gpu_apply_button.set_sensitive(false);
-            gpu_mode_row.set_subtitle(&feature_control_subtitle(
+            gpu_mode_row.set_subtitle(&dashboard_control_subtitle(
                 &caps.gpu_mode_access,
                 "Select mode and apply",
             ));
@@ -4141,7 +4711,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             charge_apply_button.set_sensitive(false);
             battery_charge_spin.set_sensitive(false);
             battery_charge_apply.set_sensitive(false);
-            charge_limit_row.set_subtitle(&feature_control_subtitle(
+            charge_limit_row.set_subtitle(&dashboard_control_subtitle(
                 &caps.charge_limit_access,
                 "Set desired limit and apply",
             ));
@@ -4618,23 +5188,31 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             let _ = h.update(|tray| tray.summary = summary.clone()).await;
                         }
                         if let Ok(mut st) = shared.lock() {
+                            let gpu_temp_c = t.gpu_temp_c;
+                            let memory_used_percent = t.mem_used_percent;
                             st.telemetry = Some(t);
                             st.cpu = cpu.clone();
                             st.cpu_caps = cpu_caps;
                             push_history(
                                 &mut st.cpu_usage_history,
                                 cpu.as_ref().and_then(|c| c.usage_percent),
-                                600,
+                                60,
                             );
                             push_history(
                                 &mut st.cpu_temp_history,
                                 cpu.as_ref().and_then(|c| c.temp_c),
-                                600,
+                                60,
                             );
                             push_history(
                                 &mut st.cpu_power_history,
                                 cpu.as_ref().and_then(|c| c.package_power_w),
-                                600,
+                                60,
+                            );
+                            push_history(&mut st.gpu_temp_history, gpu_temp_c, 60);
+                            push_history(
+                                &mut st.memory_usage_history,
+                                memory_used_percent,
+                                60,
                             );
                             st.caps = caps;
                             st.caps_text = caps_text;
@@ -6435,6 +7013,14 @@ fn feature_control_subtitle(access: &FeatureAvailability, available_text: &str) 
     }
 }
 
+fn dashboard_control_subtitle(access: &FeatureAvailability, available_text: &str) -> String {
+    if access.status == FeatureAccessState::MissingBackend {
+        "Unavailable · see dependency note above".to_string()
+    } else {
+        feature_control_subtitle(access, available_text)
+    }
+}
+
 fn feature_value_label(access: &FeatureAvailability) -> String {
     match access.status {
         FeatureAccessState::Available => "Available".to_string(),
@@ -6751,75 +7337,6 @@ fn support_messages(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> Vec<String> {
 
     messages.retain(|message| !message.trim().is_empty());
     messages
-}
-
-fn support_banner_title(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> String {
-    let has_missing_backend = [
-        caps.profile_access.status,
-        caps.charge_limit_access.status,
-        caps.gpu_mode_access.status,
-        caps.kbd_backlight_access.status,
-    ]
-    .into_iter()
-    .any(|status| status == FeatureAccessState::MissingBackend);
-    let has_permission_denied = [
-        caps.profile_access.status,
-        caps.charge_limit_access.status,
-        caps.gpu_mode_access.status,
-        caps.kbd_backlight_access.status,
-    ]
-    .into_iter()
-    .any(|status| status == FeatureAccessState::PermissionDenied)
-        || cpu_caps
-            .control_access
-            .iter()
-            .any(|control| control.status == CpuAccessState::PermissionDenied);
-    let has_temporarily_unavailable = [
-        caps.profile_access.status,
-        caps.charge_limit_access.status,
-        caps.gpu_mode_access.status,
-        caps.kbd_backlight_access.status,
-    ]
-    .into_iter()
-    .any(|status| status == FeatureAccessState::TemporarilyUnavailable)
-        || cpu_caps
-            .control_access
-            .iter()
-            .any(|control| control.status == CpuAccessState::TemporarilyUnavailable);
-    let has_unsupported = [
-        caps.profile_access.status,
-        caps.charge_limit_access.status,
-        caps.gpu_mode_access.status,
-        caps.kbd_backlight_access.status,
-    ]
-    .into_iter()
-    .any(|status| status == FeatureAccessState::Unsupported)
-        || cpu_caps
-            .control_access
-            .iter()
-            .any(|control| control.status == CpuAccessState::MissingBackend);
-
-    let category_count = [
-        has_missing_backend,
-        has_permission_denied,
-        has_temporarily_unavailable,
-        has_unsupported,
-    ]
-    .into_iter()
-    .filter(|value| *value)
-    .count();
-
-    if category_count > 1 {
-        "Some controls need setup or permissions".to_string()
-    } else if has_missing_backend {
-        "Some controls need system services".to_string()
-    } else if has_permission_denied {
-        "Some controls are visible but read-only".to_string()
-    } else if has_temporarily_unavailable {
-        "Some controls could not be confirmed right now".to_string()
-    } else {
-        "Some controls are not supported on this machine".to_string()
-    }
 }
 
 fn gpu_status_summary(caps: &DeviceCaps, warnings: &[String]) -> String {
@@ -7204,6 +7721,124 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     value
 }
 
+fn dashboard_nav_card(
+    card: &MetricCard,
+    stack: &adw::ViewStack,
+    page_name: &'static str,
+    accessible_label: &'static str,
+) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("dashboard-card-button");
+    button.set_hexpand(true);
+    button.set_tooltip_text(Some(accessible_label));
+    button.update_property(&[gtk::accessible::Property::Label(accessible_label)]);
+    button.set_child(Some(card.widget()));
+    let stack = stack.clone();
+    button.connect_clicked(move |_| stack.set_visible_child_name(page_name));
+    button
+}
+
+fn dashboard_panel(title: &str, icon_name: &str) -> (gtk::Box, gtk::Box) {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    root.add_css_class("surface-card");
+    root.add_css_class("dashboard-panel");
+    root.set_hexpand(true);
+    root.set_vexpand(false);
+    root.set_valign(gtk::Align::Start);
+    root.set_size_request(300, -1);
+
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(17);
+    icon.add_css_class("dashboard-panel-icon");
+    icon.set_accessible_role(gtk::AccessibleRole::Img);
+    let label = gtk::Label::new(Some(title));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.add_css_class("dashboard-panel-title");
+    heading.append(&icon);
+    heading.append(&label);
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.append(&heading);
+    root.append(&body);
+    (root, body)
+}
+
+fn update_dashboard_flow_layout(secondary_metrics: &gtk::FlowBox, current_modes: &gtk::FlowBox) {
+    let secondary_max = dashboard_secondary_columns(secondary_metrics.width());
+    if secondary_metrics.max_children_per_line() != secondary_max {
+        secondary_metrics.set_max_children_per_line(secondary_max);
+    }
+
+    let mode_max = dashboard_mode_columns(current_modes.width());
+    if current_modes.max_children_per_line() != mode_max {
+        current_modes.set_max_children_per_line(mode_max);
+    }
+}
+
+fn dashboard_secondary_columns(width: i32) -> u32 {
+    if width >= 1160 {
+        5
+    } else {
+        3
+    }
+}
+
+fn dashboard_mode_columns(width: i32) -> u32 {
+    if width >= 760 {
+        5
+    } else {
+        3
+    }
+}
+
+fn dashboard_mode_item(title: &str) -> (gtk::Box, gtk::Label) {
+    let item = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    item.add_css_class("dashboard-mode-item");
+    item.set_hexpand(true);
+
+    let title = gtk::Label::new(Some(title));
+    title.set_xalign(0.0);
+    title.add_css_class("dashboard-mode-title");
+    let value = gtk::Label::new(Some("—"));
+    value.set_xalign(0.0);
+    value.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    value.add_css_class("dashboard-mode-value");
+    item.append(&title);
+    item.append(&value);
+    (item, value)
+}
+
+fn dashboard_status_row(title: &str) -> (gtk::Box, gtk::Label, gtk::Label) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.add_css_class("dashboard-status-row");
+    let indicator = gtk::Label::new(Some("●"));
+    indicator.add_css_class("dashboard-status-indicator");
+    let title = gtk::Label::new(Some(title));
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    title.add_css_class("dashboard-status-name");
+    let value = gtk::Label::new(Some("—"));
+    value.set_xalign(1.0);
+    value.set_halign(gtk::Align::End);
+    value.add_css_class("dashboard-status-value");
+    row.append(&indicator);
+    row.append(&title);
+    row.append(&value);
+    (row, indicator, value)
+}
+
+fn set_dashboard_status(indicator: &gtk::Label, label: &gtk::Label, text: &str, class: &str) {
+    for old_class in ["status-ok", "status-info", "status-warning", "status-error"] {
+        indicator.remove_css_class(old_class);
+        label.remove_css_class(old_class);
+    }
+    label.set_text(text);
+    indicator.add_css_class(class);
+    label.add_css_class(class);
+}
+
 fn style_linked_toggle_row(row: &gtk::Box) {
     row.add_css_class("linked");
     row.set_spacing(0);
@@ -7251,6 +7886,45 @@ fn style_combo_control(combo: &gtk::ComboBoxText) {
 fn format_cpu_freq_value(mhz: Option<u32>) -> String {
     mhz.map(|value| format!("{value} MHz"))
         .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn cpu_dashboard_summary(cpu: &CpuTelemetry) -> String {
+    let mut parts = Vec::new();
+    if let Some(usage) = cpu.usage_percent {
+        parts.push(format!("{usage:.0}% utilisation"));
+    }
+    if let Some(clock) = cpu.avg_freq_mhz {
+        parts.push(format!("{:.2} GHz", clock / 1000.0));
+    }
+    if parts.is_empty() {
+        "Telemetry available".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn gpu_dashboard_summary(telemetry: &TelemetrySnapshot, mode: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if telemetry.gpu_temp_c.is_some()
+        || telemetry.gpu_core_clock_mhz.is_some()
+        || telemetry.gpu_memory_clock_mhz.is_some()
+    {
+        parts.push("Telemetry available".to_string());
+    } else {
+        parts.push("Telemetry unavailable".to_string());
+    }
+    if let Some(mode) = mode {
+        parts.push(format!("Mode {mode}"));
+    } else {
+        parts.push("Mode unavailable".to_string());
+    }
+    if let Some(clock) = telemetry.gpu_core_clock_mhz {
+        parts.push(format!("Core {clock} MHz"));
+    }
+    if let Some(clock) = telemetry.gpu_memory_clock_mhz {
+        parts.push(format!("Memory {clock} MHz"));
+    }
+    parts.join(" · ")
 }
 
 fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
@@ -8788,6 +9462,47 @@ mod tests {
             summary_from_state(&telemetry, Some("Turbo"), Some("Hybrid")),
             "AC | 87% | CPU 61C | GPU 50C | Profile Turbo | Mode Hybrid"
         );
+    }
+
+    #[test]
+    fn dashboard_summaries_only_include_reported_telemetry() {
+        let mut cpu = CpuTelemetry::empty_now(0);
+        cpu.usage_percent = Some(18.0);
+        assert_eq!(cpu_dashboard_summary(&cpu), "18% utilisation");
+        cpu.avg_freq_mhz = Some(1170.0);
+        assert_eq!(cpu_dashboard_summary(&cpu), "18% utilisation · 1.17 GHz");
+
+        let mut telemetry = TelemetrySnapshot::empty_now(0);
+        telemetry.gpu_temp_c = Some(46.0);
+        telemetry.gpu_core_clock_mhz = Some(2100);
+        assert_eq!(
+            gpu_dashboard_summary(&telemetry, None),
+            "Telemetry available · Mode unavailable · Core 2100 MHz"
+        );
+    }
+
+    #[test]
+    fn dashboard_missing_backend_uses_the_shared_dependency_hint() {
+        let access = FeatureAvailability::new(
+            FeatureAccessState::MissingBackend,
+            "Install and start asusd to enable this control.",
+        );
+
+        assert_eq!(
+            dashboard_control_subtitle(&access, "Apply control"),
+            "Unavailable · see dependency note above"
+        );
+    }
+
+    #[test]
+    fn dashboard_breakpoints_avoid_four_plus_one_packing() {
+        assert_eq!(dashboard_secondary_columns(1260), 5);
+        assert_eq!(dashboard_secondary_columns(1160), 5);
+        assert_eq!(dashboard_secondary_columns(1159), 3);
+        assert_eq!(dashboard_secondary_columns(780), 3);
+
+        assert_eq!(dashboard_mode_columns(900), 5);
+        assert_eq!(dashboard_mode_columns(759), 3);
     }
 
     #[test]

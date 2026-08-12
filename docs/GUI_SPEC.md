@@ -76,25 +76,36 @@ Purpose:
 
 Current content:
 
-- a two-card primary telemetry area for CPU and GPU
-- a CPU utilisation sparkline backed only by the existing cached history
-- secondary cards for battery, cooling, memory, power source, and NVMe temperature when available
-- warning banner and warning summary area
-- quick actions for:
+- a responsive three-card hero row for CPU, GPU, and System State
+- CPU temperature, utilisation, average clock, semantic status, and a compact 60-second utilisation sparkline
+- GPU temperature, telemetry state, current mode when reported, and real core/memory clocks when available
+- a System State summary for power source, battery state, daemon connection, available control count, and missing-service setup count
+- a compact Current System Mode strip for known power, profile, GPU mode, cooling mode, and battery state values; unknown controls show an em dash rather than dependency errors
+- compact Battery, Cooling, Memory, Power, and conditional NVMe cards
+- a compact warning notification that reserves error emphasis for daemon/telemetry failure
+- a compact two-column Quick Performance tile grid for:
   - performance profile
   - GPU mode
   - battery charge limit
   - keyboard backlight brightness
-- expandable detail sections for temperatures, fans, and endpoint snippets
+- one aggregated dependency hint for missing `asusd` and `supergfxd`, instead of repeating setup prose under every affected control
+- a content-driven Cooling Snapshot with CPU/GPU/NVMe thermal values and up to four detected fan RPM rows using static fan symbols; it ends after its last detected row
+- a Live Performance panel with compact CPU usage, CPU temperature, GPU temperature, and memory usage trends
+- a System Health panel summarizing `rog-helperd`, `asusd`, `supergfxd`, CPU writes, Lighting writes, fan-control state, and warning count with semantic indicators
+- raw temperatures, fan endpoints, and other technical names under a collapsed Advanced Sensor Details section
 
 Current behavior:
 
 - controls are enabled or disabled based on daemon-reported capabilities
-- warning area shows concise reason text for missing services, unsupported features, and permission-blocked controls
-- Dashboard quick-action rows stay visible when relevant support is missing and explain why the control is disabled
-- quick-action controls use aligned inline control clusters with compact apply buttons so disabled/read-only states still look intentional
+- optional capability gaps use a compact notification; daemon disconnection remains a prominent error
+- Dashboard quick-action rows stay visible when relevant support is missing and point to the single dependency hint
+- quick-action controls use compact dashboard tiles with aligned controls and apply buttons so disabled/read-only states still look intentional
 - fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
 - when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
+- CPU, GPU, Battery, Cooling, and Memory cards provide keyboard-accessible navigation with visible hover/focus feedback
+- System Overview uses five cards across when at least 1160 px is available to the group and intentionally caps at three columns below that point, preventing an accidental 4+1 wrap
+- other responsive `GtkFlowBox` groups wrap naturally to two or one column without horizontal scrolling; Current System Mode uses 5-wide or 3+2 packing
+- GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
 
 ### CPU
 

@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1786561640.291267,
-    "ast_hash": "15e6e15798ecd493bf7f305f9a21cc76",
+    "mtime": 1786559920.8294551,
+    "ast_hash": "706527f2dc4a0ba1c3547f4b71859d38",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -250,8 +250,8 @@
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1786561640.2932668,
-    "ast_hash": "ef5af9a8512cc26a0064406d73a5764b",
+    "mtime": 1786559853.9993815,
+    "ast_hash": "c855d00abc708176331827cb0a717378",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1786561494.483779,
-    "ast_hash": "f07491f1d0012469afa862f1460c5438",
+    "mtime": 1786559854.001382,
+    "ast_hash": "aeb5574bd9f33378c4eb5777f4df60b9",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -470,13 +470,13 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/theme.rs": {
-    "mtime": 1786561249.7924566,
-    "ast_hash": "da6f75e4b2077e696707427bf9e7e04c",
+    "mtime": 1786559890.4890962,
+    "ast_hash": "d1eb647b6f25b5b75fb833b1c4d81fff",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/widgets/mod.rs": {
-    "mtime": 1786561295.4306781,
-    "ast_hash": "8c738078fb1c9f94df9339cfc694e4c7",
+    "mtime": 1786559391.090518,
+    "ast_hash": "eb1960d039e371a6ebfdc6ebde2e9c0b",
     "semantic_hash": ""
   },
   "crates/rog-ui/resources/icons/scalable/actions/rog-power-symbolic.svg": {

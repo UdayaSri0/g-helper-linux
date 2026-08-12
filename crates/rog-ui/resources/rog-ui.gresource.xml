@@ -6,6 +6,8 @@
     <file>icons/scalable/actions/rog-gpu-symbolic.svg</file>
     <file>icons/scalable/actions/rog-battery-symbolic.svg</file>
     <file>icons/scalable/actions/rog-memory-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-storage-symbolic.svg</file>
+    <file>icons/scalable/actions/rog-power-symbolic.svg</file>
     <file>icons/scalable/actions/rog-lighting-symbolic.svg</file>
     <file alias="icons/scalable/actions/rog-fan-symbolic.svg">../assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg</file>
     <file>icons/scalable/actions/rog-diagnostics-symbolic.svg</file>
