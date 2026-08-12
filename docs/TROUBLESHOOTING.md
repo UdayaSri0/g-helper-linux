@@ -54,6 +54,34 @@ busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.git
 
 If these commands fail, start the daemon manually and retry.
 
+## Settings Do Not Persist or `config.toml` Is Invalid
+
+The canonical configuration is:
+
+```text
+$XDG_CONFIG_HOME/rog-helper/config.toml
+```
+
+When `XDG_CONFIG_HOME` is unset, it is `$HOME/.config/rog-helper/config.toml`. The file is owned by
+the current user; do not create it as root. `rog-helperd` is the authoritative writer, so confirm the
+session daemon is reachable before changing Settings.
+
+Useful checks:
+
+```bash
+systemctl --user status rog-helperd --no-pager
+busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetConfiguration
+```
+
+If TOML is malformed, the application continues with safe defaults and logs a warning; it does not
+overwrite the broken file automatically. Correct the syntax or use the confirmed Reset to Defaults
+action. A reset replaces only rog-helper's canonical configuration and updates the app-managed
+autostart entry to match the default lifecycle state.
+
+An older `$XDG_CONFIG_HOME/rog-helper/ui.toml` is imported only when `config.toml` does not yet
+exist. The old file is deliberately retained for recovery. Saved charge-limit, profile, and fan-sync
+values are not applied automatically at daemon startup or login.
+
 ## Daemon Not Running
 
 Start the daemon first:

@@ -25,6 +25,7 @@ Shared model layer:
 
 - `rog-core`
   - Domain types
+  - Versioned configuration schema and atomic XDG persistence helpers
   - Validation helpers
   - Policy model
   - Error types
@@ -87,13 +88,49 @@ These are held in-memory behind `RwLock`s in `crates/rog-daemon/src/main.rs`.
 
 The UI keeps a cached mirror of daemon state in `SharedUiState` inside `crates/rog-ui/src/main.rs`. It is not authoritative and is refreshed continuously from the daemon.
 
-The UI has a small TOML-backed lifecycle settings file for window/tray behavior,
-launch-on-login, start-minimized-to-tray, and the one-time close-to-tray hint.
-It is stored below the user's XDG config directory as
-`rog-helper/ui.toml`.
+Persistent configuration is a versioned `AppConfig` model in `rog-core`. The canonical path is
+`$XDG_CONFIG_HOME/rog-helper/config.toml`, falling back to
+`$HOME/.config/rog-helper/config.toml`. The daemon loads it, owns the in-memory authoritative copy,
+and is the sole writer through `GetConfiguration`, `SetConfiguration`, and `ResetConfiguration`.
+The UI may read the same file at process startup so start-minimized behavior is available before
+DBus connects, but all subsequent persistence goes through the daemon.
 
-This is intentionally limited. The current runtime still does not persist
-hardware control preferences, fan curves, profiles, or automation rules.
+Configuration ownership is divided by section:
+
+- `ui`: UI/lifecycle behavior such as close, login startup, and tray hints
+- `dashboard`: optional panels and compact layout
+- `controls`: remembered charge-limit/profile/fan-sync preferences
+
+Version 1 serializes as:
+
+```toml
+version = 1
+
+[ui]
+close_behavior = "minimize_to_tray"
+launch_on_login = false
+start_minimized_to_tray = false
+close_to_tray_hint_shown = false
+fan_warning_acknowledged = false
+
+[dashboard]
+show_system_health = true
+show_nvme = true
+show_cooling_snapshot = true
+compact = false
+
+[controls]
+# preferred_charge_limit = 80   # optional, validated to 40..=100
+# last_manual_profile = "Turbo" # optional, remembered only
+fan_sync_enabled = false
+```
+
+Control preferences are inert metadata. Loading configuration never applies a hardware action.
+The previous `rog-helper/ui.toml` is migrated only when `config.toml` is absent; the legacy file is
+left untouched. Writes use a temporary file in the destination directory, `sync_all`, and atomic
+rename, so a failed replacement does not destroy the last good file. Malformed files fall back to
+defaults without blocking daemon or UI startup, while valid fields survive individual invalid
+values and unknown/future fields are tolerated during reads.
 
 ## Polling Model
 
@@ -227,5 +264,6 @@ The current architecture has several known limitations:
 - The UI and daemon duplicate some formatting and payload-shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model
 - Typed shared DBus payloads are not yet in place
+- Saved control preferences are deliberately not an automation engine and are never auto-applied
 
 These limitations are important when reading older roadmap and GUI documents. Some design ideas are already present in the model layer, while the runtime still exposes only a subset of that design.

@@ -13,14 +13,15 @@ use gtk4 as gtk;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
-    dbus_keys, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind,
-    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
-    DependencyStatus, DeviceCaps, FanCaps, FanControlMode, FanInfo, FanState, FanTelemetry,
-    FeatureAccessState, FeatureAvailability, PermissionKind, PermissionState, PermissionStatus,
-    PowerSource, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
-    TopProcessMem,
+    config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_config, parse_config,
+    parse_legacy_ui_config, validate_config, AppConfig, BatteryState, CloseBehavior,
+    CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
+    CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, FanCaps,
+    FanControlMode, FanInfo, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
+    PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor, SetupIssue,
+    SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -42,8 +43,6 @@ const APP_BINARY_NAME: &str = "rog-helper-ui";
 const APP_ICON_NAME: &str = "rog-helper";
 const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
 const APP_REPOSITORY_FALLBACK_URL: &str = "https://github.com/UdayaSri0/g-helper-linux";
-const APP_CONFIG_DIR_NAME: &str = "rog-helper";
-const APP_SETTINGS_FILE_NAME: &str = "ui.toml";
 const AUTOSTART_DESKTOP_FILE_NAME: &str = "rog-helper.desktop";
 const START_MINIMIZED_ARG: &str = "--minimized-to-tray";
 const ICON_RESOURCE_PATH: &str = "/io/github/roghelper/icons";
@@ -57,6 +56,7 @@ const ICON_POWER: &str = "rog-power-symbolic";
 const ICON_LIGHTING: &str = "rog-lighting-symbolic";
 const ICON_FANS: &str = "rog-fan-symbolic";
 const ICON_DIAGNOSTICS: &str = "rog-diagnostics-symbolic";
+const ICON_SETTINGS: &str = "preferences-system-symbolic";
 const ICON_ABOUT: &str = "rog-about-symbolic";
 
 #[zbus::proxy(
@@ -65,6 +65,9 @@ const ICON_ABOUT: &str = "rog-about-symbolic";
     default_path = "/io/github/roghelper/Daemon"
 )]
 trait Daemon1 {
+    fn get_configuration(&self) -> zbus::Result<String>;
+    fn set_configuration(&self, contents: &str) -> zbus::Result<()>;
+    fn reset_configuration(&self) -> zbus::Result<String>;
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -135,74 +138,6 @@ impl AppMetadata {
             maintainer_url,
             issues_url,
             releases_url,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloseBehavior {
-    MinimizeToTray,
-    ExitApplication,
-}
-
-impl CloseBehavior {
-    fn from_id(value: &str) -> Self {
-        match value {
-            "exit_application" => Self::ExitApplication,
-            _ => Self::MinimizeToTray,
-        }
-    }
-
-    fn id(self) -> &'static str {
-        match self {
-            Self::MinimizeToTray => "minimize_to_tray",
-            Self::ExitApplication => "exit_application",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct AppSettings {
-    close_behavior: CloseBehavior,
-    launch_on_login: bool,
-    start_minimized_to_tray: bool,
-    close_to_tray_hint_shown: bool,
-    fan_warning_acknowledged: bool,
-    fan_sync_enabled: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            close_behavior: CloseBehavior::MinimizeToTray,
-            launch_on_login: false,
-            start_minimized_to_tray: false,
-            close_to_tray_hint_shown: false,
-            fan_warning_acknowledged: false,
-            fan_sync_enabled: false,
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct AppSettingsFile {
-    close_behavior: Option<String>,
-    launch_on_login: Option<bool>,
-    start_minimized_to_tray: Option<bool>,
-    close_to_tray_hint_shown: Option<bool>,
-    fan_warning_acknowledged: Option<bool>,
-    fan_sync_enabled: Option<bool>,
-}
-
-impl From<&AppSettings> for AppSettingsFile {
-    fn from(settings: &AppSettings) -> Self {
-        Self {
-            close_behavior: Some(settings.close_behavior.id().to_string()),
-            launch_on_login: Some(settings.launch_on_login),
-            start_minimized_to_tray: Some(settings.start_minimized_to_tray),
-            close_to_tray_hint_shown: Some(settings.close_to_tray_hint_shown),
-            fan_warning_acknowledged: Some(settings.fan_warning_acknowledged),
-            fan_sync_enabled: Some(settings.fan_sync_enabled),
         }
     }
 }
@@ -291,7 +226,9 @@ struct SharedUiState {
     pending_open_link: Option<OpenLinkRequest>,
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
-    settings: AppSettings,
+    settings: AppConfig,
+    pending_config_save: Option<AppConfig>,
+    pending_config_reset: bool,
     tray_available: Option<bool>,
     show_window: bool,
     show_about: bool,
@@ -337,7 +274,9 @@ impl Default for SharedUiState {
             pending_open_link: None,
             pending_toast: None,
             daemon_error: None,
-            settings: AppSettings::default(),
+            settings: AppConfig::default(),
+            pending_config_save: None,
+            pending_config_reset: false,
             tray_available: None,
             show_window: false,
             show_about: false,
@@ -775,7 +714,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let app_metadata = AppMetadata::detect();
     let app_settings = load_app_settings();
-    let start_hidden = start_minimized_from_cli || app_settings.start_minimized_to_tray;
+    let start_hidden = start_minimized_from_cli || app_settings.ui.start_minimized_to_tray;
     let shared = Arc::new(Mutex::new(SharedUiState::default()));
     if let Ok(mut st) = shared.lock() {
         st.update_state = initial_update_state(&app_metadata);
@@ -2277,10 +2216,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let diag = clamped_scroller(&diag_root);
 
+    let settings_page = page_container();
+    settings_page.append(&page_header_group(
+        "Settings",
+        "Application behavior, dashboard layout, remembered controls, and reset options.",
+    ));
+
     let about_page = page_container();
     about_page.append(&page_header_group(
         "About",
-        "Application identity, runtime information, lifecycle preferences, and project links.",
+        "Application identity, runtime information, updates, and project links.",
     ));
 
     let about_identity = gtk::Box::new(gtk::Orientation::Horizontal, 18);
@@ -2324,7 +2269,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     about_page.append(&about_app_group);
 
     let lifecycle_group = adw::PreferencesGroup::builder()
-        .title("Lifecycle")
+        .title("Startup & Tray")
         .description("Window, tray, and login startup behavior.")
         .build();
 
@@ -2332,7 +2277,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     style_combo_control(&close_behavior_combo);
     close_behavior_combo.append(Some("minimize_to_tray"), "Minimize to tray");
     close_behavior_combo.append(Some("exit_application"), "Exit application");
-    close_behavior_combo.set_active_id(Some(app_settings.close_behavior.id()));
+    close_behavior_combo.set_active_id(Some(app_settings.ui.close_behavior.id()));
     let close_behavior_row = adw::ActionRow::builder()
         .title("On Close")
         .subtitle("Choose what the window close button does.")
@@ -2342,7 +2287,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lifecycle_group.add(&close_behavior_row);
 
     let launch_on_login_switch = gtk::Switch::new();
-    launch_on_login_switch.set_active(app_settings.launch_on_login);
+    launch_on_login_switch.set_active(app_settings.ui.launch_on_login);
     launch_on_login_switch.set_valign(gtk::Align::Center);
     let launch_on_login_row = adw::ActionRow::builder()
         .title("Launch on Login")
@@ -2353,7 +2298,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lifecycle_group.add(&launch_on_login_row);
 
     let start_minimized_switch = gtk::Switch::new();
-    start_minimized_switch.set_active(app_settings.start_minimized_to_tray);
+    start_minimized_switch.set_active(app_settings.ui.start_minimized_to_tray);
     start_minimized_switch.set_valign(gtk::Align::Center);
     let start_minimized_row = adw::ActionRow::builder()
         .title("Start Minimized to Tray")
@@ -2374,7 +2319,112 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     quit_app_row.set_activatable(false);
     lifecycle_group.add(&quit_app_row);
 
-    about_page.append(&lifecycle_group);
+    settings_page.append(&lifecycle_group);
+
+    let dashboard_settings_group = adw::PreferencesGroup::builder()
+        .title("Dashboard")
+        .description("Choose which optional dashboard areas are visible.")
+        .build();
+    let settings_health_switch = settings_switch_row(
+        &dashboard_settings_group,
+        "Advanced System Health",
+        "Show backend, access, and warning status on the dashboard.",
+        app_settings.dashboard.show_system_health,
+    );
+    let settings_nvme_switch = settings_switch_row(
+        &dashboard_settings_group,
+        "NVMe Card",
+        "Show the NVMe temperature card when a sensor is available.",
+        app_settings.dashboard.show_nvme,
+    );
+    let settings_cooling_switch = settings_switch_row(
+        &dashboard_settings_group,
+        "Cooling Snapshot",
+        "Show the dashboard thermal strip and fan RPM summary.",
+        app_settings.dashboard.show_cooling_snapshot,
+    );
+    let settings_compact_switch = settings_switch_row(
+        &dashboard_settings_group,
+        "Compact Dashboard",
+        "Reduce vertical spacing for smaller displays.",
+        app_settings.dashboard.compact,
+    );
+    settings_page.append(&dashboard_settings_group);
+
+    let control_settings_group = adw::PreferencesGroup::builder()
+        .title("Control Preferences")
+        .description("Remembered values are suggestions only and are never applied at startup.")
+        .build();
+    let remember_charge_switch = gtk::Switch::new();
+    remember_charge_switch.set_valign(gtk::Align::Center);
+    remember_charge_switch.set_active(app_settings.controls.preferred_charge_limit.is_some());
+    let preferred_charge_spin = gtk::SpinButton::with_range(40.0, 100.0, 5.0);
+    style_spin_control(&preferred_charge_spin, 5);
+    preferred_charge_spin.set_numeric(true);
+    preferred_charge_spin
+        .set_value(app_settings.controls.preferred_charge_limit.unwrap_or(80) as f64);
+    preferred_charge_spin.set_sensitive(remember_charge_switch.is_active());
+    let preferred_charge_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    preferred_charge_box.append(&remember_charge_switch);
+    preferred_charge_box.append(&preferred_charge_spin);
+    let preferred_charge_row = adw::ActionRow::builder()
+        .title("Preferred Charge Limit")
+        .subtitle("Remember a value for manual use; enabling this does not change the battery.")
+        .build();
+    preferred_charge_row.add_suffix(&preferred_charge_box);
+    preferred_charge_row.set_activatable(false);
+    control_settings_group.add(&preferred_charge_row);
+
+    let preferred_profile_combo = gtk::ComboBoxText::new();
+    style_combo_control(&preferred_profile_combo);
+    preferred_profile_combo.append(Some("none"), "Do not remember");
+    preferred_profile_combo.append(Some("Silent"), "Quiet");
+    preferred_profile_combo.append(Some("Balanced"), "Balanced");
+    preferred_profile_combo.append(Some("Turbo"), "Turbo");
+    preferred_profile_combo.set_active_id(Some(
+        app_settings
+            .controls
+            .last_manual_profile
+            .as_deref()
+            .unwrap_or("none"),
+    ));
+    let preferred_profile_row = adw::ActionRow::builder()
+        .title("Last Manual Profile")
+        .subtitle("Remember the last manually selected profile without applying it on launch.")
+        .build();
+    preferred_profile_row.add_suffix(&preferred_profile_combo);
+    preferred_profile_row.set_activatable(false);
+    control_settings_group.add(&preferred_profile_row);
+    settings_page.append(&control_settings_group);
+
+    let automation_group = adw::PreferencesGroup::builder()
+        .title("Automation")
+        .description("Automatic hardware changes are intentionally unavailable in this release.")
+        .build();
+    let automation_row = adw::ActionRow::builder()
+        .title("Startup Hardware Actions")
+        .subtitle("Disabled — saved control preferences are never auto-applied at boot or login.")
+        .build();
+    automation_row.set_activatable(false);
+    automation_group.add(&automation_row);
+    settings_page.append(&automation_group);
+
+    let reset_group = adw::PreferencesGroup::builder()
+        .title("Reset")
+        .description(
+            "Reset only rog-helper configuration. Hardware state and other files are untouched.",
+        )
+        .build();
+    let reset_settings_button = gtk::Button::with_label("Reset to Defaults");
+    reset_settings_button.add_css_class("destructive-action");
+    let reset_settings_row = adw::ActionRow::builder()
+        .title("Reset All Settings")
+        .subtitle("Restore the versioned configuration defaults after confirmation.")
+        .build();
+    reset_settings_row.add_suffix(&reset_settings_button);
+    reset_settings_row.set_activatable(false);
+    reset_group.add(&reset_settings_row);
+    settings_page.append(&reset_group);
 
     let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
     let about_authors = pref_value_row(&about_project_group, "Authors", false);
@@ -2527,10 +2577,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         close_behavior_combo.connect_changed(move |combo| {
             let behavior = combo
                 .active_id()
-                .map(|id| CloseBehavior::from_id(&id))
+                .and_then(|id| CloseBehavior::from_id(&id))
                 .unwrap_or(CloseBehavior::MinimizeToTray);
             if let Err(error) = persist_settings_change(&shared, |settings| {
-                settings.close_behavior = behavior;
+                settings.ui.close_behavior = behavior;
             }) {
                 if let Ok(mut st) = shared.lock() {
                     st.pending_toast = Some((error, true));
@@ -2542,7 +2592,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         launch_on_login_switch.connect_state_set(move |_, enabled| {
             match persist_settings_change(&shared, |settings| {
-                settings.launch_on_login = enabled;
+                settings.ui.launch_on_login = enabled;
             }) {
                 Ok(_) => glib::Propagation::Proceed,
                 Err(error) => {
@@ -2558,7 +2608,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         start_minimized_switch.connect_state_set(move |_, enabled| {
             match persist_settings_change(&shared, |settings| {
-                settings.start_minimized_to_tray = enabled;
+                settings.ui.start_minimized_to_tray = enabled;
             }) {
                 Ok(_) => glib::Propagation::Proceed,
                 Err(error) => {
@@ -2568,6 +2618,102 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     glib::Propagation::Stop
                 }
             }
+        });
+    }
+    for (switch, update) in [
+        (settings_health_switch.clone(), 0_u8),
+        (settings_nvme_switch.clone(), 1_u8),
+        (settings_cooling_switch.clone(), 2_u8),
+        (settings_compact_switch.clone(), 3_u8),
+    ] {
+        let shared = shared.clone();
+        switch.connect_state_set(move |_, enabled| {
+            let result = persist_settings_change(&shared, |settings| match update {
+                0 => settings.dashboard.show_system_health = enabled,
+                1 => settings.dashboard.show_nvme = enabled,
+                2 => settings.dashboard.show_cooling_snapshot = enabled,
+                _ => settings.dashboard.compact = enabled,
+            });
+            if let Err(error) = result {
+                if let Ok(mut st) = shared.lock() {
+                    st.pending_toast = Some((error, true));
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    {
+        let shared = shared.clone();
+        let preferred_charge_spin = preferred_charge_spin.clone();
+        remember_charge_switch.connect_state_set(move |_, enabled| {
+            preferred_charge_spin.set_sensitive(enabled);
+            let value = preferred_charge_spin.value().round().clamp(40.0, 100.0) as u8;
+            match persist_settings_change(&shared, |settings| {
+                settings.controls.preferred_charge_limit = enabled.then_some(value);
+            }) {
+                Ok(_) => glib::Propagation::Proceed,
+                Err(error) => {
+                    if let Ok(mut st) = shared.lock() {
+                        st.pending_toast = Some((error, true));
+                    }
+                    glib::Propagation::Stop
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        preferred_charge_spin.connect_value_changed(move |spin| {
+            let enabled = shared
+                .lock()
+                .map(|st| st.settings.controls.preferred_charge_limit.is_some())
+                .unwrap_or(false);
+            if enabled {
+                let value = spin.value().round().clamp(40.0, 100.0) as u8;
+                let _ = persist_settings_change(&shared, |settings| {
+                    settings.controls.preferred_charge_limit = Some(value);
+                });
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        preferred_profile_combo.connect_changed(move |combo| {
+            let profile = combo
+                .active_id()
+                .filter(|value| value.as_str() != "none")
+                .map(|value| value.to_string());
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                settings.controls.last_manual_profile = profile;
+            }) {
+                if let Ok(mut st) = shared.lock() {
+                    st.pending_toast = Some((error, true));
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        reset_settings_button.connect_clicked(move |_| {
+            let dialog = adw::MessageDialog::new(
+                None::<&gtk::Window>,
+                Some("Reset all settings?"),
+                Some("This resets only rog-helper's config.toml. It does not apply hardware controls or remove unrelated files."),
+            );
+            dialog.add_responses(&[("cancel", "Cancel"), ("reset", "Reset Settings")]);
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+            let shared_reset = shared.clone();
+            dialog.connect_response(Some("reset"), move |dialog, _| {
+                if let Ok(mut st) = shared_reset.lock() {
+                    st.pending_config_reset = true;
+                }
+                dialog.close();
+            });
+            dialog.connect_response(Some("cancel"), |dialog, _| dialog.close());
+            dialog.present();
         });
     }
     {
@@ -2932,7 +3078,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let fan_sync_switch = gtk::Switch::new();
     fan_sync_switch.set_valign(gtk::Align::Center);
-    fan_sync_switch.set_active(app_settings.fan_sync_enabled);
+    fan_sync_switch.set_active(app_settings.controls.fan_sync_enabled);
     fan_sync_switch.set_tooltip_text(Some(
         "Sync fans is unavailable until more than one controllable fan is detected.",
     ));
@@ -2947,7 +3093,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         fan_sync_switch.connect_state_set(move |_, enabled| {
             if let Err(error) = persist_settings_change(&shared, |settings| {
-                settings.fan_sync_enabled = enabled;
+                settings.controls.fan_sync_enabled = enabled;
             }) {
                 if let Ok(mut st) = shared.lock() {
                     st.pending_toast = Some((error, true));
@@ -2995,7 +3141,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let percent = fan_manual_scale.value().round().clamp(0.0, 100.0) as u8;
             let needs_ack = shared
                 .lock()
-                .map(|st| !st.settings.fan_warning_acknowledged)
+                .map(|st| !st.settings.ui.fan_warning_acknowledged)
                 .unwrap_or(true);
             if needs_ack {
                 let dialog = adw::MessageDialog::new(
@@ -3012,7 +3158,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 let shared_apply = shared.clone();
                 dialog.connect_response(Some("apply"), move |d, _| {
                     let _ = persist_settings_change(&shared_apply, |settings| {
-                        settings.fan_warning_acknowledged = true;
+                        settings.ui.fan_warning_acknowledged = true;
                     });
                     if let Ok(mut st) = shared_apply.lock() {
                         st.pending_fan_action = Some(PendingFanAction::ManualPercent {
@@ -3210,6 +3356,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
     stack.add_titled_with_icon(&fans, Some("fans"), "Cooling", ICON_FANS);
     stack.add_titled_with_icon(&setup, Some("setup"), "Setup & Access", ICON_DIAGNOSTICS);
+    stack.add_titled_with_icon(&settings_page, Some("settings"), "Settings", ICON_SETTINGS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
@@ -3256,6 +3403,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             icon: ICON_DIAGNOSTICS,
         },
         NavigationItem {
+            name: "settings",
+            label: "Settings",
+            icon: ICON_SETTINGS,
+        },
+        NavigationItem {
             name: "diagnostics",
             label: "Diagnostics",
             icon: ICON_DIAGNOSTICS,
@@ -3289,25 +3441,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let _keepalive = &app_keepalive;
             let (close_behavior, tray_available) = shared
                 .lock()
-                .map(|st| (st.settings.close_behavior, st.tray_available))
+                .map(|st| (st.settings.ui.close_behavior, st.tray_available))
                 .unwrap_or((CloseBehavior::ExitApplication, Some(false)));
 
             if close_behavior == CloseBehavior::MinimizeToTray && tray_available != Some(false) {
                 window.hide();
-                let mut settings_to_save = None;
                 if let Ok(mut st) = shared.lock() {
-                    if !st.settings.close_to_tray_hint_shown {
-                        st.settings.close_to_tray_hint_shown = true;
+                    if !st.settings.ui.close_to_tray_hint_shown {
+                        st.settings.ui.close_to_tray_hint_shown = true;
                         st.pending_toast = Some((
                             "rog-helper is still running in the tray.".to_string(),
                             false,
                         ));
-                        settings_to_save = Some(st.settings.clone());
-                    }
-                }
-                if let Some(settings) = settings_to_save {
-                    if let Err(error) = save_app_settings(&settings) {
-                        warn!("failed to save close-to-tray hint state: {error}");
+                        st.pending_config_save = Some(st.settings.clone());
                     }
                 }
             } else if let Ok(mut st) = shared.lock() {
@@ -3404,6 +3550,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             update_action_in_progress,
             pending_open_link,
             daemon_error,
+            settings,
             show_window,
             show_about,
             show_gpu_page,
@@ -3446,6 +3593,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.update_action_in_progress,
                 st.pending_open_link.take(),
                 st.daemon_error.clone(),
+                st.settings.clone(),
                 show_window,
                 show_about,
                 show_gpu_page,
@@ -3480,6 +3628,32 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         }
 
         update_dashboard_flow_layout(&secondary_metrics_grid, &current_mode_flow);
+        system_health_panel.set_visible(settings.dashboard.show_system_health);
+        cooling_snapshot_panel.set_visible(settings.dashboard.show_cooling_snapshot);
+        dash_root.set_spacing(if settings.dashboard.compact { 12 } else { 20 });
+        dash_root.set_margin_top(if settings.dashboard.compact { 12 } else { 20 });
+        dash_root.set_margin_bottom(if settings.dashboard.compact { 18 } else { 28 });
+        settings_health_switch.set_active(settings.dashboard.show_system_health);
+        settings_nvme_switch.set_active(settings.dashboard.show_nvme);
+        settings_cooling_switch.set_active(settings.dashboard.show_cooling_snapshot);
+        settings_compact_switch.set_active(settings.dashboard.compact);
+        close_behavior_combo.set_active_id(Some(settings.ui.close_behavior.id()));
+        launch_on_login_switch.set_active(settings.ui.launch_on_login);
+        start_minimized_switch.set_active(settings.ui.start_minimized_to_tray);
+        remember_charge_switch.set_active(settings.controls.preferred_charge_limit.is_some());
+        preferred_charge_spin.set_sensitive(settings.controls.preferred_charge_limit.is_some());
+        if let Some(limit) = settings.controls.preferred_charge_limit {
+            if preferred_charge_spin.value().round() as u8 != limit {
+                preferred_charge_spin.set_value(limit as f64);
+            }
+        }
+        preferred_profile_combo.set_active_id(Some(
+            settings
+                .controls
+                .last_manual_profile
+                .as_deref()
+                .unwrap_or("none"),
+        ));
         cpu_usage_graph.set_samples(&cpu_usage_history);
         cpu_temp_graph.set_samples(&cpu_temp_history);
         dashboard_cpu_sparkline.set_samples(&cpu_usage_history);
@@ -4128,7 +4302,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 })
                 .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             if let Some(v) = nvme_temp {
-                nvme_card.widget().set_visible(true);
+                nvme_card.widget().set_visible(settings.dashboard.show_nvme);
                 nvme_card.set_value(format!("{v:.1}"));
                 nvme_card.set_unit(Some("°C"));
                 nvme_card.set_subtitle(Some("Temperature"));
@@ -5212,7 +5386,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
             if let Ok(mut st) = shared.lock() {
                 st.tray_available = Some(tray_handle.is_some());
                 if tray_handle.is_none()
-                    && st.settings.close_behavior == CloseBehavior::MinimizeToTray
+                    && st.settings.ui.close_behavior == CloseBehavior::MinimizeToTray
                 {
                     st.show_window = true;
                     st.pending_toast =
@@ -5220,9 +5394,68 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                 }
             }
 
+            match fetch_configuration().await {
+                Ok(config) => {
+                    if let Err(error) = sync_autostart(&config.ui) {
+                        warn!("failed to synchronize autostart state: {error}");
+                    }
+                    if let Ok(mut st) = shared.lock() {
+                        if st.pending_config_save.is_none() && !st.pending_config_reset {
+                            st.settings = config;
+                        }
+                    }
+                }
+                Err(error) => warn!("unable to read daemon configuration: {error}"),
+            }
+
             loop {
                 if shared.lock().map(|st| st.quit).unwrap_or(true) {
                     break;
+                }
+
+                let pending_config_reset = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| std::mem::take(&mut st.pending_config_reset))
+                    .unwrap_or(false);
+                if pending_config_reset {
+                    match reset_configuration().await {
+                        Ok(config) => {
+                            if let Err(error) = sync_autostart(&config.ui) {
+                                warn!("failed to reset autostart state: {error}");
+                            }
+                            if let Ok(mut st) = shared.lock() {
+                                st.settings = config;
+                                st.pending_config_save = None;
+                                st.pending_toast =
+                                    Some(("Settings reset to defaults.".to_string(), false));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.pending_toast = Some((error, true));
+                            }
+                        }
+                    }
+                }
+
+                let pending_config = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_config_save.take());
+                if let Some(config) = pending_config {
+                    if let Err(error) = save_configuration(&config).await {
+                        let persisted = fetch_configuration().await.ok();
+                        if let Some(config) = persisted.as_ref() {
+                            let _ = sync_autostart(&config.ui);
+                        }
+                        if let Ok(mut st) = shared.lock() {
+                            if let Some(config) = persisted {
+                                st.settings = config;
+                            }
+                            st.pending_toast = Some((error, true));
+                        }
+                    }
                 }
 
                 let pending_profile = shared
@@ -5530,6 +5763,52 @@ async fn fetch_setup_status() -> Result<SetupStatus, String> {
         .await
         .map_err(|error| format!("daemon GetSetupStatus failed: {error}"))?;
     Ok(setup_status_from_dbus(&map))
+}
+
+async fn save_configuration(config: &AppConfig) -> Result<(), String> {
+    let contents = config_to_toml(config)?;
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    proxy
+        .set_configuration(&contents)
+        .await
+        .map_err(|error| format!("Unable to save settings through rog-helperd: {error}"))
+}
+
+async fn fetch_configuration() -> Result<AppConfig, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let contents = proxy
+        .get_configuration()
+        .await
+        .map_err(|error| format!("daemon GetConfiguration failed: {error}"))?;
+    let loaded = parse_config(&contents);
+    for warning in loaded.warnings {
+        warn!("daemon configuration warning: {warning}");
+    }
+    Ok(loaded.config)
+}
+
+async fn reset_configuration() -> Result<AppConfig, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let contents = proxy
+        .reset_configuration()
+        .await
+        .map_err(|error| format!("Unable to reset settings through rog-helperd: {error}"))?;
+    Ok(parse_config(&contents).config)
 }
 
 async fn fetch_state() -> Result<
@@ -6485,87 +6764,59 @@ fn format_timestamp_local(timestamp: i64) -> String {
     format!("unix:{timestamp}")
 }
 
-fn load_app_settings() -> AppSettings {
-    let mut settings = AppSettings::default();
-    if let Ok(path) = settings_file_path() {
-        match fs::read_to_string(&path) {
-            Ok(contents) => match toml::from_str::<AppSettingsFile>(&contents) {
-                Ok(file_settings) => {
-                    if let Some(value) = file_settings.close_behavior.as_deref() {
-                        settings.close_behavior = CloseBehavior::from_id(value);
-                    }
-                    if let Some(value) = file_settings.launch_on_login {
-                        settings.launch_on_login = value;
-                    }
-                    if let Some(value) = file_settings.start_minimized_to_tray {
-                        settings.start_minimized_to_tray = value;
-                    }
-                    if let Some(value) = file_settings.close_to_tray_hint_shown {
-                        settings.close_to_tray_hint_shown = value;
-                    }
-                    if let Some(value) = file_settings.fan_warning_acknowledged {
-                        settings.fan_warning_acknowledged = value;
-                    }
-                    if let Some(value) = file_settings.fan_sync_enabled {
-                        settings.fan_sync_enabled = value;
-                    }
-                }
-                Err(error) => warn!("failed to parse UI settings {}: {error}", path.display()),
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => warn!("failed to read UI settings {}: {error}", path.display()),
+fn load_app_settings() -> AppConfig {
+    let mut loaded = match config_path() {
+        Ok(path) if path.exists() => load_config(&path),
+        Ok(_) => legacy_ui_config_path()
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .map(|contents| parse_legacy_ui_config(&contents))
+            .unwrap_or_else(|| rog_core::ConfigLoad {
+                config: AppConfig::default(),
+                source: rog_core::ConfigSource::Defaults,
+                warnings: Vec::new(),
+            }),
+        Err(error) => {
+            warn!("{error}");
+            return AppConfig::default();
         }
+    };
+    for warning in loaded.warnings.drain(..) {
+        warn!("{warning}");
     }
-
     if let Ok(enabled) = autostart_enabled() {
-        settings.launch_on_login = enabled;
+        loaded.config.ui.launch_on_login = enabled;
     }
-
-    settings
+    loaded.config
 }
 
 fn persist_settings_change<F>(
     shared: &Arc<Mutex<SharedUiState>>,
     update: F,
-) -> Result<AppSettings, String>
+) -> Result<AppConfig, String>
 where
-    F: FnOnce(&mut AppSettings),
+    F: FnOnce(&mut AppConfig),
 {
-    let mut next = shared
+    let current = shared
         .lock()
         .map_err(|_| "Unable to update settings right now.".to_string())?
         .settings
         .clone();
+    let mut next = current.clone();
     update(&mut next);
-    save_app_settings(&next)?;
+    validate_config(&next)?;
+    if current.ui.launch_on_login != next.ui.launch_on_login
+        || current.ui.start_minimized_to_tray != next.ui.start_minimized_to_tray
+    {
+        sync_autostart(&next.ui)?;
+    }
 
     let mut st = shared
         .lock()
         .map_err(|_| "Unable to update settings right now.".to_string())?;
     st.settings = next.clone();
+    st.pending_config_save = Some(next.clone());
     Ok(next)
-}
-
-fn save_app_settings(settings: &AppSettings) -> Result<(), String> {
-    let path = settings_file_path()?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Unable to determine the settings directory.".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Unable to create settings directory: {error}"))?;
-
-    let file_settings = AppSettingsFile::from(settings);
-    let contents = toml::to_string_pretty(&file_settings)
-        .map_err(|error| format!("Unable to serialize settings: {error}"))?;
-    fs::write(&path, contents).map_err(|error| format!("Unable to save settings: {error}"))?;
-
-    sync_autostart(settings)
-}
-
-fn settings_file_path() -> Result<PathBuf, String> {
-    Ok(xdg_config_home()?
-        .join(APP_CONFIG_DIR_NAME)
-        .join(APP_SETTINGS_FILE_NAME))
 }
 
 fn autostart_file_path() -> Result<PathBuf, String> {
@@ -6616,7 +6867,7 @@ fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
         && raw_value.trim().eq_ignore_ascii_case(expected_value)
 }
 
-fn sync_autostart(settings: &AppSettings) -> Result<(), String> {
+fn sync_autostart(settings: &rog_core::UiPreferences) -> Result<(), String> {
     let path = autostart_file_path()?;
     if !settings.launch_on_login {
         match fs::remove_file(&path) {
@@ -6636,7 +6887,7 @@ fn sync_autostart(settings: &AppSettings) -> Result<(), String> {
         .map_err(|error| format!("Unable to save autostart entry: {error}"))
 }
 
-fn autostart_desktop_entry(settings: &AppSettings) -> String {
+fn autostart_desktop_entry(settings: &rog_core::UiPreferences) -> String {
     let exec = if settings.start_minimized_to_tray {
         format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
     } else {
@@ -8008,6 +8259,25 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     row.set_activatable(false);
     group.add(&row);
     value
+}
+
+fn settings_switch_row(
+    group: &adw::PreferencesGroup,
+    title: &str,
+    subtitle: &str,
+    active: bool,
+) -> gtk::Switch {
+    let switch = gtk::Switch::new();
+    switch.set_active(active);
+    switch.set_valign(gtk::Align::Center);
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    row.add_suffix(&switch);
+    row.set_activatable(false);
+    group.add(&row);
+    switch
 }
 
 fn setup_pref_row(group: &adw::PreferencesGroup, title: &str) -> (adw::ActionRow, gtk::Label) {
@@ -9941,10 +10211,10 @@ mod tests {
 
     #[test]
     fn autostart_entry_supports_minimized_launch() {
-        let settings = AppSettings {
+        let settings = rog_core::UiPreferences {
             launch_on_login: true,
             start_minimized_to_tray: true,
-            ..AppSettings::default()
+            ..rog_core::UiPreferences::default()
         };
 
         let entry = autostart_desktop_entry(&settings);

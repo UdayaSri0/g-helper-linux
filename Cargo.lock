@@ -1429,6 +1429,7 @@ version = "0.2.2"
 dependencies = [
  "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -1440,6 +1441,7 @@ dependencies = [
  "rog-core",
  "rog-providers",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",
@@ -1474,7 +1476,6 @@ dependencies = [
  "semver",
  "serde",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",

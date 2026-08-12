@@ -242,6 +242,32 @@ Current behavior:
 - copy diagnostics includes a `Keyboard Lighting / RGB Diagnostics` section
 - the report lists sysfs LED paths, current brightness, read/write status, asusd services checked, interfaces found, RGB-looking methods/properties, fallback reasons, and recommended action text
 
+## Settings
+
+### What it shows
+
+- Startup & Tray preferences: On Close, Launch on Login, Start Minimized to Tray, and full exit
+- dashboard visibility switches for Advanced System Health, the conditional NVMe card, and Cooling Snapshot
+- compact dashboard spacing
+- an optional preferred battery charge limit and last manual performance profile
+- an explicit Automation section explaining that startup hardware actions are disabled
+- a confirmed Reset to Defaults action
+
+### What it supports
+
+- durable, versioned preferences through the daemon-owned XDG configuration
+- immediate dashboard visibility/layout updates
+- synchronization of the app-managed XDG autostart entry
+- reset of rog-helper preferences without touching hardware state or unrelated user files
+
+### Persistence and safety
+
+- canonical file: `$XDG_CONFIG_HOME/rog-helper/config.toml`, or `$HOME/.config/rog-helper/config.toml`
+- the UI reads startup behavior locally, then uses the daemon configuration API for writes
+- preferred hardware values are reminders for manual use and are never auto-applied at boot/login
+- malformed configuration falls back safely; unknown fields are tolerated; writes replace atomically
+- legacy `rog-helper/ui.toml` is migrated when no canonical file exists and is left in place
+
 ## Diagnostics
 
 ### What it shows
@@ -292,7 +318,6 @@ Current behavior:
 - last check timestamp
 - last check result
 - release-notes preview
-- lifecycle controls for close behavior, launch on login, start minimized to tray, and full exit
 
 ### What it supports
 
@@ -300,20 +325,18 @@ Current behavior:
 - best-effort `Update Now` for safe user-local direct-binary installs
 - browser actions for source / GitHub, support / repository, and issue reporting
 - safe fallback to opening the latest release page when automatic in-place replacement is not supported
-- persisted close-to-tray and startup behavior preferences
 
 ### Capability dependencies
 
 - static metadata has no daemon capability dependency
 - release checks depend on network access to GitHub
 - automatic in-place replacement depends on a matching direct release asset plus a writable user-local binary path
-- launch-on-login depends on write access to the user's XDG autostart directory
 
 ### Missing or planned
 
 - no distro package-manager integration or privileged updater
 - no scheduled background update checks
-- no general Settings page or persistent hardware/control rules yet
+- lifecycle and control-preference settings live on the dedicated Settings page
 - metadata comes from Cargo manifest fields and only falls back to project defaults if those fields are blank
 
 ## Cooling
@@ -340,7 +363,6 @@ Current page. The internal page identifier remains `fans` for compatibility.
 These are not separate pages in the current UI:
 
 - Profiles
-- Settings
 
 Related note:
 

@@ -7,6 +7,7 @@ access
 accesses
 accessibility
 action
+actionable
 actions
 activate
 activation
@@ -79,6 +80,7 @@ body
 bool
 boost
 boundaries
+bounded
 box
 branch
 breakdown
@@ -149,6 +151,7 @@ concurrency
 config
 configuration
 connect
+connected
 connection
 constraints
 container
@@ -220,6 +223,7 @@ disambiguates
 discipline
 discovery
 display
+distinguishes
 doc
 docs
 documentation
@@ -284,8 +288,10 @@ files
 final
 finalize
 finalizes
+find
 finds
 firmware
+first
 fix
 flags
 flathub
@@ -328,6 +334,7 @@ hash
 header
 health
 helper
+helperd
 helpers
 hero
 hex
@@ -609,6 +616,7 @@ rate
 read
 readiness
 readme
+ready
 real
 reality
 reapply
@@ -684,12 +692,15 @@ section
 select
 self
 sensors
+separate
 service
 services
 session
 set
 setter
 settings
+setup
+severity
 sha
 shape
 shared
@@ -832,7 +843,6 @@ usage
 used
 user
 users
-uses
 valid
 validate
 validated

@@ -39,8 +39,10 @@ The implemented page set is:
 5. Memory
 6. Lighting
 7. Cooling
-8. Diagnostics
-9. About
+8. Setup & Access
+9. Settings
+10. Diagnostics
+11. About
 
 The tray menu currently supports:
 
@@ -52,7 +54,7 @@ The tray menu currently supports:
 - Quit
 
 The window close button defaults to hiding the main window when tray support is
-available. The tray Quit action and the About-page lifecycle Quit action remain
+available. The tray Quit action and the Settings-page lifecycle Quit action remain
 the explicit full-exit paths.
 
 ## Current Update Model
@@ -106,6 +108,7 @@ Current behavior:
 - System Overview uses five cards across when at least 1160 px is available to the group and intentionally caps at three columns below that point, preventing an accidental 4+1 wrap
 - other responsive `GtkFlowBox` groups wrap naturally to two or one column without horizontal scrolling; Current System Mode uses 5-wide or 3+2 packing
 - GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
+- Settings can hide Advanced System Health, the conditional NVMe card, or Cooling Snapshot and can enable a compact vertical layout
 
 ### Setup & Access
 
@@ -241,6 +244,28 @@ Current implementation note:
 - Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
+### Settings
+
+Purpose:
+
+- keep application preferences separate from project metadata and hardware action pages
+- expose the durable configuration surface without implying startup automation
+
+Current content:
+
+- Startup & Tray: On Close, Launch on Login, Start Minimized to Tray, and Exit Completely
+- Dashboard: Advanced System Health, conditional NVMe card, Cooling Snapshot, and compact spacing
+- Control Preferences: preferred charge limit and last manual performance profile
+- Automation: an explicit notice that saved hardware preferences are not auto-applied
+- Reset: destructive-style button with confirmation that restores rog-helper defaults
+
+Current behavior:
+
+- changes are sent to the daemon and atomically saved in versioned XDG `config.toml`
+- a failed save leaves the previous good file in place and reports an error toast
+- Reset synchronizes rog-helper's managed autostart entry with the default lifecycle setting
+- remembered hardware values do not trigger writes on application or daemon startup
+
 ### Diagnostics
 
 Purpose:
@@ -280,11 +305,6 @@ Current content:
 - last check timestamp
 - last check result
 - release-notes preview
-- lifecycle controls for:
-  - close behavior
-  - launch on login
-  - start minimized to tray
-  - explicit full exit
 - manual `Check for Updates` action
 - best-effort `Update Now` / `Download Latest` action
 - source, support, and issue-reporting buttons
@@ -296,7 +316,7 @@ Current implementation note:
 - maintainer GitHub metadata is derived from the repository URL when possible
 - release checks are manual, run in the UI process, and use the GitHub Releases API
 - automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
-- lifecycle preferences are limited UI settings persisted in the user's XDG config/autostart locations; they are not a general hardware-control settings system
+- lifecycle and durable preferences are intentionally located on Settings
 
 ## Current Capability Behavior
 
@@ -354,7 +374,6 @@ These are not current pages or complete current UI features.
 ### Planned or future pages
 
 - Profiles page
-- Settings page
 
 Related note:
 

@@ -51,6 +51,9 @@ The daemon already exposes:
 - `GetCpuCaps`
 - `GetCpuTelemetry`
 - `GetCpuDiagnostics`
+- `GetConfiguration`
+- `SetConfiguration`
+- `ResetConfiguration`
 - `SetLighting`
 - `SetProfile`
 - `SetGpuMode`
@@ -70,6 +73,8 @@ The UI currently ships these pages:
 - Memory
 - Lighting
 - Cooling
+- Setup & Access
+- Settings
 - Diagnostics
 - About
 
@@ -192,16 +197,20 @@ Implemented when asusd exposes a compatible Aura/keyboard lighting DBus backend,
 
 ### Persistent configuration
 
-Implemented in limited form:
+Implemented:
 
-- UI lifecycle settings for close behavior, launch-on-login, start-minimized-to-tray,
-  and the one-time close-to-tray hint
+- versioned XDG `config.toml` with daemon-authoritative writes
+- atomic replacement, safe defaults, field-level validation, future-field tolerance, and legacy
+  `ui.toml` migration
+- dedicated Settings page for lifecycle and dashboard preferences
+- inert preferred charge limit, last manual profile, and fan-sync preference
+- confirmed reset to defaults
 
-Planned but missing:
+Still missing:
 
-- persistent hardware/control preferences
-- saved automation rules
-- durable control preferences
+- saved automation rules and daemon policy execution
+- persistent verified fan curves
+- automatic hardware application, intentionally deferred until an explicit safety model exists
 
 ### Typed daemon API payloads
 

@@ -1,16 +1,18 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use regex::Regex;
 use rog_core::{
-    dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
-    CpuControlAccess, CpuPathAccess, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
-    FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
-    FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode,
-    LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor, SetupIssue,
-    SetupStatus, TelemetrySnapshot,
+    config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_or_migrate,
+    save_config_atomic, validate_config, AppConfig, AppState, BatteryLimitPercent, BatteryState,
+    CpuAccessState, CpuCaps, CpuControlAccess, CpuPathAccess, CpuTelemetry, DependencyStatus,
+    DeviceCaps, FanCaps, FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState,
+    FanTelemetry, FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics,
+    LightingMode, LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor,
+    SetupIssue, SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -39,6 +41,8 @@ const DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 struct SharedState {
     inner: RwLock<AppState>,
     control: RwLock<ControlState>,
+    config: RwLock<AppConfig>,
+    config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +155,22 @@ impl RogHelperDaemon {
         self.state.control.read().expect("rwlock poisoned").clone()
     }
 
+    fn read_config(&self) -> AppConfig {
+        self.state.config.read().expect("rwlock poisoned").clone()
+    }
+
+    fn persist_config(&self, mut config: AppConfig) -> Result<AppConfig, String> {
+        config.version = rog_core::CONFIG_VERSION;
+        validate_config(&config)?;
+        let path = self.state.config_path.as_ref().ok_or_else(|| {
+            "Configuration path is unavailable because HOME and XDG_CONFIG_HOME are not set."
+                .to_string()
+        })?;
+        save_config_atomic(path, &config)?;
+        *self.state.config.write().expect("rwlock poisoned") = config.clone();
+        Ok(config)
+    }
+
     fn set_control_state(
         &self,
         profile: Option<PerformanceProfile>,
@@ -188,6 +208,29 @@ impl RogHelperDaemon {
 
 #[interface(name = "io.github.roghelper.Daemon1")]
 impl RogHelperDaemon {
+    fn get_configuration(&self) -> String {
+        config_to_toml(&self.read_config()).unwrap_or_else(|error| {
+            warn!("failed to serialize in-memory configuration: {error}");
+            config_to_toml(&AppConfig::default()).expect("default configuration serializes")
+        })
+    }
+
+    fn set_configuration(&self, contents: &str) -> fdo::Result<()> {
+        let config = toml::from_str::<AppConfig>(contents).map_err(|error| {
+            fdo::Error::InvalidArgs(format!("configuration is invalid: {error}"))
+        })?;
+        self.persist_config(config)
+            .map(|_| ())
+            .map_err(fdo::Error::Failed)
+    }
+
+    fn reset_configuration(&self) -> fdo::Result<String> {
+        let config = self
+            .persist_config(AppConfig::default())
+            .map_err(fdo::Error::Failed)?;
+        config_to_toml(&config).map_err(fdo::Error::Failed)
+    }
+
     fn get_caps(&self) -> HashMap<String, OwnedValue> {
         caps_to_dbus(&self.read_state().caps)
     }
@@ -649,6 +692,23 @@ async fn main() -> anyhow::Result<()> {
 
     info!("starting rog-helperd");
 
+    let resolved_config_path = config_path();
+    let (app_config, app_config_path) = match resolved_config_path {
+        Ok(path) => {
+            let legacy = legacy_ui_config_path().unwrap_or_else(|_| path.with_file_name("ui.toml"));
+            let loaded = load_or_migrate(&path, &legacy);
+            for warning in &loaded.warnings {
+                warn!("{warning}");
+            }
+            info!("configuration path: {}", path.display());
+            (loaded.config, Some(path))
+        }
+        Err(error) => {
+            warn!("{error}; using in-memory defaults");
+            (AppConfig::default(), None)
+        }
+    };
+
     let upower = UPowerProvider::connect_system()
         .await
         .context("connect to UPower")?;
@@ -989,6 +1049,8 @@ async fn main() -> anyhow::Result<()> {
     let shared = Arc::new(SharedState {
         inner: RwLock::new(init_state),
         control: RwLock::new(control_state),
+        config: RwLock::new(app_config),
+        config_path: app_config_path,
     });
 
     // Export DBus service on the session bus.

@@ -31,8 +31,24 @@ This is the current design, not a placeholder.
 
 ## Methods
 
+### Configuration
+
+- `GetConfiguration() -> s`
+  - returns the current normalized, versioned TOML configuration
+- `SetConfiguration(s) -> ()`
+  - validates and atomically persists a complete configuration replacement
+  - updates preferences only; it never invokes a hardware setter
+- `ResetConfiguration() -> s`
+  - atomically replaces the canonical file with safe defaults and returns normalized TOML
+
+The daemon is the only runtime writer of `config.toml`. The UI reads the file directly only during
+early startup so start-minimized behavior is known before the DBus connection is ready.
+
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
+| `GetConfiguration` | none | `s` | Returns normalized versioned TOML |
+| `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
+| `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
 | `GetCaps` | none | `a{sv}` | Returns the top-level device capability map |
 | `GetState` | none | `a{sv}` | Returns combined daemon state, including nested maps |
 | `GetTelemetry` | none | `a{sv}` | Returns the current telemetry snapshot |

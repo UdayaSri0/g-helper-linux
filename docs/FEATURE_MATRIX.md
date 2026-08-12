@@ -29,9 +29,12 @@ This matrix reflects the current implementation in the repository today. It is b
 | About page | `rog-ui` | Read | Implemented | Leads with packaged identity/icon and version, uses Cargo metadata with fallbacks, and shows maintainer info, source/support links, and release-status text |
 | Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
-| UI lifecycle preferences | `rog-ui` + XDG config/autostart files | Read + Write | Implemented | Limited to close behavior, launch-on-login, start-minimized-to-tray, and the close-to-tray hint |
+| Settings page | `rog-ui` + daemon configuration API | Read + Write | Implemented | Lifecycle, dashboard visibility/compactness, inert control preferences, automation policy, and confirmed reset |
+| Persistent configuration | `rog-core` + `rog-daemon` | Read + Write | Implemented | Versioned XDG `config.toml`, legacy `ui.toml` migration, field-level fallback, unknown-field tolerance, validation, and atomic replacement |
+| UI lifecycle preferences | `rog-ui` + daemon config/XDG autostart | Read + Write | Implemented | Close behavior, launch-on-login, start-minimized-to-tray, and the close-to-tray hint now live on Settings |
+| Remembered hardware/control preferences | `rog-daemon` config | Read + Write | Implemented, inert | Preferred charge limit, last manual profile, and fan-sync preference are saved but never applied at boot/login |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |
-| Persistent hardware/control configuration | None in current runtime | Read + Write | Missing | No saved hardware-control preferences, fan curves, profiles, or automation rules |
+| Persistent fan curves and automation rules | None in current runtime | Read + Write | Missing | No durable fan-curve or auto-policy runtime yet |
 
 ## Notes
 
