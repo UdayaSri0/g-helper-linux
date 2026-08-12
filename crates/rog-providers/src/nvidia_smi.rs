@@ -10,6 +10,13 @@ pub struct NvidiaGpuClocks {
     pub memory_clock_mhz: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NvidiaSmiProbe {
+    Available { gpu_names: Vec<String> },
+    NotFound,
+    Unavailable(String),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct NvidiaSmiTelemetryProvider {
     pub timeout_ms: u64,
@@ -24,6 +31,43 @@ impl Default for NvidiaSmiTelemetryProvider {
 impl NvidiaSmiTelemetryProvider {
     pub fn new(timeout_ms: u64) -> Self {
         Self { timeout_ms }
+    }
+
+    /// Executes a harmless read query so setup checks can distinguish an installed,
+    /// working CLI from a binary that merely exists on PATH.
+    pub async fn probe(&self) -> NvidiaSmiProbe {
+        let mut cmd = Command::new("nvidia-smi");
+        cmd.args(["--query-gpu=name", "--format=csv,noheader"]);
+
+        let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return NvidiaSmiProbe::NotFound
+            }
+            Ok(Err(error)) => {
+                return NvidiaSmiProbe::Unavailable(format!(
+                    "failed to execute nvidia-smi: {error}"
+                ))
+            }
+            Err(_) => return NvidiaSmiProbe::Unavailable("nvidia-smi timed out".to_string()),
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return NvidiaSmiProbe::Unavailable(if stderr.is_empty() {
+                format!("nvidia-smi exited with {}", output.status)
+            } else {
+                format!("nvidia-smi failed: {stderr}")
+            });
+        }
+
+        let gpu_names = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        NvidiaSmiProbe::Available { gpu_names }
     }
 
     /// Returns `Ok(None)` if `nvidia-smi` is not available.

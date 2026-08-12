@@ -43,6 +43,19 @@ pub const CPU_PATH_PATH_KEY: &str = "path";
 pub const CPU_PATH_READABLE_KEY: &str = "readable";
 pub const CPU_PATH_WRITABLE_KEY: &str = "writable";
 
+pub const SETUP_DEPENDENCIES_KEY: &str = "dependencies";
+pub const SETUP_PERMISSIONS_KEY: &str = "permissions";
+pub const SETUP_ISSUES_KEY: &str = "issues";
+pub const SETUP_KIND_KEY: &str = "kind";
+pub const SETUP_STATE_KEY: &str = "state";
+pub const SETUP_SUMMARY_KEY: &str = "summary";
+pub const SETUP_REQUIRED_FOR_KEY: &str = "required_for";
+pub const SETUP_EVIDENCE_KEY: &str = "evidence";
+pub const SETUP_PATHS_KEY: &str = "paths";
+pub const SETUP_SEVERITY_KEY: &str = "severity";
+pub const SETUP_TITLE_KEY: &str = "title";
+pub const SETUP_GUIDANCE_KEY: &str = "guidance";
+
 pub const CPU_TELEMETRY_PER_CORE_KEY: &str = "per_core";
 pub const CPU_LOGICAL_CPU_ID_KEY: &str = "logical_cpu_id";
 pub const CPU_CORE_ID_COMPAT_KEY: &str = "core_id";

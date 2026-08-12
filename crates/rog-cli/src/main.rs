@@ -9,11 +9,13 @@ use rog_core::{
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
+use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
+use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use tracing::{info, warn};
@@ -31,6 +33,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Check service readiness, hardware access, and write permissions.
+    SetupCheck,
     /// Print presence of key services (DBus + systemd).
     Services,
     /// List and optionally introspect system DBus services.
@@ -88,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
+        Cmd::SetupCheck => cmd_setup_check().await?,
         Cmd::Services => cmd_services().await?,
         Cmd::Dbus {
             filter,
@@ -114,6 +119,48 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
     }
 
+    Ok(())
+}
+
+async fn cmd_setup_check() -> anyhow::Result<()> {
+    let hwmon = HwmonTelemetryProvider::default();
+    let fan_caps = hwmon.fan_caps().unwrap_or_else(|error| {
+        warn!("fan capability probe failed during setup check: {error}");
+        FanCaps::from_fans(&[])
+    });
+    let cpu_caps = CpuTelemetryProvider::default().probe_caps();
+    let lighting_probe = probe_lighting_diagnostics().await;
+
+    let mut caps = DeviceCaps::unknown();
+    caps.has_aura = lighting_probe.aura.is_some();
+    caps.has_kbd_backlight = lighting_probe.kbd_detected;
+    let sysfs_writable = lighting_probe
+        .kbd_backlight
+        .as_ref()
+        .map(KbdBacklightSysfs::can_set_brightness)
+        .unwrap_or(false);
+    caps.kbd_backlight_access = lighting_access_from_backend_flags(
+        caps.has_aura,
+        lighting_probe.kbd_backlight.is_some(),
+        sysfs_writable,
+        lighting_probe.kbd_detected,
+        lighting_probe.kbd_probe_error.as_deref(),
+    );
+    let keyboard_paths = lighting_probe
+        .kbd_backlight
+        .as_ref()
+        .map(|kbd| vec![kbd.brightness_path().display().to_string()])
+        .unwrap_or_default();
+
+    let status = probe_setup_status(
+        RogHelperdProbe::ProbeSession,
+        &caps,
+        &cpu_caps,
+        &fan_caps,
+        keyboard_paths,
+    )
+    .await;
+    println!("{}", status.to_report_text(true));
     Ok(())
 }
 
@@ -776,6 +823,12 @@ fn lighting_access_from_backend_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_check_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["rog-helper", "setup-check"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::SetupCheck));
+    }
 
     #[test]
     fn backend_connect_status_maps_missing_backend_without_error() {

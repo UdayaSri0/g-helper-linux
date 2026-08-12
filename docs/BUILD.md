@@ -72,6 +72,7 @@ Run the diagnostics CLI:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps

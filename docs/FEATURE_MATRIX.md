@@ -5,7 +5,8 @@ This matrix reflects the current implementation in the repository today. It is b
 | Feature | Backend / provider | Read / Write | Current status | Notes / limitations |
 | --- | --- | --- | --- | --- |
 | Session daemon API | `rog-daemon` | Read + Write | Implemented | Session bus API exposed at `io.github.roghelper.Daemon` |
-| Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Useful for service, DBus, sensor, capability, and dedicated keyboard lighting/RGB inspection |
+| Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Includes consolidated `setup-check` plus service, DBus, sensor, capability, fan, and keyboard lighting/RGB inspection |
+| Setup & Access readiness | `setup` provider + daemon DBus + GTK UI | Read | Implemented | Verifies expected APIs, distinguishes missing/unreachable services from read-only/unsupported controls, and exposes advanced evidence without privilege escalation |
 | Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | Fan capability keys now include reading, manual percent, RPM target, curves, sync, boost, count, and backend; writable support is still hardware/backend-dependent |
 | Performance profile | `asusd` | Read + Write | Implemented | Requires `asusd`; UI exposes quick actions and GPU-page controls |
 | Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; available on Battery with a Dashboard quick control |

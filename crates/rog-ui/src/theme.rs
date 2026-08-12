@@ -52,6 +52,18 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
 .status-chip-info { background: alpha(#4da3ff, 0.12); color: #b9dcff; }
 .status-chip-warning { background: alpha(#e9a23b, 0.16); color: #f4c775; }
 .status-chip-error { background: alpha(#ef5b68, 0.14); color: #ff9ba4; }
+.setup-status-value {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: alpha(#4da3ff, 0.10);
+  color: #b9dcff;
+  font-size: 11px;
+  font-weight: 650;
+}
+.setup-status-value.status-ok { background: alpha(#39c58a, 0.14); color: #7de0b2; }
+.setup-status-value.status-info { background: alpha(#4da3ff, 0.12); color: #b9dcff; }
+.setup-status-value.status-warning { background: alpha(#e9a23b, 0.16); color: #f4c775; }
+.setup-status-value.status-error { background: alpha(#ef5b68, 0.14); color: #ff9ba4; }
 .page-header { margin: 2px 0 4px 0; }
 .page-title { font-size: 27px; font-weight: 750; color: #f4f7fb; }
 .page-subtitle { font-size: 14px; color: alpha(white, 0.58); }

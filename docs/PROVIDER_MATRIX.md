@@ -266,6 +266,26 @@ File: `crates/rog-providers/src/dbus.rs`
   - intended for diagnostics and probing
   - current introspection parsing is lightweight and regex-based
 
+## `setup`
+
+File: `crates/rog-providers/src/setup.rs`
+
+- Purpose
+  - aggregate bounded, unprivileged readiness checks for Setup & Access and the CLI
+- Read / Write
+  - Read only
+- Dependencies
+  - existing asusd, supergfxd, UPower, NVIDIA, CPU, keyboard-lighting, and fan probes
+  - session/system DBus, `systemctl show`, PATH lookup, and sysfs metadata
+- Current behavior
+  - live expected API calls determine readiness
+  - executable and systemd-unit discovery is retained only as diagnostic evidence
+  - NVIDIA relevance is based on detected PCI display hardware
+  - no command is executed for remediation and no permission is changed
+- Current limitations
+  - service checks use bounded timeouts and report unreachable when an API stalls
+  - package installation guidance remains documentation-based because package names and commands vary by distribution
+
 ## `traits`
 
 File: `crates/rog-providers/src/traits.rs`

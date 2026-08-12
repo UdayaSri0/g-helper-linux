@@ -8,6 +8,8 @@
 - Redesigned Fans page with a polished dashboard, animated RPM rotors, larger side-by-side CPU/GPU temperature gauges with operating MHz display, individual fan cards, disabled safe controls, curve preview, and collapsed diagnostics.
 - Session DBus fan methods: `GetFanCaps`, `GetFanState`, `GetFanCurves`, `SetFanAuto`, `SetFanManualPercent`, `SetFanRpmTarget`, `SetFanCurve`, `SetFanSync`, `SetFanBoost`, and `ResetFansToAuto`.
 - CLI fan diagnostics via `rog-helper fans` and `rog-helper fan-caps`.
+- Setup & Access page with verified service readiness, explicit write-permission states, safe guidance, refresh/copy actions, and advanced technical evidence.
+- Session DBus `GetSetupStatus` method and terminal parity through `rog-helper setup-check`.
 
 ## Safety
 
@@ -16,3 +18,4 @@
 - Manual fan control requires acknowledgement.
 - Boost is time-limited and restores Auto/BIOS mode when the timer ends.
 - Dangerous fan curves are rejected by shared core validation.
+- Setup checks remain unprivileged and never install packages, invoke `sudo`, change sysfs permissions, or bypass DBus policy.

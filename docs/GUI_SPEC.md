@@ -88,7 +88,7 @@ Current content:
   - GPU mode
   - battery charge limit
   - keyboard backlight brightness
-- one aggregated dependency hint for missing `asusd` and `supergfxd`, instead of repeating setup prose under every affected control
+- a single compact `N control areas need setup` notification whose Review action opens Setup & Access; Dashboard does not duplicate remediation prose
 - a content-driven Cooling Snapshot with CPU/GPU/NVMe thermal values and up to four detected fan RPM rows using static fan symbols; it ends after its last detected row
 - a Live Performance panel with compact CPU usage, CPU temperature, GPU temperature, and memory usage trends
 - a System Health panel summarizing `rog-helperd`, `asusd`, `supergfxd`, CPU writes, Lighting writes, fan-control state, and warning count with semantic indicators
@@ -106,6 +106,23 @@ Current behavior:
 - System Overview uses five cards across when at least 1160 px is available to the group and intentionally caps at three columns below that point, preventing an accidental 4+1 wrap
 - other responsive `GtkFlowBox` groups wrap naturally to two or one column without horizontal scrolling; Current System Mode uses 5-wide or 3+2 packing
 - GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
+
+### Setup & Access
+
+Purpose:
+
+- explain why a control is unavailable without asking users to interpret raw diagnostics
+- separate missing services, permission limits, unsupported hardware, and transient API failures
+
+Current content and behavior:
+
+- grouped Session Daemon, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
+- verified readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and relevant `nvidia-smi` support
+- live API checks are authoritative; executable and systemd-unit discovery is advanced evidence
+- explicit Writable, Read-only, Unsupported, and Unavailable permission language
+- Refresh checks, Copy setup diagnostics, and Open full Diagnostics actions
+- sysfs paths and endpoint details remain collapsed under Advanced details
+- all checks are read-only; the UI does not invoke `sudo`, install packages, change permissions, or execute remediation commands
 
 ### CPU
 

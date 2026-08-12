@@ -34,6 +34,7 @@ Diagnostics CLI:
 - `rog-helper`
   - Direct provider and environment inspection
   - Useful when the daemon or UI is unavailable
+  - `setup-check` reports the same service-readiness and permission concepts from a terminal
 
 ## Runtime Data Flow
 
@@ -59,6 +60,11 @@ More concretely:
   - `nvidia-smi` as a read-only fallback
 
 Hardware I/O is not implemented in the UI.
+
+Setup readiness follows the same boundary. Structured `SetupStatus`, `DependencyStatus`,
+`PermissionStatus`, and `SetupIssue` types live in `rog-core`; live discovery is implemented in
+`rog-providers`; `rog-helperd` exposes the result over session DBus; and the UI only presents it.
+API calls are the readiness authority, while binary and systemd discovery is retained as evidence.
 
 ## State Ownership
 

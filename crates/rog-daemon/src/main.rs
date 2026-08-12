@@ -6,10 +6,11 @@ use anyhow::Context;
 use regex::Regex;
 use rog_core::{
     dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
-    CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanCaps, FanControlMode, FanCurve,
-    FanDomain, FanInfo, FanPoint, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    GpuMode, LightingDiagnostics, LightingMode, LightingState, PerformanceProfile, PowerSource,
-    RgbColor, TelemetrySnapshot,
+    CpuControlAccess, CpuPathAccess, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
+    FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode,
+    LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor, SetupIssue,
+    SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -20,6 +21,7 @@ use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::power_supply::PowerSupplySysfsProvider;
+use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use rog_providers::upower::UPowerProvider;
@@ -246,6 +248,24 @@ impl RogHelperDaemon {
     fn get_cpu_diagnostics(&self) -> String {
         let state = self.read_state();
         cpu_diagnostics_text(&state.cpu_caps, &state.cpu)
+    }
+
+    async fn get_setup_status(&self) -> HashMap<String, OwnedValue> {
+        let state = self.read_state();
+        let keyboard_paths = self
+            .kbd_backlight
+            .as_ref()
+            .map(|kbd| vec![kbd.brightness_path().display().to_string()])
+            .unwrap_or_default();
+        let setup = probe_setup_status(
+            RogHelperdProbe::AssumeConnected,
+            &state.caps,
+            &state.cpu_caps,
+            &state.fan_state.caps,
+            keyboard_paths,
+        )
+        .await;
+        setup_status_to_dbus(&setup)
     }
 
     fn get_fan_caps(&self) -> HashMap<String, OwnedValue> {
@@ -1686,6 +1706,106 @@ fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, Own
     m
 }
 
+fn setup_status_to_dbus(status: &SetupStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        "checked_at_ms".to_string(),
+        OwnedValue::from(status.checked_at_ms),
+    );
+    map.insert(
+        dbus_keys::SETUP_DEPENDENCIES_KEY.to_string(),
+        ov(status
+            .dependencies
+            .iter()
+            .map(setup_dependency_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map.insert(
+        dbus_keys::SETUP_PERMISSIONS_KEY.to_string(),
+        ov(status
+            .permissions
+            .iter()
+            .map(setup_permission_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map.insert(
+        dbus_keys::SETUP_ISSUES_KEY.to_string(),
+        ov(status
+            .issues
+            .iter()
+            .map(setup_issue_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map
+}
+
+fn setup_dependency_to_dbus(status: &DependencyStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_KIND_KEY.to_string(),
+        ov(status.kind.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_STATE_KEY.to_string(),
+        ov(status.state.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(status.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_REQUIRED_FOR_KEY.to_string(),
+        ov(status.required_for.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_EVIDENCE_KEY.to_string(),
+        ov(status.evidence.clone()),
+    );
+    map
+}
+
+fn setup_permission_to_dbus(status: &PermissionStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_KIND_KEY.to_string(),
+        ov(status.kind.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_STATE_KEY.to_string(),
+        ov(status.state.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(status.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_PATHS_KEY.to_string(),
+        ov(status.paths.clone()),
+    );
+    map
+}
+
+fn setup_issue_to_dbus(issue: &SetupIssue) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_SEVERITY_KEY.to_string(),
+        ov(issue.severity.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_TITLE_KEY.to_string(),
+        ov(issue.title.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(issue.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_GUIDANCE_KEY.to_string(),
+        ov(issue.guidance.clone()),
+    );
+    map
+}
+
 fn cpu_path_access_to_dbus(path: &CpuPathAccess) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert(
@@ -2617,6 +2737,48 @@ mod tests {
                 reason
             );
         }
+    }
+
+    #[test]
+    fn setup_status_to_dbus_emits_structured_rows() {
+        let status = SetupStatus {
+            checked_at_ms: 42,
+            dependencies: vec![rog_core::DependencyStatus {
+                kind: rog_core::DependencyKind::Asusd,
+                state: rog_core::DependencyState::NotAvailable,
+                summary: "No compatible API found.".to_string(),
+                required_for: vec!["performance profiles".to_string()],
+                evidence: vec!["systemd unit not found".to_string()],
+            }],
+            permissions: vec![rog_core::PermissionStatus {
+                kind: rog_core::PermissionKind::CpuPolicyWrites,
+                state: rog_core::PermissionState::ReadOnly,
+                summary: "Writes blocked.".to_string(),
+                paths: vec!["/sys/example".to_string()],
+            }],
+            issues: vec![rog_core::SetupIssue {
+                severity: rog_core::SetupSeverity::Warning,
+                title: "asusd needs attention".to_string(),
+                summary: "Missing service.".to_string(),
+                guidance: "See installation documentation.".to_string(),
+            }],
+        };
+
+        let map = setup_status_to_dbus(&status);
+        assert_eq!(
+            map.get("checked_at_ms")
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(42)
+        );
+        assert_eq!(
+            rows_from_value(&map[dbus_keys::SETUP_DEPENDENCIES_KEY]).len(),
+            1
+        );
+        assert_eq!(
+            rows_from_value(&map[dbus_keys::SETUP_PERMISSIONS_KEY]).len(),
+            1
+        );
+        assert_eq!(rows_from_value(&map[dbus_keys::SETUP_ISSUES_KEY]).len(), 1);
     }
 
     #[test]

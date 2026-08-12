@@ -39,6 +39,7 @@ This is the current design, not a placeholder.
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
 | `GetCpuDiagnostics` | none | `s` | Returns formatted text diagnostics for CPU support and state |
+| `GetSetupStatus` | none | `a{sv}` | Runs bounded, read-only service/API and permission readiness checks |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
 | `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
@@ -119,6 +120,20 @@ Optional keys:
 - `battery_limit` -> `t`
 
 This is the main fetch path used by the current UI.
+
+## `GetSetupStatus` Response
+
+`GetSetupStatus` returns structured readiness data for the Setup & Access page:
+
+- `checked_at_ms` -> `t`
+- `dependencies` -> array of maps containing `kind`, `state`, `summary`, `required_for`, and advanced `evidence`
+- `permissions` -> array of maps containing `kind`, `state`, `summary`, and advanced `paths`
+- `issues` -> array of maps containing `severity`, `title`, `summary`, and safe human-readable `guidance`
+
+Dependency states are `connected`, `ready`, `not_available`, `inactive`, `unreachable`,
+`not_relevant`, or `unknown`. Permission states are `writable`, `read_only`, `unsupported`,
+`unavailable`, or `unknown`. Probes are bounded and unprivileged; this method performs no repair,
+installation, or permission change.
 
 ### Lighting map
 

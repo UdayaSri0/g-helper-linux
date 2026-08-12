@@ -2,7 +2,7 @@
 
 This document describes the current pages implemented in `crates/rog-ui/src/`.
 
-All nine pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, compact/standard/hero metric tiers, semantic status chips, neutral card surfaces, spacing, and capability-state language.
+All ten pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, compact/standard/hero metric tiers, semantic status chips, neutral card surfaces, spacing, and capability-state language.
 
 For each page, it lists:
 
@@ -22,7 +22,7 @@ For each page, it lists:
 - compact battery, cooling, memory, power, and conditional NVMe cards
 - Cooling Snapshot with a three-temperature strip and up to four static live-RPM fan rows
 - compact CPU usage/temperature, GPU temperature, and memory history trends
-- System Health summary for daemon/dependency/CPU/Lighting/fan/warning state with semantic indicators and a standard Diagnostics action
+- System Health summary for daemon/dependency/CPU/Lighting/fan/warning state with semantic indicators and a Setup & Access action
 - compact warning notification and warning summary
 - collapsed Advanced Sensor Details for raw temperatures, fans, and endpoint samples
 
@@ -44,7 +44,7 @@ For each page, it lists:
 
 Current behavior:
 
-- disabled quick actions remain capability-driven; missing `asusd`/`supergfxd` guidance is consolidated into one dependency hint
+- disabled quick actions remain capability-driven; remediation guidance lives on Setup & Access rather than being duplicated below Dashboard controls
 - Quick Performance uses a two-column dashboard tile grid where space permits and wraps without changing capability gating
 - System Overview uses five columns at wide widths and an intentional 3+2 arrangement below its wide breakpoint; it never falls into a 4+1 layout
 - Cooling Snapshot is content-driven and ends directly after its last detected fan row
@@ -57,6 +57,30 @@ Current behavior:
 - Dashboard intentionally does not duplicate Cooling fan curves or other detailed-page controls
 - GPU utilisation, VRAM use, SMART health, and other unreported metrics remain absent rather than simulated
 - no richer profile rules editor yet
+
+## Setup & Access
+
+### What it shows
+
+- live readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and `nvidia-smi` when relevant
+- the controls each service enables and whether the expected API actually responded
+- CPU policy, keyboard-lighting, and fan-control write states as Writable, Read-only, Unsupported, Unavailable, or Checking
+- a hardware-support summary that preserves unsupported states instead of treating them as permission failures
+- human-readable next steps without unverified package-manager commands
+- technical DBus, systemd, binary, and sysfs evidence under collapsed Advanced details
+
+### What it supports
+
+- Refresh checks
+- Copy setup diagnostics
+- Open full Diagnostics
+
+### Safety and discovery behavior
+
+- checks are unprivileged and read-only
+- service readiness requires a working DBus/API query; binary presence and systemd state are supporting evidence only
+- the page never runs `sudo`, installs packages, changes sysfs modes, or bypasses DBus authorization
+- Dashboard Review actions navigate here and show only a compact issue count
 
 ## CPU
 
@@ -237,6 +261,7 @@ Current behavior:
 ### What it supports
 
 - copy diagnostics
+- open Setup & Access for guided remediation
 
 ### Capability dependencies
 

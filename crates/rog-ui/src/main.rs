@@ -14,9 +14,11 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     dbus_keys, BatteryState, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind,
-    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DeviceCaps, FanCaps, FanControlMode, FanInfo,
-    FanState, FanTelemetry, FeatureAccessState, FeatureAvailability, PowerSource, RgbColor,
-    TelemetrySnapshot, TopProcessMem,
+    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
+    DependencyStatus, DeviceCaps, FanCaps, FanControlMode, FanInfo, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, PermissionKind, PermissionState, PermissionStatus,
+    PowerSource, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
+    TopProcessMem,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -69,6 +71,7 @@ trait Daemon1 {
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
+    fn get_setup_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_curves(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -263,6 +266,9 @@ struct SharedUiState {
     memory_usage_history: Vec<f32>,
     caps: DeviceCaps,
     caps_text: String,
+    setup_status: SetupStatus,
+    pending_setup_refresh: bool,
+    setup_refreshing: bool,
     warnings: Vec<String>,
     profile: Option<String>,
     gpu_mode: Option<String>,
@@ -306,6 +312,9 @@ impl Default for SharedUiState {
             memory_usage_history: Vec::new(),
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
+            setup_status: SetupStatus::unknown(),
+            pending_setup_refresh: true,
+            setup_refreshing: false,
             warnings: Vec::new(),
             profile: None,
             gpu_mode: None,
@@ -820,16 +829,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     system_state_details.set_wrap(true);
     system_state_details.add_css_class("dashboard-system-details");
     system_card.widget().append(&system_state_details);
-    let system_review_button = gtk::Button::with_label("Review Diagnostics");
+    let system_review_button = gtk::Button::with_label("Review Setup");
     system_review_button.add_css_class("flat");
     system_review_button.set_halign(gtk::Align::Start);
     system_review_button.update_property(&[gtk::accessible::Property::Label(
-        "Review system health in Diagnostics",
+        "Review Setup and Access status",
     )]);
     {
         let stack = stack.clone();
         system_review_button.connect_clicked(move |_| {
-            stack.set_visible_child_name("diagnostics");
+            stack.set_visible_child_name("setup");
         });
     }
     system_card.widget().append(&system_review_button);
@@ -905,7 +914,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let warning_banner = adw::Banner::new("Some controls need attention");
     warning_banner.add_css_class("dashboard-warning");
-    warning_banner.set_button_label(Some("Open Diagnostics"));
+    warning_banner.set_button_label(Some("Review"));
     warning_banner.set_revealed(false);
 
     let warning_subtitle = gtk::Label::new(Some(""));
@@ -932,12 +941,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let secondary_title = gtk::Label::new(Some("System Overview"));
     secondary_title.set_xalign(0.0);
     secondary_title.add_css_class("title-3");
-
-    let quick_dependency_hint = gtk::Label::new(None);
-    quick_dependency_hint.set_xalign(0.0);
-    quick_dependency_hint.set_wrap(true);
-    quick_dependency_hint.add_css_class("dashboard-dependency-hint");
-    quick_dependency_hint.set_visible(false);
 
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     style_linked_toggle_row(&profile_buttons);
@@ -1088,7 +1091,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let (quick_performance_panel, quick_performance_body) =
         dashboard_panel("Quick Performance", ICON_DASHBOARD);
     quick_performance_panel.add_css_class("dashboard-quick-panel");
-    quick_performance_body.append(&quick_dependency_hint);
     let quick_performance_grid = gtk::FlowBox::new();
     quick_performance_grid.set_selection_mode(gtk::SelectionMode::None);
     quick_performance_grid.set_min_children_per_line(1);
@@ -1213,17 +1215,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     ] {
         system_health_body.append(row);
     }
-    let health_review_button = gtk::Button::with_label("Open Diagnostics");
+    let health_review_button = gtk::Button::with_label("Review Setup");
     health_review_button.add_css_class("suggested-action");
     health_review_button.add_css_class("pill");
     health_review_button.set_halign(gtk::Align::Start);
     health_review_button.update_property(&[gtk::accessible::Property::Label(
-        "Open Diagnostics for system health details",
+        "Review Setup and Access status",
     )]);
     {
         let stack = stack.clone();
         health_review_button.connect_clicked(move |_| {
-            stack.set_visible_child_name("diagnostics");
+            stack.set_visible_child_name("setup");
         });
     }
     system_health_body.append(&health_review_button);
@@ -1348,7 +1350,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     {
         let stack = stack.clone();
         cpu_read_only_banner.connect_button_clicked(move |_| {
-            stack.set_visible_child_name("diagnostics");
+            stack.set_visible_child_name("setup");
         });
     }
 
@@ -2027,6 +2029,140 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let gpu = clamped_scroller(&gpu_page);
 
+    let setup_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    setup_root.set_margin_top(24);
+    setup_root.set_margin_bottom(32);
+    setup_root.set_margin_start(24);
+    setup_root.set_margin_end(24);
+    setup_root.append(&page_header(
+        "Setup & Access",
+        "Understand which services, permissions, or hardware capabilities affect controls.",
+    ));
+
+    let setup_safety_banner = adw::Banner::new(
+        "Checks are read-only. rog-helper never runs sudo, changes permissions, or installs packages.",
+    );
+    setup_safety_banner.add_css_class("compact-banner");
+    setup_safety_banner.set_revealed(true);
+    setup_root.append(&setup_safety_banner);
+
+    let setup_session_group = adw::PreferencesGroup::builder()
+        .title("Session Daemon")
+        .description("The unprivileged session service used by the desktop application.")
+        .build();
+    let (setup_daemon_row, setup_daemon_value) =
+        setup_pref_row(&setup_session_group, "rog-helperd");
+    setup_root.append(&setup_session_group);
+
+    let setup_services_group = adw::PreferencesGroup::builder()
+        .title("Control Services")
+        .description("A live API check is required; a binary alone is not considered ready.")
+        .build();
+    let (setup_asusd_row, setup_asusd_value) = setup_pref_row(&setup_services_group, "asusd");
+    let (setup_supergfxd_row, setup_supergfxd_value) =
+        setup_pref_row(&setup_services_group, "supergfxd");
+    let (setup_upower_row, setup_upower_value) = setup_pref_row(&setup_services_group, "UPower");
+    let (setup_nvidia_row, setup_nvidia_value) =
+        setup_pref_row(&setup_services_group, "nvidia-smi");
+    setup_root.append(&setup_services_group);
+
+    let setup_permissions_group = adw::PreferencesGroup::builder()
+        .title("Permissions")
+        .description("Detected device paths are shown only in Advanced details below.")
+        .build();
+    let (setup_cpu_row, setup_cpu_value) =
+        setup_pref_row(&setup_permissions_group, "CPU policy writes");
+    let (setup_lighting_row, setup_lighting_value) =
+        setup_pref_row(&setup_permissions_group, "Keyboard lighting writes");
+    let (setup_fans_row, setup_fans_value) =
+        setup_pref_row(&setup_permissions_group, "Fan controls");
+    setup_root.append(&setup_permissions_group);
+
+    let setup_hardware_group = adw::PreferencesGroup::builder()
+        .title("Hardware Support")
+        .description(
+            "Unsupported hardware remains visible and is not presented as a permission problem.",
+        )
+        .build();
+    let (setup_profiles_row, setup_profiles_value) =
+        setup_pref_row(&setup_hardware_group, "Performance profiles");
+    let (setup_charge_row, setup_charge_value) =
+        setup_pref_row(&setup_hardware_group, "Battery charge limit");
+    let (setup_gpu_row, setup_gpu_value) =
+        setup_pref_row(&setup_hardware_group, "GPU mode switching");
+    let (setup_kbd_support_row, setup_kbd_support_value) =
+        setup_pref_row(&setup_hardware_group, "Keyboard lighting");
+    let (setup_fan_support_row, setup_fan_support_value) =
+        setup_pref_row(&setup_hardware_group, "Fan telemetry and control");
+    setup_root.append(&setup_hardware_group);
+
+    let setup_issues_group = adw::PreferencesGroup::builder()
+        .title("Recommended Next Steps")
+        .build();
+    let setup_issues_row = adw::ActionRow::builder()
+        .title("Checking setup readiness…")
+        .subtitle("Refresh checks to verify services and permissions again.")
+        .build();
+    setup_issues_row.set_activatable(false);
+    setup_issues_group.add(&setup_issues_row);
+    setup_root.append(&setup_issues_group);
+
+    let refresh_setup_button = gtk::Button::with_label("Refresh checks");
+    refresh_setup_button.add_css_class("suggested-action");
+    {
+        let shared = shared.clone();
+        refresh_setup_button.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            if let Ok(mut state) = shared.lock() {
+                state.pending_setup_refresh = true;
+                state.setup_refreshing = true;
+            }
+        });
+    }
+    let copy_setup_button = gtk::Button::with_label("Copy setup diagnostics");
+    {
+        let shared = shared.clone();
+        copy_setup_button.connect_clicked(move |_| {
+            let text = shared
+                .lock()
+                .map(|state| state.setup_status.to_report_text(true))
+                .unwrap_or_default();
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&text);
+            }
+        });
+    }
+    let setup_open_diagnostics = gtk::Button::with_label("Open full Diagnostics");
+    {
+        let stack = stack.clone();
+        setup_open_diagnostics.connect_clicked(move |_| {
+            stack.set_visible_child_name("diagnostics");
+        });
+    }
+    let setup_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    setup_actions.set_halign(gtk::Align::Start);
+    setup_actions.append(&refresh_setup_button);
+    setup_actions.append(&copy_setup_button);
+    setup_actions.append(&setup_open_diagnostics);
+    setup_root.append(&setup_actions);
+
+    let setup_advanced_buffer = gtk::TextBuffer::new(None);
+    setup_advanced_buffer.set_text("Run setup checks to load technical evidence.");
+    let setup_advanced_view = gtk::TextView::with_buffer(&setup_advanced_buffer);
+    setup_advanced_view.set_editable(false);
+    setup_advanced_view.set_cursor_visible(false);
+    setup_advanced_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    setup_advanced_view.add_css_class("monospace");
+    let setup_advanced_scroller = gtk::ScrolledWindow::new();
+    setup_advanced_scroller.set_min_content_height(280);
+    setup_advanced_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    setup_advanced_scroller.set_child(Some(&setup_advanced_view));
+    let setup_advanced_expander = gtk::Expander::new(Some("Advanced details"));
+    setup_advanced_expander.set_expanded(false);
+    setup_advanced_expander.set_child(Some(&setup_advanced_scroller));
+    setup_root.append(&setup_advanced_expander);
+    let setup = clamped_scroller(&setup_root);
+
     let diag_buffer = gtk::TextBuffer::new(None);
     diag_buffer.set_text("Loading diagnostics...");
     let diag_view = gtk::TextView::with_buffer(&diag_buffer);
@@ -2064,6 +2200,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         "Diagnostics",
         "Services, capabilities, permissions, sensor endpoints, and troubleshooting details.",
     ));
+    let diag_setup_button = gtk::Button::with_label("Open Setup & Access");
+    diag_setup_button.add_css_class("suggested-action");
+    diag_setup_button.set_halign(gtk::Align::Start);
+    {
+        let stack = stack.clone();
+        diag_setup_button.connect_clicked(move |_| {
+            stack.set_visible_child_name("setup");
+        });
+    }
+    diag_root.append(&diag_setup_button);
     let diag_overview = gtk::FlowBox::new();
     diag_overview.set_selection_mode(gtk::SelectionMode::None);
     diag_overview.set_min_children_per_line(1);
@@ -2686,12 +2832,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let fans_banner = adw::Banner::new("Fan control is capability-dependent");
     fans_banner.add_css_class("fans-warning-banner");
     fans_banner.set_revealed(true);
-    fans_banner.set_button_label(Some("Open Diagnostics"));
+    fans_banner.set_button_label(Some("Review Access"));
     fans_root.append(&fans_banner);
     {
         let stack = stack.clone();
         fans_banner.connect_button_clicked(move |_| {
-            stack.set_visible_child_name("diagnostics");
+            stack.set_visible_child_name("setup");
         });
     }
 
@@ -3063,6 +3209,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&ram, Some("ram"), "Memory", ICON_RAM);
     stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
     stack.add_titled_with_icon(&fans, Some("fans"), "Cooling", ICON_FANS);
+    stack.add_titled_with_icon(&setup, Some("setup"), "Setup & Access", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
@@ -3102,6 +3249,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             name: "fans",
             label: "Cooling",
             icon: ICON_FANS,
+        },
+        NavigationItem {
+            name: "setup",
+            label: "Setup & Access",
+            icon: ICON_DIAGNOSTICS,
         },
         NavigationItem {
             name: "diagnostics",
@@ -3178,7 +3330,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     {
         let stack = stack.clone();
         warning_banner.connect_button_clicked(move |_| {
-            stack.set_visible_child_name("diagnostics");
+            stack.set_visible_child_name("setup");
         });
     }
     {
@@ -3237,6 +3389,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             memory_usage_history,
             caps,
             caps_text,
+            setup_status,
+            setup_refreshing,
             warnings,
             profile,
             gpu_mode,
@@ -3277,6 +3431,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.memory_usage_history.clone(),
                 st.caps.clone(),
                 st.caps_text.clone(),
+                st.setup_status.clone(),
+                st.setup_refreshing,
                 st.warnings.clone(),
                 st.profile.clone(),
                 st.gpu_mode.clone(),
@@ -3335,6 +3491,102 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         connection_status.remove_css_class("connected");
         connection_status.remove_css_class("disconnected");
         let state_received = telemetry.is_some();
+
+        update_setup_dependency_row(
+            &setup_status,
+            DependencyKind::RogHelperd,
+            &setup_daemon_row,
+            &setup_daemon_value,
+        );
+        update_setup_dependency_row(
+            &setup_status,
+            DependencyKind::Asusd,
+            &setup_asusd_row,
+            &setup_asusd_value,
+        );
+        update_setup_dependency_row(
+            &setup_status,
+            DependencyKind::Supergfxd,
+            &setup_supergfxd_row,
+            &setup_supergfxd_value,
+        );
+        update_setup_dependency_row(
+            &setup_status,
+            DependencyKind::UPower,
+            &setup_upower_row,
+            &setup_upower_value,
+        );
+        update_setup_dependency_row(
+            &setup_status,
+            DependencyKind::NvidiaSmi,
+            &setup_nvidia_row,
+            &setup_nvidia_value,
+        );
+        update_setup_permission_row(
+            &setup_status,
+            PermissionKind::CpuPolicyWrites,
+            &setup_cpu_row,
+            &setup_cpu_value,
+        );
+        update_setup_permission_row(
+            &setup_status,
+            PermissionKind::KeyboardLightingWrites,
+            &setup_lighting_row,
+            &setup_lighting_value,
+        );
+        update_setup_permission_row(
+            &setup_status,
+            PermissionKind::FanControls,
+            &setup_fans_row,
+            &setup_fans_value,
+        );
+        refresh_setup_button.set_sensitive(!setup_refreshing);
+        refresh_setup_button.set_label(if setup_refreshing {
+            "Refreshing…"
+        } else {
+            "Refresh checks"
+        });
+        setup_advanced_buffer.set_text(&setup_status.to_report_text(true));
+        if setup_status.issues.is_empty() {
+            setup_issues_row.set_title("No setup issues detected");
+            setup_issues_row
+                .set_subtitle("All relevant live service and permission checks currently pass.");
+        } else {
+            setup_issues_row.set_title(&format!(
+                "{} control areas need setup",
+                setup_status.issue_count()
+            ));
+            setup_issues_row.set_subtitle(
+                &setup_status
+                    .issues
+                    .iter()
+                    .map(|issue| format!("{} — {}", issue.title, issue.guidance))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        setup_profiles_value.set_text(feature_status_label(caps.profile_access.status));
+        setup_profiles_row.set_subtitle(&caps.profile_access.reason);
+        setup_charge_value.set_text(feature_status_label(caps.charge_limit_access.status));
+        setup_charge_row.set_subtitle(&caps.charge_limit_access.reason);
+        setup_gpu_value.set_text(feature_status_label(caps.gpu_mode_access.status));
+        setup_gpu_row.set_subtitle(&caps.gpu_mode_access.reason);
+        setup_kbd_support_value.set_text(feature_status_label(caps.kbd_backlight_access.status));
+        setup_kbd_support_row.set_subtitle(&caps.kbd_backlight_access.reason);
+        setup_fan_support_value.set_text(if fan_state.caps.has_individual_fan_control {
+            "Available"
+        } else if !fan_state.fans.is_empty() {
+            "Telemetry only"
+        } else {
+            "Unsupported"
+        });
+        setup_fan_support_row.set_subtitle(if fan_state.caps.has_individual_fan_control {
+            "Fan telemetry and at least one writable manual-control endpoint are available."
+        } else if !fan_state.fans.is_empty() {
+            "Fan RPM is available, but no writable manual-control endpoint was confirmed."
+        } else {
+            "No supported fan telemetry or control endpoint was detected."
+        });
         if daemon_error.is_some() {
             connection_status.set_text("Daemon offline");
             connection_status.add_css_class("disconnected");
@@ -4451,8 +4703,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let gpu_mode_read_failed = warning_detail(&warnings, "GPU mode read failed: ");
         let charge_limit_read_failed = warning_detail(&warnings, "charge limit read failed: ");
 
-        let missing_services = usize::from(asusd_missing)
-            + usize::from(caps.gpu_mode_access.status == FeatureAccessState::MissingBackend);
+        let missing_services = setup_status.control_issue_count();
         let control_state = if available_controls > 0 {
             format!("{available_controls} available")
         } else {
@@ -4479,16 +4730,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             );
         }
 
-        let mut dependency_hints = Vec::new();
-        if asusd_missing {
-            dependency_hints.push("Performance profiles and charge-limit control require asusd.");
-        }
-        if caps.gpu_mode_access.status == FeatureAccessState::MissingBackend {
-            dependency_hints.push("GPU mode control requires supergfxd.");
-        }
-        quick_dependency_hint.set_text(&dependency_hints.join(" "));
-        quick_dependency_hint.set_visible(!dependency_hints.is_empty());
-
         if daemon_error.is_some() {
             warning_banner.remove_css_class("warning-info");
             warning_banner.remove_css_class("warning-warning");
@@ -4501,17 +4742,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
-        } else if !support_messages.is_empty() {
+        } else if setup_status.control_issue_count() > 0 {
             warning_banner.remove_css_class("warning-info");
             warning_banner.remove_css_class("warning-error");
             warning_banner.add_css_class("warning-warning");
             warning_banner.set_title(&format!(
                 "{} control areas need setup",
-                support_messages.len()
+                setup_status.control_issue_count()
             ));
             warning_banner.set_button_label(Some("Review"));
             warning_subtitle.set_text(
-                "Telemetry is still available. Review optional dependencies and permissions in Diagnostics.",
+                "Telemetry is still available. Review optional dependencies and permissions in Setup & Access.",
             );
             warning_subtitle.set_visible(true);
             warning_banner.set_revealed(true);
@@ -5228,7 +5469,41 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     Err(e) => {
                         warn!("{e}");
                         if let Ok(mut st) = shared.lock() {
+                            st.setup_status = SetupStatus::daemon_unavailable(e.clone());
                             st.daemon_error = Some(e);
+                        }
+                    }
+                }
+
+                let refresh_setup = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_setup_refresh))
+                    .unwrap_or(false);
+                if refresh_setup {
+                    if let Ok(mut state) = shared.lock() {
+                        state.setup_refreshing = true;
+                    }
+                    match fetch_setup_status().await {
+                        Ok(status) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.setup_status = status;
+                                state.setup_refreshing = false;
+                                state.pending_toast = Some((
+                                    "Setup and access checks refreshed.".to_string(),
+                                    false,
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.setup_status = SetupStatus::daemon_unavailable(error.clone());
+                                state.setup_refreshing = false;
+                                state.pending_toast = Some((
+                                    "Setup checks could not reach rog-helperd.".to_string(),
+                                    true,
+                                ));
+                            }
                         }
                     }
                 }
@@ -5241,6 +5516,20 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
             }
         });
     });
+}
+
+async fn fetch_setup_status() -> Result<SetupStatus, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let map = proxy
+        .get_setup_status()
+        .await
+        .map_err(|error| format!("daemon GetSetupStatus failed: {error}"))?;
+    Ok(setup_status_from_dbus(&map))
 }
 
 async fn fetch_state() -> Result<
@@ -7015,7 +7304,7 @@ fn feature_control_subtitle(access: &FeatureAvailability, available_text: &str) 
 
 fn dashboard_control_subtitle(access: &FeatureAvailability, available_text: &str) -> String {
     if access.status == FeatureAccessState::MissingBackend {
-        "Unavailable · see dependency note above".to_string()
+        "Unavailable · review Setup & Access".to_string()
     } else {
         feature_control_subtitle(access, available_text)
     }
@@ -7719,6 +8008,81 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     row.set_activatable(false);
     group.add(&row);
     value
+}
+
+fn setup_pref_row(group: &adw::PreferencesGroup, title: &str) -> (adw::ActionRow, gtk::Label) {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle("Checking readiness…")
+        .build();
+    let value = gtk::Label::new(Some("Checking"));
+    value.add_css_class("setup-status-value");
+    value.set_halign(gtk::Align::End);
+    value.set_valign(gtk::Align::Center);
+    row.add_suffix(&value);
+    row.set_activatable(false);
+    group.add(&row);
+    (row, value)
+}
+
+fn update_setup_dependency_row(
+    status: &SetupStatus,
+    kind: DependencyKind,
+    row: &adw::ActionRow,
+    value: &gtk::Label,
+) {
+    if let Some(dependency) = status.dependency(kind) {
+        value.set_text(dependency.state.label());
+        set_setup_value_status(
+            value,
+            match dependency.state {
+                DependencyState::Connected | DependencyState::Ready => "status-ok",
+                DependencyState::NotRelevant | DependencyState::Unknown => "status-info",
+                DependencyState::NotAvailable | DependencyState::Inactive => "status-warning",
+                DependencyState::Unreachable => "status-error",
+            },
+        );
+        let required_for = if dependency.required_for.is_empty() {
+            String::new()
+        } else {
+            format!(" Required for: {}.", dependency.required_for.join(", "))
+        };
+        row.set_subtitle(&format!("{}{required_for}", dependency.summary));
+    } else {
+        value.set_text("Checking");
+        row.set_subtitle("No readiness result has been received yet.");
+    }
+}
+
+fn update_setup_permission_row(
+    status: &SetupStatus,
+    kind: PermissionKind,
+    row: &adw::ActionRow,
+    value: &gtk::Label,
+) {
+    if let Some(permission) = status.permission(kind) {
+        value.set_text(permission.state.label());
+        set_setup_value_status(
+            value,
+            match permission.state {
+                PermissionState::Writable => "status-ok",
+                PermissionState::Unknown | PermissionState::Unsupported => "status-info",
+                PermissionState::ReadOnly => "status-warning",
+                PermissionState::Unavailable => "status-error",
+            },
+        );
+        row.set_subtitle(&permission.summary);
+    } else {
+        value.set_text("Checking");
+        row.set_subtitle("No permission result has been received yet.");
+    }
+}
+
+fn set_setup_value_status(value: &gtk::Label, class_name: &str) {
+    for class in ["status-ok", "status-info", "status-warning", "status-error"] {
+        value.remove_css_class(class);
+    }
+    value.add_css_class(class_name);
 }
 
 fn dashboard_nav_card(
@@ -8502,6 +8866,76 @@ fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
             .into_iter()
             .filter_map(|entry| cpu_control_access_from_dbus(&entry))
             .collect(),
+    }
+}
+
+fn setup_status_from_dbus(map: &HashMap<String, OwnedValue>) -> SetupStatus {
+    fn string(map: &HashMap<String, OwnedValue>, key: &str) -> String {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+    fn strings(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        map.get(key)
+            .cloned()
+            .and_then(|value| Vec::<String>::try_from(value).ok())
+            .unwrap_or_default()
+    }
+
+    let dependencies = map
+        .get(dbus_keys::SETUP_DEPENDENCIES_KEY)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some(DependencyStatus {
+                kind: DependencyKind::parse(&string(&entry, dbus_keys::SETUP_KIND_KEY))?,
+                state: DependencyState::parse(&string(&entry, dbus_keys::SETUP_STATE_KEY)),
+                summary: string(&entry, dbus_keys::SETUP_SUMMARY_KEY),
+                required_for: strings(&entry, dbus_keys::SETUP_REQUIRED_FOR_KEY),
+                evidence: strings(&entry, dbus_keys::SETUP_EVIDENCE_KEY),
+            })
+        })
+        .collect();
+    let permissions = map
+        .get(dbus_keys::SETUP_PERMISSIONS_KEY)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some(PermissionStatus {
+                kind: PermissionKind::parse(&string(&entry, dbus_keys::SETUP_KIND_KEY))?,
+                state: PermissionState::parse(&string(&entry, dbus_keys::SETUP_STATE_KEY)),
+                summary: string(&entry, dbus_keys::SETUP_SUMMARY_KEY),
+                paths: strings(&entry, dbus_keys::SETUP_PATHS_KEY),
+            })
+        })
+        .collect();
+    let issues = map
+        .get(dbus_keys::SETUP_ISSUES_KEY)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| SetupIssue {
+            severity: SetupSeverity::parse(&string(&entry, dbus_keys::SETUP_SEVERITY_KEY)),
+            title: string(&entry, dbus_keys::SETUP_TITLE_KEY),
+            summary: string(&entry, dbus_keys::SETUP_SUMMARY_KEY),
+            guidance: string(&entry, dbus_keys::SETUP_GUIDANCE_KEY),
+        })
+        .collect();
+
+    SetupStatus {
+        checked_at_ms: map
+            .get("checked_at_ms")
+            .and_then(u64_from_value)
+            .unwrap_or_default(),
+        dependencies,
+        permissions,
+        issues,
     }
 }
 
@@ -9482,7 +9916,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_missing_backend_uses_the_shared_dependency_hint() {
+    fn dashboard_missing_backend_points_to_setup_and_access() {
         let access = FeatureAvailability::new(
             FeatureAccessState::MissingBackend,
             "Install and start asusd to enable this control.",
@@ -9490,7 +9924,7 @@ mod tests {
 
         assert_eq!(
             dashboard_control_subtitle(&access, "Apply control"),
-            "Unavailable · see dependency note above"
+            "Unavailable · review Setup & Access"
         );
     }
 

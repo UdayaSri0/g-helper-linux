@@ -1175,6 +1175,372 @@ impl FeatureAvailability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DependencyKind {
+    RogHelperd,
+    Asusd,
+    Supergfxd,
+    UPower,
+    NvidiaSmi,
+}
+
+impl DependencyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RogHelperd => "rog_helperd",
+            Self::Asusd => "asusd",
+            Self::Supergfxd => "supergfxd",
+            Self::UPower => "upower",
+            Self::NvidiaSmi => "nvidia_smi",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "rog_helperd" | "rog-helperd" => Some(Self::RogHelperd),
+            "asusd" => Some(Self::Asusd),
+            "supergfxd" => Some(Self::Supergfxd),
+            "upower" => Some(Self::UPower),
+            "nvidia_smi" | "nvidia-smi" => Some(Self::NvidiaSmi),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RogHelperd => "rog-helperd",
+            Self::Asusd => "asusd",
+            Self::Supergfxd => "supergfxd",
+            Self::UPower => "UPower",
+            Self::NvidiaSmi => "nvidia-smi",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DependencyState {
+    Unknown,
+    Connected,
+    Ready,
+    NotAvailable,
+    Inactive,
+    Unreachable,
+    NotRelevant,
+}
+
+impl DependencyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Connected => "connected",
+            Self::Ready => "ready",
+            Self::NotAvailable => "not_available",
+            Self::Inactive => "inactive",
+            Self::Unreachable => "unreachable",
+            Self::NotRelevant => "not_relevant",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "connected" => Self::Connected,
+            "ready" => Self::Ready,
+            "not_available" => Self::NotAvailable,
+            "inactive" => Self::Inactive,
+            "unreachable" => Self::Unreachable,
+            "not_relevant" => Self::NotRelevant,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Connected | Self::Ready | Self::NotRelevant)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Connected => "Connected",
+            Self::Ready => "Available",
+            Self::NotAvailable => "Not available",
+            Self::Inactive => "Inactive",
+            Self::Unreachable => "Unreachable",
+            Self::NotRelevant => "Not needed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyStatus {
+    pub kind: DependencyKind,
+    pub state: DependencyState,
+    pub summary: String,
+    pub required_for: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionKind {
+    CpuPolicyWrites,
+    KeyboardLightingWrites,
+    FanControls,
+}
+
+impl PermissionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuPolicyWrites => "cpu_policy_writes",
+            Self::KeyboardLightingWrites => "keyboard_lighting_writes",
+            Self::FanControls => "fan_controls",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cpu_policy_writes" => Some(Self::CpuPolicyWrites),
+            "keyboard_lighting_writes" => Some(Self::KeyboardLightingWrites),
+            "fan_controls" => Some(Self::FanControls),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CpuPolicyWrites => "CPU policy writes",
+            Self::KeyboardLightingWrites => "Keyboard lighting writes",
+            Self::FanControls => "Fan controls",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionState {
+    Unknown,
+    Writable,
+    ReadOnly,
+    Unsupported,
+    Unavailable,
+}
+
+impl PermissionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Writable => "writable",
+            Self::ReadOnly => "read_only",
+            Self::Unsupported => "unsupported",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "writable" => Self::Writable,
+            "read_only" => Self::ReadOnly,
+            "unsupported" => Self::Unsupported,
+            "unavailable" => Self::Unavailable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Writable => "Writable",
+            Self::ReadOnly => "Read-only",
+            Self::Unsupported => "Unsupported",
+            Self::Unavailable => "Unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionStatus {
+    pub kind: PermissionKind,
+    pub state: PermissionState,
+    pub summary: String,
+    /// Technical paths are deliberately kept out of normal UI summaries.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetupSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl SetupSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "warning" => Self::Warning,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupIssue {
+    pub severity: SetupSeverity,
+    pub title: String,
+    pub summary: String,
+    pub guidance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupStatus {
+    pub checked_at_ms: u64,
+    pub dependencies: Vec<DependencyStatus>,
+    pub permissions: Vec<PermissionStatus>,
+    pub issues: Vec<SetupIssue>,
+}
+
+impl SetupStatus {
+    pub fn unknown() -> Self {
+        Self {
+            checked_at_ms: 0,
+            dependencies: Vec::new(),
+            permissions: Vec::new(),
+            issues: Vec::new(),
+        }
+    }
+
+    pub fn daemon_unavailable(summary: impl Into<String>) -> Self {
+        let summary = summary.into();
+        Self {
+            checked_at_ms: 0,
+            dependencies: vec![DependencyStatus {
+                kind: DependencyKind::RogHelperd,
+                state: DependencyState::NotAvailable,
+                summary: summary.clone(),
+                required_for: vec!["application communication".to_string()],
+                evidence: Vec::new(),
+            }],
+            permissions: Vec::new(),
+            issues: vec![SetupIssue {
+                severity: SetupSeverity::Error,
+                title: "rog-helperd is unavailable".to_string(),
+                summary,
+                guidance: "Start the rog-helper user-session daemon, then refresh these checks. See installation documentation if the service is not installed.".to_string(),
+            }],
+        }
+    }
+
+    pub fn issue_count(&self) -> usize {
+        self.issues.len()
+    }
+
+    pub fn control_issue_count(&self) -> usize {
+        let dependency_issues = self
+            .dependencies
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.kind,
+                    DependencyKind::RogHelperd | DependencyKind::Asusd | DependencyKind::Supergfxd
+                )
+            })
+            .filter(|entry| !entry.state.is_ready() && entry.state != DependencyState::Unknown)
+            .count();
+        let permission_issues = self
+            .permissions
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.state,
+                    PermissionState::ReadOnly | PermissionState::Unavailable
+                )
+            })
+            .count();
+        dependency_issues + permission_issues
+    }
+
+    pub fn dependency(&self, kind: DependencyKind) -> Option<&DependencyStatus> {
+        self.dependencies.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn permission(&self, kind: PermissionKind) -> Option<&PermissionStatus> {
+        self.permissions.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn to_report_text(&self, include_advanced: bool) -> String {
+        let mut lines = vec![
+            "rog-helper Setup & Access Diagnostics".to_string(),
+            "=====================================".to_string(),
+            format!("checked_at_ms: {}", self.checked_at_ms),
+            format!("setup_issues: {}", self.issue_count()),
+            String::new(),
+            "Control services".to_string(),
+            "----------------".to_string(),
+        ];
+
+        for dependency in &self.dependencies {
+            lines.push(format!(
+                "{}: {} — {}",
+                dependency.kind.label(),
+                dependency.state.label(),
+                dependency.summary
+            ));
+            if !dependency.required_for.is_empty() {
+                lines.push(format!(
+                    "  required for: {}",
+                    dependency.required_for.join(", ")
+                ));
+            }
+            if include_advanced {
+                for evidence in &dependency.evidence {
+                    lines.push(format!("  evidence: {evidence}"));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("Permissions".to_string());
+        lines.push("-----------".to_string());
+        for permission in &self.permissions {
+            lines.push(format!(
+                "{}: {} — {}",
+                permission.kind.label(),
+                permission.state.label(),
+                permission.summary
+            ));
+            if include_advanced {
+                for path in &permission.paths {
+                    lines.push(format!("  path: {path}"));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("Setup issues".to_string());
+        lines.push("------------".to_string());
+        if self.issues.is_empty() {
+            lines.push("None".to_string());
+        } else {
+            for issue in &self.issues {
+                lines.push(format!(
+                    "[{}] {}: {}",
+                    issue.severity.as_str(),
+                    issue.title,
+                    issue.summary
+                ));
+                lines.push(format!("  guidance: {}", issue.guidance));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySnapshot {
     pub timestamp_ms: u64,

@@ -2,6 +2,15 @@
 
 This document covers common issues based on the current implementation.
 
+For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:
+
+```bash
+cargo run -p rog-cli -- setup-check
+```
+
+The report verifies live APIs where possible and lists binary, systemd, DBus, and sysfs evidence.
+It does not elevate privileges or apply any repair automatically.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:
@@ -93,6 +102,7 @@ Check:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "asus|rog"
 cargo run -p rog-cli -- caps
 ```
@@ -122,6 +132,7 @@ Check:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "supergfx"
 cargo run -p rog-cli -- caps
 ```

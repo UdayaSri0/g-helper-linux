@@ -12,7 +12,7 @@ The current codebase implements:
 
 - A GTK4/libadwaita desktop application with tray support via `ksni`
 - A session-DBus daemon (`rog-helperd`) that owns current state and control actions
-- Provider modules for `asusd`, `supergfxd`, `UPower`, `hwmon`, CPU sysfs, keyboard backlight sysfs, battery sysfs, memory telemetry, and DBus diagnostics helpers
+- Provider modules for `asusd`, `supergfxd`, `UPower`, `hwmon`, CPU sysfs, keyboard backlight sysfs, battery sysfs, memory telemetry, DBus diagnostics, and setup-readiness checks
 - A CLI (`rog-helper`) for diagnostics and environment inspection
 
 The project is clearly beyond an initial scaffold, but it is still an early implementation. Several core features are working today, while other planned features are still missing or only partially modeled.
@@ -108,6 +108,7 @@ Current source-backed features include:
 - ASUS battery charge limit read/write through `asusd`
 - Keyboard backlight brightness read/write through sysfs when permissions allow
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
+- Dedicated Setup & Access UI plus `rog-helper setup-check`, backed by live API verification and read-only permission probes
 - Fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - polished RPM monitoring dashboard with animated fan rotors, larger CPU/GPU gauges, and best-effort operating MHz display
   - best-effort dynamic RPM telemetry for 0..N fans

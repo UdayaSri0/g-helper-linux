@@ -139,6 +139,17 @@ That means:
 
 This is expected behavior in the current design.
 
+## Setup & Access Checks
+
+The Setup & Access page and `rog-helper setup-check` make these boundaries visible without
+changing them. They perform read-only service/API probes and filesystem access checks. Binary
+presence and systemd state are diagnostic evidence only; a dependency is marked ready only after
+its expected API responds.
+
+These checks never run `sudo`, install packages, modify sysfs permissions, create udev/polkit
+rules, or bypass system DBus authorization. Remediation falls back to installation and
+troubleshooting documentation when the repository has no verified distro-specific command.
+
 ## System DBus Expectations
 
 The repository assumes these service categories may exist:
