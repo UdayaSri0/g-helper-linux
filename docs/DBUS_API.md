@@ -25,7 +25,12 @@ Tradeoffs:
 
 - daemon and UI must agree on string keys
 - payload decoding is manual
-- there is no strongly typed shared DBus schema yet
+- external clients do not get a generated strongly typed schema
+
+To reduce drift without changing the public format, daemon encoders and UI decoders now share the
+high-risk wire-key constants from `rog-core::dbus_keys`, and the UI uses lossless helpers that keep
+missing or wrongly typed optional values absent. The audited daemon/UI/CLI/default mapping is in
+[DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md).
 
 This is the current design, not a placeholder.
 
@@ -478,9 +483,11 @@ Current behavior:
 - applied through `asusd`
 - current backend validation ultimately depends on the `asusd` provider
 
-Important note:
+Range note:
 
-- the domain model, UI, and `asusd` backend do not currently use exactly the same default range assumptions
+- the asusd wire backend accepts its verified `20..=100` range
+- the UI and persistent preferred-limit configuration deliberately expose the narrower `40..=100` policy range
+- this is a product-policy restriction, not a decoding default; out-of-range requests return an error
 
 ## CPU Setter Methods
 
@@ -525,7 +532,12 @@ Current mapping:
 - permission denied -> `AccessDenied`
 - invalid input -> `InvalidArgs`
 - transient failure -> `TimedOut`
+- temporarily unavailable -> `Failed`
 - unexpected -> `Failed`
+
+The internal presentation taxonomy additionally distinguishes `read-only`, `missing dependency`,
+`permission denied`, `transient failure`, and general `unavailable` states. This does not rename
+existing DBus errors or status strings.
 
 ## Not Currently Exposed
 
@@ -533,6 +545,7 @@ The following features are not part of the current daemon API:
 
 - a verified fan-curve read/write backend (the method surface exists, but writes are capability-gated off)
 - auto rules setter
-- diagnostics bundle export method
+- diagnostics bundle export DBus method (a read-only Markdown export is available from
+  `rog-helper hardware-report`)
 
 If those are added later, update this file at the same time as `crates/rog-daemon/src/main.rs`.

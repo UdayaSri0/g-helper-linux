@@ -1,4 +1,5 @@
 about
+above
 absent
 accent
 acceptance
@@ -56,6 +57,7 @@ atomic
 attr
 aur
 aura
+authorizing
 authors
 auto
 automation
@@ -86,6 +88,7 @@ body
 bool
 boost
 boundaries
+boundary
 bounded
 box
 branch
@@ -278,8 +281,10 @@ exit
 expectations
 expected
 explains
+explicit
 export
 exposed
+exposes
 extend
 extension
 facing
@@ -304,7 +309,6 @@ final
 finalize
 finalizes
 find
-finds
 firmware
 first
 fix
@@ -357,6 +361,7 @@ helperd
 helpers
 hero
 hex
+hierarchy
 high
 highlights
 hint
@@ -409,6 +414,7 @@ into
 introspect
 introspection
 invalid
+invented
 ipc
 issue
 issues
@@ -419,7 +425,6 @@ keeps
 key
 keyboard
 keys
-keyword
 khz
 kib
 kind
@@ -477,6 +482,7 @@ match
 matching
 matrix
 max
+maximum
 medium
 mem
 meminfo
@@ -518,6 +524,7 @@ navigation
 need
 needed
 new
+next
 node
 nodes
 normal
@@ -527,6 +534,7 @@ not
 note
 notes
 now
+numeric
 nvidia
 object
 objective
@@ -699,7 +707,6 @@ roadmap
 robust
 rog
 root
-roots
 rotor
 rotors
 round
@@ -899,6 +906,7 @@ value
 values
 vec
 verification
+verified
 verify
 version
 versions
@@ -918,7 +926,6 @@ widget
 widgets
 width
 window
-wire
 with
 without
 word
@@ -933,5 +940,7 @@ wrong
 xdg
 yes
 yet
+zone
+zones
 zram
 zswap

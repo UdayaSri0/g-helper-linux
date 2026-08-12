@@ -2,6 +2,9 @@
 
 Use this checklist before calling the repository release-ready.
 
+Latest evidence-based walkthrough: [RELEASE_READINESS_AUDIT.md](RELEASE_READINESS_AUDIT.md).
+Unchecked items remain unverified even when the audit records partial automated coverage.
+
 ## Documentation
 
 - [ ] `README.md` reflects the current implementation and does not overstate hardware support

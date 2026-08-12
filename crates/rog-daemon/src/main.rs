@@ -239,10 +239,13 @@ impl RogHelperDaemon {
         let state = self.read_state();
         let mut m = state_to_dbus(&state);
         m.insert(
-            "cpu_caps".to_string(),
+            dbus_keys::state::CPU_CAPS.to_string(),
             ov(cpu_caps_to_dbus(&state.cpu_caps)),
         );
-        m.insert("cpu".to_string(), ov(cpu_to_dbus(&state.cpu)));
+        m.insert(
+            dbus_keys::state::CPU.to_string(),
+            ov(cpu_to_dbus(&state.cpu)),
+        );
         m.insert(
             dbus_keys::FAN_STATE_KEY.to_string(),
             ov(fan_state_to_dbus(&state.fan_state)),
@@ -252,26 +255,32 @@ impl RogHelperDaemon {
             ov(fan_caps_to_dbus(&state.fan_state.caps)),
         );
         if let Some(l) = self.lighting_to_dbus().await {
-            m.insert("lighting".to_string(), ov(l));
+            m.insert(dbus_keys::state::LIGHTING.to_string(), ov(l));
         }
         let lighting_diagnostics = self.lighting_diagnostics(None, None);
         m.insert(
-            "lighting_diagnostics_summary".to_string(),
+            dbus_keys::state::LIGHTING_DIAGNOSTICS_SUMMARY.to_string(),
             ov(lighting_diagnostics.summary_line()),
         );
         m.insert(
-            "lighting_diagnostics_details".to_string(),
+            dbus_keys::state::LIGHTING_DIAGNOSTICS_DETAILS.to_string(),
             ov(lighting_diagnostics.to_report_text()),
         );
         let control = self.read_control_state();
         if let Some(p) = control.profile {
-            m.insert("profile".to_string(), ov(profile_to_str(p)));
+            m.insert(dbus_keys::state::PROFILE.to_string(), ov(profile_to_str(p)));
         }
         if let Some(g) = control.gpu_mode {
-            m.insert("gpu_mode".to_string(), ov(gpu_mode_to_str(g)));
+            m.insert(
+                dbus_keys::state::GPU_MODE.to_string(),
+                ov(gpu_mode_to_str(g)),
+            );
         }
         if let Some(lim) = control.battery_limit {
-            m.insert("battery_limit".to_string(), OwnedValue::from(lim.0 as u64));
+            m.insert(
+                dbus_keys::state::BATTERY_LIMIT.to_string(),
+                OwnedValue::from(lim.0 as u64),
+            );
         }
         m
     }
@@ -322,11 +331,11 @@ impl RogHelperDaemon {
     fn get_fan_curves(&self) -> HashMap<String, OwnedValue> {
         let mut m = HashMap::new();
         m.insert(
-            "supported".to_string(),
+            dbus_keys::fan_curves::SUPPORTED.to_string(),
             OwnedValue::from(self.read_state().fan_state.caps.has_fan_curves),
         );
         m.insert(
-            "reason".to_string(),
+            dbus_keys::fan_curves::REASON.to_string(),
             ov(
                 "Fan curve reading is backend-dependent and not exposed by the active backend yet."
                     .to_string(),
@@ -1554,8 +1563,14 @@ fn lighting_access_from_backend_flags(
 
 fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("caps".to_string(), ov(caps_to_dbus(&s.caps)));
-    m.insert("telemetry".to_string(), ov(telemetry_to_dbus(&s.telemetry)));
+    m.insert(
+        dbus_keys::state::CAPS.to_string(),
+        ov(caps_to_dbus(&s.caps)),
+    );
+    m.insert(
+        dbus_keys::state::TELEMETRY.to_string(),
+        ov(telemetry_to_dbus(&s.telemetry)),
+    );
     m.insert(
         dbus_keys::FAN_STATE_KEY.to_string(),
         ov(fan_state_to_dbus(&s.fan_state)),
@@ -1564,65 +1579,80 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_CAPS_KEY.to_string(),
         ov(fan_caps_to_dbus(&s.fan_state.caps)),
     );
-    m.insert("warnings".to_string(), ov(s.warnings.clone()));
+    m.insert(
+        dbus_keys::state::WARNINGS.to_string(),
+        ov(s.warnings.clone()),
+    );
     m
 }
 
 fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("has_profiles".to_string(), OwnedValue::from(c.has_profiles));
     m.insert(
-        "has_fan_curves".to_string(),
+        dbus_keys::caps::HAS_PROFILES.to_string(),
+        OwnedValue::from(c.has_profiles),
+    );
+    m.insert(
+        dbus_keys::caps::HAS_FAN_CURVES.to_string(),
         OwnedValue::from(c.has_fan_curves),
     );
     m.insert(
-        "has_fan_reading".to_string(),
+        dbus_keys::caps::HAS_FAN_READING.to_string(),
         OwnedValue::from(c.has_fan_reading),
     );
     m.insert(
-        "has_charge_limit".to_string(),
+        dbus_keys::caps::HAS_CHARGE_LIMIT.to_string(),
         OwnedValue::from(c.has_charge_limit),
     );
     m.insert(
-        "has_gpu_modes".to_string(),
+        dbus_keys::caps::HAS_GPU_MODES.to_string(),
         OwnedValue::from(c.has_gpu_modes),
     );
-    m.insert("has_aura".to_string(), OwnedValue::from(c.has_aura));
     m.insert(
-        "has_kbd_backlight".to_string(),
+        dbus_keys::caps::HAS_AURA.to_string(),
+        OwnedValue::from(c.has_aura),
+    );
+    m.insert(
+        dbus_keys::caps::HAS_KBD_BACKLIGHT.to_string(),
         OwnedValue::from(c.has_kbd_backlight),
     );
     m.insert(
-        "has_fan_manual_percent".to_string(),
+        dbus_keys::caps::HAS_FAN_MANUAL_PERCENT.to_string(),
         OwnedValue::from(c.has_fan_manual_percent),
     );
     m.insert(
-        "has_fan_manual_rpm_target".to_string(),
+        dbus_keys::caps::HAS_FAN_MANUAL_RPM_TARGET.to_string(),
         OwnedValue::from(c.has_fan_manual_rpm_target),
     );
     m.insert(
-        "has_individual_fan_control".to_string(),
+        dbus_keys::caps::HAS_INDIVIDUAL_FAN_CONTROL.to_string(),
         OwnedValue::from(c.has_individual_fan_control),
     );
     m.insert(
-        "has_fan_sync_control".to_string(),
+        dbus_keys::caps::HAS_FAN_SYNC_CONTROL.to_string(),
         OwnedValue::from(c.has_fan_sync_control),
     );
     m.insert(
-        "has_fan_boost".to_string(),
+        dbus_keys::caps::HAS_FAN_BOOST.to_string(),
         OwnedValue::from(c.has_fan_boost),
     );
     m.insert(
-        "fan_count".to_string(),
+        dbus_keys::caps::FAN_COUNT.to_string(),
         OwnedValue::from(c.fan_count as u64),
     );
-    m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
     m.insert(
-        "requires_reboot_for_gpu_switch".to_string(),
+        dbus_keys::caps::FAN_BACKEND.to_string(),
+        ov(c.fan_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH.to_string(),
         OwnedValue::from(c.requires_reboot_for_gpu_switch),
     );
-    m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
-    m.insert("notes".to_string(), ov(c.notes.clone()));
+    m.insert(
+        dbus_keys::caps::ENDPOINTS.to_string(),
+        ov(c.endpoints.clone()),
+    );
+    m.insert(dbus_keys::caps::NOTES.to_string(), ov(c.notes.clone()));
     insert_feature_access_to_dbus(&mut m, dbus_keys::PROFILE_ACCESS_PREFIX, &c.profile_access);
     insert_feature_access_to_dbus(
         &mut m,
@@ -1830,50 +1860,68 @@ fn insert_feature_access_to_dbus(
 
 fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("has_cpufreq".to_string(), OwnedValue::from(c.has_cpufreq));
-    m.insert("has_epp".to_string(), OwnedValue::from(c.has_epp));
     m.insert(
-        "has_boost_toggle".to_string(),
+        dbus_keys::cpu_caps::HAS_CPUFREQ.to_string(),
+        OwnedValue::from(c.has_cpufreq),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_EPP.to_string(),
+        OwnedValue::from(c.has_epp),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_BOOST_TOGGLE.to_string(),
         OwnedValue::from(c.has_boost_toggle),
     );
     m.insert(
-        "has_package_power".to_string(),
+        dbus_keys::cpu_caps::HAS_PACKAGE_POWER.to_string(),
         OwnedValue::from(c.has_package_power),
     );
     m.insert(
-        "policy_writable".to_string(),
+        dbus_keys::cpu_caps::POLICY_WRITABLE.to_string(),
         OwnedValue::from(c.policy_writable),
     );
     m.insert(
-        "has_min_freq_limit".to_string(),
+        dbus_keys::cpu_caps::HAS_MIN_FREQ_LIMIT.to_string(),
         OwnedValue::from(c.has_min_freq_limit),
     );
     m.insert(
-        "has_max_freq_limit".to_string(),
+        dbus_keys::cpu_caps::HAS_MAX_FREQ_LIMIT.to_string(),
         OwnedValue::from(c.has_max_freq_limit),
     );
-    m.insert("has_governor".to_string(), OwnedValue::from(c.has_governor));
     m.insert(
-        "has_core_online".to_string(),
+        dbus_keys::cpu_caps::HAS_GOVERNOR.to_string(),
+        OwnedValue::from(c.has_governor),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_CORE_ONLINE.to_string(),
         OwnedValue::from(c.has_core_online),
     );
     if let Some(v) = &c.scaling_driver {
-        m.insert("scaling_driver".to_string(), ov(v.clone()));
+        m.insert(
+            dbus_keys::cpu_caps::SCALING_DRIVER.to_string(),
+            ov(v.clone()),
+        );
     }
     m.insert(
-        "cpu_count".to_string(),
+        dbus_keys::cpu_caps::CPU_COUNT.to_string(),
         OwnedValue::from(c.cpu_count as u64),
     );
     m.insert(
-        "thread_count".to_string(),
+        dbus_keys::cpu_caps::THREAD_COUNT.to_string(),
         OwnedValue::from(c.thread_count as u64),
     );
     m.insert(
-        "governor_choices".to_string(),
+        dbus_keys::cpu_caps::GOVERNOR_CHOICES.to_string(),
         ov(c.governor_choices.clone()),
     );
-    m.insert("epp_choices".to_string(), ov(c.epp_choices.clone()));
-    m.insert("sysfs_paths".to_string(), ov(c.sysfs_paths.clone()));
+    m.insert(
+        dbus_keys::cpu_caps::EPP_CHOICES.to_string(),
+        ov(c.epp_choices.clone()),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::SYSFS_PATHS.to_string(),
+        ov(c.sysfs_paths.clone()),
+    );
     m.insert(
         dbus_keys::CPU_CONTROL_ACCESS_KEY.to_string(),
         ov(c.control_access
@@ -2695,7 +2743,7 @@ fn fan_curve_from_dbus(
     map: &HashMap<String, OwnedValue>,
 ) -> rog_core::RogResult<FanCurve> {
     let rows = map
-        .get("points")
+        .get(dbus_keys::fan_curves::POINTS)
         .cloned()
         .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
         .ok_or_else(|| {
@@ -2703,13 +2751,13 @@ fn fan_curve_from_dbus(
         })?;
     let mut points = Vec::with_capacity(rows.len());
     for row in rows {
-        let temp_c = u64_from_map(&row, "temp_c")
+        let temp_c = u64_from_map(&row, dbus_keys::fan_curves::TEMP_C)
             .and_then(|value| u8::try_from(value).ok())
             .ok_or_else(|| {
                 rog_core::RogError::InvalidInput("fan curve point missing temp_c".to_string())
             })?;
-        let duty_percent = u64_from_map(&row, "speed_percent")
-            .or_else(|| u64_from_map(&row, "duty_percent"))
+        let duty_percent = u64_from_map(&row, dbus_keys::fan_curves::SPEED_PERCENT)
+            .or_else(|| u64_from_map(&row, dbus_keys::fan_curves::DUTY_PERCENT_COMPAT))
             .and_then(|value| u8::try_from(value).ok())
             .ok_or_else(|| {
                 rog_core::RogError::InvalidInput(
@@ -2859,72 +2907,99 @@ fn lighting_state_to_dbus(
     diagnostics: &LightingDiagnostics,
 ) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("backend".to_string(), ov(state.backend.clone()));
-    m.insert("device".to_string(), ov(state.device.clone()));
     m.insert(
-        "brightness".to_string(),
+        dbus_keys::lighting::BACKEND.to_string(),
+        ov(state.backend.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::DEVICE.to_string(),
+        ov(state.device.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::BRIGHTNESS.to_string(),
         OwnedValue::from(state.brightness.unwrap_or(0) as u64),
     );
     m.insert(
-        "max_brightness".to_string(),
+        dbus_keys::lighting::MAX_BRIGHTNESS.to_string(),
         OwnedValue::from(state.max_brightness.unwrap_or(0) as u64),
     );
-    m.insert("can_set".to_string(), OwnedValue::from(state.writable));
-    m.insert("writable".to_string(), OwnedValue::from(state.writable));
+    m.insert(
+        dbus_keys::lighting::CAN_SET.to_string(),
+        OwnedValue::from(state.writable),
+    );
+    m.insert(
+        dbus_keys::lighting::WRITABLE.to_string(),
+        OwnedValue::from(state.writable),
+    );
     if let Some(mode) = state.mode_label() {
-        m.insert("mode".to_string(), ov(mode));
+        m.insert(dbus_keys::lighting::MODE.to_string(), ov(mode));
     }
     m.insert(
-        "supported_modes".to_string(),
+        dbus_keys::lighting::SUPPORTED_MODES.to_string(),
         ov(state.supported_mode_labels()),
     );
     m.insert(
-        "supports_brightness".to_string(),
+        dbus_keys::lighting::SUPPORTS_BRIGHTNESS.to_string(),
         OwnedValue::from(state.supports_brightness),
     );
     m.insert(
-        "supports_modes".to_string(),
+        dbus_keys::lighting::SUPPORTS_MODES.to_string(),
         OwnedValue::from(state.supports_modes),
     );
     m.insert(
-        "supports_rgb".to_string(),
+        dbus_keys::lighting::SUPPORTS_RGB.to_string(),
         OwnedValue::from(state.supports_rgb),
     );
     if let Some(rgb) = state.rgb {
-        m.insert("rgb_hex".to_string(), ov(rgb.to_hex()));
+        m.insert(dbus_keys::lighting::RGB_HEX.to_string(), ov(rgb.to_hex()));
     }
     m.insert(
-        "supports_speed".to_string(),
+        dbus_keys::lighting::SUPPORTS_SPEED.to_string(),
         OwnedValue::from(state.supports_speed),
     );
     m.insert(
-        "supported_speeds".to_string(),
+        dbus_keys::lighting::SUPPORTED_SPEEDS.to_string(),
         ov(state.supported_speeds.clone()),
     );
     m.insert(
-        "supported_zones".to_string(),
+        dbus_keys::lighting::SUPPORTED_ZONES.to_string(),
         ov(state.supported_zones.clone()),
     );
-    m.insert("status".to_string(), ov(state.status.clone()));
+    m.insert(
+        dbus_keys::lighting::STATUS.to_string(),
+        ov(state.status.clone()),
+    );
     if let Some(error) = &state.last_error {
-        m.insert("last_error".to_string(), ov(error.clone()));
+        m.insert(
+            dbus_keys::lighting::LAST_ERROR.to_string(),
+            ov(error.clone()),
+        );
     }
     m.insert(
-        "diagnostics_summary".to_string(),
+        dbus_keys::lighting::DIAGNOSTICS_SUMMARY.to_string(),
         ov(diagnostics.summary_line()),
     );
     m.insert(
-        "diagnostics_details".to_string(),
+        dbus_keys::lighting::DIAGNOSTICS_DETAILS.to_string(),
         ov(diagnostics.to_report_text()),
     );
     if let Some(reason) = &diagnostics.fallback_reason {
-        m.insert("fallback_reason".to_string(), ov(reason.clone()));
+        m.insert(
+            dbus_keys::lighting::FALLBACK_REASON.to_string(),
+            ov(reason.clone()),
+        );
     }
     if let Some(reason) = &diagnostics.unavailable_reason {
-        m.insert("unavailable_reason".to_string(), ov(reason.clone()));
+        m.insert(
+            dbus_keys::lighting::UNAVAILABLE_REASON.to_string(),
+            ov(reason.clone()),
+        );
     }
     if let Some(warning) = &diagnostics.permission_warning {
-        m.insert("permission_warning".to_string(), ov(warning.clone()));
+        m.insert(
+            dbus_keys::lighting::PERMISSION_WARNING.to_string(),
+            ov(warning.clone()),
+        );
     }
     m
 }
@@ -3120,6 +3195,27 @@ mod tests {
         assert_eq!(u64_from_map(row, dbus_keys::FAN_ROW_RPM_KEY), Some(3210));
         assert_eq!(u64_from_map(&map, "gpu_core_clock_mhz"), Some(2100));
         assert_eq!(u64_from_map(&map, "gpu_memory_clock_mhz"), Some(7000));
+    }
+
+    #[test]
+    fn telemetry_to_dbus_omits_unavailable_optional_fields() {
+        let telemetry = TelemetrySnapshot::empty_now(42);
+        let map = telemetry_to_dbus(&telemetry);
+
+        assert!(map.contains_key(dbus_keys::telemetry::TIMESTAMP_MS));
+        for key in [
+            dbus_keys::telemetry::GPU_TEMP_C,
+            dbus_keys::telemetry::GPU_USAGE_PERCENT,
+            dbus_keys::telemetry::GPU_VRAM_USED_BYTES,
+            dbus_keys::telemetry::GPU_VRAM_TOTAL_BYTES,
+            dbus_keys::telemetry::GPU_POWER_W,
+            dbus_keys::telemetry::POWER_SOURCE,
+        ] {
+            assert!(
+                !map.contains_key(key),
+                "optional key {key} must stay absent"
+            );
+        }
     }
 
     #[test]

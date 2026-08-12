@@ -115,7 +115,8 @@ The current daemon DBus identity is:
 - object path: `/io/github/roghelper/Daemon`
 - interface: `io.github.roghelper.Daemon1`
 
-See [DBUS_API.md](DBUS_API.md) for the current API surface.
+See [DBUS_API.md](DBUS_API.md) for the current API surface and
+[DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md) for the release contract audit.
 
 ## Install Locally
 

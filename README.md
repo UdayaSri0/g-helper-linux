@@ -126,6 +126,7 @@ See:
 
 - [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)
 - [docs/DBUS_API.md](docs/DBUS_API.md)
+- [docs/DBUS_CONTRACT_MAP.md](docs/DBUS_CONTRACT_MAP.md)
 - [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)
 - [docs/UI_PAGES.md](docs/UI_PAGES.md)
 
@@ -137,7 +138,8 @@ Important gaps in the current implementation:
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions
 - Live auto mode / policy automation integration
 - Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
-- Typed DBus payloads shared between daemon and UI
+- Generated strongly typed external DBus payloads (the current backwards-compatible `a{sv}` API
+  now shares internal key constants and decoding semantics)
 - Complete tested hardware support matrix
 - Broader cross-distro install validation, including wider AppImage runtime validation beyond the current Ubuntu-class release host
 

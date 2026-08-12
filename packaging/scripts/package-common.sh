@@ -132,8 +132,10 @@ import sys
 src, dest, exec_path = sys.argv[1:4]
 text = Path(src).read_text()
 text = text.replace("rog-helperd", exec_path)
-Path(dest).parent.mkdir(parents=True, exist_ok=True)
-Path(dest).write_text(text)
+target = Path(dest)
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(text)
+target.chmod(0o644)
 PY
 }
 
@@ -166,6 +168,7 @@ build_release_workspace() {
 prepare_release_assets() {
   export_source_date_epoch
   generate_icon_assets
+  python3 "$REPO_ROOT/packaging/scripts/check-release-metadata.py"
   validate_desktop_entry
   validate_metainfo
   build_release_workspace

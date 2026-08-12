@@ -8,6 +8,6 @@ pub mod policy;
 
 pub use config::*;
 pub use dbus_keys::*;
-pub use error::{RogError, RogResult, ValidationWarning};
+pub use error::{ErrorCategory, RogError, RogResult, ValidationWarning};
 pub use model::*;
 pub use policy::*;

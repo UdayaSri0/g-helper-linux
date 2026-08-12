@@ -88,6 +88,7 @@ Every real machine record should include:
 Capture these commands:
 
 ```bash
+cargo run -p rog-cli -- hardware-report > hardware-report.md
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
@@ -97,6 +98,13 @@ cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- lighting-diagnostics
 busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon
 ```
+
+`hardware-report` is the preferred starting point. It uses read-only probes and produces a
+Markdown record containing model, distro, kernel, desktop/session, CPU/GPU, installed service
+versions and states, provider capabilities, fan/sensor endpoints, mapping confidence, and
+permission/dependency results. Review the output, fill in the manual runtime fields, attach the
+remaining command/screenshot evidence, and do not treat generated capability output as proof that
+a hardware write succeeded.
 
 Capture these UI views when relevant:
 

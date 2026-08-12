@@ -88,6 +88,7 @@ Recommended status words:
 
 ### Evidence
 
+- `cargo run -p rog-cli -- hardware-report`:
 - `cargo run -p rog-cli -- services`:
 - `cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"`:
 - `cargo run -p rog-cli -- sensors`:

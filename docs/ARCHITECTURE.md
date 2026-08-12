@@ -246,12 +246,14 @@ Benefits:
 
 Tradeoffs:
 
-- Tight string-key coupling between daemon and UI
+- External clients still depend on documented string keys
 - Manual serialization in `rog-daemon`
-- Manual decoding in `rog-ui`
-- More room for drift if fields are renamed without updating both sides
+- Manual domain decoding in `rog-ui`, using shared lossless map helpers
+- Leaf-row fields not yet moved into shared constants still require coordinated changes
 
-See [DBUS_API.md](DBUS_API.md) for the current wire-level API.
+The highest-risk keys and status semantics are shared through `rog-core`, without changing the
+wire format. See [DBUS_API.md](DBUS_API.md) for the public API and
+[DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md) for the encoder/decoder/default audit.
 
 ## Current Architectural Limitations
 
@@ -260,8 +262,8 @@ The current architecture has several known limitations:
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
 - Fan curve support is modeled but not implemented end-to-end
 - Aura/RGB lighting depends on asusd exposing a compatible introspectable backend and still needs broad hardware validation
-- The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, and fan drawing are separate modules
-- The UI and daemon duplicate some formatting and payload-shape logic
+- The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules
+- The UI and daemon still duplicate some presentation formatting and lower-risk leaf-row shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model
 - Typed shared DBus payloads are not yet in place
 - Saved control preferences are deliberately not an automation engine and are never auto-applied

@@ -1259,6 +1259,37 @@ impl DeviceCaps {
     }
 }
 
+/// Canonical internal availability semantics shared across feature, setup,
+/// permission, and CPU-control status models. Existing DBus strings remain
+/// unchanged; this type prevents UI pages from interpreting each model
+/// differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContractStatus {
+    Unknown,
+    Available,
+    Unsupported,
+    ReadOnly,
+    MissingDependency,
+    PermissionDenied,
+    TransientFailure,
+    Unavailable,
+}
+
+impl ContractStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Available => "Available",
+            Self::Unsupported => "Unsupported",
+            Self::ReadOnly => "Read-only",
+            Self::MissingDependency => "Missing dependency",
+            Self::PermissionDenied => "Permission denied",
+            Self::TransientFailure => "Temporarily unavailable",
+            Self::Unavailable => "Unavailable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeatureAccessState {
     Unknown,
@@ -1289,6 +1320,17 @@ impl FeatureAccessState {
             "permission_denied" => Self::PermissionDenied,
             "temporarily_unavailable" => Self::TemporarilyUnavailable,
             _ => Self::Unknown,
+        }
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Available => ContractStatus::Available,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::MissingBackend => ContractStatus::MissingDependency,
+            Self::PermissionDenied => ContractStatus::PermissionDenied,
+            Self::TemporarilyUnavailable => ContractStatus::TransientFailure,
         }
     }
 }
@@ -1412,6 +1454,16 @@ impl DependencyState {
             Self::NotRelevant => "Not needed",
         }
     }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown | Self::NotRelevant => ContractStatus::Unknown,
+            Self::Connected | Self::Ready => ContractStatus::Available,
+            Self::NotAvailable => ContractStatus::MissingDependency,
+            Self::Inactive => ContractStatus::Unavailable,
+            Self::Unreachable => ContractStatus::TransientFailure,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1494,6 +1546,16 @@ impl PermissionState {
             Self::ReadOnly => "Read-only",
             Self::Unsupported => "Unsupported",
             Self::Unavailable => "Unavailable",
+        }
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Writable => ContractStatus::Available,
+            Self::ReadOnly => ContractStatus::ReadOnly,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::Unavailable => ContractStatus::Unavailable,
         }
     }
 }
@@ -1922,6 +1984,17 @@ impl CpuAccessState {
 
     pub fn is_writable(self) -> bool {
         matches!(self, Self::Available)
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Available => ContractStatus::Available,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::MissingBackend => ContractStatus::MissingDependency,
+            Self::PermissionDenied => ContractStatus::PermissionDenied,
+            Self::TemporarilyUnavailable => ContractStatus::TransientFailure,
+        }
     }
 }
 
@@ -2399,5 +2472,25 @@ mod tests {
         let report = diagnostics.to_report_text();
         assert!(report.contains("Potential Aura interfaces"));
         assert!(report.contains("does not yet implement this interface"));
+    }
+
+    #[test]
+    fn feature_access_maps_to_canonical_contract_status() {
+        assert_eq!(
+            FeatureAccessState::Available.contract_status(),
+            ContractStatus::Available
+        );
+        assert_eq!(
+            FeatureAccessState::MissingBackend.contract_status(),
+            ContractStatus::MissingDependency
+        );
+        assert_eq!(
+            FeatureAccessState::PermissionDenied.contract_status(),
+            ContractStatus::PermissionDenied
+        );
+        assert_eq!(
+            FeatureAccessState::TemporarilyUnavailable.contract_status(),
+            ContractStatus::TransientFailure
+        );
     }
 }

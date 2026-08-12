@@ -15,16 +15,18 @@ use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_config, parse_config,
     parse_legacy_ui_config, validate_config, AppConfig, BatteryState, CloseBehavior,
-    CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
-    CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, FanCaps,
-    FanControlMode, FanInfo, FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor,
-    SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
+    ContractStatus, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry,
+    CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps,
+    ErrorCategory, FanCaps, FanControlMode, FanInfo, FanMappingConfidence, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, PermissionKind, PermissionState, PermissionStatus,
+    PowerSource, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
+    TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
+mod dbus_decode;
 mod fan_widgets;
 mod shell;
 mod theme;
@@ -5966,48 +5968,19 @@ async fn fetch_state() -> Result<
         .await
         .map_err(|e| format!("daemon GetState failed: {e}"))?;
 
-    let caps_map = state
-        .get("caps")
-        .cloned()
-        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
-        .unwrap_or_default();
-    let telemetry_map = state
-        .get("telemetry")
-        .cloned()
-        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
-        .unwrap_or_default();
-    let cpu_map = state
-        .get("cpu")
-        .cloned()
-        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
-        .unwrap_or_default();
-    let cpu_caps_map = state
-        .get("cpu_caps")
-        .cloned()
-        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
-        .unwrap_or_default();
-    let warnings = state
-        .get("warnings")
-        .cloned()
-        .and_then(|v| Vec::<String>::try_from(v).ok())
-        .unwrap_or_default();
-    let profile = state
-        .get("profile")
-        .and_then(|v| <&str>::try_from(v).ok())
-        .map(|v| v.to_string());
-    let gpu_mode = state
-        .get("gpu_mode")
-        .and_then(|v| <&str>::try_from(v).ok())
-        .map(|v| v.to_string());
-    let battery_limit = state
-        .get("battery_limit")
-        .and_then(u64_from_value)
+    let caps_map = dbus_decode::nested_map(&state, dbus_keys::state::CAPS).unwrap_or_default();
+    let telemetry_map =
+        dbus_decode::nested_map(&state, dbus_keys::state::TELEMETRY).unwrap_or_default();
+    let cpu_map = dbus_decode::nested_map(&state, dbus_keys::state::CPU).unwrap_or_default();
+    let cpu_caps_map =
+        dbus_decode::nested_map(&state, dbus_keys::state::CPU_CAPS).unwrap_or_default();
+    let warnings = dbus_decode::strings(&state, dbus_keys::state::WARNINGS).unwrap_or_default();
+    let profile = dbus_decode::string(&state, dbus_keys::state::PROFILE);
+    let gpu_mode = dbus_decode::string(&state, dbus_keys::state::GPU_MODE);
+    let battery_limit = dbus_decode::unsigned(&state, dbus_keys::state::BATTERY_LIMIT)
         .and_then(|v| u8::try_from(v).ok());
-    let lighting = state
-        .get("lighting")
-        .cloned()
-        .and_then(|v| HashMap::<String, OwnedValue>::try_from(v).ok())
-        .and_then(lighting_from_dbus);
+    let lighting =
+        dbus_decode::nested_map(&state, dbus_keys::state::LIGHTING).and_then(lighting_from_dbus);
     let fan_state = state
         .get(dbus_keys::FAN_STATE_KEY)
         .cloned()
@@ -6023,10 +5996,8 @@ async fn fetch_state() -> Result<
                     .collect(),
             )
         });
-    let lighting_diagnostics_details = state
-        .get("lighting_diagnostics_details")
-        .and_then(|v| <&str>::try_from(v).ok())
-        .map(|v| v.to_string());
+    let lighting_diagnostics_details =
+        dbus_decode::string(&state, dbus_keys::state::LIGHTING_DIAGNOSTICS_DETAILS);
 
     let caps = caps_from_dbus(&caps_map);
     let cpu_caps = cpu_caps_from_dbus(&cpu_caps_map);
@@ -7134,49 +7105,38 @@ fn push_history(buf: &mut Vec<f32>, value: Option<f32>, max_samples: usize) {
 }
 
 fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
-    let ts = map
-        .get("timestamp_ms")
-        .and_then(|v| u64::try_from(v).ok())
-        .unwrap_or(0);
+    let ts = dbus_decode::unsigned(&map, dbus_keys::telemetry::TIMESTAMP_MS).unwrap_or(0);
 
     let mut t = TelemetrySnapshot::empty_now(ts);
 
-    if let Some(v) = map.get("cpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
+    if let Some(v) = dbus_decode::float(&map, dbus_keys::telemetry::CPU_TEMP_C) {
         t.cpu_temp_c = Some(v as f32);
     }
-    if let Some(v) = map.get("gpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
+    if let Some(v) = dbus_decode::float(&map, dbus_keys::telemetry::GPU_TEMP_C) {
         t.gpu_temp_c = Some(v as f32);
     }
-    if let Some(v) = map
-        .get("gpu_usage_percent")
-        .and_then(|v| f64::try_from(v).ok())
-    {
+    if let Some(v) = dbus_decode::float(&map, dbus_keys::telemetry::GPU_USAGE_PERCENT) {
         t.gpu_usage_percent = Some(v as f32);
     }
-    t.gpu_vram_used_bytes = map.get("gpu_vram_used_bytes").and_then(u64_from_value);
-    t.gpu_vram_total_bytes = map.get("gpu_vram_total_bytes").and_then(u64_from_value);
-    t.gpu_core_clock_mhz = map
-        .get("gpu_core_clock_mhz")
-        .and_then(u64_from_value)
-        .and_then(|v| u32::try_from(v).ok());
-    t.gpu_memory_clock_mhz = map
-        .get("gpu_memory_clock_mhz")
-        .and_then(u64_from_value)
-        .and_then(|v| u32::try_from(v).ok());
-    if let Some(v) = map.get("gpu_power_w").and_then(|v| f64::try_from(v).ok()) {
+    t.gpu_vram_used_bytes = dbus_decode::unsigned(&map, dbus_keys::telemetry::GPU_VRAM_USED_BYTES);
+    t.gpu_vram_total_bytes =
+        dbus_decode::unsigned(&map, dbus_keys::telemetry::GPU_VRAM_TOTAL_BYTES);
+    t.gpu_core_clock_mhz =
+        dbus_decode::unsigned_u32(&map, dbus_keys::telemetry::GPU_CORE_CLOCK_MHZ);
+    t.gpu_memory_clock_mhz =
+        dbus_decode::unsigned_u32(&map, dbus_keys::telemetry::GPU_MEMORY_CLOCK_MHZ);
+    if let Some(v) = dbus_decode::float(&map, dbus_keys::telemetry::GPU_POWER_W) {
         t.gpu_power_w = Some(v as f32);
     }
-    t.gpu_index = map
-        .get("gpu_index")
-        .and_then(u64_from_value)
-        .and_then(|v| u32::try_from(v).ok());
-    t.gpu_name = string_from_value(&map, "gpu_name");
-    t.gpu_uuid = string_from_value(&map, "gpu_uuid");
-    t.gpu_pci_bus_id = string_from_value(&map, "gpu_pci_bus_id");
-    t.gpu_telemetry_provider = string_from_value(&map, "gpu_telemetry_provider");
-    t.gpu_telemetry_status = string_from_value(&map, "gpu_telemetry_status");
+    t.gpu_index = dbus_decode::unsigned_u32(&map, dbus_keys::telemetry::GPU_INDEX);
+    t.gpu_name = dbus_decode::string(&map, dbus_keys::telemetry::GPU_NAME);
+    t.gpu_uuid = dbus_decode::string(&map, dbus_keys::telemetry::GPU_UUID);
+    t.gpu_pci_bus_id = dbus_decode::string(&map, dbus_keys::telemetry::GPU_PCI_BUS_ID);
+    t.gpu_telemetry_provider =
+        dbus_decode::string(&map, dbus_keys::telemetry::GPU_TELEMETRY_PROVIDER);
+    t.gpu_telemetry_status = dbus_decode::string(&map, dbus_keys::telemetry::GPU_TELEMETRY_STATUS);
     if let Some(temps) = map
-        .get("temps_c")
+        .get(dbus_keys::telemetry::TEMPS_C)
         .cloned()
         .and_then(|v| HashMap::<String, f64>::try_from(v).ok())
     {
@@ -7185,7 +7145,7 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         }
     }
     if let Some(fans) = map
-        .get("fans_rpm")
+        .get(dbus_keys::telemetry::FANS_RPM)
         .cloned()
         .and_then(|v| HashMap::<String, u32>::try_from(v).ok())
     {
@@ -7193,11 +7153,7 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
             t.fans_rpm.insert(k, v);
         }
     }
-    if let Some(rows) = map
-        .get(dbus_keys::TELEMETRY_FAN_ROWS_KEY)
-        .cloned()
-        .and_then(|v| Vec::<HashMap<String, OwnedValue>>::try_from(v).ok())
-    {
+    if let Some(rows) = dbus_decode::rows(&map, dbus_keys::TELEMETRY_FAN_ROWS_KEY) {
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             if let Some(fan) = fan_row_from_dbus(&row) {
@@ -7219,24 +7175,21 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
             })
             .collect();
     }
-    if let Some(v) = map
-        .get("battery_percent")
-        .and_then(|v| f64::try_from(v).ok())
-    {
+    if let Some(v) = dbus_decode::float(&map, dbus_keys::telemetry::BATTERY_PERCENT) {
         t.battery_percent = Some(v as f32);
     }
-    if let Some(v) = map.get("ac_online").and_then(|v| bool::try_from(v).ok()) {
+    if let Some(v) = dbus_decode::boolean(&map, dbus_keys::telemetry::AC_ONLINE) {
         t.ac_online = Some(v);
     }
     if let Some(src) = map
-        .get("power_source")
+        .get(dbus_keys::telemetry::POWER_SOURCE)
         .and_then(|v| <&str>::try_from(v).ok())
     {
-        t.power_source = Some(match src {
-            "Ac" => PowerSource::Ac,
-            "Battery" => PowerSource::Battery,
-            _ => PowerSource::Ac,
-        });
+        t.power_source = match src {
+            "Ac" => Some(PowerSource::Ac),
+            "Battery" => Some(PowerSource::Battery),
+            _ => None,
+        };
     }
 
     if let Some(src) = map
@@ -7529,15 +7482,7 @@ fn cpu_telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> CpuTelemetry {
 }
 
 fn u64_from_value(v: &OwnedValue) -> Option<u64> {
-    u64::try_from(v)
-        .ok()
-        .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
-}
-
-fn string_from_value(map: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    map.get(key)
-        .and_then(|value| <&str>::try_from(value).ok())
-        .map(str::to_string)
+    dbus_decode::unsigned_value(v)
 }
 
 fn format_duration_short(secs: u64) -> String {
@@ -7689,13 +7634,15 @@ fn warning_detail<'a>(warnings: &'a [String], prefix: &str) -> Option<&'a str> {
 }
 
 fn feature_status_label(status: FeatureAccessState) -> &'static str {
-    match status {
-        FeatureAccessState::Available => "Available",
-        FeatureAccessState::Unsupported => "Not supported on this machine",
-        FeatureAccessState::MissingBackend => "Missing required service",
-        FeatureAccessState::PermissionDenied => "Permission denied",
-        FeatureAccessState::TemporarilyUnavailable => "Temporarily unavailable",
-        FeatureAccessState::Unknown => "Checking support",
+    match status.contract_status() {
+        ContractStatus::Available => "Available",
+        ContractStatus::Unsupported => "Not supported on this machine",
+        ContractStatus::MissingDependency => "Missing required service",
+        ContractStatus::PermissionDenied => "Permission denied",
+        ContractStatus::TransientFailure => "Temporarily unavailable",
+        ContractStatus::ReadOnly => "Read-only",
+        ContractStatus::Unavailable => "Unavailable",
+        ContractStatus::Unknown => "Checking support",
     }
 }
 
@@ -8172,17 +8119,34 @@ fn friendly_action_error(error: &str) -> String {
         && lower.contains("not supported by the sysfs led backend")
     {
         "The current lighting backend supports only Off and Static.".to_string()
-    } else if lower.contains("permission denied") {
-        "Permission denied. Open Diagnostics for the affected paths and backend details."
-            .to_string()
     } else if lower.contains("session dbus unavailable")
         || lower.contains("failed to connect to daemon proxy")
     {
         "rog-helperd is not reachable on the session bus.".to_string()
-    } else if let Some((_, suffix)) = error.split_once(": ") {
-        suffix.to_string()
     } else {
-        error.to_string()
+        match ErrorCategory::classify_message(error) {
+            ErrorCategory::PermissionDenied => {
+                "Permission denied. Open Diagnostics for the affected paths and backend details."
+                    .to_string()
+            }
+            ErrorCategory::ReadOnly => {
+                "This control is read-only for the current backend or user.".to_string()
+            }
+            ErrorCategory::MissingDependency => {
+                "A required service is missing or not running. Open Diagnostics for setup details."
+                    .to_string()
+            }
+            ErrorCategory::Unsupported => {
+                "This control is not supported by the active hardware backend.".to_string()
+            }
+            ErrorCategory::TransientFailure | ErrorCategory::Unavailable => {
+                "The control is temporarily unavailable. Check the daemon and backend status, then retry."
+                    .to_string()
+            }
+            ErrorCategory::InvalidInput | ErrorCategory::Unknown => error
+                .split_once(": ")
+                .map_or_else(|| error.to_string(), |(_, suffix)| suffix.to_string()),
+        }
     }
 }
 
@@ -8905,54 +8869,45 @@ fn update_detail_rows_dynamic(
 }
 
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
-    fn s(map: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {
-        map.get(k)
-            .and_then(|v| <&str>::try_from(v).ok())
-            .map(|v| v.to_string())
-    }
-    fn b(map: &HashMap<String, OwnedValue>, k: &str) -> Option<bool> {
-        map.get(k).and_then(|v| bool::try_from(v).ok())
-    }
-    fn u(map: &HashMap<String, OwnedValue>, k: &str) -> Option<u64> {
-        map.get(k).and_then(|v| {
-            u64::try_from(v)
-                .ok()
-                .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
-        })
-    }
-    fn vec_string(map: &HashMap<String, OwnedValue>, k: &str) -> Option<Vec<String>> {
-        map.get(k)
-            .cloned()
-            .and_then(|v| Vec::<String>::try_from(v).ok())
-    }
-
-    let supported_modes = vec_string(&map, "supported_modes").unwrap_or_default();
-    let max_brightness = u(&map, "max_brightness").unwrap_or(0);
-    let supports_brightness = b(&map, "supports_brightness").unwrap_or(max_brightness > 0);
-    let supports_modes = b(&map, "supports_modes").unwrap_or(!supported_modes.is_empty());
+    let supported_modes =
+        dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_MODES).unwrap_or_default();
+    let max_brightness =
+        dbus_decode::unsigned(&map, dbus_keys::lighting::MAX_BRIGHTNESS).unwrap_or(0);
+    let supports_brightness = dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_BRIGHTNESS)
+        .unwrap_or(max_brightness > 0);
+    let supports_modes = dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_MODES)
+        .unwrap_or(!supported_modes.is_empty());
 
     Some(LightingInfo {
-        backend: s(&map, "backend").unwrap_or_else(|| "Unknown backend".to_string()),
-        device: s(&map, "device").unwrap_or_else(|| "Unknown device".to_string()),
-        brightness: u(&map, "brightness").unwrap_or(0),
+        backend: dbus_decode::string(&map, dbus_keys::lighting::BACKEND)
+            .unwrap_or_else(|| "Unknown backend".to_string()),
+        device: dbus_decode::string(&map, dbus_keys::lighting::DEVICE)
+            .unwrap_or_else(|| "Unknown device".to_string()),
+        brightness: dbus_decode::unsigned(&map, dbus_keys::lighting::BRIGHTNESS).unwrap_or(0),
         max_brightness,
-        can_set: b(&map, "can_set").unwrap_or(false),
-        mode: s(&map, "mode").unwrap_or_else(|| "Current mode not reported".to_string()),
+        can_set: dbus_decode::boolean(&map, dbus_keys::lighting::CAN_SET).unwrap_or(false),
+        mode: dbus_decode::string(&map, dbus_keys::lighting::MODE)
+            .unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_brightness,
         supports_modes,
-        supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
-        rgb_hex: s(&map, "rgb_hex"),
+        supports_rgb: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_RGB)
+            .unwrap_or(false),
+        rgb_hex: dbus_decode::string(&map, dbus_keys::lighting::RGB_HEX),
         supported_modes,
-        supports_speed: b(&map, "supports_speed").unwrap_or(false),
-        supported_speeds: vec_string(&map, "supported_speeds").unwrap_or_default(),
-        supported_zones: vec_string(&map, "supported_zones").unwrap_or_default(),
-        status: s(&map, "status").unwrap_or_else(|| "unknown".to_string()),
-        last_error: s(&map, "last_error"),
-        diagnostics_summary: s(&map, "diagnostics_summary"),
-        diagnostics_details: s(&map, "diagnostics_details"),
-        fallback_reason: s(&map, "fallback_reason"),
-        unavailable_reason: s(&map, "unavailable_reason"),
-        permission_warning: s(&map, "permission_warning"),
+        supports_speed: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_SPEED)
+            .unwrap_or(false),
+        supported_speeds: dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_SPEEDS)
+            .unwrap_or_default(),
+        supported_zones: dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_ZONES)
+            .unwrap_or_default(),
+        status: dbus_decode::string(&map, dbus_keys::lighting::STATUS)
+            .unwrap_or_else(|| "unknown".to_string()),
+        last_error: dbus_decode::string(&map, dbus_keys::lighting::LAST_ERROR),
+        diagnostics_summary: dbus_decode::string(&map, dbus_keys::lighting::DIAGNOSTICS_SUMMARY),
+        diagnostics_details: dbus_decode::string(&map, dbus_keys::lighting::DIAGNOSTICS_DETAILS),
+        fallback_reason: dbus_decode::string(&map, dbus_keys::lighting::FALLBACK_REASON),
+        unavailable_reason: dbus_decode::string(&map, dbus_keys::lighting::UNAVAILABLE_REASON),
+        permission_warning: dbus_decode::string(&map, dbus_keys::lighting::PERMISSION_WARNING),
     })
 }
 
@@ -9013,48 +8968,42 @@ fn fan_state_from_dbus(map: HashMap<String, OwnedValue>) -> FanState {
 }
 
 fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
-    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
-        map.get(key)
-            .and_then(|value| bool::try_from(value).ok())
-            .unwrap_or(false)
-    }
-    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> String {
-        map.get(key)
-            .and_then(|value| <&str>::try_from(value).ok())
-            .unwrap_or_default()
-            .to_string()
-    }
-    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
-        map.get(key)
-            .cloned()
-            .and_then(|value| Vec::<String>::try_from(value).ok())
-            .unwrap_or_default()
-    }
-
     FanCaps {
-        has_fan_reading: b(&map, "has_fan_reading"),
-        has_fan_curves: b(&map, "has_fan_curves"),
-        fan_curve_readable: b(&map, "fan_curve_readable"),
-        fan_curve_writable: b(&map, "fan_curve_writable"),
-        has_fan_manual_percent: b(&map, "has_fan_manual_percent"),
-        has_fan_manual_rpm_target: b(&map, "has_fan_manual_rpm_target"),
-        has_individual_fan_control: b(&map, "has_individual_fan_control"),
-        has_fan_sync_control: b(&map, "has_fan_sync_control"),
-        has_fan_boost: b(&map, "has_fan_boost"),
-        fan_count: map
-            .get("fan_count")
-            .and_then(u64_from_value)
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0),
-        fan_mapping_confidence: map
-            .get("fan_mapping_confidence")
-            .and_then(|value| <&str>::try_from(value).ok())
-            .map(FanMappingConfidence::parse)
-            .unwrap_or(FanMappingConfidence::Unknown),
-        fan_backend: s(&map, "fan_backend"),
-        endpoints: vec_string(&map, "endpoints"),
-        notes: vec_string(&map, "notes"),
-        warnings: vec_string(&map, "warnings"),
+        has_fan_reading: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_READING)
+            .unwrap_or(false),
+        has_fan_curves: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_CURVES)
+            .unwrap_or(false),
+        fan_curve_readable: dbus_decode::boolean(&map, dbus_keys::fan_caps::FAN_CURVE_READABLE)
+            .unwrap_or(false),
+        fan_curve_writable: dbus_decode::boolean(&map, dbus_keys::fan_caps::FAN_CURVE_WRITABLE)
+            .unwrap_or(false),
+        has_fan_manual_percent: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_MANUAL_PERCENT)
+            .unwrap_or(false),
+        has_fan_manual_rpm_target: dbus_decode::boolean(
+            &map,
+            dbus_keys::caps::HAS_FAN_MANUAL_RPM_TARGET,
+        )
+        .unwrap_or(false),
+        has_individual_fan_control: dbus_decode::boolean(
+            &map,
+            dbus_keys::caps::HAS_INDIVIDUAL_FAN_CONTROL,
+        )
+        .unwrap_or(false),
+        has_fan_sync_control: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_SYNC_CONTROL)
+            .unwrap_or(false),
+        has_fan_boost: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_BOOST).unwrap_or(false),
+        fan_count: dbus_decode::unsigned_u32(&map, dbus_keys::caps::FAN_COUNT).unwrap_or(0),
+        fan_mapping_confidence: dbus_decode::string(
+            &map,
+            dbus_keys::fan_caps::FAN_MAPPING_CONFIDENCE,
+        )
+        .as_deref()
+        .map(FanMappingConfidence::parse)
+        .unwrap_or(FanMappingConfidence::Unknown),
+        fan_backend: dbus_decode::string(&map, dbus_keys::caps::FAN_BACKEND).unwrap_or_default(),
+        endpoints: dbus_decode::strings(&map, dbus_keys::caps::ENDPOINTS).unwrap_or_default(),
+        notes: dbus_decode::strings(&map, dbus_keys::caps::NOTES).unwrap_or_default(),
+        warnings: dbus_decode::strings(&map, dbus_keys::fan_state::WARNINGS).unwrap_or_default(),
     }
 }
 
@@ -9294,21 +9243,21 @@ fn cpu_caps_from_dbus(map: &HashMap<String, OwnedValue>) -> CpuCaps {
     }
 
     CpuCaps {
-        has_cpufreq: b(map, "has_cpufreq"),
-        has_epp: b(map, "has_epp"),
-        has_boost_toggle: b(map, "has_boost_toggle"),
-        has_package_power: b(map, "has_package_power"),
-        policy_writable: b(map, "policy_writable"),
-        has_min_freq_limit: b(map, "has_min_freq_limit"),
-        has_max_freq_limit: b(map, "has_max_freq_limit"),
-        has_governor: b(map, "has_governor"),
-        has_core_online: b(map, "has_core_online"),
-        scaling_driver: s(map, "scaling_driver"),
-        cpu_count: u32v(map, "cpu_count").unwrap_or(0),
-        thread_count: u32v(map, "thread_count").unwrap_or(0),
-        governor_choices: vec_string(map, "governor_choices"),
-        epp_choices: vec_string(map, "epp_choices"),
-        sysfs_paths: vec_string(map, "sysfs_paths"),
+        has_cpufreq: b(map, dbus_keys::cpu_caps::HAS_CPUFREQ),
+        has_epp: b(map, dbus_keys::cpu_caps::HAS_EPP),
+        has_boost_toggle: b(map, dbus_keys::cpu_caps::HAS_BOOST_TOGGLE),
+        has_package_power: b(map, dbus_keys::cpu_caps::HAS_PACKAGE_POWER),
+        policy_writable: b(map, dbus_keys::cpu_caps::POLICY_WRITABLE),
+        has_min_freq_limit: b(map, dbus_keys::cpu_caps::HAS_MIN_FREQ_LIMIT),
+        has_max_freq_limit: b(map, dbus_keys::cpu_caps::HAS_MAX_FREQ_LIMIT),
+        has_governor: b(map, dbus_keys::cpu_caps::HAS_GOVERNOR),
+        has_core_online: b(map, dbus_keys::cpu_caps::HAS_CORE_ONLINE),
+        scaling_driver: s(map, dbus_keys::cpu_caps::SCALING_DRIVER),
+        cpu_count: u32v(map, dbus_keys::cpu_caps::CPU_COUNT).unwrap_or(0),
+        thread_count: u32v(map, dbus_keys::cpu_caps::THREAD_COUNT).unwrap_or(0),
+        governor_choices: vec_string(map, dbus_keys::cpu_caps::GOVERNOR_CHOICES),
+        epp_choices: vec_string(map, dbus_keys::cpu_caps::EPP_CHOICES),
+        sysfs_paths: vec_string(map, dbus_keys::cpu_caps::SYSFS_PATHS),
         control_access: map
             .get(dbus_keys::CPU_CONTROL_ACCESS_KEY)
             .cloned()
@@ -9381,7 +9330,7 @@ fn setup_status_from_dbus(map: &HashMap<String, OwnedValue>) -> SetupStatus {
 
     SetupStatus {
         checked_at_ms: map
-            .get("checked_at_ms")
+            .get(dbus_keys::setup::CHECKED_AT_MS)
             .and_then(u64_from_value)
             .unwrap_or_default(),
         dependencies,
@@ -9391,52 +9340,30 @@ fn setup_status_from_dbus(map: &HashMap<String, OwnedValue>) -> SetupStatus {
 }
 
 fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
-    fn b(map: &HashMap<String, OwnedValue>, key: &str) -> bool {
-        map.get(key)
-            .and_then(|v| bool::try_from(v).ok())
-            .unwrap_or(false)
-    }
-    fn vec_string(map: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
-        map.get(key)
-            .cloned()
-            .and_then(|v| Vec::<String>::try_from(v).ok())
-            .unwrap_or_default()
-    }
-    fn u32v(map: &HashMap<String, OwnedValue>, key: &str) -> u32 {
-        map.get(key)
-            .and_then(u64_from_value)
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0)
-    }
-    fn s(map: &HashMap<String, OwnedValue>, key: &str) -> String {
-        map.get(key)
-            .and_then(|v| <&str>::try_from(v).ok())
-            .unwrap_or_default()
-            .to_string()
-    }
+    let b = |key| dbus_decode::boolean(map, key).unwrap_or(false);
 
     DeviceCaps {
-        has_profiles: b(map, "has_profiles"),
-        has_fan_curves: b(map, "has_fan_curves"),
-        has_fan_reading: b(map, "has_fan_reading"),
-        has_charge_limit: b(map, "has_charge_limit"),
-        has_gpu_modes: b(map, "has_gpu_modes"),
-        has_aura: b(map, "has_aura"),
-        has_kbd_backlight: b(map, "has_kbd_backlight"),
-        has_fan_manual_percent: b(map, "has_fan_manual_percent"),
-        has_fan_manual_rpm_target: b(map, "has_fan_manual_rpm_target"),
-        has_individual_fan_control: b(map, "has_individual_fan_control"),
-        has_fan_sync_control: b(map, "has_fan_sync_control"),
-        has_fan_boost: b(map, "has_fan_boost"),
-        fan_count: u32v(map, "fan_count"),
-        fan_backend: s(map, "fan_backend"),
-        requires_reboot_for_gpu_switch: b(map, "requires_reboot_for_gpu_switch"),
+        has_profiles: b(dbus_keys::caps::HAS_PROFILES),
+        has_fan_curves: b(dbus_keys::caps::HAS_FAN_CURVES),
+        has_fan_reading: b(dbus_keys::caps::HAS_FAN_READING),
+        has_charge_limit: b(dbus_keys::caps::HAS_CHARGE_LIMIT),
+        has_gpu_modes: b(dbus_keys::caps::HAS_GPU_MODES),
+        has_aura: b(dbus_keys::caps::HAS_AURA),
+        has_kbd_backlight: b(dbus_keys::caps::HAS_KBD_BACKLIGHT),
+        has_fan_manual_percent: b(dbus_keys::caps::HAS_FAN_MANUAL_PERCENT),
+        has_fan_manual_rpm_target: b(dbus_keys::caps::HAS_FAN_MANUAL_RPM_TARGET),
+        has_individual_fan_control: b(dbus_keys::caps::HAS_INDIVIDUAL_FAN_CONTROL),
+        has_fan_sync_control: b(dbus_keys::caps::HAS_FAN_SYNC_CONTROL),
+        has_fan_boost: b(dbus_keys::caps::HAS_FAN_BOOST),
+        fan_count: dbus_decode::unsigned_u32(map, dbus_keys::caps::FAN_COUNT).unwrap_or(0),
+        fan_backend: dbus_decode::string(map, dbus_keys::caps::FAN_BACKEND).unwrap_or_default(),
+        requires_reboot_for_gpu_switch: b(dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH),
         profile_access: feature_access_from_dbus(map, dbus_keys::PROFILE_ACCESS_PREFIX),
         charge_limit_access: feature_access_from_dbus(map, dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
         gpu_mode_access: feature_access_from_dbus(map, dbus_keys::GPU_MODE_ACCESS_PREFIX),
         kbd_backlight_access: feature_access_from_dbus(map, dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
-        endpoints: vec_string(map, "endpoints"),
-        notes: vec_string(map, "notes"),
+        endpoints: dbus_decode::strings(map, dbus_keys::caps::ENDPOINTS).unwrap_or_default(),
+        notes: dbus_decode::strings(map, dbus_keys::caps::NOTES).unwrap_or_default(),
     }
 }
 
@@ -10249,6 +10176,20 @@ mod tests {
     }
 
     #[test]
+    fn missing_capability_fields_remain_disabled() {
+        let caps = caps_from_dbus(&HashMap::new());
+        let lighting = lighting_from_dbus(HashMap::new()).expect("map should decode");
+
+        assert!(!caps.has_profiles);
+        assert!(!caps.has_aura);
+        assert_eq!(caps.profile_access.status, FeatureAccessState::Unknown);
+        assert!(!lighting.can_set);
+        assert!(!lighting.supports_brightness);
+        assert!(!lighting.supports_rgb);
+        assert_eq!(lighting.max_brightness, 0);
+    }
+
+    #[test]
     fn telemetry_from_dbus_parses_structured_fan_rows() {
         let mut fan_row = HashMap::new();
         fan_row.insert(
@@ -10308,6 +10249,28 @@ mod tests {
         assert_eq!(telemetry.gpu_usage_percent, Some(32.0));
         assert_eq!(telemetry.gpu_vram_total_bytes, Some(8_589_934_592));
         assert_eq!(telemetry.gpu_name.as_deref(), Some("NVIDIA Test GPU"));
+    }
+
+    #[test]
+    fn telemetry_from_dbus_preserves_missing_optional_fields() {
+        let telemetry = telemetry_from_dbus(HashMap::new());
+
+        assert_eq!(telemetry.gpu_temp_c, None);
+        assert_eq!(telemetry.gpu_usage_percent, None);
+        assert_eq!(telemetry.gpu_vram_total_bytes, None);
+        assert_eq!(telemetry.power_source, None);
+        assert!(telemetry.fan_rows.is_empty());
+    }
+
+    #[test]
+    fn telemetry_from_dbus_does_not_fabricate_unknown_power_source() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::telemetry::POWER_SOURCE.to_string(),
+            ov("future-wire-value".to_string()),
+        );
+
+        assert_eq!(telemetry_from_dbus(map).power_source, None);
     }
 
     #[test]

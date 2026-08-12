@@ -29,8 +29,8 @@
   "27": "In Progress or Still Evolving",
   "28": "README.md",
   "29": "Development",
-  "30": "SharedUiState",
-  "31": "FanCurve",
+  "30": "RogTray",
+  "31": ".sanitize",
   "32": "Build",
   "33": "SetupStatus",
   "34": "Permissions",
@@ -74,7 +74,7 @@
   "72": "String",
   "73": "build_shell",
   "74": "theme.rs",
-  "75": "fetch_state",
+  "75": "OwnedValue",
   "76": "DependencyState",
   "77": "Lighting",
   "78": "About",
@@ -89,5 +89,10 @@
   "87": "Fan-control backend discovery",
   "88": "Q: Implement robust persistent configuration and a dedicated Settings page",
   "89": "FanInfo",
-  "90": "DeviceCaps"
+  "90": "CpuCaps",
+  "91": "dbus_decode.rs",
+  "92": "FeatureAccessState",
+  "93": "Release Readiness Audit",
+  "94": "check-release-metadata.py",
+  "95": "DBus Contract Map"
 }
