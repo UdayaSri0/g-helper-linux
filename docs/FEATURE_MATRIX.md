@@ -12,8 +12,8 @@ This matrix reflects the current implementation in the repository today. It is b
 | Battery charge limit | `asusd` | Read + Write | Implemented | Requires `asusd`; available on Battery with a Dashboard quick control |
 | GPU mode | `supergfxd` | Read + Write | Implemented | Requires `supergfxd`; current safety model is hint-based rather than a full busy-state system |
 | Keyboard backlight brightness | sysfs LED backend (`kbd_backlight`) | Read + Write | Implemented | Writable only if the current user can write the LED `brightness` file |
-| Lighting mode | sysfs LED backend or asusd Aura DBus | Read + Write | Partial | Sysfs supports `Off` and `Static`; Aura mode choices come only from the probed backend |
-| Aura / RGB lighting | asusd Aura DBus provider | Read + Write | Implemented, hardware-dependent | Requires an introspectable Aura/keyboard lighting interface from `asusd`; degrades to sysfs brightness-only when Aura/RGB is not exposed |
+| Lighting mode | sysfs LED backend | Read + Write | Partial | Verified support is limited to `Off` and `Static`; no Aura effect contract is currently authorized |
+| Aura / RGB lighting | DBus discovery provider | Read-only discovery | Not yet implemented | Aura-looking interfaces are diagnostic-only until an exact service/path/interface/signature contract is captured and tested; see `AURA_BACKEND_DISCOVERY.md` |
 | Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; Cooling shows bounded mapped-only RPM animation, circular temperature gauges, individual cards, and collapsed diagnostics while keeping read-only fans visible |
 | Fan manual percent control | `hwmon` PWM via daemon | Write | Implemented, hardware-dependent | Enabled only when matching `pwmN` and `pwmN_enable` are writable by `rog-helperd`; UI uses percentages and provider converts to PWM |
 | Fan RPM target | `hwmon` `fanN_target` via daemon | Write | Optional/backend-dependent | Hidden/disabled unless a writable `fanN_target` endpoint is explicitly detected |
@@ -24,7 +24,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support; daemon reports per-control access state, blocked paths, and suggested checks |
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
-| NVIDIA GPU temperature and clock fallback | `nvidia-smi` | Read | Implemented | Temperature is used only when primary GPU temperature is unavailable from `hwmon`; core and memory clocks are best-effort and may be unavailable when the GPU is powered down or `nvidia-smi` is missing |
+| NVIDIA GPU telemetry | `nvidia-smi` | Read | Implemented | One daemon-side query every three seconds provides optional utilisation, VRAM, clocks, power, identity, and temperature; hwmon temperature stays preferred and all fields degrade independently |
 | Diagnostics page | `rog-ui` + daemon capability/warning data | Read | Implemented | Structured Services/Permissions/Sensors/Warnings overview plus a collapsed copyable raw report, fan hwmon mapping, CPU access diagnostics, and keyboard lighting/RGB diagnostics |
 | About page | `rog-ui` | Read | Implemented | Leads with packaged identity/icon and version, uses Cargo metadata with fallbacks, and shows maintainer info, source/support links, and release-status text |
 | Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |

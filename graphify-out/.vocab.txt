@@ -1,4 +1,5 @@
 about
+absent
 accent
 acceptance
 accepted
@@ -15,6 +16,7 @@ add
 added
 additional
 adjustment
+after
 agents
 alias
 aliases
@@ -23,6 +25,7 @@ always
 and
 animated
 animation
+answer
 any
 api
 app
@@ -32,6 +35,7 @@ append
 appimage
 application
 apply
+applying
 apprun
 apt
 arc
@@ -48,6 +52,7 @@ assets
 asus
 asusd
 async
+atomic
 attr
 aur
 aura
@@ -59,6 +64,7 @@ availability
 available
 avgs
 avoid
+back
 backend
 background
 backlight
@@ -66,7 +72,7 @@ banner
 basic
 basics
 battery
-become
+before
 behavior
 behaviour
 best
@@ -96,6 +102,7 @@ byte
 bytes
 call
 can
+candidate
 candidates
 canonicalize
 capabilities
@@ -127,10 +134,10 @@ clamps
 class
 classify
 clean
+cleans
 cli
 client
 clock
-clocks
 close
 cmd
 code
@@ -145,9 +152,11 @@ commands
 common
 compare
 compile
+complete
 compression
 compressors
 concurrency
+confidence
 config
 configuration
 connect
@@ -192,6 +201,8 @@ deb
 debian
 debounce
 debugging
+decision
+dedicated
 default
 defaults
 degradation
@@ -211,6 +222,7 @@ detect
 developer
 development
 device
+diagnostic
 diagnostics
 dialog
 dir
@@ -220,7 +232,10 @@ dirs
 disabled
 disagree
 disambiguates
+discard
 discipline
+discover
+discovers
 discovery
 display
 distinguishes
@@ -241,7 +256,6 @@ dynamic
 editor
 emits
 empty
-enable
 enabled
 endpoint
 endpoints
@@ -273,6 +287,7 @@ failed
 failure
 fallback
 fallbacks
+falls
 fan
 fans
 fdo
@@ -294,6 +309,7 @@ firmware
 first
 fix
 flags
+flat
 flathub
 flatpak
 floor
@@ -308,9 +324,11 @@ friendly
 from
 full
 future
+gate
 gauge
 gauges
 generate
+generic
 get
 gib
 git
@@ -320,6 +338,7 @@ goal
 governor
 governors
 gpu
+gpus
 graph
 graphify
 group
@@ -355,7 +374,9 @@ icon
 icons
 identity
 ids
+ignored
 image
+implement
 implementation
 implemented
 important
@@ -414,6 +435,7 @@ layer
 layered
 layout
 led
+legacy
 lib
 license
 lighting
@@ -439,12 +461,14 @@ logical
 logs
 look
 low
+lowest
 machine
 main
 maintainability
 maintainer
 maintenance
 make
+malformed
 manual
 map
 mapping
@@ -468,6 +492,8 @@ metric
 metrics
 mhz
 mib
+migrate
+migrates
 milestone
 minimized
 minimum
@@ -479,6 +505,7 @@ mode
 model
 modes
 monotonic
+multiple
 mutex
 name
 names
@@ -492,6 +519,8 @@ need
 needed
 new
 node
+nodes
+normal
 normalize
 normalizes
 not
@@ -503,6 +532,7 @@ object
 objective
 off
 one
+ones
 online
 only
 open
@@ -526,6 +556,7 @@ packaging
 packing
 page
 pages
+pairs
 panel
 parse
 parsed
@@ -548,6 +579,7 @@ performed
 permission
 permissions
 persist
+persistence
 persistent
 phase
 physical
@@ -580,6 +612,7 @@ prepare
 prerequisites
 present
 preserve
+preserves
 preset
 preview
 print
@@ -607,7 +640,9 @@ publishing
 push
 put
 pwm
+query
 quick
+quoted
 radial
 ram
 range
@@ -627,14 +662,17 @@ record
 rect
 redesign
 ref
+references
 refresh
 regex
 register
 rejected
 rejects
 release
+remain
 remote
 render
+replaces
 repo
 report
 reported
@@ -658,11 +696,13 @@ rgb
 rgba
 richer
 roadmap
+robust
 rog
 root
 roots
 rotor
 rotors
+round
 rounded
 row
 rows
@@ -679,6 +719,7 @@ same
 sample
 samples
 sanitize
+satisfied
 save
 scale
 scenario
@@ -693,6 +734,7 @@ select
 self
 sensors
 separate
+serialization
 service
 services
 session
@@ -767,6 +809,7 @@ system
 systemctl
 systemd
 systems
+table
 tag
 tarball
 target
@@ -777,6 +820,7 @@ temp
 temperature
 template
 temporarily
+temporary
 test
 testing
 tests
@@ -788,6 +832,7 @@ these
 things
 this
 thread
+through
 tick
 tile
 time
@@ -799,6 +844,8 @@ tips
 title
 toggle
 token
+tolerated
+toml
 tool
 toolbar
 tooling
@@ -813,6 +860,7 @@ treated
 tree
 trim
 trimmed
+trip
 troubleshooting
 truncate
 turbo

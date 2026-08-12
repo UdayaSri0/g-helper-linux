@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rog_core::{
     validate_fan_percent, validate_fan_request, FanCaps, FanControlMode, FanControlRequest,
-    FanCurve, FanDomain, FanInfo, FanState, FanTelemetry, RogError, RogResult, TelemetrySnapshot,
+    FanCurve, FanDomain, FanInfo, FanMappingConfidence, FanState, FanTelemetry, RogError,
+    RogResult, TelemetrySnapshot,
 };
 use tracing::debug;
 
@@ -104,99 +104,64 @@ impl HwmonTelemetryProvider {
     }
 
     pub fn fan_caps(&self) -> RogResult<FanCaps> {
-        self.list_fans().map(|fans| FanCaps::from_fans(&fans))
+        let fans = self.list_fans()?;
+        Ok(self.fan_caps_from_fans(&fans))
     }
 
     pub fn fan_state(&self) -> RogResult<FanState> {
-        self.list_fans().map(FanState::from_fans)
+        let fans = self.list_fans()?;
+        let mut state = FanState::from_fans(fans);
+        state.caps = self.fan_caps_from_fans(&state.fans);
+        Ok(state)
+    }
+
+    fn fan_caps_from_fans(&self, fans: &[FanInfo]) -> FanCaps {
+        let mut caps = FanCaps::from_fans(fans);
+        let Ok(hwmons) = self.list_hwmon() else {
+            return caps;
+        };
+
+        for (name, path) in hwmons {
+            if name != "asus_custom_fan_curve" {
+                continue;
+            }
+            let discovery = discover_asus_curve_points(&path);
+            caps.endpoints.extend(discovery.endpoints);
+            caps.notes.extend(discovery.notes);
+            caps.warnings.extend(discovery.warnings);
+            caps.fan_curve_readable |= discovery.readable;
+        }
+        caps.endpoints.sort();
+        caps.endpoints.dedup();
+        caps.notes.sort();
+        caps.notes.dedup();
+        caps.warnings.sort();
+        caps.warnings.dedup();
+
+        // A readable curve ABI is not write authorisation. Generic hwmon curve
+        // writes remain disabled until a backend-specific implementation can
+        // validate the device, ranges, restore path, and daemon permissions.
+        caps.fan_curve_writable = caps.has_fan_curves;
+        caps
     }
 
     pub fn set_fan_auto(&self, fan_id: Option<&str>) -> RogResult<()> {
         let fans = self.list_fans()?;
-        let selected = select_fans(&fans, fan_id)?;
-        if selected.is_empty() {
-            return Err(RogError::NotSupported(
-                "no fans exposing Auto/BIOS restore were detected".to_string(),
-            ));
-        }
-
-        let mut errors = Vec::new();
-        for fan in selected {
-            if !fan.supports_auto {
-                errors.push(format!("{} does not expose writable pwm_enable", fan.label));
-                continue;
-            }
-            let Some(path) = endpoint_path(fan, "pwm_enable:") else {
-                errors.push(format!("{} has no pwm_enable endpoint", fan.label));
-                continue;
-            };
-            if let Err(err) = write_pwm_enable_auto(&path) {
-                errors.push(format!("{}: {err}", fan.label));
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(RogError::PermissionDenied(format!(
-                "failed to restore Auto for one or more fans: {}",
-                errors.join("; ")
-            )))
-        }
+        let _ = select_fans(&fans, fan_id)?;
+        Err(RogError::NotSupported(
+            "generic hwmon fan Auto writes are disabled until a backend-specific restore contract is verified"
+                .to_string(),
+        ))
     }
 
     pub fn set_fan_manual_percent(&self, fan_id: &str, percent: u8) -> RogResult<()> {
         validate_fan_percent(percent)?;
         let fans = self.list_fans()?;
-        let selected = select_fans(&fans, Some(fan_id))?;
-        if selected.is_empty() {
-            return Err(RogError::NotSupported(
-                "no fans exposing manual percentage control were detected".to_string(),
-            ));
-        }
-
-        let mut applied = Vec::new();
-        let mut errors = Vec::new();
-        for fan in selected {
-            if !fan.supports_manual_percent {
-                errors.push(format!(
-                    "{} does not support manual percentage control",
-                    fan.label
-                ));
-                continue;
-            }
-            let Some(enable_path) = endpoint_path(fan, "pwm_enable:") else {
-                errors.push(format!("{} has no pwm_enable endpoint", fan.label));
-                continue;
-            };
-            let Some(pwm_path) = endpoint_path(fan, "pwm:") else {
-                errors.push(format!("{} has no pwm endpoint", fan.label));
-                continue;
-            };
-            if let Err(err) = write_sysfs(&enable_path, "1\n") {
-                errors.push(format!(
-                    "{}: failed to enable manual mode: {err}",
-                    fan.label
-                ));
-                continue;
-            }
-            applied.push(fan.id.clone());
-            let pwm_value = percent_to_pwm(percent);
-            if let Err(err) = write_sysfs(&pwm_path, &format!("{pwm_value}\n")) {
-                errors.push(format!("{}: failed to write PWM value: {err}", fan.label));
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            let _ = self.set_fan_auto(None);
-            Err(RogError::PermissionDenied(format!(
-                "fan manual write failed after applying to [{}]: {}",
-                applied.join(", "),
-                errors.join("; ")
-            )))
-        }
+        let _ = select_fans(&fans, Some(fan_id))?;
+        Err(RogError::NotSupported(
+            "generic hwmon manual-percent writes are disabled until the backend is verified"
+                .to_string(),
+        ))
     }
 
     pub fn set_fan_rpm_target(&self, fan_id: &str, rpm: u32) -> RogResult<()> {
@@ -206,26 +171,11 @@ impl HwmonTelemetryProvider {
             ));
         }
         let fans = self.list_fans()?;
-        let selected = select_fans(&fans, Some(fan_id))?;
-        if selected.len() != 1 {
-            return Err(RogError::InvalidInput(
-                "RPM target requires one explicit fan id".to_string(),
-            ));
-        }
-        let fan = selected[0];
-        if !fan.supports_manual_rpm_target {
-            return Err(RogError::NotSupported(format!(
-                "{} does not expose writable fan target RPM control",
-                fan.label
-            )));
-        }
-        let Some(path) = endpoint_path(fan, "fan_target:") else {
-            return Err(RogError::NotSupported(format!(
-                "{} has no fan target endpoint",
-                fan.label
-            )));
-        };
-        write_sysfs(&path, &format!("{rpm}\n"))
+        let _ = select_fans(&fans, Some(fan_id))?;
+        Err(RogError::NotSupported(
+            "generic hwmon RPM-target writes are disabled until the backend is verified"
+                .to_string(),
+        ))
     }
 
     pub fn set_fan_curve(&self, fan_id: &str, curve: FanCurve) -> RogResult<()> {
@@ -465,32 +415,33 @@ fn read_fan_infos(_hwname: &str, hwpath: &Path) -> Vec<FanInfo> {
         }
         endpoints.extend(auto_point_endpoints(hwpath, index));
 
-        let pwm_writable = path_is_writable(&pwm);
-        let pwm_enable_writable = path_is_writable(&pwm_enable);
-        let fan_target_writable = path_is_writable(&fan_target);
-        let supports_manual_percent = pwm_writable && pwm_enable_writable;
-        let supports_manual_rpm_target = fan_target_writable;
-        let supports_auto = pwm_enable_writable;
+        // Presence or file permissions do not establish safe control semantics.
+        // Keep generic hwmon endpoints diagnostic-only until an allow-listed,
+        // backend-specific implementation verifies the hardware contract.
+        let supports_manual_percent = false;
+        let supports_manual_rpm_target = false;
+        let supports_auto = false;
         let current_percent = read_u32(&pwm).map(pwm_to_percent);
         let supports_curve = false;
 
         let mut notes = Vec::new();
         let mut warnings = Vec::new();
-        if path_exists(&pwm) && !pwm_writable {
-            warnings
-                .push("PWM endpoint exists but is not writable by the daemon user.".to_string());
+        if path_exists(&pwm) || path_exists(&pwm_enable) {
+            notes.push(
+                "PWM candidate detected; control is withheld until backend semantics and safe restore behavior are verified."
+                    .to_string(),
+            );
         }
-        if path_exists(&fan_target) && !fan_target_writable {
-            warnings.push(
-                "RPM target endpoint exists but is not writable by the daemon user.".to_string(),
+        if path_exists(&fan_target) {
+            notes.push(
+                "RPM-target candidate detected; control is withheld until the backend is verified."
+                    .to_string(),
             );
         }
         if !supports_manual_percent && !supports_manual_rpm_target {
             notes.push(
                 "Telemetry only; no writable fan-control endpoint was confirmed.".to_string(),
             );
-        } else {
-            notes.push("Writable hwmon fan-control endpoint confirmed.".to_string());
         }
         if raw_label.is_none() {
             warnings.push(
@@ -505,6 +456,11 @@ fn read_fan_infos(_hwname: &str, hwpath: &Path) -> Vec<FanInfo> {
                 .as_deref()
                 .map(friendly_fan_label)
                 .unwrap_or_default(),
+            mapping_confidence: if raw_label.is_some() {
+                FanMappingConfidence::HardwareLabel
+            } else {
+                FanMappingConfidence::Unknown
+            },
             current_rpm: rpm,
             min_rpm,
             max_rpm,
@@ -607,10 +563,6 @@ fn path_exists(path: &Path) -> bool {
     fs::metadata(path).is_ok()
 }
 
-fn path_is_writable(path: &Path) -> bool {
-    OpenOptions::new().write(true).open(path).is_ok()
-}
-
 fn stable_hwmon_id(path: &Path) -> String {
     path.file_name()
         .and_then(|value| value.to_str())
@@ -637,11 +589,108 @@ fn auto_point_endpoints(hwpath: &Path, index: u32) -> Vec<String> {
     endpoints
 }
 
-fn endpoint_path(fan: &FanInfo, prefix: &str) -> Option<PathBuf> {
-    fan.endpoints
-        .iter()
-        .find_map(|endpoint| endpoint.strip_prefix(prefix))
-        .map(PathBuf::from)
+#[derive(Debug, Default)]
+struct FanCurveDiscovery {
+    readable: bool,
+    endpoints: Vec<String>,
+    notes: Vec<String>,
+    warnings: Vec<String>,
+}
+
+fn discover_asus_curve_points(hwpath: &Path) -> FanCurveDiscovery {
+    let mut discovery = FanCurveDiscovery::default();
+    let Ok(entries) = fs::read_dir(hwpath) else {
+        discovery
+            .warnings
+            .push("ASUS fan-curve hwmon device could not be inspected.".to_string());
+        return discovery;
+    };
+    let mut points = BTreeMap::<u32, BTreeMap<u32, (bool, bool)>>::new();
+    let mut enable_channels = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Some(channel) = name
+            .strip_prefix("pwm")
+            .and_then(|rest| rest.strip_suffix("_enable"))
+            .and_then(|raw| raw.parse::<u32>().ok())
+        {
+            discovery
+                .endpoints
+                .push(format!("curve_enable_candidate:{}", path.display()));
+            if let Some(value) = read_u32(&path) {
+                enable_channels.push(format!("{channel}={value}"));
+            }
+            continue;
+        }
+        let Some((channel, point, is_temp)) = parse_auto_point_name(name) else {
+            continue;
+        };
+        discovery
+            .endpoints
+            .push(format!("curve_point_candidate:{}", path.display()));
+        let pair = points
+            .entry(channel)
+            .or_default()
+            .entry(point)
+            .or_insert((false, false));
+        if read_u32(&path).is_some() {
+            if is_temp {
+                pair.0 = true;
+            } else {
+                pair.1 = true;
+            }
+        }
+    }
+
+    let complete = !points.is_empty()
+        && points
+            .values()
+            .all(|channel| channel.len() >= 2 && channel.values().all(|pair| pair.0 && pair.1));
+    discovery.readable = complete;
+    if complete {
+        let point_counts = points
+            .values()
+            .map(|channel| channel.len().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let enables = if enable_channels.is_empty() {
+            "unavailable".to_string()
+        } else {
+            enable_channels.join(", ")
+        };
+        discovery.notes.push(format!(
+            "Readable ASUS WMI fan-curve candidate: {} channel(s), paired point counts [{}], enable values [{}].",
+            points.len(), point_counts, enables
+        ));
+        discovery.notes.push(
+            "Curve writes are intentionally disabled; readable sysfs attributes do not prove daemon write access or a complete safe restore contract."
+                .to_string(),
+        );
+    } else if !points.is_empty() {
+        discovery.warnings.push(
+            "ASUS fan-curve candidate is incomplete or contains unreadable point pairs."
+                .to_string(),
+        );
+    }
+    discovery.endpoints.sort();
+    discovery
+}
+
+fn parse_auto_point_name(name: &str) -> Option<(u32, u32, bool)> {
+    let rest = name.strip_prefix("pwm")?;
+    let (channel, rest) = rest.split_once("_auto_point")?;
+    let channel = channel.parse::<u32>().ok()?;
+    let (point, kind) = rest.rsplit_once('_')?;
+    let point = point.parse::<u32>().ok()?;
+    match kind {
+        "temp" => Some((channel, point, true)),
+        "pwm" => Some((channel, point, false)),
+        _ => None,
+    }
 }
 
 fn select_fans<'a>(fans: &'a [FanInfo], fan_id: Option<&str>) -> RogResult<Vec<&'a FanInfo>> {
@@ -659,43 +708,8 @@ fn select_fans<'a>(fans: &'a [FanInfo], fan_id: Option<&str>) -> RogResult<Vec<&
     }
 }
 
-fn percent_to_pwm(percent: u8) -> u32 {
-    ((percent as u32) * 255 + 50) / 100
-}
-
 fn pwm_to_percent(pwm: u32) -> u8 {
     (((pwm.min(255) * 100) + 127) / 255) as u8
-}
-
-fn write_pwm_enable_auto(path: &Path) -> RogResult<()> {
-    match write_sysfs(path, "2\n") {
-        Ok(()) => Ok(()),
-        Err(first) => match write_sysfs(path, "0\n") {
-            Ok(()) => Ok(()),
-            Err(second) => Err(RogError::PermissionDenied(format!(
-                "auto restore rejected values 2 ({first}) and 0 ({second})"
-            ))),
-        },
-    }
-}
-
-fn write_sysfs(path: &Path, value: &str) -> RogResult<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::PermissionDenied => {
-                RogError::PermissionDenied(format!("{}: {e}", path.display()))
-            }
-            _ => RogError::TemporarilyUnavailable(format!("{}: {e}", path.display())),
-        })?;
-    file.write_all(value.as_bytes())
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::PermissionDenied => {
-                RogError::PermissionDenied(format!("{}: {e}", path.display()))
-            }
-            _ => RogError::TemporarilyUnavailable(format!("{}: {e}", path.display())),
-        })
 }
 
 fn friendly_fan_label(raw: &str) -> String {
@@ -794,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn list_fans_reports_writable_pwm_support_and_endpoints() {
+    fn list_fans_reports_pwm_as_diagnostic_candidate_only() {
         let root = temp_hwmon_root("pwm");
         let hwmon0 = root.join("hwmon0");
         fs::create_dir_all(&hwmon0).unwrap();
@@ -807,8 +821,9 @@ mod tests {
         let fans = provider.list_fans().unwrap();
 
         assert_eq!(fans.len(), 1);
-        assert!(fans[0].supports_manual_percent);
-        assert!(fans[0].supports_auto);
+        assert!(!fans[0].controllable);
+        assert!(!fans[0].supports_manual_percent);
+        assert!(!fans[0].supports_auto);
         assert!(fans[0]
             .endpoints
             .iter()
@@ -819,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_percent_writes_pwm_and_manual_enable() {
+    fn manual_percent_rejects_unverified_generic_pwm() {
         let root = temp_hwmon_root("write");
         let hwmon0 = root.join("hwmon0");
         fs::create_dir_all(&hwmon0).unwrap();
@@ -830,14 +845,77 @@ mod tests {
 
         let provider = HwmonTelemetryProvider::new(root.clone());
         let fan_id = provider.list_fans().unwrap()[0].id.clone();
-        provider.set_fan_manual_percent(&fan_id, 50).unwrap();
-
+        assert!(provider.set_fan_manual_percent(&fan_id, 50).is_err());
         assert_eq!(
             fs::read_to_string(hwmon0.join("pwm1_enable")).unwrap(),
-            "1\n"
+            "2\n"
         );
-        assert_eq!(fs::read_to_string(hwmon0.join("pwm1")).unwrap(), "128\n");
+        assert_eq!(fs::read_to_string(hwmon0.join("pwm1")).unwrap(), "0\n");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discovers_complete_asus_curve_as_read_only() {
+        let root = temp_hwmon_root("asus-curve");
+        let rpm = root.join("hwmon0");
+        let curve = root.join("hwmon1");
+        fs::create_dir_all(&rpm).unwrap();
+        fs::create_dir_all(&curve).unwrap();
+        fs::write(rpm.join("name"), "asus\n").unwrap();
+        fs::write(rpm.join("fan1_input"), "2400\n").unwrap();
+        fs::write(rpm.join("fan1_label"), "cpu_fan\n").unwrap();
+        fs::write(curve.join("name"), "asus_custom_fan_curve\n").unwrap();
+        fs::write(curve.join("pwm1_enable"), "2\n").unwrap();
+        for (point, temp, pwm) in [(1, 40, 22), (2, 55, 28)] {
+            fs::write(
+                curve.join(format!("pwm1_auto_point{point}_temp")),
+                format!("{temp}\n"),
+            )
+            .unwrap();
+            fs::write(
+                curve.join(format!("pwm1_auto_point{point}_pwm")),
+                format!("{pwm}\n"),
+            )
+            .unwrap();
+        }
+
+        let caps = HwmonTelemetryProvider::new(root.clone())
+            .fan_caps()
+            .unwrap();
+        assert!(caps.has_fan_reading);
+        assert!(caps.fan_curve_readable);
+        assert!(!caps.fan_curve_writable);
+        assert!(!caps.has_fan_curves);
+        assert_eq!(
+            caps.fan_mapping_confidence,
+            FanMappingConfidence::HardwareLabel
+        );
+        assert!(caps
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.starts_with("curve_point_candidate:")));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_malformed_curve_point_names_and_incomplete_pairs() {
+        assert_eq!(
+            parse_auto_point_name("pwm3_auto_point8_temp"),
+            Some((3, 8, true))
+        );
+        assert_eq!(
+            parse_auto_point_name("pwm3_auto_point8_pwm"),
+            Some((3, 8, false))
+        );
+        assert_eq!(parse_auto_point_name("pwm3_auto_point_temp"), None);
+        assert_eq!(parse_auto_point_name("fan1_input"), None);
+
+        let root = temp_hwmon_root("incomplete-curve");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("pwm1_auto_point1_temp"), "40\n").unwrap();
+        assert!(!discover_asus_curve_points(&root).readable);
         let _ = fs::remove_dir_all(root);
     }
 

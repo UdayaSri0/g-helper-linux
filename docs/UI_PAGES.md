@@ -136,8 +136,9 @@ Current behavior:
 - current ASUS performance profile
 - current GPU mode
 - GPU temperature when available
-- responsive temperature-first overview cards for temperature, mode, and profile
-- one consolidated control-dependency group for `asusd`, `supergfxd`, and the GPU switch hint
+- optional NVIDIA utilisation, VRAM usage, power, core clock, and memory clock
+- responsive overview cards and real-sample temperature/utilisation history graphs
+- one consolidated dependency group for `asusd`, `supergfxd`, NVIDIA telemetry status, and the GPU switch hint
 - support/status summary
 
 ### What it supports
@@ -154,7 +155,8 @@ Current behavior:
 Current behavior:
 
 - the dependency group replaces vague `(n/a)` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
-- unavailable selectors refer to the consolidated dependency group, while GPU temperature telemetry remains independent
+- unavailable selectors refer to the consolidated dependency group, while all telemetry remains read-only and independent
+- NVIDIA metrics stay absent rather than showing invented zeroes when the GPU, driver, command, or individual field is unavailable
 
 ### Missing or planned
 
@@ -218,8 +220,8 @@ Current behavior:
 
 ### What it supports
 
-- mode selection
-- brightness change
+- mode selection only when `supports_modes` and backend modes are reported
+- brightness change only when `supports_brightness` is reported
 - apply action
 - RGB picker only when the daemon reports `supports_rgb`
 
@@ -228,19 +230,20 @@ Current behavior:
 - depends on the daemon exposing a lighting backend
 - write support depends on backend writability
 - RGB support depends on `supports_rgb`
+- effect speed and zone controls are not shown without their explicit capabilities
 - unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
 ### Backend behavior
 
-- asusd Aura/RGB is used when a supported Aura/keyboard lighting interface is exposed on system DBus
+- Aura/RGB may be used only when an exact supported Aura contract is verified; a merely Aura-looking interface is diagnostic-only
 - sysfs keyboard backlight remains available as a brightness-only fallback
 - sysfs-supported modes are limited to `Off` and `Static`
-- Aura-supported modes are not invented by the UI; they come from daemon/backend reporting
+- Aura-supported modes, speeds, and zones are not invented by the UI; they come from daemon/backend reporting
 
 ### Diagnostics report
 
 - copy diagnostics includes a `Keyboard Lighting / RGB Diagnostics` section
-- the report lists sysfs LED paths, current brightness, read/write status, asusd services checked, interfaces found, RGB-looking methods/properties, fallback reasons, and recommended action text
+- the report lists sysfs LED paths, current brightness, read/write status, services checked, interfaces found, candidate method/property signatures for brightness/mode/RGB/speed/zones, verified-contract state, fallback reasons, and recommended action text
 
 ## Settings
 

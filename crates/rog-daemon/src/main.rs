@@ -477,69 +477,143 @@ impl RogHelperDaemon {
     }
 
     async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
+        const ACCEPTED_KEYS: &[&str] = &["brightness", "mode", "rgb_hex", "speed", "zone"];
+        if let Some(key) = state
+            .keys()
+            .find(|key| !ACCEPTED_KEYS.contains(&key.as_str()))
+        {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "unknown lighting key '{key}'"
+            )));
+        }
+
+        if state.contains_key("speed") {
+            return Err(fdo::Error::NotSupported(
+                "Lighting speed is unavailable because no verified backend speed contract is active."
+                    .to_string(),
+            ));
+        }
+        if state.contains_key("zone") {
+            return Err(fdo::Error::NotSupported(
+                "Lighting zones are unavailable because no verified backend zone contract is active."
+                    .to_string(),
+            ));
+        }
+
         let mode = state
             .get("mode")
-            .and_then(|v| <&str>::try_from(v).ok())
-            .map(|v| v.to_string());
-        let rgb_hex = state.get("rgb_hex").and_then(|v| <&str>::try_from(v).ok());
+            .map(|v| {
+                <&str>::try_from(v)
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .map_err(|_| {
+                        fdo::Error::InvalidArgs("lighting mode must be a string".to_string())
+                    })
+            })
+            .transpose()?;
+        if mode.as_deref() == Some("") {
+            return Err(fdo::Error::InvalidArgs(
+                "lighting mode cannot be empty".to_string(),
+            ));
+        }
+        let rgb_hex = state
+            .get("rgb_hex")
+            .map(|v| {
+                <&str>::try_from(v)
+                    .map_err(|_| fdo::Error::InvalidArgs("rgb_hex must be a string".to_string()))
+            })
+            .transpose()?;
+        let rgb = rgb_hex
+            .map(RgbColor::parse_hex)
+            .transpose()
+            .map_err(map_rog_error_to_fdo)?;
         let brightness = u64_from_map(&state, "brightness");
+        if state.contains_key("brightness") && brightness.is_none() {
+            return Err(fdo::Error::InvalidArgs(
+                "brightness must be a non-negative integer".to_string(),
+            ));
+        }
+        let brightness = brightness
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    fdo::Error::InvalidArgs(format!(
+                        "lighting brightness {value} exceeds the supported integer range"
+                    ))
+                })
+            })
+            .transpose()?;
+
+        if mode.is_none() && rgb.is_none() && brightness.is_none() {
+            return Err(fdo::Error::InvalidArgs(
+                "lighting request contains no control value".to_string(),
+            ));
+        }
 
         if let Some(aura) = &self.aura {
             if let Some(mode) = mode.as_deref() {
-                let parsed_mode = LightingMode::parse_label(mode)
-                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
-                if aura.can_set_mode() {
-                    aura.set_mode(parsed_mode)
-                        .await
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if !matches!(parsed_mode, LightingMode::Off | LightingMode::Static) {
+                if !aura.can_set_mode() {
                     return Err(fdo::Error::NotSupported(format!(
                         "Aura backend does not expose writable lighting modes for '{mode}'."
                     )));
                 }
             }
-
-            if let Some(rgb_hex) = rgb_hex {
-                if !aura.supports_rgb() {
-                    return Err(fdo::Error::NotSupported(
-                        "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
-                    ));
-                }
-                let rgb = RgbColor::parse_hex(rgb_hex).map_err(map_rog_error_to_fdo)?;
-                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
+            if rgb.is_some() && !aura.supports_rgb() {
+                return Err(fdo::Error::NotSupported(
+                    "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
+                ));
             }
-
-            if let Some(brightness) = brightness {
-                if aura.can_set_brightness() {
-                    aura.set_brightness(brightness.min(u32::MAX as u64) as u32)
-                        .await
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if let Some(kbd) = &self.kbd_backlight {
-                    kbd.set_brightness(brightness as u32)
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if brightness != 0 {
+            if !aura.can_set_brightness() {
+                if let (Some(brightness), Some(kbd)) = (brightness, self.kbd_backlight.as_ref()) {
+                    if brightness > kbd.max_brightness() {
+                        return Err(fdo::Error::InvalidArgs(format!(
+                            "keyboard brightness {brightness} exceeds backend maximum {}",
+                            kbd.max_brightness()
+                        )));
+                    }
+                } else if brightness.is_some() {
                     return Err(fdo::Error::NotSupported(
                         "Aura backend does not expose brightness and no sysfs keyboard backlight fallback is available."
                             .to_string(),
                     ));
                 }
             }
+            if let Some(mode) = mode.as_deref() {
+                let parsed_mode = LightingMode::parse_label(mode)
+                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
+                aura.set_mode(parsed_mode)
+                    .await
+                    .map_err(map_rog_error_to_fdo)?;
+            }
+
+            if let Some(rgb) = rgb {
+                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
+            }
+
+            if let Some(brightness) = brightness {
+                if aura.can_set_brightness() {
+                    aura.set_brightness(brightness)
+                        .await
+                        .map_err(map_rog_error_to_fdo)?;
+                } else if let Some(kbd) = &self.kbd_backlight {
+                    kbd.set_brightness(brightness)
+                        .map_err(map_rog_error_to_fdo)?;
+                }
+            }
 
             return Ok(());
         }
 
-        if rgb_hex.is_some() {
+        if rgb.is_some() {
             return Err(fdo::Error::NotSupported(
                 "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
                     .to_string(),
             ));
         }
         let mode = mode.unwrap_or_else(|| "Static".to_string());
-        let mut brightness = brightness.unwrap_or(0);
         if mode.eq_ignore_ascii_case("off") {
-            brightness = 0;
-        }
-        if !mode.eq_ignore_ascii_case("off") && !mode.eq_ignore_ascii_case("static") {
+            // Off is the only synthetic mode supported by the brightness-only
+            // sysfs backend, and maps exactly to brightness zero.
+        } else if !mode.eq_ignore_ascii_case("static") {
             return Err(fdo::Error::NotSupported(format!(
                 "Lighting mode '{mode}' is not supported by the sysfs LED backend."
             )));
@@ -551,7 +625,15 @@ impl RogHelperDaemon {
             ));
         };
 
-        kbd.set_brightness(brightness as u32)
+        let brightness = if mode.eq_ignore_ascii_case("off") {
+            0
+        } else {
+            match brightness {
+                Some(brightness) => brightness,
+                None => kbd.read_brightness().map_err(map_rog_error_to_fdo)?,
+            }
+        };
+        kbd.set_brightness(brightness)
             .map_err(map_rog_error_to_fdo)?;
         Ok(())
     }
@@ -1082,6 +1164,10 @@ async fn main() -> anyhow::Result<()> {
     let mut next_top_update_ms: u64 = 0;
     let mut cached_top_rows: Option<Vec<rog_core::TopProcessMem>> = None;
     let mut cached_top_text: Option<String> = None;
+    let mut next_nvidia_update_ms: u64 = 0;
+    let mut cached_nvidia = None;
+    let mut nvidia_status = "nvidia-smi not checked yet".to_string();
+    let mut nvidia_warning: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -1191,26 +1277,65 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => warnings.push(format!("power_supply sysfs unavailable: {e}")),
                 }
 
-                // Best-effort NVIDIA telemetry (read-only).
-                if telemetry.gpu_temp_c.is_none() {
-                    match nvidia.read_gpu_temp_c().await {
-                        Ok(Some(temp)) => {
-                            telemetry.gpu_temp_c = Some(temp);
-                            telemetry
-                                .temps_c
-                                .insert("nvidia-smi:gpu_temp".to_string(), temp);
+                // Best-effort NVIDIA telemetry (read-only). One multi-field query runs at most
+                // every three seconds; its cached sample remains visible between daemon ticks.
+                let poll_now_ms = now_ms();
+                if poll_now_ms >= next_nvidia_update_ms {
+                    next_nvidia_update_ms = poll_now_ms.saturating_add(3_000);
+                    match nvidia.read_telemetry().await {
+                        Ok(Some(sample)) => {
+                            let missing = sample.unavailable_field_count();
+                            nvidia_status = if missing == 0 {
+                                format!(
+                                    "nvidia-smi available · GPU {} detected ({})",
+                                    sample.index, sample.name
+                                )
+                            } else {
+                                format!(
+                                    "nvidia-smi available · GPU {} detected ({}) · {missing} optional field(s) unavailable",
+                                    sample.index, sample.name
+                                )
+                            };
+                            cached_nvidia = Some(sample);
+                            nvidia_warning = None;
                         }
-                        Ok(None) => {}
-                        Err(e) => warnings.push(format!("nvidia-smi telemetry unavailable: {e}")),
+                        Ok(None) => {
+                            cached_nvidia = None;
+                            nvidia_status =
+                                "nvidia-smi unavailable or no NVIDIA GPU is currently queryable"
+                                    .to_string();
+                            nvidia_warning = None;
+                        }
+                        Err(error) => {
+                            cached_nvidia = None;
+                            nvidia_status = format!("nvidia-smi telemetry unavailable: {error}");
+                            nvidia_warning = Some(nvidia_status.clone());
+                        }
                     }
                 }
-                match nvidia.read_gpu_clocks_mhz().await {
-                    Ok(Some(clocks)) => {
-                        telemetry.gpu_core_clock_mhz = clocks.core_clock_mhz;
-                        telemetry.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+                telemetry.gpu_telemetry_status = Some(nvidia_status.clone());
+                if let Some(warning) = nvidia_warning.clone() {
+                    warnings.push(warning);
+                }
+                if let Some(sample) = cached_nvidia.as_ref() {
+                    telemetry.gpu_telemetry_provider = Some("nvidia-smi".to_string());
+                    telemetry.gpu_name = Some(sample.name.clone());
+                    telemetry.gpu_uuid = Some(sample.uuid.clone());
+                    telemetry.gpu_pci_bus_id = Some(sample.pci_bus_id.clone());
+                    telemetry.gpu_index = Some(sample.index);
+                    telemetry.gpu_usage_percent = sample.usage_percent;
+                    telemetry.gpu_vram_used_bytes = sample.vram_used_bytes;
+                    telemetry.gpu_vram_total_bytes = sample.vram_total_bytes;
+                    telemetry.gpu_core_clock_mhz = sample.core_clock_mhz;
+                    telemetry.gpu_memory_clock_mhz = sample.memory_clock_mhz;
+                    telemetry.gpu_power_w = sample.power_w;
+                    if let Some(temp) = sample.temperature_c {
+                        telemetry
+                            .temps_c
+                            .insert("nvidia-smi:gpu_temp".to_string(), temp);
+                        // hwmon remains the primary source when it already reported a GPU temp.
+                        telemetry.gpu_temp_c.get_or_insert(temp);
                     }
-                    Ok(None) => {}
-                    Err(_) => {}
                 }
 
                 match upower.read_status().await {
@@ -1540,6 +1665,14 @@ fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
         OwnedValue::from(c.has_fan_curves),
     );
     m.insert(
+        "fan_curve_readable".to_string(),
+        OwnedValue::from(c.fan_curve_readable),
+    );
+    m.insert(
+        "fan_curve_writable".to_string(),
+        OwnedValue::from(c.fan_curve_writable),
+    );
+    m.insert(
         "has_fan_manual_percent".to_string(),
         OwnedValue::from(c.has_fan_manual_percent),
     );
@@ -1564,6 +1697,10 @@ fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
         OwnedValue::from(c.fan_count as u64),
     );
     m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
+    m.insert(
+        "fan_mapping_confidence".to_string(),
+        ov(c.fan_mapping_confidence.as_str().to_string()),
+    );
     m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
     m.insert("notes".to_string(), ov(c.notes.clone()));
     m.insert("warnings".to_string(), ov(c.warnings.clone()));
@@ -1608,6 +1745,10 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
     m.insert(
         dbus_keys::FAN_INFO_LABEL_KEY.to_string(),
         ov(fan.label.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY.to_string(),
+        ov(fan.mapping_confidence.as_str().to_string()),
     );
     if let Some(v) = fan.current_rpm {
         m.insert(
@@ -1985,6 +2126,15 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     if let Some(v) = t.gpu_temp_c {
         m.insert("gpu_temp_c".to_string(), OwnedValue::from(v as f64));
     }
+    if let Some(v) = t.gpu_usage_percent {
+        m.insert("gpu_usage_percent".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.gpu_vram_used_bytes {
+        m.insert("gpu_vram_used_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.gpu_vram_total_bytes {
+        m.insert("gpu_vram_total_bytes".to_string(), OwnedValue::from(v));
+    }
     if let Some(v) = t.gpu_core_clock_mhz {
         m.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(v as u64));
     }
@@ -1993,6 +2143,23 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
             "gpu_memory_clock_mhz".to_string(),
             OwnedValue::from(v as u64),
         );
+    }
+    if let Some(v) = t.gpu_power_w {
+        m.insert("gpu_power_w".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.gpu_index {
+        m.insert("gpu_index".to_string(), OwnedValue::from(v));
+    }
+    for (key, value) in [
+        ("gpu_name", t.gpu_name.as_ref()),
+        ("gpu_uuid", t.gpu_uuid.as_ref()),
+        ("gpu_pci_bus_id", t.gpu_pci_bus_id.as_ref()),
+        ("gpu_telemetry_provider", t.gpu_telemetry_provider.as_ref()),
+        ("gpu_telemetry_status", t.gpu_telemetry_status.as_ref()),
+    ] {
+        if let Some(value) = value {
+            m.insert(key.to_string(), ov(value.clone()));
+        }
     }
     if !t.temps_c.is_empty() {
         let temps: HashMap<String, f64> = t
@@ -2598,8 +2765,14 @@ impl RogHelperDaemon {
                             brightness: None,
                             max_brightness: None,
                             mode: None,
+                            supports_brightness: aura.supports_brightness(),
+                            supports_modes: aura.can_set_mode()
+                                || !aura.supported_modes_hint().is_empty(),
                             supported_modes: aura.supported_modes_hint(),
                             supports_rgb: aura.supports_rgb(),
+                            supports_speed: aura.supports_speed(),
+                            supported_speeds: Vec::new(),
+                            supported_zones: aura.supported_zones(),
                             writable: aura.supports_rgb()
                                 || aura.can_set_mode()
                                 || aura.can_set_brightness(),
@@ -2666,9 +2839,14 @@ impl RogHelperDaemon {
             brightness: Some(brightness),
             max_brightness: Some(kbd.max_brightness()),
             mode: Some(mode),
+            supports_brightness: true,
+            supports_modes: true,
             supported_modes: vec![LightingMode::Off, LightingMode::Static],
             supports_rgb: false,
             rgb: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
             writable: kbd.can_set_brightness(),
             status: "rgb_unsupported".to_string(),
             last_error: None,
@@ -2701,12 +2879,32 @@ fn lighting_state_to_dbus(
         ov(state.supported_mode_labels()),
     );
     m.insert(
+        "supports_brightness".to_string(),
+        OwnedValue::from(state.supports_brightness),
+    );
+    m.insert(
+        "supports_modes".to_string(),
+        OwnedValue::from(state.supports_modes),
+    );
+    m.insert(
         "supports_rgb".to_string(),
         OwnedValue::from(state.supports_rgb),
     );
     if let Some(rgb) = state.rgb {
         m.insert("rgb_hex".to_string(), ov(rgb.to_hex()));
     }
+    m.insert(
+        "supports_speed".to_string(),
+        OwnedValue::from(state.supports_speed),
+    );
+    m.insert(
+        "supported_speeds".to_string(),
+        ov(state.supported_speeds.clone()),
+    );
+    m.insert(
+        "supported_zones".to_string(),
+        ov(state.supported_zones.clone()),
+    );
     m.insert("status".to_string(), ov(state.status.clone()));
     if let Some(error) = &state.last_error {
         m.insert("last_error".to_string(), ov(error.clone()));
@@ -2802,6 +3000,31 @@ mod tests {
     }
 
     #[test]
+    fn fan_caps_to_dbus_keeps_read_and_write_capabilities_separate() {
+        let mut caps = FanCaps::from_fans(&[]);
+        caps.fan_curve_readable = true;
+        caps.fan_curve_writable = false;
+        caps.fan_mapping_confidence = rog_core::FanMappingConfidence::HardwareLabel;
+
+        let map = fan_caps_to_dbus(&caps);
+
+        assert_eq!(
+            map.get("fan_curve_readable")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("fan_curve_writable")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            value_as_str(&map, "fan_mapping_confidence"),
+            "hardware_label"
+        );
+    }
+
+    #[test]
     fn setup_status_to_dbus_emits_structured_rows() {
         let status = SetupStatus {
             checked_at_ms: 42,
@@ -2846,8 +3069,15 @@ mod tests {
     #[test]
     fn telemetry_to_dbus_emits_structured_fan_rows() {
         let mut telemetry = TelemetrySnapshot::empty_now(42);
+        telemetry.gpu_usage_percent = Some(32.0);
+        telemetry.gpu_vram_used_bytes = Some(2_147_483_648);
+        telemetry.gpu_vram_total_bytes = Some(8_589_934_592);
         telemetry.gpu_core_clock_mhz = Some(2100);
         telemetry.gpu_memory_clock_mhz = Some(7000);
+        telemetry.gpu_power_w = Some(42.5);
+        telemetry.gpu_name = Some("NVIDIA Test GPU".to_string());
+        telemetry.gpu_uuid = Some("GPU-test".to_string());
+        telemetry.gpu_index = Some(0);
         telemetry.fan_rows.push(FanTelemetry {
             hwmon_device: "hwmon3".to_string(),
             hwmon_path: "/sys/class/hwmon/hwmon3".to_string(),
@@ -2858,6 +3088,12 @@ mod tests {
         });
 
         let map = telemetry_to_dbus(&telemetry);
+        assert_eq!(
+            map.get("gpu_vram_total_bytes")
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(8_589_934_592)
+        );
+        assert_eq!(value_as_str(&map, "gpu_name"), "NVIDIA Test GPU");
         let rows = rows_from_value(
             map.get(dbus_keys::TELEMETRY_FAN_ROWS_KEY)
                 .expect("fan_rows key should exist"),
@@ -2987,11 +3223,60 @@ mod tests {
     }
 
     #[test]
-    fn lighting_access_prefers_aura_when_available() {
+    fn lighting_access_prefers_verified_aura_when_available() {
         let access = lighting_access_from_backend_flags(true, false, false, false, None);
 
         assert_eq!(access.status, FeatureAccessState::Available);
         assert!(access.reason.contains("ASUS Aura"));
+    }
+
+    #[test]
+    fn lighting_dbus_map_exposes_explicit_optional_capabilities() {
+        let state = LightingState {
+            backend: "test-verified-aura".to_string(),
+            device: "test-endpoint".to_string(),
+            brightness: None,
+            max_brightness: None,
+            mode: Some(LightingMode::Static),
+            supports_brightness: false,
+            supports_modes: true,
+            supported_modes: vec![LightingMode::Static],
+            supports_rgb: true,
+            rgb: Some(RgbColor::new(1, 2, 3)),
+            supports_speed: true,
+            supported_speeds: vec!["Medium".to_string()],
+            supported_zones: vec!["Keyboard".to_string()],
+            writable: true,
+            status: "available".to_string(),
+            last_error: None,
+        };
+
+        let map = lighting_state_to_dbus(&state, &LightingDiagnostics::unknown());
+        assert_eq!(
+            map.get("supports_brightness")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            map.get("supports_modes")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("supports_rgb")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("supports_speed")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("rgb_hex")
+                .and_then(|value| <&str>::try_from(value).ok()),
+            Some("#010203")
+        );
     }
 
     #[test]

@@ -17,9 +17,9 @@ use rog_core::{
     parse_legacy_ui_config, validate_config, AppConfig, BatteryState, CloseBehavior,
     CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
     CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, FanCaps,
-    FanControlMode, FanInfo, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor, SetupIssue,
-    SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
+    FanControlMode, FanInfo, FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState,
+    FeatureAvailability, PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor,
+    SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -198,6 +198,7 @@ struct SharedUiState {
     cpu_temp_history: Vec<f32>,
     cpu_power_history: Vec<f32>,
     gpu_temp_history: Vec<f32>,
+    gpu_usage_history: Vec<f32>,
     memory_usage_history: Vec<f32>,
     caps: DeviceCaps,
     caps_text: String,
@@ -246,6 +247,7 @@ impl Default for SharedUiState {
             cpu_temp_history: Vec::new(),
             cpu_power_history: Vec::new(),
             gpu_temp_history: Vec::new(),
+            gpu_usage_history: Vec::new(),
             memory_usage_history: Vec::new(),
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
@@ -310,9 +312,14 @@ struct LightingInfo {
     max_brightness: u64,
     can_set: bool,
     mode: String,
+    supports_brightness: bool,
+    supports_modes: bool,
     supports_rgb: bool,
     rgb_hex: Option<String>,
     supported_modes: Vec<String>,
+    supports_speed: bool,
+    supported_speeds: Vec<String>,
+    supported_zones: Vec<String>,
     status: String,
     last_error: Option<String>,
     diagnostics_summary: Option<String>,
@@ -324,7 +331,7 @@ struct LightingInfo {
 
 #[derive(Debug, Clone)]
 struct PendingLighting {
-    brightness: u64,
+    brightness: Option<u64>,
     mode: Option<String>,
     rgb_hex: Option<String>,
 }
@@ -1011,15 +1018,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let kbd_brightness_spin = kbd_brightness_spin.clone();
         kbd_apply_button.connect_clicked(move |_| {
             let desired_brightness = kbd_brightness_spin.value().round().max(0.0) as u64;
-            let desired_mode = shared
-                .lock()
-                .ok()
-                .and_then(|st| st.lighting.as_ref().map(|l| l.mode.clone()))
-                .unwrap_or_else(|| "Static".to_string());
             if let Ok(mut st) = shared.lock() {
                 st.pending_lighting = Some(PendingLighting {
-                    brightness: desired_brightness,
-                    mode: Some(desired_mode),
+                    brightness: Some(desired_brightness),
+                    mode: None,
                     rgb_hex: None,
                 });
                 st.lighting_error = None;
@@ -1848,6 +1850,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_overview_group = adw::PreferencesGroup::builder().title("Overview").build();
     let gpu_page_temp_card = MetricCard::new("GPU Temperature");
     gpu_page_temp_card.add_css_class("metric-card-primary");
+    let gpu_page_usage_card = MetricCard::new("GPU Utilisation");
+    let gpu_page_vram_card = MetricCard::new("VRAM");
+    let gpu_page_power_card = MetricCard::new("GPU Power");
     let gpu_page_mode_card = MetricCard::new("GPU Mode");
     let gpu_page_profile_card = MetricCard::new("Performance Profile");
     let gpu_overview_grid = gtk::FlowBox::new();
@@ -1858,13 +1863,47 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     gpu_overview_grid.set_column_spacing(16);
     gpu_overview_grid.set_homogeneous(true);
     gpu_overview_grid.insert(gpu_page_temp_card.widget(), -1);
+    gpu_overview_grid.insert(gpu_page_usage_card.widget(), -1);
+    gpu_overview_grid.insert(gpu_page_vram_card.widget(), -1);
+    gpu_overview_grid.insert(gpu_page_power_card.widget(), -1);
     gpu_overview_grid.insert(gpu_page_mode_card.widget(), -1);
     gpu_overview_grid.insert(gpu_page_profile_card.widget(), -1);
     gpu_overview_group.add(&gpu_overview_grid);
     gpu_page.append(&gpu_overview_group);
 
+    let gpu_history_group = adw::PreferencesGroup::builder()
+        .title("Live Telemetry")
+        .description(
+            "Recent real samples; NVIDIA metrics are refreshed every three seconds by the daemon.",
+        )
+        .build();
+    let gpu_history_grid = gtk::FlowBox::new();
+    gpu_history_grid.set_selection_mode(gtk::SelectionMode::None);
+    gpu_history_grid.set_min_children_per_line(1);
+    gpu_history_grid.set_max_children_per_line(2);
+    gpu_history_grid.set_row_spacing(16);
+    gpu_history_grid.set_column_spacing(16);
+    gpu_history_grid.set_homogeneous(true);
+    let gpu_usage_graph = HistoryGraph::new("GPU Utilisation", 0.0, 100.0, "%", (0.30, 0.64, 1.0));
+    let gpu_temp_graph = HistoryGraph::new("GPU Temperature", 30.0, 95.0, "°C", (0.68, 0.48, 0.96));
+    gpu_history_grid.insert(gpu_usage_graph.widget(), -1);
+    gpu_history_grid.insert(gpu_temp_graph.widget(), -1);
+    gpu_history_group.add(&gpu_history_grid);
+    gpu_history_group.set_visible(false);
+    gpu_page.append(&gpu_history_group);
+
+    let gpu_clocks_group = adw::PreferencesGroup::builder()
+        .title("Clocks")
+        .description("Current read-only clocks reported by the selected telemetry GPU.")
+        .build();
+    let gpu_page_core_clock = pref_value_row(&gpu_clocks_group, "Core", false);
+    let gpu_page_memory_clock = pref_value_row(&gpu_clocks_group, "Memory", false);
+    gpu_page_core_clock.set_text("Unavailable");
+    gpu_page_memory_clock.set_text("Unavailable");
+    gpu_page.append(&gpu_clocks_group);
+
     let gpu_state_group = adw::PreferencesGroup::builder()
-        .title("Control Dependencies")
+        .title("Dependencies & Telemetry")
         .description(
             "Telemetry remains independent when optional ASUS control services are absent.",
         )
@@ -1872,9 +1911,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_page_current_profile = pref_value_row(&gpu_state_group, "asusd · Profiles", false);
     let gpu_page_current_mode = pref_value_row(&gpu_state_group, "supergfxd · GPU Modes", false);
     let gpu_page_switch_hint = pref_value_row(&gpu_state_group, "Switch Hint", false);
+    let gpu_page_telemetry_provider = pref_value_row(&gpu_state_group, "NVIDIA Telemetry", false);
     gpu_page_current_profile.set_text("Checking support...");
     gpu_page_current_mode.set_text("Checking support...");
     gpu_page_switch_hint.set_text("Checking support...");
+    gpu_page_telemetry_provider.set_text("Checking provider...");
     gpu_page.append(&gpu_state_group);
 
     let gpu_controls_group = adw::PreferencesGroup::builder()
@@ -2168,6 +2209,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let diag_service_daemon = pref_value_row(&diag_services_group, "rog-helperd", false);
     let diag_service_asusd = pref_value_row(&diag_services_group, "asusd", false);
     let diag_service_supergfxd = pref_value_row(&diag_services_group, "supergfxd", false);
+    let diag_service_nvidia = pref_value_row(&diag_services_group, "nvidia-smi", false);
     diag_root.append(&diag_services_group);
 
     let diag_capabilities_group = adw::PreferencesGroup::builder()
@@ -2921,23 +2963,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
             let desired_mode = mode_combo.active_id().map(|s| s.to_string());
 
-            let mut desired_rgb_hex = None;
-            if let Ok(st) = shared.lock() {
-                if st
-                    .lighting
-                    .as_ref()
-                    .map(|l| l.supports_rgb)
-                    .unwrap_or(false)
-                {
-                    desired_rgb_hex = Some(rgba_to_hex(&rgb_button.rgba()));
-                }
-            }
-
             if let Ok(mut st) = shared.lock() {
+                let Some(lighting) = st.lighting.as_ref() else {
+                    return;
+                };
+                let brightness = lighting.supports_brightness.then_some(desired_brightness);
+                let mode = lighting.supports_modes.then_some(desired_mode).flatten();
+                let rgb_hex = lighting
+                    .supports_rgb
+                    .then(|| rgba_to_hex(&rgb_button.rgba()));
+                if brightness.is_none() && mode.is_none() && rgb_hex.is_none() {
+                    return;
+                }
                 st.pending_lighting = Some(PendingLighting {
-                    brightness: desired_brightness,
-                    mode: desired_mode,
-                    rgb_hex: desired_rgb_hex,
+                    brightness,
+                    mode,
+                    rgb_hex,
                 });
                 st.lighting_error = None;
             }
@@ -3532,6 +3573,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_usage_history,
             cpu_temp_history,
             gpu_temp_history,
+            gpu_usage_history,
             memory_usage_history,
             caps,
             caps_text,
@@ -3575,6 +3617,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.cpu_usage_history.clone(),
                 st.cpu_temp_history.clone(),
                 st.gpu_temp_history.clone(),
+                st.gpu_usage_history.clone(),
                 st.memory_usage_history.clone(),
                 st.caps.clone(),
                 st.caps_text.clone(),
@@ -3660,6 +3703,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         live_cpu_usage_sparkline.set_samples(&cpu_usage_history);
         live_cpu_temp_sparkline.set_samples(&cpu_temp_history);
         live_gpu_temp_sparkline.set_samples(&gpu_temp_history);
+        gpu_temp_graph.set_samples(&gpu_temp_history);
+        gpu_usage_graph.set_samples(&gpu_usage_history);
+        gpu_history_group
+            .set_visible(!gpu_temp_history.is_empty() || !gpu_usage_history.is_empty());
         live_memory_sparkline.set_samples(&memory_usage_history);
 
         connection_status.remove_css_class("connected");
@@ -3995,7 +4042,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             FanControlMode::Unsupported => "—",
             mode => fan_mode_label_text(mode),
         });
-        let mapping_uncertain = fan_state.fans.iter().any(fan_mapping_uncertain);
+        let mapping_uncertain =
+            fan_state.caps.fan_mapping_confidence != FanMappingConfidence::HardwareLabel;
         fan_mapping_label.set_text(if mapping_uncertain {
             "Mapping uncertain"
         } else {
@@ -4051,6 +4099,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         );
 
         if let Some(t) = telemetry {
+            diag_service_nvidia.set_text(
+                t.gpu_telemetry_status
+                    .as_deref()
+                    .unwrap_or("Optional provider unavailable"),
+            );
             diag_sensor_cpu.set_text(if t.cpu_temp_c.is_some() {
                 "Reporting"
             } else {
@@ -4112,6 +4165,55 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 thermal_gpu.set_text("GPU  —");
             }
             gpu_card.set_subtitle(Some(&gpu_dashboard_summary(&t, gpu_mode.as_deref())));
+            if let Some(value) = t.gpu_usage_percent {
+                gpu_page_usage_card.set_value(format!("{value:.0}"));
+                gpu_page_usage_card.set_unit(Some("%"));
+                gpu_page_usage_card.set_status_chip(Some("Reporting"));
+            } else {
+                gpu_page_usage_card.set_value("—");
+                gpu_page_usage_card.set_unit(None);
+                gpu_page_usage_card.set_status_chip(Some("Unavailable"));
+            }
+            match (t.gpu_vram_used_bytes, t.gpu_vram_total_bytes) {
+                (Some(used), Some(total)) if total > 0 => {
+                    gpu_page_vram_card.set_value(format!(
+                        "{:.1} / {:.1}",
+                        used as f64 / 1024_f64.powi(3),
+                        total as f64 / 1024_f64.powi(3)
+                    ));
+                    gpu_page_vram_card.set_unit(Some("GiB"));
+                    gpu_page_vram_card.set_status_chip(Some("Reporting"));
+                }
+                _ => {
+                    gpu_page_vram_card.set_value("—");
+                    gpu_page_vram_card.set_unit(None);
+                    gpu_page_vram_card.set_status_chip(Some("Unavailable"));
+                }
+            }
+            if let Some(value) = t.gpu_power_w {
+                gpu_page_power_card.set_value(format!("{value:.1}"));
+                gpu_page_power_card.set_unit(Some("W"));
+                gpu_page_power_card.set_status_chip(Some("Reporting"));
+            } else {
+                gpu_page_power_card.set_value("—");
+                gpu_page_power_card.set_unit(None);
+                gpu_page_power_card.set_status_chip(Some("Unavailable"));
+            }
+            gpu_page_core_clock.set_text(
+                &t.gpu_core_clock_mhz
+                    .map(|value| format!("{value} MHz"))
+                    .unwrap_or_else(|| "Unavailable".to_string()),
+            );
+            gpu_page_memory_clock.set_text(
+                &t.gpu_memory_clock_mhz
+                    .map(|value| format!("{value} MHz"))
+                    .unwrap_or_else(|| "Unavailable".to_string()),
+            );
+            gpu_page_telemetry_provider.set_text(
+                t.gpu_telemetry_status
+                    .as_deref()
+                    .unwrap_or("NVIDIA telemetry is optional and currently unavailable."),
+            );
             gpu_temp_gauge.set_speed_metrics(
                 "Core Clock",
                 t.gpu_core_clock_mhz.map(u64::from),
@@ -4458,6 +4560,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             );
             details_fan_group_ref.set_visible(true);
         } else {
+            diag_service_nvidia.set_text("Waiting for telemetry");
             diag_sensor_cpu.set_text("Waiting for telemetry");
             diag_sensor_gpu.set_text("Waiting for telemetry");
             diag_sensor_fans.set_text("Waiting for telemetry");
@@ -4493,6 +4596,18 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             gpu_page_temp_card.set_value("—");
             gpu_page_temp_card.set_unit(None);
+            for card in [
+                &gpu_page_usage_card,
+                &gpu_page_vram_card,
+                &gpu_page_power_card,
+            ] {
+                card.set_value("—");
+                card.set_unit(None);
+                card.set_status_chip(Some("Pending"));
+            }
+            gpu_page_core_clock.set_text("Unavailable");
+            gpu_page_memory_clock.set_text("Unavailable");
+            gpu_page_telemetry_provider.set_text("Waiting for daemon telemetry...");
             battery_hero_card.set_value("—");
             battery_hero_card.set_unit(None);
             battery_hero_card.set_subtitle(Some("Battery telemetry unavailable"));
@@ -5144,7 +5259,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             gpu_page_last_action.set_text(&gpu_status_summary(&caps, &warnings));
         }
 
-        let has_kbd_backlight = caps.has_kbd_backlight || lighting.is_some();
+        let has_kbd_backlight = caps.has_kbd_backlight
+            || lighting
+                .as_ref()
+                .is_some_and(|lighting| lighting.supports_brightness);
         kbd_backlight_row.set_visible(has_kbd_backlight);
         if has_kbd_backlight {
             if let Some(ref l) = lighting {
@@ -5152,9 +5270,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 if !kbd_brightness_spin.has_focus() {
                     kbd_brightness_spin.set_value(l.brightness as f64);
                 }
-                kbd_brightness_spin.set_sensitive(l.can_set);
-                kbd_apply_button.set_sensitive(l.can_set);
-                if l.can_set {
+                let can_set_brightness = l.can_set && l.supports_brightness;
+                kbd_brightness_spin.set_sensitive(can_set_brightness);
+                kbd_apply_button.set_sensitive(can_set_brightness);
+                if can_set_brightness {
                     kbd_backlight_row.set_subtitle("Adjust brightness");
                 } else {
                     kbd_backlight_row
@@ -5200,8 +5319,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Lighting telemetry is available, but controls are read-only"
             });
             lighting_capability_banner.set_revealed(!can_set);
-            brightness_scale.set_sensitive(can_set);
-            apply_lighting.set_sensitive(can_set);
+            brightness_row.set_visible(l.supports_brightness);
+            brightness_scale.set_sensitive(can_set && l.supports_brightness);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
                 Some(l),
                 &caps.kbd_backlight_access,
@@ -5217,11 +5336,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 apply_row.set_subtitle("Unavailable · see capability status above");
             }
 
-            let mut modes = l.supported_modes.clone();
-            if modes.is_empty() && l.backend.eq_ignore_ascii_case("sysfs-led") {
-                modes = vec!["Off".to_string(), "Static".to_string()];
-            }
-            mode_combo.set_sensitive(can_set && !modes.is_empty());
+            let modes = l.supported_modes.clone();
+            mode_row.set_visible(l.supports_modes && !modes.is_empty());
+            mode_combo.set_sensitive(can_set && l.supports_modes && !modes.is_empty());
             if !mode_combo.is_focus() {
                 let mut last = last_supported_modes.borrow_mut();
                 if *last != modes {
@@ -5246,6 +5363,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
             rgb_row.set_visible(l.supports_rgb);
+            let has_visible_controls =
+                l.supports_brightness || (l.supports_modes && !modes.is_empty()) || l.supports_rgb;
+            lighting_controls_group.set_visible(has_visible_controls);
+            apply_row.set_visible(can_set && has_visible_controls);
+            apply_lighting.set_sensitive(can_set && has_visible_controls);
             lighting_rgb_note.set_visible(!l.supports_rgb);
             if let Some(rgba) = l
                 .rgb_hex
@@ -5274,6 +5396,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             mode_combo.set_sensitive(false);
             apply_lighting.set_sensitive(false);
             rgb_button.set_sensitive(false);
+            lighting_controls_group.set_visible(false);
+            brightness_row.set_visible(false);
+            mode_row.set_visible(false);
+            apply_row.set_visible(false);
             rgb_row.set_visible(false);
             lighting_rgb_note.set_visible(true);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
@@ -5663,6 +5789,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         if let Ok(mut st) = shared.lock() {
                             let gpu_temp_c = t.gpu_temp_c;
+                            let gpu_usage_percent = t.gpu_usage_percent;
                             let memory_used_percent = t.mem_used_percent;
                             st.telemetry = Some(t);
                             st.cpu = cpu.clone();
@@ -5683,6 +5810,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 60,
                             );
                             push_history(&mut st.gpu_temp_history, gpu_temp_c, 60);
+                            push_history(&mut st.gpu_usage_history, gpu_usage_percent, 60);
                             push_history(
                                 &mut st.memory_usage_history,
                                 memory_used_percent,
@@ -5959,7 +6087,9 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
         .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
 
     let mut m = HashMap::new();
-    m.insert("brightness".to_string(), OwnedValue::from(p.brightness));
+    if let Some(brightness) = p.brightness {
+        m.insert("brightness".to_string(), OwnedValue::from(brightness));
+    }
     if let Some(mode) = p.mode {
         m.insert("mode".to_string(), ov(mode));
     }
@@ -7017,6 +7147,14 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     if let Some(v) = map.get("gpu_temp_c").and_then(|v| f64::try_from(v).ok()) {
         t.gpu_temp_c = Some(v as f32);
     }
+    if let Some(v) = map
+        .get("gpu_usage_percent")
+        .and_then(|v| f64::try_from(v).ok())
+    {
+        t.gpu_usage_percent = Some(v as f32);
+    }
+    t.gpu_vram_used_bytes = map.get("gpu_vram_used_bytes").and_then(u64_from_value);
+    t.gpu_vram_total_bytes = map.get("gpu_vram_total_bytes").and_then(u64_from_value);
     t.gpu_core_clock_mhz = map
         .get("gpu_core_clock_mhz")
         .and_then(u64_from_value)
@@ -7025,6 +7163,18 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
         .get("gpu_memory_clock_mhz")
         .and_then(u64_from_value)
         .and_then(|v| u32::try_from(v).ok());
+    if let Some(v) = map.get("gpu_power_w").and_then(|v| f64::try_from(v).ok()) {
+        t.gpu_power_w = Some(v as f32);
+    }
+    t.gpu_index = map
+        .get("gpu_index")
+        .and_then(u64_from_value)
+        .and_then(|v| u32::try_from(v).ok());
+    t.gpu_name = string_from_value(&map, "gpu_name");
+    t.gpu_uuid = string_from_value(&map, "gpu_uuid");
+    t.gpu_pci_bus_id = string_from_value(&map, "gpu_pci_bus_id");
+    t.gpu_telemetry_provider = string_from_value(&map, "gpu_telemetry_provider");
+    t.gpu_telemetry_status = string_from_value(&map, "gpu_telemetry_status");
     if let Some(temps) = map
         .get("temps_c")
         .cloned()
@@ -7382,6 +7532,12 @@ fn u64_from_value(v: &OwnedValue) -> Option<u64> {
     u64::try_from(v)
         .ok()
         .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
+}
+
+fn string_from_value(map: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(str::to_string)
 }
 
 fn format_duration_short(secs: u64) -> String {
@@ -8539,26 +8695,31 @@ fn cpu_dashboard_summary(cpu: &CpuTelemetry) -> String {
 
 fn gpu_dashboard_summary(telemetry: &TelemetrySnapshot, mode: Option<&str>) -> String {
     let mut parts = Vec::new();
-    if telemetry.gpu_temp_c.is_some()
-        || telemetry.gpu_core_clock_mhz.is_some()
-        || telemetry.gpu_memory_clock_mhz.is_some()
-    {
-        parts.push("Telemetry available".to_string());
-    } else {
-        parts.push("Telemetry unavailable".to_string());
+    if let Some(usage) = telemetry.gpu_usage_percent {
+        parts.push(format!("{usage:.0}% load"));
+    }
+    if let (Some(used), Some(total)) = (
+        telemetry.gpu_vram_used_bytes,
+        telemetry.gpu_vram_total_bytes,
+    ) {
+        parts.push(format!(
+            "{:.1} / {:.1} GiB VRAM",
+            used as f64 / 1024_f64.powi(3),
+            total as f64 / 1024_f64.powi(3)
+        ));
     }
     if let Some(mode) = mode {
         parts.push(format!("Mode {mode}"));
+    }
+    if parts.is_empty() {
+        if telemetry.gpu_temp_c.is_some() {
+            "Telemetry available".to_string()
+        } else {
+            "Telemetry unavailable".to_string()
+        }
     } else {
-        parts.push("Mode unavailable".to_string());
+        parts.join(" · ")
     }
-    if let Some(clock) = telemetry.gpu_core_clock_mhz {
-        parts.push(format!("Core {clock} MHz"));
-    }
-    if let Some(clock) = telemetry.gpu_memory_clock_mhz {
-        parts.push(format!("Memory {clock} MHz"));
-    }
-    parts.join(" · ")
 }
 
 fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
@@ -8765,16 +8926,26 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
             .and_then(|v| Vec::<String>::try_from(v).ok())
     }
 
+    let supported_modes = vec_string(&map, "supported_modes").unwrap_or_default();
+    let max_brightness = u(&map, "max_brightness").unwrap_or(0);
+    let supports_brightness = b(&map, "supports_brightness").unwrap_or(max_brightness > 0);
+    let supports_modes = b(&map, "supports_modes").unwrap_or(!supported_modes.is_empty());
+
     Some(LightingInfo {
         backend: s(&map, "backend").unwrap_or_else(|| "Unknown backend".to_string()),
         device: s(&map, "device").unwrap_or_else(|| "Unknown device".to_string()),
         brightness: u(&map, "brightness").unwrap_or(0),
-        max_brightness: u(&map, "max_brightness").unwrap_or(3),
+        max_brightness,
         can_set: b(&map, "can_set").unwrap_or(false),
         mode: s(&map, "mode").unwrap_or_else(|| "Current mode not reported".to_string()),
+        supports_brightness,
+        supports_modes,
         supports_rgb: b(&map, "supports_rgb").unwrap_or(false),
         rgb_hex: s(&map, "rgb_hex"),
-        supported_modes: vec_string(&map, "supported_modes").unwrap_or_default(),
+        supported_modes,
+        supports_speed: b(&map, "supports_speed").unwrap_or(false),
+        supported_speeds: vec_string(&map, "supported_speeds").unwrap_or_default(),
+        supported_zones: vec_string(&map, "supported_zones").unwrap_or_default(),
         status: s(&map, "status").unwrap_or_else(|| "unknown".to_string()),
         last_error: s(&map, "last_error"),
         diagnostics_summary: s(&map, "diagnostics_summary"),
@@ -8863,6 +9034,8 @@ fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
     FanCaps {
         has_fan_reading: b(&map, "has_fan_reading"),
         has_fan_curves: b(&map, "has_fan_curves"),
+        fan_curve_readable: b(&map, "fan_curve_readable"),
+        fan_curve_writable: b(&map, "fan_curve_writable"),
         has_fan_manual_percent: b(&map, "has_fan_manual_percent"),
         has_fan_manual_rpm_target: b(&map, "has_fan_manual_rpm_target"),
         has_individual_fan_control: b(&map, "has_individual_fan_control"),
@@ -8873,6 +9046,11 @@ fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
             .and_then(u64_from_value)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(0),
+        fan_mapping_confidence: map
+            .get("fan_mapping_confidence")
+            .and_then(|value| <&str>::try_from(value).ok())
+            .map(FanMappingConfidence::parse)
+            .unwrap_or(FanMappingConfidence::Unknown),
         fan_backend: s(&map, "fan_backend"),
         endpoints: vec_string(&map, "endpoints"),
         notes: vec_string(&map, "notes"),
@@ -8912,6 +9090,9 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         id: s(&map, dbus_keys::FAN_INFO_ID_KEY)?,
         index: u32v(&map, dbus_keys::FAN_INFO_INDEX_KEY).unwrap_or(0),
         label: s(&map, dbus_keys::FAN_INFO_LABEL_KEY)?,
+        mapping_confidence: s(&map, dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY)
+            .map(|value| FanMappingConfidence::parse(&value))
+            .unwrap_or(FanMappingConfidence::Unknown),
         current_rpm: u32v(&map, dbus_keys::FAN_INFO_CURRENT_RPM_KEY),
         min_rpm: u32v(&map, dbus_keys::FAN_INFO_MIN_RPM_KEY),
         max_rpm: u32v(&map, dbus_keys::FAN_INFO_MAX_RPM_KEY),
@@ -9428,6 +9609,10 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
     lines.push("=======================".to_string());
     lines.push(format!("backend: {}", state.caps.fan_backend));
     lines.push(format!("fan_count: {}", state.caps.fan_count));
+    lines.push(format!(
+        "fan_mapping_confidence: {}",
+        state.caps.fan_mapping_confidence.as_str()
+    ));
     lines.push(format!("mode: {}", fan_mode_label_text(state.mode)));
     lines.push(format!("sync_enabled: {}", state.sync_enabled));
     lines.push(format!(
@@ -9439,6 +9624,14 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         state.caps.has_fan_manual_rpm_target
     ));
     lines.push(format!("curves: {}", state.caps.has_fan_curves));
+    lines.push(format!(
+        "fan_curve_readable: {}",
+        state.caps.fan_curve_readable
+    ));
+    lines.push(format!(
+        "fan_curve_writable: {}",
+        state.caps.fan_curve_writable
+    ));
     lines.push(format!("boost: {}", state.caps.has_fan_boost));
     if let Some(until) = state.active_boost_until_ms {
         let remaining = until.saturating_sub(now_ms()) / 1000;
@@ -9470,8 +9663,9 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
                 .unwrap_or_else(|| "(not reported)".to_string())
         ));
         lines.push(format!(
-            "  backend: {}; controllable: {}; manual_percent: {}; rpm_target: {}; curve: {}; auto: {}",
+            "  backend: {}; mapping: {}; controllable: {}; manual_percent: {}; rpm_target: {}; curve: {}; auto: {}",
             fan.backend,
+            fan.mapping_confidence.as_str(),
             fan.controllable,
             fan.supports_manual_percent,
             fan.supports_manual_rpm_target,
@@ -9486,6 +9680,22 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         }
         for warning in &fan.warnings {
             lines.push(format!("  warning: {warning}"));
+        }
+    }
+    if !state.caps.endpoints.is_empty() {
+        lines.push(String::new());
+        lines.push("Candidate endpoints".to_string());
+        lines.push("-------------------".to_string());
+        for endpoint in &state.caps.endpoints {
+            lines.push(format!("- {endpoint}"));
+        }
+    }
+    if !state.caps.notes.is_empty() {
+        lines.push(String::new());
+        lines.push("Capability notes".to_string());
+        lines.push("----------------".to_string());
+        for note in &state.caps.notes {
+            lines.push(format!("- {note}"));
         }
     }
     if !state.caps.warnings.is_empty() {
@@ -9777,9 +9987,7 @@ fn rotor_status(fan: &FanInfo) -> RotorStatus {
 }
 
 fn fan_mapping_uncertain(fan: &FanInfo) -> bool {
-    fan.warnings
-        .iter()
-        .any(|warning| warning.to_ascii_lowercase().contains("mapping"))
+    fan.mapping_confidence != FanMappingConfidence::HardwareLabel
 }
 
 fn fan_warning_text(fan: &FanInfo) -> String {
@@ -9893,7 +10101,29 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
             lighting.supported_modes.join(", ")
         }
     ));
+    lines.push(format!(
+        "supports_brightness: {}",
+        lighting.supports_brightness
+    ));
+    lines.push(format!("supports_modes: {}", lighting.supports_modes));
     lines.push(format!("supports_rgb: {}", lighting.supports_rgb));
+    lines.push(format!("supports_speed: {}", lighting.supports_speed));
+    lines.push(format!(
+        "supported_speeds: {}",
+        if lighting.supported_speeds.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            lighting.supported_speeds.join(", ")
+        }
+    ));
+    lines.push(format!(
+        "supported_zones: {}",
+        if lighting.supported_zones.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            lighting.supported_zones.join(", ")
+        }
+    ));
     lines.push(format!(
         "rgb_hex: {}",
         lighting.rgb_hex.as_deref().unwrap_or("(not reported)")
@@ -9986,6 +10216,39 @@ mod tests {
     }
 
     #[test]
+    fn lighting_from_dbus_parses_explicit_backend_capabilities() {
+        let mut map = HashMap::new();
+        map.insert("backend".to_string(), ov("verified-aura".to_string()));
+        map.insert("device".to_string(), ov("test-endpoint".to_string()));
+        map.insert("can_set".to_string(), OwnedValue::from(true));
+        map.insert("supports_brightness".to_string(), OwnedValue::from(false));
+        map.insert("supports_modes".to_string(), OwnedValue::from(true));
+        map.insert("supports_rgb".to_string(), OwnedValue::from(true));
+        map.insert("supports_speed".to_string(), OwnedValue::from(true));
+        map.insert(
+            "supported_modes".to_string(),
+            ov(vec!["Static".to_string(), "Breathe".to_string()]),
+        );
+        map.insert(
+            "supported_speeds".to_string(),
+            ov(vec!["Medium".to_string()]),
+        );
+        map.insert(
+            "supported_zones".to_string(),
+            ov(vec!["Keyboard".to_string()]),
+        );
+
+        let lighting = lighting_from_dbus(map).expect("lighting state should parse");
+        assert!(!lighting.supports_brightness);
+        assert!(lighting.supports_modes);
+        assert!(lighting.supports_rgb);
+        assert!(lighting.supports_speed);
+        assert_eq!(lighting.supported_modes, ["Static", "Breathe"]);
+        assert_eq!(lighting.supported_speeds, ["Medium"]);
+        assert_eq!(lighting.supported_zones, ["Keyboard"]);
+    }
+
+    #[test]
     fn telemetry_from_dbus_parses_structured_fan_rows() {
         let mut fan_row = HashMap::new();
         fan_row.insert(
@@ -10016,6 +10279,12 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("timestamp_ms".to_string(), OwnedValue::from(10_u64));
         map.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(2100_u64));
+        map.insert("gpu_usage_percent".to_string(), OwnedValue::from(32.0_f64));
+        map.insert(
+            "gpu_vram_total_bytes".to_string(),
+            OwnedValue::from(8_589_934_592_u64),
+        );
+        map.insert("gpu_name".to_string(), ov("NVIDIA Test GPU".to_string()));
         map.insert(
             "gpu_memory_clock_mhz".to_string(),
             OwnedValue::from(7000_u64),
@@ -10036,6 +10305,9 @@ mod tests {
         assert_eq!(fan.rpm, Some(2875));
         assert_eq!(telemetry.gpu_core_clock_mhz, Some(2100));
         assert_eq!(telemetry.gpu_memory_clock_mhz, Some(7000));
+        assert_eq!(telemetry.gpu_usage_percent, Some(32.0));
+        assert_eq!(telemetry.gpu_vram_total_bytes, Some(8_589_934_592));
+        assert_eq!(telemetry.gpu_name.as_deref(), Some("NVIDIA Test GPU"));
     }
 
     #[test]
@@ -10181,7 +10453,14 @@ mod tests {
         telemetry.gpu_core_clock_mhz = Some(2100);
         assert_eq!(
             gpu_dashboard_summary(&telemetry, None),
-            "Telemetry available · Mode unavailable · Core 2100 MHz"
+            "Telemetry available"
+        );
+        telemetry.gpu_usage_percent = Some(32.0);
+        telemetry.gpu_vram_used_bytes = Some(2 * 1024 * 1024 * 1024);
+        telemetry.gpu_vram_total_bytes = Some(8 * 1024 * 1024 * 1024);
+        assert_eq!(
+            gpu_dashboard_summary(&telemetry, Some("Hybrid")),
+            "32% load · 2.0 / 8.0 GiB VRAM · Mode Hybrid"
         );
     }
 

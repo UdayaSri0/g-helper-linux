@@ -243,7 +243,7 @@ The app should degrade to read-only telemetry instead of trying unsafe writes.
 
 ## GPU Clock Shows `-- MHz`
 
-The Fans page shows GPU core and memory clocks only when the daemon can read them safely. On NVIDIA systems this is best-effort `nvidia-smi` telemetry.
+The GPU and Cooling pages show NVIDIA utilisation, VRAM, power, and clock values only when the daemon can read them safely. This is best-effort, read-only `nvidia-smi` telemetry refreshed every three seconds.
 
 Common reasons clocks are unavailable:
 
@@ -393,12 +393,16 @@ The repository does not currently ship a bundled udev rule or privileged helper 
 
 ## Keyboard RGB / Aura Diagnostics
 
-RGB colour requires an asusd Aura/keyboard lighting interface on system DBus.
+RGB colour requires a verified Aura/keyboard lighting control contract on system DBus. An
+Aura-looking interface is reported for diagnostics but is not enough to enable writes.
 
 Check:
 
 ```bash
-gdbus introspect --system --dest xyz.ljones.Asusd --object-path /xyz/ljones --recurse
+busctl --system --no-pager list
+# If an ASUS lighting service name is actually present:
+busctl --system tree SERVICE
+busctl --system introspect SERVICE OBJECT_PATH
 cargo run -p rog-cli -- lighting-diagnostics
 cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb"
@@ -409,15 +413,17 @@ cat /sys/class/leds/asus::kbd_backlight/max_brightness
 
 Expected behavior:
 
-- `has_aura: true` only when an Aura/RGB provider was actually detected
+- `has_aura: true` only when an exact verified Aura/RGB provider contract is active
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
-- if asusd is present but does not expose Aura/RGB, Diagnostics should say that RGB is not exposed by asusd
+- if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only
 - if only sysfs is available, Diagnostics should explain that the active backend only supports brightness through `/sys/class/leds/...`
 - if write access is blocked, Diagnostics should name the brightness file permission issue
-- if a potential Aura-like interface is found but unsupported, include the introspection output in a GitHub issue
+- if a potential Aura-like interface is found but unsupported, include its exact service version, tree, and introspection output in a GitHub issue
 
 If RGB is unavailable, the app should keep brightness controls available when sysfs backlight support exists.
+Do not substitute a guessed object path for `OBJECT_PATH`; select it from `busctl tree SERVICE`.
+The current target findings are recorded in `AURA_BACKEND_DISCOVERY.md`.
 
 ## Missing Telemetry or Limited `hwmon` Coverage
 
@@ -438,7 +444,7 @@ cargo run -p rog-cli -- sensors
 The current telemetry implementation is best-effort:
 
 - `hwmon` is the primary source for temperatures and fans
-- `nvidia-smi` is used as a fallback for GPU temperature
+- `nvidia-smi` optionally supplies NVIDIA utilisation, VRAM, clocks, power, identity, and fallback temperature telemetry
 - battery and power state are supplemented by `UPower` and power-supply sysfs
 
 If a metric is not exposed by your system, the UI will show it as unavailable rather than inventing a value.

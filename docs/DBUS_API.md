@@ -59,7 +59,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
 | `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
-| `SetLighting` | `a{sv}` | `()` | Uses Aura/RGB through asusd when exposed; otherwise sysfs keyboard backlight fallback |
+| `SetLighting` | `a{sv}` | `()` | Uses the verified sysfs brightness/Off/Static backend; Aura/RGB remains gated on an exact tested DBus contract |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
 | `SetBatteryLimit` | `t` (`u64`) | `()` | Uses `asusd` when available |
@@ -69,10 +69,10 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
-| `SetFanAuto` | `s` | `()` | Empty string means all controllable fans |
-| `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Percentage is `0..=100`; empty string or sync mode applies to all controllable fans |
-| `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Only available when writable `fanN_target` is explicitly detected |
-| `SetFanCurve` | `sa{sv}` | `()` | Validates conservative temperature/speed points before provider write |
+| `SetFanAuto` | `s` | `()` | Reserved for a verified backend; empty string means all controllable fans |
+| `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
+| `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
+| `SetFanCurve` | `sa{sv}` | `()` | Validates conservative points, then returns `NotSupported` until a verified curve backend exists |
 | `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
 | `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
@@ -161,8 +161,13 @@ When present, `lighting` includes:
 - `max_brightness` -> `t`
 - `mode` -> `s`, when reported
 - `supported_modes` -> `as`
+- `supports_brightness` -> `b`
+- `supports_modes` -> `b`
 - `supports_rgb` -> `b`
 - `rgb_hex` -> optional `s` in `#RRGGBB` form
+- `supports_speed` -> `b`
+- `supported_speeds` -> `as`
+- `supported_zones` -> `as`
 - `can_set` / `writable` -> `b`
 - `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
 - `last_error` -> optional `s`
@@ -174,8 +179,9 @@ When present, `lighting` includes:
 
 The diagnostics detail string is a copyable report headed `Keyboard Lighting / RGB Diagnostics`.
 It includes the selected backend, sysfs LED paths, brightness read/write state, asusd services and
-interfaces found through introspection, RGB-looking methods/properties, fallback reasons, and
-recommended next actions.
+interfaces found through introspection, exact candidate brightness/mode/RGB/speed/zone method and
+property signatures, whether a verified contract matched, fallback reasons, and recommended next
+actions.
 
 ### Fan state map
 
@@ -191,9 +197,16 @@ recommended next actions.
 - `active_curve_summary` -> optional `s`
 - `warnings` -> `as`
 
+Its nested `fan_caps` map adds these read-only discovery keys without renaming existing keys:
+
+- `fan_curve_readable` -> `b`: at least one supported curve layout was completely readable
+- `fan_curve_writable` -> `b`: a backend-specific safe write contract is active
+- `fan_mapping_confidence` -> `s`: `unknown`, `heuristic`, or `hardware_label`
+- `endpoints`, `notes`, `warnings` include read-only candidate-path evidence
+
 Each fan map includes:
 
-- `id`, `index`, `label`
+- `id`, `index`, `label`, and `mapping_confidence`
 - optional `current_rpm`, `min_rpm`, `max_rpm`, `current_percent`
 - `controllable`
 - `supports_manual_percent`
@@ -203,7 +216,7 @@ Each fan map includes:
 - `backend`
 - `endpoints`, `notes`, `warnings`
 
-Fan control methods return `InvalidArgs` for unsafe input, `NotSupported` for missing backend support, and `AccessDenied` for permission-denied sysfs writes.
+Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no verified backend is active. Candidate generic hwmon files never authorize a write.
 
 ## `GetTelemetry` Response
 
@@ -216,13 +229,23 @@ Current telemetry keys are grouped below.
 - `timestamp_ms`
 - `cpu_temp_c`
 - `gpu_temp_c`
+- `gpu_usage_percent`
+- `gpu_vram_used_bytes`
+- `gpu_vram_total_bytes`
 - `gpu_core_clock_mhz`
 - `gpu_memory_clock_mhz`
+- `gpu_power_w`
+- `gpu_name`
+- `gpu_uuid`
+- `gpu_pci_bus_id`
+- `gpu_index`
+- `gpu_telemetry_provider`
+- `gpu_telemetry_status`
 - `temps_c`
 - `fans_rpm`
 - `fan_rows`
 
-`gpu_core_clock_mhz` and `gpu_memory_clock_mhz` are best-effort NVIDIA clock values from the daemon-side `nvidia-smi` provider. They are omitted when `nvidia-smi` is missing, unsupported, timed out, or the GPU is powered down.
+The optional GPU usage, VRAM, clock, power, and identity keys are best-effort values from the daemon-side `nvidia-smi` provider. The daemon selects the lowest reported NVIDIA GPU index deterministically (using PCI bus ID and UUID as tie-breakers), refreshes it every three seconds in one query, and caches the sample between one-second daemon ticks. Unsupported or `N/A` metrics are omitted individually. `gpu_temp_c` keeps its existing key and prefers the existing hwmon reading; NVIDIA temperature fills only a missing value. `gpu_telemetry_status` explains provider availability without making NVIDIA hardware mandatory.
 
 `fans_rpm` is a flattened convenience map keyed by chosen display label and only includes rows that currently report an RPM value.
 
@@ -404,13 +427,15 @@ Current accepted keys:
 - `brightness` -> integer
 - `mode` -> string
 - `rgb_hex` -> optional string
+- `speed` and `zone` are reserved capability keys and return `NotSupported` until a verified backend contract is active
 
 Current behavior:
 
-- if Aura/RGB is exposed by asusd and `mode` or `rgb_hex` is supplied, the daemon routes that request through the Aura provider
-- if Aura brightness is not exposed, brightness can still use the sysfs keyboard backlight fallback when present
-- without Aura, the sysfs backend accepts brightness plus `Off` and `Static` only
-- `rgb_hex` without writable Aura/RGB support returns a clear `NotSupported` error
+- the current verified backend is sysfs keyboard brightness, with `Off` and `Static` only
+- brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
+- unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`
+- Aura routing remains disabled until an exact introspected control contract is captured and tested
+- a future verified Aura backend may still use the sysfs brightness fallback when Aura does not expose brightness
 
 ## `SetProfile`
 
@@ -504,10 +529,9 @@ Current mapping:
 
 ## Not Currently Exposed
 
-The following features are not part of the current daemon API, even though older design docs mentioned them:
+The following features are not part of the current daemon API:
 
-- fan curve setters/getters
-- auto mode toggle
+- a verified fan-curve read/write backend (the method surface exists, but writes are capability-gated off)
 - auto rules setter
 - diagnostics bundle export method
 

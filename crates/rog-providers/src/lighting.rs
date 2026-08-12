@@ -25,6 +25,16 @@ pub fn build_lighting_diagnostics(
     diagnostics.asusd_potential_aura_interfaces = aura_probe.potential_aura_interfaces.clone();
     diagnostics.asusd_rgb_methods_detected = aura_probe.rgb_methods_detected.clone();
     diagnostics.asusd_rgb_properties_detected = aura_probe.rgb_properties_detected.clone();
+    diagnostics.asusd_brightness_methods_detected = aura_probe.brightness_methods_detected.clone();
+    diagnostics.asusd_brightness_properties_detected =
+        aura_probe.brightness_properties_detected.clone();
+    diagnostics.asusd_mode_methods_detected = aura_probe.mode_methods_detected.clone();
+    diagnostics.asusd_mode_properties_detected = aura_probe.mode_properties_detected.clone();
+    diagnostics.asusd_speed_methods_detected = aura_probe.speed_methods_detected.clone();
+    diagnostics.asusd_speed_properties_detected = aura_probe.speed_properties_detected.clone();
+    diagnostics.asusd_zone_methods_detected = aura_probe.zone_methods_detected.clone();
+    diagnostics.asusd_zone_properties_detected = aura_probe.zone_properties_detected.clone();
+    diagnostics.asusd_verified_aura_interface = aura_probe.verified_interface_detected;
     diagnostics.probe_errors = aura_probe.probe_errors.clone();
 
     if let Some(error) = kbd_backlight_probe_error {
@@ -62,11 +72,14 @@ pub fn build_lighting_diagnostics(
     }
 
     if let Some(state) = aura_state {
-        diagnostics.supports_brightness |= state.brightness.is_some();
-        diagnostics.supports_modes |= !state.supported_modes.is_empty() || state.mode.is_some();
+        diagnostics.supports_brightness |= state.supports_brightness;
+        diagnostics.supports_modes |= state.supports_modes;
         diagnostics.supported_modes = state.supported_mode_labels();
         diagnostics.active_mode = state.mode_label();
         diagnostics.supports_rgb = state.supports_rgb;
+        diagnostics.supports_speed = state.supports_speed;
+        diagnostics.supported_speeds = state.supported_speeds.clone();
+        diagnostics.supported_zones = state.supported_zones.clone();
         diagnostics.rgb_current_hex = state.rgb.map(|rgb| rgb.to_hex());
         if state.supports_rgb || aura_provider.is_some() {
             diagnostics.rgb_backend_detected = true;
@@ -102,6 +115,10 @@ pub fn build_lighting_diagnostics(
             .get_or_insert_with(|| provider.endpoint_tag());
         diagnostics.supports_rgb |= provider.supports_rgb();
         diagnostics.supports_brightness |= provider.supports_brightness();
+        diagnostics.supports_speed |= provider.supports_speed();
+        if diagnostics.supported_zones.is_empty() {
+            diagnostics.supported_zones = provider.supported_zones();
+        }
         if diagnostics.supported_modes.is_empty() {
             diagnostics.supported_modes = provider
                 .supported_modes_hint()

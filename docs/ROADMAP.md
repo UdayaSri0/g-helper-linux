@@ -24,7 +24,7 @@ The following features are present in the current codebase.
 
 - `UPower` integration for power source and battery telemetry
 - `hwmon` integration for temperatures and fan RPMs
-- `nvidia-smi` fallback for GPU temperature
+- optional multi-metric `nvidia-smi` telemetry with deterministic GPU selection and a slower cached refresh cadence
 - `asusd` integration for:
   - ASUS platform profile read/write
   - battery charge-limit read/write
@@ -189,11 +189,16 @@ Note:
 
 ### Aura / RGB lighting
 
-Implemented when asusd exposes a compatible Aura/keyboard lighting DBus backend, with remaining work focused on:
+Discovery and capability reporting are implemented, but Aura writes are not. The validated target
+has no installed Aura service, so heuristic interface names cannot authorize a backend. Remaining
+work is gated on:
 
-- broader hardware validation
-- additional asusd interface shape coverage if real machines expose unsupported signatures
-- clearer reporting for backend-specific effects that do not map to the shared mode labels
+- captured introspection and service version from real Aura-capable hardware
+- an exact service/path/interface/signature adapter with readback tests
+- backend-reported effect, speed, zone, and range handling
+- unprivileged write/error validation on that hardware
+
+See `AURA_BACKEND_DISCOVERY.md` for the current evidence and acceptance gate.
 
 ### Persistent configuration
 

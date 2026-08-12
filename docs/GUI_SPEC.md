@@ -172,11 +172,13 @@ Purpose:
 
 Current content:
 
-- a temperature-first overview that remains useful independently of optional control services
+- an overview for temperature plus optional NVIDIA utilisation, VRAM, power, and clock telemetry
+- compact temperature and utilisation history graphs shown after real samples arrive
 - one control-dependencies group for:
   - `asusd` performance profiles
   - `supergfxd` GPU modes
   - GPU switch hint
+  - NVIDIA telemetry provider status
 - controls group for:
   - profile apply
   - GPU mode apply
@@ -185,6 +187,7 @@ Current content:
 Current behavior:
 
 - controls are gated by daemon capabilities
+- NVIDIA data is read-only, daemon-polled every three seconds, and remains absent per field when unsupported
 - reboot or logout requirement is shown through a capability hint from the daemon
 - the dependency values distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
 - unavailable control rows refer back to the single dependency summary instead of repeating the service explanation
@@ -229,18 +232,19 @@ Current content:
 
 - controls first, followed by availability and recent-action status
 - one read-only/unavailable capability banner
-- mode combo box
-- brightness slider
+- mode combo box only when `supports_modes` and non-empty `supported_modes` are reported
+- brightness slider only when `supports_brightness` is reported
 - RGB colour control only when `supports_rgb` is reported
 - apply action
 - collapsed backend details containing current backend, brightness, mode, and RGB values
 
 Current implementation note:
 
-- the daemon prefers an asusd Aura/RGB DBus backend when introspection confirms one exists
+- an Aura backend may be preferred only when introspection matches an exact, reviewed control contract; Aura-looking names remain diagnostic-only
 - the sysfs keyboard backlight backend remains the brightness-only fallback
 - sysfs daemon-reported supported modes are `Off` and `Static`
-- Aura mode choices and RGB enablement come from the daemon-reported backend capability data
+- speed and zone controls remain hidden because no verified backend currently reports them
+- future Aura mode choices, RGB, speed, and zones must come from daemon-reported backend capability data
 - Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 

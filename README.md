@@ -391,7 +391,7 @@ Tagged release packaging is driven by `.github/workflows/release.yml`.
 The application can launch without all external services, but feature availability depends on what is installed and reachable:
 
 - `UPower`: expected for battery and power-source telemetry
-- `asusd`: required for ASUS platform profile, battery-limit control, and Aura/RGB lighting when exposed by the backend
+- `asusd`: required for ASUS platform profile and battery-limit control; Aura/RGB remains disabled until an exact lighting interface contract is verified
 - `supergfxd`: required for GPU mode control
 - Writable sysfs access: required for some CPU and keyboard-backlight operations
 - Tray support: depends on desktop support for StatusNotifierItem / AppIndicator integration

@@ -64,7 +64,7 @@ pub async fn probe_setup_status(
         ),
         bounded_probe(
             DependencyKind::NvidiaSmi,
-            vec!["NVIDIA GPU telemetry fallback".to_string()],
+            vec!["NVIDIA GPU telemetry".to_string()],
             probe_nvidia_smi(),
         ),
     );
@@ -313,7 +313,7 @@ async fn probe_nvidia_smi() -> DependencyStatus {
         }
     )];
     evidence.extend(binary_evidence("nvidia-smi"));
-    let required_for = vec!["NVIDIA GPU telemetry fallback".to_string()];
+    let required_for = vec!["NVIDIA GPU telemetry".to_string()];
 
     match NvidiaSmiTelemetryProvider::default().probe().await {
         NvidiaSmiProbe::Available { gpu_names } => {

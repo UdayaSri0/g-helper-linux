@@ -104,7 +104,12 @@ impl KbdBacklightSysfs {
 
     pub fn set_brightness(&self, brightness: u32) -> RogResult<()> {
         let p = self.led_path.join("brightness");
-        let clamped = brightness.min(self.max_brightness);
+        if brightness > self.max_brightness {
+            return Err(RogError::InvalidInput(format!(
+                "keyboard brightness {brightness} exceeds backend maximum {}",
+                self.max_brightness
+            )));
+        }
 
         let mut f = OpenOptions::new().write(true).open(&p).map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -118,8 +123,28 @@ impl KbdBacklightSysfs {
         })?;
 
         // sysfs prefers a newline-terminated write.
-        writeln!(f, "{clamped}")
+        writeln!(f, "{brightness}")
             .map_err(|e| RogError::Unexpected(format!("failed to write {}: {e}", p.display())))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn brightness_above_backend_maximum_is_rejected_before_io() {
+        let provider = KbdBacklightSysfs {
+            led_name: "test::kbd_backlight".to_string(),
+            led_path: PathBuf::from("/path/that/must/not/be/opened"),
+            max_brightness: 3,
+        };
+
+        let error = provider.set_brightness(4).unwrap_err();
+        assert!(matches!(error, RogError::InvalidInput(_)));
+        assert!(error.to_string().contains("exceeds backend maximum 3"));
     }
 }

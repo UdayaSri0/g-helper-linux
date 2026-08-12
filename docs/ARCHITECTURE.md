@@ -19,7 +19,7 @@ The project is split into three main runtime layers, plus a shared model layer a
 3. Providers (`rog-providers`)
    - System DBus clients
    - Sysfs/procfs readers and writers
-   - External command fallback for NVIDIA temperature
+   - Optional external-command NVIDIA telemetry
 
 Shared model layer:
 
@@ -58,7 +58,7 @@ More concretely:
 - Providers talk to either:
   - system services over DBus
   - kernel/system interfaces in sysfs or procfs
-  - `nvidia-smi` as a read-only fallback
+  - `nvidia-smi` as an optional read-only NVIDIA telemetry source
 
 Hardware I/O is not implemented in the UI.
 
@@ -145,7 +145,7 @@ The current architecture is polling-based.
 - updates vmstat-based swap rates
 - refreshes top memory users on a slower cadence
 - supplements battery details from power-supply sysfs
-- uses `nvidia-smi` as a fallback GPU temperature source
+- refreshes optional NVIDIA telemetry every three seconds with one multi-field `nvidia-smi` query, caching it between daemon ticks; hwmon remains the preferred GPU temperature source
 - reads `UPower` battery and power-source state
 - refreshes CPU telemetry
 - refreshes current profile, GPU mode, and battery limit when their backends are available

@@ -20,6 +20,7 @@ pub const FAN_INFOS_KEY: &str = "fans";
 pub const FAN_INFO_ID_KEY: &str = "id";
 pub const FAN_INFO_INDEX_KEY: &str = "index";
 pub const FAN_INFO_LABEL_KEY: &str = "label";
+pub const FAN_INFO_MAPPING_CONFIDENCE_KEY: &str = "mapping_confidence";
 pub const FAN_INFO_CURRENT_RPM_KEY: &str = "current_rpm";
 pub const FAN_INFO_MIN_RPM_KEY: &str = "min_rpm";
 pub const FAN_INFO_MAX_RPM_KEY: &str = "max_rpm";

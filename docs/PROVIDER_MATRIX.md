@@ -27,7 +27,7 @@ File: `crates/rog-providers/src/asusd.rs`
     - `org.asuslinux.Daemon` / `/org/asuslinux` / `org.asuslinux.Platform`
 - Current limitations
   - only profile and charge-limit coverage are implemented
-  - Aura / RGB is implemented in the separate `aura` provider
+  - Aura / RGB discovery is implemented separately; no Aura write contract is currently verified
   - fan curve support is modeled in the daemon/API, but this provider does not write ASUS fan curves until an asusd curve interface is discoverable and tested
   - if asusd is present without a fan-curve interface, fan curves are reported as unsupported rather than broken
   - interface compatibility across `asusd` versions is still a live concern
@@ -37,9 +37,9 @@ File: `crates/rog-providers/src/asusd.rs`
 File: `crates/rog-providers/src/aura.rs`
 
 - Purpose
-  - ASUS Aura/RGB keyboard lighting discovery and control through asusd DBus
+  - read-only ASUS Aura/RGB DBus discovery and exact interface diagnostics
 - Read / Write
-  - Read + Write when the backend exposes writable controls
+  - Read-only discovery; no Aura writes are currently authorized
 - Dependencies
   - system DBus
   - `asusd` service exposing an introspectable Aura/keyboard LED interface
@@ -50,8 +50,11 @@ File: `crates/rog-providers/src/aura.rs`
   - object paths and interface names are discovered through DBus introspection
 - Current limitations
   - no hardcoded hardware model database
-  - RGB, mode, and brightness support depend on what asusd exposes on the machine
-  - if Aura is absent or incompatible, the daemon keeps the sysfs brightness-only fallback
+  - object paths are learned from the standard DBus root rather than guessed
+  - Aura-looking method/property names do not enable controls by themselves
+  - no target with an installed, introspectable Aura service was available to verify a control contract
+  - if Aura is absent or unverified, the daemon keeps the sysfs brightness/Off/Static fallback
+  - exact target evidence and the implementation gate are in `AURA_BACKEND_DISCOVERY.md`
 
 ## `supergfx`
 
@@ -117,17 +120,18 @@ File: `crates/rog-providers/src/hwmon.rs`
   - `pwm*_auto_point*`
   - optional label files
 - Current limitations
-  - sensor mapping is heuristic
+  - fan mapping confidence is explicit: raw `fan*_label` values are hardware-labelled; generated display names remain unknown rather than authoritative mappings
   - CPU/GPU identification depends on hwmon names and labels
   - some hardware exposes only partial data
   - fan discovery is dynamic over `fan*_input` files and may yield zero, one, or many rows depending on the platform
   - raw `fan*_label` files are optional; when missing, the daemon/UI fall back to `Fan 1`, `Fan 2`, and so on
   - a detected fan input may still have no current RPM value, which is surfaced as unavailable rather than dropped from diagnostics
-  - manual percentage control is available only when both `pwmN` and `pwmN_enable` are writable
-  - RPM target control is available only when `fanN_target` is writable
-  - generic hwmon fan curves are reported as unsupported unless the backend can prove a safe writable curve format
-  - permission-denied PWM/target paths are treated as read-only diagnostics, not fatal startup errors
-  - backend priority is: verified asusd fan curves when implemented, writable hwmon PWM/target control, read-only hwmon telemetry, then unsupported/read-only diagnostics
+  - `pwmN`, `pwmN_enable`, and `fanN_target` are diagnostic candidates only; existence or writable file permissions do not establish safe hardware semantics
+  - the ASUS WMI `asus_custom_fan_curve` hwmon device is probed read-only for complete `pwmN_auto_pointM_{temp,pwm}` pairs and enable values
+  - a complete readable curve sets `fan_curve_readable`, but does not set `has_fan_curves`, `fan_curve_writable`, or any control capability
+  - generic hwmon fan writes are withheld until a backend-specific implementation verifies supported ranges, fan/channel mapping, permissions, and a reliable firmware Auto restore path
+  - permission-denied and candidate paths remain diagnostics, not fatal startup errors
+  - current backend priority is: a future verified fan-control backend, read-only hwmon telemetry/curve discovery, then unsupported diagnostics
 
 ## `cpu`
 
@@ -196,17 +200,20 @@ File: `crates/rog-providers/src/lighting.rs`
 File: `crates/rog-providers/src/nvidia_smi.rs`
 
 - Purpose
-  - read-only fallback GPU temperature source
+  - optional read-only NVIDIA temperature, utilisation, VRAM, clock, power, and identity telemetry
 - Read / Write
   - Read only
 - Dependencies
   - `nvidia-smi` binary
 - External services and paths
-  - external command: `nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits`
+  - one multi-field `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` invocation per refresh
 - Current limitations
-  - only a fallback path
+  - hwmon remains authoritative for the shared GPU temperature field
+  - the daemon refreshes this provider every three seconds and caches values between ticks
+  - multiple GPUs are parsed and the lowest NVIDIA index is selected deterministically
+  - individual `N/A` or malformed metrics remain absent
   - depends on `PATH`
-  - command absence or timeout is expected to be handled gracefully
+  - command absence, driver unload, failure, or timeout is handled as optional unavailability
 
 ## `power_supply`
 
@@ -306,7 +313,8 @@ File: `crates/rog-providers/src/traits.rs`
 
 The provider layer already covers a meaningful amount of real system integration, but it is still uneven:
 
-- profile, battery limit, GPU mode, Aura/RGB lighting when exposed, CPU control, and multiple telemetry sources are implemented
+- profile, battery limit, GPU mode, sysfs keyboard brightness, CPU control, and multiple telemetry sources are implemented
+- Aura/RGB has read-only DBus discovery and capability diagnostics, but no verified write adapter yet
 - fan curves and a unified telemetry abstraction are not implemented end-to-end
 
 When updating provider-related docs, compare against:

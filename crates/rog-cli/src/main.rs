@@ -265,23 +265,35 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
     println!();
     println!("telemetry snapshot:");
     let mut snap = provider.read_snapshot().context("read hwmon snapshot")?;
-    if snap.gpu_temp_c.is_none() {
-        let nvidia = NvidiaSmiTelemetryProvider::default();
-        if let Ok(Some(temp)) = nvidia.read_gpu_temp_c().await {
-            snap.gpu_temp_c = Some(temp);
-            snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
-        }
-    }
     let nvidia = NvidiaSmiTelemetryProvider::default();
-    if let Ok(Some(clocks)) = nvidia.read_gpu_clocks_mhz().await {
-        snap.gpu_core_clock_mhz = clocks.core_clock_mhz;
-        snap.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+    if let Ok(Some(sample)) = nvidia.read_telemetry().await {
+        if let Some(temp) = sample.temperature_c {
+            snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
+            snap.gpu_temp_c.get_or_insert(temp);
+        }
+        snap.gpu_usage_percent = sample.usage_percent;
+        snap.gpu_vram_used_bytes = sample.vram_used_bytes;
+        snap.gpu_vram_total_bytes = sample.vram_total_bytes;
+        snap.gpu_core_clock_mhz = sample.core_clock_mhz;
+        snap.gpu_memory_clock_mhz = sample.memory_clock_mhz;
+        snap.gpu_power_w = sample.power_w;
+        snap.gpu_name = Some(sample.name);
+        snap.gpu_uuid = Some(sample.uuid);
+        snap.gpu_pci_bus_id = Some(sample.pci_bus_id);
+        snap.gpu_index = Some(sample.index);
+        snap.gpu_telemetry_provider = Some("nvidia-smi".to_string());
     }
     println!("  timestamp_ms: {}", snap.timestamp_ms);
     println!("  cpu_temp_c: {:?}", snap.cpu_temp_c);
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
+    println!("  gpu_usage_percent: {:?}", snap.gpu_usage_percent);
+    println!("  gpu_vram_used_bytes: {:?}", snap.gpu_vram_used_bytes);
+    println!("  gpu_vram_total_bytes: {:?}", snap.gpu_vram_total_bytes);
     println!("  gpu_core_clock_mhz: {:?}", snap.gpu_core_clock_mhz);
     println!("  gpu_memory_clock_mhz: {:?}", snap.gpu_memory_clock_mhz);
+    println!("  gpu_power_w: {:?}", snap.gpu_power_w);
+    println!("  gpu_name: {:?}", snap.gpu_name);
+    println!("  gpu_uuid: {:?}", snap.gpu_uuid);
     println!("  temps: {}", snap.temps_c.len());
     println!("  fans: {}", snap.fans_rpm.len());
     for fan in &snap.fan_rows {
@@ -301,7 +313,7 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
 async fn cmd_fans() -> anyhow::Result<()> {
     let provider = HwmonTelemetryProvider::default();
     let fans = provider.list_fans().context("list fans")?;
-    print_fan_caps(&FanCaps::from_fans(&fans));
+    print_fan_caps(&provider.fan_caps().context("probe fan caps")?);
     println!();
     println!("Detected fans:");
     if fans.is_empty() {
@@ -313,7 +325,7 @@ async fn cmd_fans() -> anyhow::Result<()> {
     }
     println!();
     println!("Notes:");
-    println!("  Diagnostics do not require root. If PWM files exist but are read-only, root or a focused udev/system policy may reveal writable control, but rog-ui still only writes through rog-helperd.");
+    println!("  Diagnostics are read-only and do not require root. Candidate PWM/curve files do not authorize fan writes; a backend-specific safety and restore contract must be verified first.");
     Ok(())
 }
 
@@ -583,6 +595,12 @@ fn print_fan_caps(caps: &FanCaps) {
         caps.has_fan_manual_rpm_target
     );
     println!("  has_fan_curves: {}", caps.has_fan_curves);
+    println!("  fan_curve_readable: {}", caps.fan_curve_readable);
+    println!("  fan_curve_writable: {}", caps.fan_curve_writable);
+    println!(
+        "  fan_mapping_confidence: {}",
+        caps.fan_mapping_confidence.as_str()
+    );
     println!(
         "  has_individual_fan_control: {}",
         caps.has_individual_fan_control
@@ -593,6 +611,12 @@ fn print_fan_caps(caps: &FanCaps) {
         println!("  endpoints:");
         for endpoint in &caps.endpoints {
             println!("    {endpoint}");
+        }
+    }
+    if !caps.notes.is_empty() {
+        println!("  notes:");
+        for note in &caps.notes {
+            println!("    {note}");
         }
     }
     if !caps.warnings.is_empty() {
@@ -618,6 +642,7 @@ fn print_fan_info(fan: &FanInfo) {
             .unwrap_or_else(|| "(not reported)".to_string())
     );
     println!("    backend: {}", fan.backend);
+    println!("    mapping: {}", fan.mapping_confidence.as_str());
     println!("    controllable: {}", fan.controllable);
     println!("    manual_percent: {}", fan.supports_manual_percent);
     println!("    rpm_target: {}", fan.supports_manual_rpm_target);

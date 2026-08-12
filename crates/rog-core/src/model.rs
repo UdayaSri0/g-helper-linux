@@ -86,6 +86,32 @@ pub enum FanDomain {
     Other(String),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FanMappingConfidence {
+    #[default]
+    Unknown,
+    Heuristic,
+    HardwareLabel,
+}
+
+impl FanMappingConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Heuristic => "heuristic",
+            Self::HardwareLabel => "hardware_label",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hardware_label" | "hardware-label" | "labelled" | "labeled" => Self::HardwareLabel,
+            "heuristic" | "inferred" => Self::Heuristic,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanPoint {
     pub temp_c: u8,
@@ -103,6 +129,8 @@ pub struct FanInfo {
     pub id: String,
     pub index: u32,
     pub label: String,
+    #[serde(default)]
+    pub mapping_confidence: FanMappingConfidence,
     pub current_rpm: Option<u32>,
     pub min_rpm: Option<u32>,
     pub max_rpm: Option<u32>,
@@ -124,6 +152,11 @@ impl FanInfo {
             id: format!("hwmon-fan-{index}"),
             index,
             label: telemetry.display_label.clone(),
+            mapping_confidence: if telemetry.raw_label.is_some() {
+                FanMappingConfidence::HardwareLabel
+            } else {
+                FanMappingConfidence::Unknown
+            },
             current_rpm: telemetry.rpm,
             min_rpm: None,
             max_rpm: None,
@@ -185,12 +218,18 @@ impl FanControlMode {
 pub struct FanCaps {
     pub has_fan_reading: bool,
     pub has_fan_curves: bool,
+    #[serde(default)]
+    pub fan_curve_readable: bool,
+    #[serde(default)]
+    pub fan_curve_writable: bool,
     pub has_fan_manual_percent: bool,
     pub has_fan_manual_rpm_target: bool,
     pub has_individual_fan_control: bool,
     pub has_fan_sync_control: bool,
     pub has_fan_boost: bool,
     pub fan_count: u32,
+    #[serde(default)]
+    pub fan_mapping_confidence: FanMappingConfidence,
     pub fan_backend: String,
     pub endpoints: Vec<String>,
     pub notes: Vec<String>,
@@ -204,6 +243,20 @@ impl FanCaps {
         let has_fan_manual_rpm_target = fans.iter().any(|fan| fan.supports_manual_rpm_target);
         let has_fan_curves = fans.iter().any(|fan| fan.supports_curve);
         let has_fan_reading = fans.iter().any(|fan| fan.current_rpm.is_some());
+        let fan_mapping_confidence = if fans.is_empty()
+            || fans
+                .iter()
+                .any(|fan| fan.mapping_confidence == FanMappingConfidence::Unknown)
+        {
+            FanMappingConfidence::Unknown
+        } else if fans
+            .iter()
+            .all(|fan| fan.mapping_confidence == FanMappingConfidence::HardwareLabel)
+        {
+            FanMappingConfidence::HardwareLabel
+        } else {
+            FanMappingConfidence::Heuristic
+        };
         let fan_backend = if fans.is_empty() {
             "unsupported".to_string()
         } else if has_fan_curves && fans.iter().any(|fan| fan.backend.contains("asusd")) {
@@ -231,12 +284,15 @@ impl FanCaps {
         Self {
             has_fan_reading,
             has_fan_curves,
+            fan_curve_readable: has_fan_curves,
+            fan_curve_writable: has_fan_curves,
             has_fan_manual_percent,
             has_fan_manual_rpm_target,
             has_individual_fan_control: controllable_count > 0,
             has_fan_sync_control: controllable_count > 1,
             has_fan_boost: has_fan_manual_percent,
             fan_count: fans.len() as u32,
+            fan_mapping_confidence,
             fan_backend,
             endpoints,
             notes,
@@ -671,9 +727,19 @@ pub struct LightingState {
     pub brightness: Option<u32>,
     pub max_brightness: Option<u32>,
     pub mode: Option<LightingMode>,
+    #[serde(default)]
+    pub supports_brightness: bool,
+    #[serde(default)]
+    pub supports_modes: bool,
     pub supported_modes: Vec<LightingMode>,
     pub supports_rgb: bool,
     pub rgb: Option<RgbColor>,
+    #[serde(default)]
+    pub supports_speed: bool,
+    #[serde(default)]
+    pub supported_speeds: Vec<String>,
+    #[serde(default)]
+    pub supported_zones: Vec<String>,
     pub writable: bool,
     pub status: String,
     pub last_error: Option<String>,
@@ -708,6 +774,9 @@ pub struct LightingDiagnostics {
     pub supports_modes: bool,
     pub supported_modes: Vec<String>,
     pub active_mode: Option<String>,
+    pub supports_speed: bool,
+    pub supported_speeds: Vec<String>,
+    pub supported_zones: Vec<String>,
 
     pub supports_rgb: bool,
     pub rgb_backend_detected: bool,
@@ -724,6 +793,15 @@ pub struct LightingDiagnostics {
     pub asusd_potential_aura_interfaces: Vec<String>,
     pub asusd_rgb_methods_detected: Vec<String>,
     pub asusd_rgb_properties_detected: Vec<String>,
+    pub asusd_brightness_methods_detected: Vec<String>,
+    pub asusd_brightness_properties_detected: Vec<String>,
+    pub asusd_mode_methods_detected: Vec<String>,
+    pub asusd_mode_properties_detected: Vec<String>,
+    pub asusd_speed_methods_detected: Vec<String>,
+    pub asusd_speed_properties_detected: Vec<String>,
+    pub asusd_zone_methods_detected: Vec<String>,
+    pub asusd_zone_properties_detected: Vec<String>,
+    pub asusd_verified_aura_interface: bool,
 
     pub active_backend: String,
     pub fallback_reason: Option<String>,
@@ -750,6 +828,9 @@ impl LightingDiagnostics {
             supports_modes: false,
             supported_modes: Vec::new(),
             active_mode: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
             supports_rgb: false,
             rgb_backend_detected: false,
             rgb_backend_name: None,
@@ -764,6 +845,15 @@ impl LightingDiagnostics {
             asusd_potential_aura_interfaces: Vec::new(),
             asusd_rgb_methods_detected: Vec::new(),
             asusd_rgb_properties_detected: Vec::new(),
+            asusd_brightness_methods_detected: Vec::new(),
+            asusd_brightness_properties_detected: Vec::new(),
+            asusd_mode_methods_detected: Vec::new(),
+            asusd_mode_properties_detected: Vec::new(),
+            asusd_speed_methods_detected: Vec::new(),
+            asusd_speed_properties_detected: Vec::new(),
+            asusd_zone_methods_detected: Vec::new(),
+            asusd_zone_properties_detected: Vec::new(),
+            asusd_verified_aura_interface: false,
             active_backend: "none".to_string(),
             fallback_reason: None,
             unavailable_reason: None,
@@ -820,6 +910,19 @@ impl LightingDiagnostics {
                 "not available"
             }
         ));
+        lines.push(format!(
+            "- Effect speed: {}",
+            if self.supports_speed {
+                "available"
+            } else {
+                "not available"
+            }
+        ));
+        lines.push(format!(
+            "- Supported speeds: {}",
+            list_text(&self.supported_speeds)
+        ));
+        lines.push(format!("- Zones: {}", list_text(&self.supported_zones)));
         lines.push(format!("- Reason: {}", self.summary_line()));
         lines.push(format!(
             "- Aura support: {}",
@@ -933,6 +1036,42 @@ impl LightingDiagnostics {
             "- RGB properties found: {}",
             list_text(&self.asusd_rgb_properties_detected)
         ));
+        lines.push(format!(
+            "- Brightness methods found: {}",
+            list_text(&self.asusd_brightness_methods_detected)
+        ));
+        lines.push(format!(
+            "- Brightness properties found: {}",
+            list_text(&self.asusd_brightness_properties_detected)
+        ));
+        lines.push(format!(
+            "- Mode methods found: {}",
+            list_text(&self.asusd_mode_methods_detected)
+        ));
+        lines.push(format!(
+            "- Mode properties found: {}",
+            list_text(&self.asusd_mode_properties_detected)
+        ));
+        lines.push(format!(
+            "- Speed methods found: {}",
+            list_text(&self.asusd_speed_methods_detected)
+        ));
+        lines.push(format!(
+            "- Speed properties found: {}",
+            list_text(&self.asusd_speed_properties_detected)
+        ));
+        lines.push(format!(
+            "- Zone methods found: {}",
+            list_text(&self.asusd_zone_methods_detected)
+        ));
+        lines.push(format!(
+            "- Zone properties found: {}",
+            list_text(&self.asusd_zone_properties_detected)
+        ));
+        lines.push(format!(
+            "- Verified Aura contract: {}",
+            yes_no(self.asusd_verified_aura_interface)
+        ));
         lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
 
         lines.push(String::new());
@@ -943,6 +1082,11 @@ impl LightingDiagnostics {
         ));
         lines.push(format!("- has_aura: {}", yes_no(self.rgb_backend_detected)));
         lines.push(format!("- supports_rgb: {}", yes_no(self.supports_rgb)));
+        lines.push(format!("- supports_speed: {}", yes_no(self.supports_speed)));
+        lines.push(format!(
+            "- supported_zones: {}",
+            list_text(&self.supported_zones)
+        ));
         lines.push(format!(
             "- selected backend: {}",
             display_backend_name(&self.active_backend)
@@ -1547,8 +1691,18 @@ pub struct TelemetrySnapshot {
 
     pub cpu_temp_c: Option<f32>,
     pub gpu_temp_c: Option<f32>,
+    pub gpu_usage_percent: Option<f32>,
+    pub gpu_vram_used_bytes: Option<u64>,
+    pub gpu_vram_total_bytes: Option<u64>,
     pub gpu_core_clock_mhz: Option<u32>,
     pub gpu_memory_clock_mhz: Option<u32>,
+    pub gpu_power_w: Option<f32>,
+    pub gpu_name: Option<String>,
+    pub gpu_uuid: Option<String>,
+    pub gpu_pci_bus_id: Option<String>,
+    pub gpu_index: Option<u32>,
+    pub gpu_telemetry_provider: Option<String>,
+    pub gpu_telemetry_status: Option<String>,
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
@@ -1615,8 +1769,18 @@ impl TelemetrySnapshot {
             timestamp_ms,
             cpu_temp_c: None,
             gpu_temp_c: None,
+            gpu_usage_percent: None,
+            gpu_vram_used_bytes: None,
+            gpu_vram_total_bytes: None,
             gpu_core_clock_mhz: None,
             gpu_memory_clock_mhz: None,
+            gpu_power_w: None,
+            gpu_name: None,
+            gpu_uuid: None,
+            gpu_pci_bus_id: None,
+            gpu_index: None,
+            gpu_telemetry_provider: None,
+            gpu_telemetry_status: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
             fan_rows: Vec::new(),
@@ -2086,6 +2250,7 @@ mod tests {
             id: "fan1".to_string(),
             index: 1,
             label: "Fan 1".to_string(),
+            mapping_confidence: FanMappingConfidence::Unknown,
             current_rpm: Some(1000),
             min_rpm: None,
             max_rpm: None,
