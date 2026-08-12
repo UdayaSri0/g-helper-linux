@@ -12,17 +12,26 @@ pub fn build_shell(
     stack: &adw::ViewStack,
     status_label: &gtk::Label,
     items: &[NavigationItem],
+    app_icon_name: &str,
 ) -> adw::ToolbarView {
-    let brand = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let brand_mark = gtk::Image::from_icon_name(app_icon_name);
+    brand_mark.set_pixel_size(30);
+    brand_mark.add_css_class("brand-mark");
+
+    let brand_text = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let title = gtk::Label::new(Some("ROG Helper"));
     title.set_xalign(0.0);
-    title.add_css_class("heading");
+    title.add_css_class("brand-title");
     let subtitle = gtk::Label::new(Some("Hardware Control Centre"));
     subtitle.set_xalign(0.0);
-    subtitle.add_css_class("caption");
-    subtitle.add_css_class("dim-label");
-    brand.append(&title);
-    brand.append(&subtitle);
+    subtitle.add_css_class("brand-subtitle");
+    brand_text.append(&title);
+    brand_text.append(&subtitle);
+
+    let brand = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    brand.set_valign(gtk::Align::Center);
+    brand.append(&brand_mark);
+    brand.append(&brand_text);
 
     status_label.add_css_class("connection-status");
     status_label.set_text("Connecting…");
@@ -41,14 +50,14 @@ pub fn build_shell(
         row.add_css_class("navigation-row");
         row.set_tooltip_text(Some(item.label));
 
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        content.set_margin_top(10);
-        content.set_margin_bottom(10);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+        content.set_margin_start(10);
+        content.set_margin_end(10);
 
         let icon = gtk::Image::from_icon_name(item.icon);
-        icon.set_pixel_size(18);
+        icon.set_pixel_size(17);
         icon.set_accessible_role(gtk::AccessibleRole::Img);
         let label = gtk::Label::new(Some(item.label));
         label.set_xalign(0.0);
@@ -95,11 +104,11 @@ pub fn build_shell(
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
     sidebar.add_css_class("sidebar");
-    sidebar.set_size_request(210, -1);
-    sidebar.set_margin_top(16);
-    sidebar.set_margin_bottom(16);
-    sidebar.set_margin_start(12);
-    sidebar.set_margin_end(12);
+    sidebar.set_size_request(202, -1);
+    sidebar.set_margin_top(14);
+    sidebar.set_margin_bottom(14);
+    sidebar.set_margin_start(10);
+    sidebar.set_margin_end(10);
     sidebar.append(&nav_header);
     sidebar.append(&navigation);
 

@@ -115,13 +115,13 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/fan_widgets.rs": {
-    "mtime": 1786207302.7955403,
-    "ast_hash": "5326f999407cf0db96e74f881a799f69",
+    "mtime": 1786293756.605708,
+    "ast_hash": "00b4232d7cd34298900d554be4e3e40f",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1786207994.9931931,
-    "ast_hash": "d78410a2011c52cf82463f2882d599cf",
+    "mtime": 1786294070.4632788,
+    "ast_hash": "b5f6a0bcc551618316b5854b6f385717",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -245,13 +245,13 @@
     "semantic_hash": ""
   },
   "docs/FEATURE_MATRIX.md": {
-    "mtime": 1786207807.4344187,
-    "ast_hash": "c1f7aef49548cdbb4a6d9f715cbeb71b",
+    "mtime": 1786293924.752078,
+    "ast_hash": "83ea6ad88444a886617a8af8813a416e",
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1786207807.431419,
-    "ast_hash": "ddb4e6461bfb31647876b0875e890fa5",
+    "mtime": 1786293924.7480743,
+    "ast_hash": "a83d82042a882d88c3224bcc4579d9fa",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1786207807.4334188,
-    "ast_hash": "05c55d295aae3c21365c5a066bc767b0",
+    "mtime": 1786293924.7500763,
+    "ast_hash": "70d112431922fa509bbc616baec14542",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -465,18 +465,18 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/shell.rs": {
-    "mtime": 1786207232.967142,
-    "ast_hash": "cc9dd78a03819835640269ae8da5a396",
+    "mtime": 1786292766.8761613,
+    "ast_hash": "7f5a0524000d8adb0e0d5c50084e82ef",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/theme.rs": {
-    "mtime": 1786207403.8919663,
-    "ast_hash": "fe1c259bc158d72f54591a31defdeb33",
+    "mtime": 1786294064.6081975,
+    "ast_hash": "5b7bb2e19c3f55439776c766ecd96187",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/widgets/mod.rs": {
-    "mtime": 1786207660.5724354,
-    "ast_hash": "6e7d478735934fb0144cc39183715bc9",
+    "mtime": 1786293127.9683368,
+    "ast_hash": "5d61f5eb185be45962e4e7abdcb2f571",
     "semantic_hash": ""
   }
 }

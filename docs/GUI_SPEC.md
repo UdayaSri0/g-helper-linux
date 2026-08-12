@@ -16,11 +16,19 @@ The current top-level structure uses:
 - `adw::ToolbarView`
 - `adw::ViewStack`
 - `adw::ToastOverlay`
-- a persistent 210 px left navigation sidebar with symbolic icons and selection state
-- a compact header with application identity and daemon connection status
+- a compact 202 px left navigation sidebar with symbolic icons, hover/focus treatment, and a strong selected state
+- a compact header with an application mark, title/subtitle identity, and daemon connection status
 - vertically scrollable page containers clamped at 1260 px
 
-The default window is 1180 x 800 with a 900 x 650 minimum. Flow-box metric grids reflow as space changes; tested layouts include 1000 x 700 and wide desktop sizes.
+The default window is 1180 x 800 with a 900 x 650 minimum. Flow-box metric grids reflow as space changes; the current layouts are checked at both default and minimum sizes.
+
+Shared presentation rules:
+
+- hero cards are reserved for primary temperature, charge, and memory summaries
+- compact cards carry secondary telemetry without arbitrary fixed heights
+- semantic chips consistently distinguish available, informational, attention, and unavailable states
+- long capability, endpoint, and metadata values wrap instead of being silently truncated
+- page content uses restrained 20 px vertical rhythm and native GTK/Adwaita controls
 
 The implemented page set is:
 
@@ -69,6 +77,7 @@ Purpose:
 Current content:
 
 - a two-card primary telemetry area for CPU and GPU
+- a CPU utilisation sparkline backed only by the existing cached history
 - secondary cards for battery, cooling, memory, power source, and NVMe temperature when available
 - warning banner and warning summary area
 - quick actions for:
@@ -96,8 +105,8 @@ Purpose:
 Current content:
 
 - overview cards for temperature, usage, package power, and average clock
-- native Cairo history graphs for CPU usage and temperature, fed from existing cached history buffers
-- CPU access-status banner when writes are blocked or partially unavailable
+- native filled-area Cairo history graphs for CPU usage and temperature, fed from existing cached history buffers and labelled with current/minimum/maximum values over the last 60 seconds
+- compact CPU control-capability panel when writes are blocked or partially unavailable
 - quick controls for:
   - turbo boost
   - power mode
@@ -132,9 +141,10 @@ Purpose:
 
 Current content:
 
-- current state group showing:
-  - current ASUS performance profile
-  - current GPU mode
+- a temperature-first overview that remains useful independently of optional control services
+- one control-dependencies group for:
+  - `asusd` performance profiles
+  - `supergfxd` GPU modes
   - GPU switch hint
 - controls group for:
   - profile apply
@@ -145,7 +155,8 @@ Current behavior:
 
 - controls are gated by daemon capabilities
 - reboot or logout requirement is shown through a capability hint from the daemon
-- the current-state values and control subtitles distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- the dependency values distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- unavailable control rows refer back to the single dependency summary instead of repeating the service explanation
 - current-state value rows wrap long reason text instead of clipping, and apply rows use the same aligned control/button treatment as the Dashboard
 
 ### Battery
@@ -156,18 +167,9 @@ Purpose:
 
 Current content:
 
-- large charge card with state, time estimate, and progress bar
+- large charge card with state, source/AC context, time estimate, and progress bar
 - capability-gated battery charge-limit control
-- charge percentage
-- battery state
-- power source
-- AC online
-- charge power
-- discharge power
-- time to full
-- time to empty
-- battery health
-- cycle count
+- compact health, cycle, active power, time, and source cards
 
 The Dashboard retains a charge-limit quick control, while Battery is the full-control location. Both use the existing daemon action path.
 
@@ -179,12 +181,12 @@ Purpose:
 
 Current content:
 
-- prominent memory-used card and progress bar with used, available, and total values
-- total, used, available, free, cached, buffers, shared, and anonymous memory
-- swap totals and activity
+- prominent memory-used card and progress bar with used and total values
+- immediate cache, shared, buffers, and swap cards
+- total, used, available, free, anonymous memory, swap totals, and activity in a collapsed detail disclosure
 - zram and zswap state
 - PSI memory pressure metrics and the detailed kernel memory breakdown in a collapsed Advanced section
-- top memory users with copy-to-clipboard support
+- compact top-memory-users table with Process, PID, User, RAM, and Swap columns plus copy-to-clipboard support
 
 ### Lighting
 
@@ -194,16 +196,13 @@ Purpose:
 
 Current content:
 
-- backend and device name
-- current brightness
-- current mode
-- current RGB colour when reported
-- availability status
+- controls first, followed by availability and recent-action status
+- one read-only/unavailable capability banner
 - mode combo box
 - brightness slider
 - RGB colour control only when `supports_rgb` is reported
 - apply action
-- last-action status
+- collapsed backend details containing current backend, brightness, mode, and RGB values
 
 Current implementation note:
 
@@ -223,7 +222,7 @@ Purpose:
 Current content:
 
 - overview cards for daemon state, available control groups, and warning count
-- troubleshooting summary for the current machine state
+- structured Services, Permissions, Sensors, and Warnings groups before technical detail
 - session daemon endpoint summary
 - capability flags
 - structured feature-access status and reason fields from daemon capabilities
@@ -231,7 +230,7 @@ Current content:
 - notes
 - fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
 - warnings
-- copy diagnostics button
+- collapsed raw technical report with copy diagnostics button
 
 ### About
 
@@ -241,9 +240,8 @@ Purpose:
 
 Current content:
 
-- name
+- leading identity card with packaged icon, product title/subtitle, version badge, and concise description
 - binary
-- version
 - license
 - session DBus API endpoint
 - authors field
@@ -306,9 +304,9 @@ Current examples in the implementation include:
 
 Cooling is the user-facing name of the existing internal `fans` page and backend API surface.
 
-- shows a neutral raised header with backend, detected fan count, current mode, and mapping warnings
+- uses the standard page header followed by compact backend, detected fan count, current mode, and mapping warning pills
 - includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
-- includes animated fan rotors whose visual speed is scaled from live RPM, capped for readability, and refreshed at 20 FPS
+- includes animated fan rotors whose visual speed is scaled from live RPM, capped for readability, refreshed at 20 FPS only while mapped, and reduced when GTK animations are disabled
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support

@@ -29,12 +29,13 @@ mod widgets;
 
 use fan_widgets::{CurvePreview, FanRotor, GaugeAccent, RotorStatus, TempGauge};
 use shell::NavigationItem;
-use widgets::{page_container, page_header, page_header_group, HistoryGraph, MetricCard};
+use widgets::{
+    page_container, page_header, page_header_group, HistoryGraph, MetricCard, Sparkline,
+};
 
 const DAEMON_DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DAEMON_DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DAEMON_DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
-const APP_DISPLAY_NAME: &str = "rog-helper";
 const APP_BINARY_NAME: &str = "rog-helper-ui";
 const APP_ICON_NAME: &str = "rog-helper";
 const APP_AUTHORS_FALLBACK: &str = "rog-helper contributors";
@@ -90,7 +91,6 @@ trait Daemon1 {
 
 #[derive(Debug, Clone)]
 struct AppMetadata {
-    app_name: String,
     binary_name: String,
     version: String,
     license: String,
@@ -121,7 +121,6 @@ impl AppMetadata {
             .map(|(owner, repo)| format!("https://github.com/{owner}/{repo}/releases/latest"));
 
         Self {
-            app_name: APP_DISPLAY_NAME.to_string(),
             binary_name: APP_BINARY_NAME.to_string(),
             version: package_value(env!("CARGO_PKG_VERSION"), "unknown"),
             license: package_value(env!("CARGO_PKG_LICENSE"), "License not configured"),
@@ -741,6 +740,20 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let nvme_card = MetricCard::new("NVMe Temperature");
     cpu_card.add_css_class("metric-card-primary");
     gpu_card.add_css_class("metric-card-primary");
+    for card in [
+        &batt_card,
+        &power_card,
+        &fans_card,
+        &memory_card,
+        &nvme_card,
+    ] {
+        card.add_css_class("metric-card-compact");
+    }
+    let dashboard_cpu_sparkline = Sparkline::new((0.30, 0.64, 1.0));
+    dashboard_cpu_sparkline
+        .widget()
+        .set_tooltip_text(Some("CPU utilisation over the last 60 seconds"));
+    cpu_card.widget().append(dashboard_cpu_sparkline.widget());
 
     let primary_metrics_grid = gtk::FlowBox::new();
     primary_metrics_grid.set_selection_mode(gtk::SelectionMode::None);
@@ -766,6 +779,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     secondary_metrics_grid.insert(nvme_card.widget(), -1);
 
     let warning_banner = adw::Banner::new("Some controls need attention");
+    warning_banner.add_css_class("dashboard-warning");
     warning_banner.set_button_label(Some("Open Diagnostics"));
     warning_banner.set_revealed(false);
 
@@ -990,9 +1004,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     status_label.set_wrap(true);
     status_label.add_css_class("dim-label");
 
-    let dash_root = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    dash_root.set_margin_top(24);
-    dash_root.set_margin_bottom(32);
+    let dash_root = gtk::Box::new(gtk::Orientation::Vertical, 20);
+    dash_root.set_margin_top(20);
+    dash_root.set_margin_bottom(28);
     dash_root.set_margin_start(24);
     dash_root.set_margin_end(24);
     dash_root.append(&page_header(
@@ -1046,8 +1060,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_history_grid.set_row_spacing(16);
     cpu_history_grid.set_column_spacing(16);
     cpu_history_grid.set_homogeneous(true);
-    let cpu_usage_graph = HistoryGraph::new("CPU Usage", 100.0, "% usage", (0.30, 0.64, 1.0));
-    let cpu_temp_graph = HistoryGraph::new("CPU Temperature", 100.0, "°C", (0.24, 0.76, 0.67));
+    let cpu_usage_graph = HistoryGraph::new("CPU Usage", 0.0, 100.0, "%", (0.30, 0.64, 1.0));
+    let cpu_temp_graph = HistoryGraph::new("CPU Temperature", 30.0, 90.0, "°C", (0.24, 0.76, 0.67));
     cpu_usage_graph
         .widget()
         .set_tooltip_text(Some("Recent CPU utilisation history."));
@@ -1059,8 +1073,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_history_group.add(&cpu_history_grid);
     cpu_page.append(&cpu_history_group);
 
-    let cpu_banner_group = adw::PreferencesGroup::new();
+    let cpu_banner_group = adw::PreferencesGroup::builder()
+        .title("Control Capability")
+        .description("Telemetry remains available when policy controls are read-only.")
+        .build();
     let cpu_read_only_banner = adw::Banner::new("Some CPU controls are unavailable");
+    cpu_read_only_banner.add_css_class("compact-banner");
     cpu_read_only_banner.set_button_label(Some("Review Access"));
     cpu_read_only_banner.set_revealed(false);
     cpu_banner_group.add(&cpu_read_only_banner);
@@ -1416,27 +1434,34 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         });
     }
 
-    let battery_group_status = adw::PreferencesGroup::builder()
-        .title("Status")
-        .description("Battery telemetry is best-effort and depends on available providers.")
+    let battery_metrics_group = adw::PreferencesGroup::builder()
+        .title("Battery Details")
+        .description("Live values reported by the existing battery provider.")
         .build();
-    let batt_tbl_percent = pref_value_row(&battery_group_status, "Charge", false);
-    let batt_tbl_state = pref_value_row(&battery_group_status, "Status", false);
-    let batt_tbl_source = pref_value_row(&battery_group_status, "Power Source", false);
-    let batt_tbl_ac_online = pref_value_row(&battery_group_status, "AC Online", false);
-    battery_page.append(&battery_group_status);
-
-    let battery_group_power = adw::PreferencesGroup::builder().title("Power").build();
-    let batt_tbl_charge_power = pref_value_row(&battery_group_power, "Power Input", false);
-    let batt_tbl_discharge_power = pref_value_row(&battery_group_power, "Power Draw", false);
-    let batt_tbl_ttf = pref_value_row(&battery_group_power, "Time to Full", false);
-    let batt_tbl_tte = pref_value_row(&battery_group_power, "Time to Empty", false);
-    battery_page.append(&battery_group_power);
-
-    let battery_group_health = adw::PreferencesGroup::builder().title("Health").build();
-    let batt_tbl_health = pref_value_row(&battery_group_health, "Health", false);
-    let batt_tbl_cycles = pref_value_row(&battery_group_health, "Cycle Count", true);
-    battery_page.append(&battery_group_health);
+    let battery_metrics = gtk::FlowBox::new();
+    battery_metrics.set_selection_mode(gtk::SelectionMode::None);
+    battery_metrics.set_min_children_per_line(2);
+    battery_metrics.set_max_children_per_line(5);
+    battery_metrics.set_row_spacing(10);
+    battery_metrics.set_column_spacing(10);
+    battery_metrics.set_homogeneous(true);
+    let battery_health_card = MetricCard::new("Health");
+    let battery_cycles_card = MetricCard::new("Cycles");
+    let battery_power_card = MetricCard::new("Power");
+    let battery_time_card = MetricCard::new("Time");
+    let battery_source_card = MetricCard::new("Source");
+    for card in [
+        &battery_health_card,
+        &battery_cycles_card,
+        &battery_power_card,
+        &battery_time_card,
+        &battery_source_card,
+    ] {
+        card.add_css_class("metric-card-compact");
+        battery_metrics.insert(card.widget(), -1);
+    }
+    battery_metrics_group.add(&battery_metrics);
+    battery_page.append(&battery_metrics_group);
 
     let battery = clamped_scroller(&battery_page);
 
@@ -1457,6 +1482,32 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     memory_hero_group.add(memory_hero_card.widget());
     ram_page.append(&memory_hero_group);
 
+    let memory_quick_group = adw::PreferencesGroup::builder()
+        .title("At a Glance")
+        .build();
+    let memory_quick_grid = gtk::FlowBox::new();
+    memory_quick_grid.set_selection_mode(gtk::SelectionMode::None);
+    memory_quick_grid.set_min_children_per_line(2);
+    memory_quick_grid.set_max_children_per_line(4);
+    memory_quick_grid.set_row_spacing(10);
+    memory_quick_grid.set_column_spacing(10);
+    memory_quick_grid.set_homogeneous(true);
+    let memory_cache_card = MetricCard::new("Cache");
+    let memory_shared_card = MetricCard::new("Shared");
+    let memory_buffers_card = MetricCard::new("Buffers");
+    let memory_swap_card = MetricCard::new("Swap");
+    for card in [
+        &memory_cache_card,
+        &memory_shared_card,
+        &memory_buffers_card,
+        &memory_swap_card,
+    ] {
+        card.add_css_class("metric-card-compact");
+        memory_quick_grid.insert(card.widget(), -1);
+    }
+    memory_quick_group.add(&memory_quick_grid);
+    ram_page.append(&memory_quick_group);
+
     let ram_group_core = adw::PreferencesGroup::builder()
         .title("Memory Details")
         .description("Values are read from procfs when available.")
@@ -1469,7 +1520,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let ram_buffers = pref_value_row(&ram_group_core, "Buffers", false);
     let ram_shared = pref_value_row(&ram_group_core, "Shared", false);
     let ram_anon = pref_value_row(&ram_group_core, "App/Anon", false);
-    ram_page.append(&ram_group_core);
 
     let ram_group_swap = adw::PreferencesGroup::builder().title("Swap").build();
     let ram_swap_total = pref_value_row(&ram_group_swap, "Swap Total", false);
@@ -1479,7 +1529,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let ram_swap_out = pref_value_row(&ram_group_swap, "Swap Out", false);
     let ram_zram = pref_value_row(&ram_group_swap, "zram", false);
     let ram_zswap = pref_value_row(&ram_group_swap, "zswap", false);
-    ram_page.append(&ram_group_swap);
+    let ram_details_box = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    ram_details_box.append(&ram_group_core);
+    ram_details_box.append(&ram_group_swap);
+    let ram_details_expander = gtk::Expander::new(Some("Memory & swap details"));
+    ram_details_expander.set_expanded(false);
+    ram_details_expander.set_child(Some(&ram_details_box));
+    let ram_details_container = adw::PreferencesGroup::new();
+    ram_details_container.add(&ram_details_expander);
+    ram_page.append(&ram_details_container);
 
     let ram_group_pressure = adw::PreferencesGroup::builder()
         .title("Memory Pressure (PSI)")
@@ -1519,16 +1577,38 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         .description("Sorted by RSS (top 10).")
         .header_suffix(&copy_top_button)
         .build();
-    let mut ram_top_rows: Vec<(adw::ActionRow, gtk::Label)> = Vec::new();
+    let process_header = gtk::Grid::new();
+    process_header.set_column_spacing(12);
+    process_header.add_css_class("process-header");
+    for (column, title) in ["Process", "PID", "User", "RAM", "Swap"].iter().enumerate() {
+        let label = gtk::Label::new(Some(title));
+        label.set_xalign(if column == 0 { 0.0 } else { 1.0 });
+        label.set_hexpand(column == 0);
+        process_header.attach(&label, column as i32, 0, 1, 1);
+    }
+    ram_group_top.add(&process_header);
+    let mut ram_top_rows: Vec<(gtk::Grid, [gtk::Label; 5])> = Vec::new();
     for _ in 0..10 {
-        let row = adw::ActionRow::builder().title("(n/a)").build();
-        let value = gtk::Label::new(Some(""));
-        value.set_xalign(1.0);
-        value.add_css_class("monospace");
-        row.add_suffix(&value);
-        row.set_activatable(false);
+        let row = gtk::Grid::new();
+        row.set_column_spacing(12);
+        row.add_css_class("process-row");
+        let labels = std::array::from_fn(|column| {
+            let label = gtk::Label::new(None);
+            label.set_xalign(if column == 0 { 0.0 } else { 1.0 });
+            label.set_hexpand(column == 0);
+            label.set_ellipsize(if column == 0 {
+                gtk::pango::EllipsizeMode::End
+            } else {
+                gtk::pango::EllipsizeMode::None
+            });
+            label.set_tooltip_text(Some(
+                "Memory use reported by the existing telemetry provider",
+            ));
+            row.attach(&label, column as i32, 0, 1, 1);
+            label
+        });
         ram_group_top.add(&row);
-        ram_top_rows.push((row, value));
+        ram_top_rows.push((row, labels));
     }
     ram_page.append(&ram_group_top);
 
@@ -1565,6 +1645,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let gpu_overview_group = adw::PreferencesGroup::builder().title("Overview").build();
     let gpu_page_temp_card = MetricCard::new("GPU Temperature");
+    gpu_page_temp_card.add_css_class("metric-card-primary");
     let gpu_page_mode_card = MetricCard::new("GPU Mode");
     let gpu_page_profile_card = MetricCard::new("Performance Profile");
     let gpu_overview_grid = gtk::FlowBox::new();
@@ -1581,13 +1662,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     gpu_page.append(&gpu_overview_group);
 
     let gpu_state_group = adw::PreferencesGroup::builder()
-        .title("Current State")
+        .title("Control Dependencies")
         .description(
-            "Current values come from asusd and supergfxd when those backends are available.",
+            "Telemetry remains independent when optional ASUS control services are absent.",
         )
         .build();
-    let gpu_page_current_profile = pref_value_row(&gpu_state_group, "Profile", false);
-    let gpu_page_current_mode = pref_value_row(&gpu_state_group, "GPU Mode", false);
+    let gpu_page_current_profile = pref_value_row(&gpu_state_group, "asusd · Profiles", false);
+    let gpu_page_current_mode = pref_value_row(&gpu_state_group, "supergfxd · GPU Modes", false);
     let gpu_page_switch_hint = pref_value_row(&gpu_state_group, "Switch Hint", false);
     gpu_page_current_profile.set_text("Checking support...");
     gpu_page_current_mode.set_text("Checking support...");
@@ -1596,9 +1677,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let gpu_controls_group = adw::PreferencesGroup::builder()
         .title("Controls")
-        .description(
-            "Selectors stay visible when support is missing so the reason is easy to inspect.",
-        )
+        .description("Unavailable selectors refer to the single dependency summary above.")
         .build();
 
     let gpu_page_profile_combo = gtk::ComboBoxText::new();
@@ -1676,8 +1755,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     gpu_page.append(&gpu_controls_group);
 
     let gpu_status_group = adw::PreferencesGroup::builder()
-        .title("Status")
-        .description("Support and recent action feedback.")
+        .title("Recent Action")
+        .description(
+            "One summary is shown here instead of repeating dependency messages per control.",
+        )
         .build();
     let gpu_page_last_action = pref_value_row(&gpu_status_group, "Summary", false);
     gpu_page_last_action.set_text("Checking support...");
@@ -1694,7 +1775,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     diag_view.add_css_class("monospace");
 
     let diag_scroller = gtk::ScrolledWindow::new();
-    diag_scroller.set_vexpand(true);
+    diag_scroller.set_min_content_height(320);
     diag_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     diag_scroller.set_child(Some(&diag_view));
 
@@ -1736,12 +1817,56 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     diag_overview.insert(diag_capabilities_card.widget(), -1);
     diag_overview.insert(diag_warnings_card.widget(), -1);
     diag_root.append(&diag_overview);
-    let diag_report_title = gtk::Label::new(Some("Technical Report"));
-    diag_report_title.set_xalign(0.0);
-    diag_report_title.add_css_class("title-3");
-    diag_root.append(&diag_report_title);
-    diag_root.append(&copy_diag_button);
-    diag_root.append(&diag_scroller);
+
+    let diag_services_group = adw::PreferencesGroup::builder().title("Services").build();
+    let diag_service_daemon = pref_value_row(&diag_services_group, "rog-helperd", false);
+    let diag_service_asusd = pref_value_row(&diag_services_group, "asusd", false);
+    let diag_service_supergfxd = pref_value_row(&diag_services_group, "supergfxd", false);
+    diag_root.append(&diag_services_group);
+
+    let diag_capabilities_group = adw::PreferencesGroup::builder()
+        .title("Capabilities")
+        .build();
+    let diag_capability_profiles =
+        pref_value_row(&diag_capabilities_group, "Performance profiles", false);
+    let diag_capability_gpu = pref_value_row(&diag_capabilities_group, "GPU modes", false);
+    let diag_capability_charge = pref_value_row(&diag_capabilities_group, "Charge limit", false);
+    let diag_capability_lighting =
+        pref_value_row(&diag_capabilities_group, "Keyboard lighting", false);
+    diag_root.append(&diag_capabilities_group);
+
+    let diag_permissions_group = adw::PreferencesGroup::builder()
+        .title("Permissions")
+        .build();
+    let diag_permission_cpu = pref_value_row(&diag_permissions_group, "CPU controls", false);
+    let diag_permission_lighting =
+        pref_value_row(&diag_permissions_group, "Keyboard lighting", false);
+    let diag_permission_fans = pref_value_row(&diag_permissions_group, "Fan control", false);
+    diag_root.append(&diag_permissions_group);
+
+    let diag_sensors_group = adw::PreferencesGroup::builder().title("Sensors").build();
+    let diag_sensor_cpu = pref_value_row(&diag_sensors_group, "CPU temperature", false);
+    let diag_sensor_gpu = pref_value_row(&diag_sensors_group, "GPU temperature", false);
+    let diag_sensor_fans = pref_value_row(&diag_sensors_group, "Fan RPM", false);
+    let diag_sensor_battery = pref_value_row(&diag_sensors_group, "Battery", false);
+    diag_root.append(&diag_sensors_group);
+
+    let diag_warning_group = adw::PreferencesGroup::builder().title("Warnings").build();
+    let diag_warning_summary = pref_value_row(&diag_warning_group, "Current summary", false);
+    diag_root.append(&diag_warning_group);
+
+    let diag_report_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    copy_diag_button.set_halign(gtk::Align::End);
+    diag_report_box.append(&copy_diag_button);
+    diag_report_box.append(&diag_scroller);
+    let diag_report_expander = gtk::Expander::new(Some("Raw technical report"));
+    diag_report_expander.set_expanded(false);
+    diag_report_expander.set_child(Some(&diag_report_box));
+    let diag_report_group = adw::PreferencesGroup::builder()
+        .description("Expand for the complete copyable daemon and provider report.")
+        .build();
+    diag_report_group.add(&diag_report_expander);
+    diag_root.append(&diag_report_group);
 
     let diag = clamped_scroller(&diag_root);
 
@@ -1751,13 +1876,42 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         "Application identity, runtime information, lifecycle preferences, and project links.",
     ));
 
+    let about_identity = gtk::Box::new(gtk::Orientation::Horizontal, 18);
+    about_identity.add_css_class("surface-card");
+    about_identity.add_css_class("about-identity");
+    let about_icon = gtk::Image::from_icon_name(APP_ICON_NAME);
+    about_icon.set_pixel_size(64);
+    about_icon.add_css_class("about-icon");
+    let about_identity_text = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    about_identity_text.set_hexpand(true);
+    let about_identity_title = gtk::Label::new(Some("ROG Helper"));
+    about_identity_title.set_xalign(0.0);
+    about_identity_title.add_css_class("title-1");
+    let about_identity_subtitle = gtk::Label::new(Some("Hardware Control Centre"));
+    about_identity_subtitle.set_xalign(0.0);
+    about_identity_subtitle.add_css_class("title-4");
+    let about_identity_description = gtk::Label::new(Some(
+        "A Linux-native interface for telemetry and capability-gated ASUS ROG laptop controls.",
+    ));
+    about_identity_description.set_xalign(0.0);
+    about_identity_description.set_wrap(true);
+    about_identity_description.add_css_class("dim-label");
+    let about_version_badge = gtk::Label::new(Some(&format!("v{}", app_metadata.version)));
+    about_version_badge.set_halign(gtk::Align::Start);
+    about_version_badge.add_css_class("status-chip");
+    about_version_badge.add_css_class("status-chip-info");
+    about_identity_text.append(&about_identity_title);
+    about_identity_text.append(&about_identity_subtitle);
+    about_identity_text.append(&about_identity_description);
+    about_identity_text.append(&about_version_badge);
+    about_identity.append(&about_icon);
+    about_identity.append(&about_identity_text);
+    about_page.append(&about_identity);
+
     let about_app_group = adw::PreferencesGroup::builder()
-        .title("App")
-        .description("Linux-native control app for ASUS ROG laptops.")
+        .title("Application Details")
         .build();
-    let about_name = pref_value_row(&about_app_group, "Name", false);
     let about_binary = pref_value_row(&about_app_group, "Binary", false);
-    let about_version = pref_value_row(&about_app_group, "Version", false);
     let about_license = pref_value_row(&about_app_group, "License", false);
     let about_dbus = pref_value_row(&about_app_group, "Session DBus API", true);
     about_page.append(&about_app_group);
@@ -1903,9 +2057,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     about_page.append(&about_support_group);
 
-    about_name.set_text(&app_metadata.app_name);
     about_binary.set_text(&app_metadata.binary_name);
-    about_version.set_text(&app_metadata.version);
     about_license.set_text(&app_metadata.license);
     about_dbus.set_text(&format!(
         "{DAEMON_DBUS_NAME} {DAEMON_DBUS_PATH} ({DAEMON_DBUS_IFACE})"
@@ -2129,7 +2281,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
     let lighting_mode = pref_value_row(&lighting_overview_group, "Mode", false);
     let lighting_rgb_current = pref_value_row(&lighting_overview_group, "RGB Colour", false);
-    lighting_page.append(&lighting_overview_group);
+
+    let lighting_capability_banner = adw::Banner::new("Lighting support is being checked");
+    lighting_capability_banner.add_css_class("compact-banner");
+    lighting_capability_banner.set_revealed(true);
+    lighting_page.append(&lighting_capability_banner);
 
     let lighting_controls_group = adw::PreferencesGroup::builder().title("Controls").build();
     let mode_combo = gtk::ComboBoxText::new();
@@ -2168,11 +2324,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     apply_row.set_activatable(false);
     lighting_controls_group.add(&apply_row);
     lighting_page.append(&lighting_controls_group);
+    let lighting_rgb_note = gtk::Label::new(Some(
+        "RGB effects are not exposed by the current lighting backend.",
+    ));
+    lighting_rgb_note.set_xalign(0.0);
+    lighting_rgb_note.set_wrap(true);
+    lighting_rgb_note.add_css_class("dim-label");
+    lighting_rgb_note.set_visible(false);
+    lighting_page.append(&lighting_rgb_note);
 
     let lighting_status_group = adw::PreferencesGroup::builder().title("Status").build();
     let lighting_availability = pref_value_row(&lighting_status_group, "Availability", false);
     let lighting_last_action = pref_value_row(&lighting_status_group, "Last action", false);
     lighting_page.append(&lighting_status_group);
+
+    let lighting_backend_expander = gtk::Expander::new(Some("Backend details"));
+    lighting_backend_expander.set_expanded(false);
+    lighting_backend_expander.set_child(Some(&lighting_overview_group));
+    let lighting_backend_container = adw::PreferencesGroup::builder()
+        .description("Technical provider values are available when troubleshooting is needed.")
+        .build();
+    lighting_backend_container.add(&lighting_backend_expander);
+    lighting_page.append(&lighting_backend_container);
 
     let lighting_unknown = FeatureAvailability::unknown();
     lighting_backend.set_text(&feature_value_label(&lighting_unknown));
@@ -2220,24 +2393,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let lighting = clamped_scroller(&lighting_page);
 
-    let fans_root = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    let fans_root = gtk::Box::new(gtk::Orientation::Vertical, 20);
     fans_root.add_css_class("fans-page");
     fans_root.set_margin_top(24);
     fans_root.set_margin_bottom(32);
     fans_root.set_margin_start(24);
     fans_root.set_margin_end(24);
 
-    let fans_header = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    fans_header.add_css_class("fans-header-card");
-    let fans_title = gtk::Label::new(Some("Cooling"));
-    fans_title.set_xalign(0.0);
-    fans_title.add_css_class("title-1");
-    let fans_subtitle = gtk::Label::new(Some(
-        "Temperatures, live fan RPM, backend status, and safe controls when supported.",
-    ));
-    fans_subtitle.set_xalign(0.0);
-    fans_subtitle.set_wrap(true);
-    fans_subtitle.add_css_class("dim-label");
+    let fans_header = gtk::Box::new(gtk::Orientation::Vertical, 10);
     let fans_pills = gtk::FlowBox::new();
     fans_pills.set_selection_mode(gtk::SelectionMode::None);
     fans_pills.set_min_children_per_line(1);
@@ -2252,8 +2415,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     fans_pills.insert(&fan_count_label, -1);
     fans_pills.insert(&fan_mode_label, -1);
     fans_pills.insert(&fan_mapping_label, -1);
-    fans_header.append(&fans_title);
-    fans_header.append(&fans_subtitle);
+    fans_header.append(&page_header(
+        "Cooling",
+        "Temperatures, live fan RPM, backend status, and safe controls when supported.",
+    ));
     fans_header.append(&fans_pills);
     fans_root.append(&fans_header);
 
@@ -2688,7 +2853,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             icon: ICON_ABOUT,
         },
     ];
-    let view = shell::build_shell(&stack, &connection_status, &navigation_items);
+    let view = shell::build_shell(&stack, &connection_status, &navigation_items, APP_ICON_NAME);
 
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view));
@@ -2791,8 +2956,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .as_secs_f64()
                 .clamp(0.0, 0.10);
             *fan_animation_last.borrow_mut() = now;
+            let reduced_motion = gtk::Settings::default()
+                .map(|settings| !settings.is_gtk_enable_animations())
+                .unwrap_or(false);
             for rotor in &fan_animation_rotors {
-                rotor.tick(delta, false);
+                rotor.tick(delta, reduced_motion);
             }
             glib::ControlFlow::Continue
         });
@@ -2892,6 +3060,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
         cpu_usage_graph.set_samples(&cpu_usage_history);
         cpu_temp_graph.set_samples(&cpu_temp_history);
+        dashboard_cpu_sparkline.set_samples(&cpu_usage_history);
 
         connection_status.remove_css_class("connected");
         connection_status.remove_css_class("disconnected");
@@ -2942,6 +3111,38 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             "Attention"
         }));
+        diag_service_daemon.set_text(if daemon_error.is_some() {
+            "Unavailable"
+        } else if state_received {
+            "Connected"
+        } else {
+            "Connecting"
+        });
+        diag_service_asusd.set_text(&feature_value_label(&caps.profile_access));
+        diag_service_supergfxd.set_text(&feature_value_label(&caps.gpu_mode_access));
+        diag_capability_profiles.set_text(&feature_value_label(&caps.profile_access));
+        diag_capability_gpu.set_text(&feature_value_label(&caps.gpu_mode_access));
+        diag_capability_charge.set_text(&feature_value_label(&caps.charge_limit_access));
+        diag_capability_lighting.set_text(&feature_value_label(&caps.kbd_backlight_access));
+        let writable_cpu_controls = cpu_caps
+            .control_access
+            .iter()
+            .filter(|control| control.status.is_writable())
+            .count();
+        diag_permission_cpu.set_text(&format!("{writable_cpu_controls} writable controls"));
+        diag_permission_lighting.set_text(&feature_value_label(&caps.kbd_backlight_access));
+        diag_permission_fans.set_text(if fan_state.caps.has_individual_fan_control {
+            "Available"
+        } else {
+            "Read-only"
+        });
+        diag_warning_summary.set_text(if warnings.is_empty() {
+            "No active warnings"
+        } else if warnings.len() == 1 {
+            &warnings[0]
+        } else {
+            "Multiple warnings · expand the raw report for details"
+        });
 
         fan_backend_label.set_text(&format!("backend: {}", fan_state.caps.fan_backend));
         update_backend_pill_class(&fan_backend_label, &fan_state.caps.fan_backend);
@@ -3008,6 +3209,26 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         );
 
         if let Some(t) = telemetry {
+            diag_sensor_cpu.set_text(if t.cpu_temp_c.is_some() {
+                "Reporting"
+            } else {
+                "Unavailable"
+            });
+            diag_sensor_gpu.set_text(if t.gpu_temp_c.is_some() {
+                "Reporting"
+            } else {
+                "Unavailable"
+            });
+            diag_sensor_fans.set_text(if t.fan_rows.iter().any(|fan| fan.rpm.is_some()) {
+                "Reporting"
+            } else {
+                "Unavailable"
+            });
+            diag_sensor_battery.set_text(if t.battery_percent.is_some() {
+                "Reporting"
+            } else {
+                "Unavailable"
+            });
             if let Some(v) = t.cpu_temp_c {
                 cpu_card.set_value(format!("{v:.1}"));
                 cpu_card.set_unit(Some("°C"));
@@ -3036,14 +3257,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_temp_gauge.set_temp(Some(v));
                 gpu_page_temp_card.set_value(format!("{v:.1}"));
                 gpu_page_temp_card.set_unit(Some("°C"));
+                gpu_page_temp_card.set_status_chip(Some("Telemetry available"));
+                gpu_card.set_subtitle(Some("Temperature available"));
             } else {
                 gpu_card.set_value("--");
                 gpu_card.set_unit(None);
                 gpu_temp_gauge.set_temp(None);
                 gpu_page_temp_card.set_value("—");
                 gpu_page_temp_card.set_unit(None);
+                gpu_page_temp_card.set_status_chip(Some("Telemetry unavailable"));
+                gpu_card.set_subtitle(Some("Temperature unavailable"));
             }
-            gpu_card.set_subtitle(gpu_mode.as_deref().or(Some("Mode not reported")));
+            gpu_card.set_status_chip(Some(if gpu_mode.is_some() {
+                "GPU mode available"
+            } else {
+                "GPU mode unavailable"
+            }));
             gpu_temp_gauge.set_speed_metrics(
                 "Core Clock",
                 t.gpu_core_clock_mhz.map(u64::from),
@@ -3088,7 +3317,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .map(|seconds| format!("{} remaining", format_duration_short(seconds))),
                 _ => None,
             };
-            battery_hero_card.set_subtitle(battery_time.as_deref());
+            let battery_source = match t.power_source {
+                Some(PowerSource::Ac) if t.ac_online == Some(true) => "AC connected",
+                Some(PowerSource::Ac) => "AC power",
+                Some(PowerSource::Battery) => "Battery power",
+                None => "Source unavailable",
+            };
+            let battery_hero_subtitle = battery_time
+                .as_deref()
+                .map(|time| format!("{battery_source} · {time}"))
+                .unwrap_or_else(|| battery_source.to_string());
+            battery_hero_card.set_subtitle(Some(&battery_hero_subtitle));
 
             power_card.set_value(match t.power_source {
                 Some(PowerSource::Ac) => "AC".to_string(),
@@ -3105,9 +3344,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 memory_hero_card.set_value(format!("{percent:.0}"));
                 memory_hero_card.set_unit(Some("% used"));
                 memory_hero_card.set_subtitle(Some(&format!(
-                    "{} used · {} available · {} total",
+                    "{} used / {} total",
                     format_bytes_gib_opt(t.mem_used_bytes),
-                    format_bytes_gib_opt(t.mem_available_bytes),
                     format_bytes_gib_opt(t.mem_total_bytes),
                 )));
                 memory_progress.set_fraction((percent as f64 / 100.0).clamp(0.0, 1.0));
@@ -3167,56 +3405,46 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 nvme_card.set_unit(None);
             }
 
-            // Battery table.
-            batt_tbl_percent.set_text(
-                &t.battery_percent
-                    .map(|v| format!("{v:.0}%"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
+            battery_health_card.set_value(
+                t.battery_health_percent
+                    .map(|v| format!("{v:.0}"))
+                    .unwrap_or_else(|| "—".to_string()),
             );
-            batt_tbl_state.set_text(&format_battery_state(&t));
-            batt_tbl_source.set_text(
-                &t.power_source
-                    .map(|p| match p {
-                        PowerSource::Ac => "AC".to_string(),
-                        PowerSource::Battery => "Battery".to_string(),
-                    })
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_tbl_ac_online.set_text(
-                &t.ac_online
-                    .map(|v| if v { "Yes" } else { "No" }.to_string())
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_tbl_charge_power.set_text(
-                &t.battery_charge_power_w
-                    .map(|v| format!("{v:.1} W"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_tbl_discharge_power.set_text(
-                &t.battery_discharge_power_w
-                    .map(|v| format!("{v:.1} W"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_tbl_health.set_text(
-                &t.battery_health_percent
-                    .map(|v| format!("{v:.0}%"))
-                    .unwrap_or_else(|| "(n/a)".to_string()),
-            );
-            batt_tbl_cycles.set_text(
-                &t.battery_cycle_count
+            battery_health_card.set_unit(t.battery_health_percent.map(|_| "%"));
+            battery_cycles_card.set_value(
+                t.battery_cycle_count
                     .map(|v| v.to_string())
-                    .unwrap_or_else(|| "(n/a)".to_string()),
+                    .unwrap_or_else(|| "—".to_string()),
             );
-            batt_tbl_ttf.set_text(
-                &t.battery_time_to_full_s
-                    .map(format_duration_short)
-                    .unwrap_or_else(|| "(n/a)".to_string()),
+            let active_power = match t.battery_state {
+                Some(BatteryState::Charging) => t.battery_charge_power_w,
+                _ => t.battery_discharge_power_w.or(t.battery_charge_power_w),
+            };
+            battery_power_card.set_value(
+                active_power
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "—".to_string()),
             );
-            batt_tbl_tte.set_text(
-                &t.battery_time_to_empty_s
-                    .map(format_duration_short)
-                    .unwrap_or_else(|| "(n/a)".to_string()),
+            battery_power_card.set_unit(active_power.map(|_| "W"));
+            battery_time_card.set_value(
+                battery_time
+                    .as_deref()
+                    .and_then(|value| value.split_whitespace().next())
+                    .unwrap_or("—"),
             );
+            battery_time_card.set_subtitle(battery_time.as_deref());
+            battery_source_card.set_value(match t.power_source {
+                Some(PowerSource::Ac) => "AC",
+                Some(PowerSource::Battery) => "Battery",
+                None => "—",
+            });
+            battery_source_card.set_status_chip(t.ac_online.map(|online| {
+                if online {
+                    "Connected"
+                } else {
+                    "On battery"
+                }
+            }));
 
             // RAM.
             ram_total.set_text(&format_bytes_gib_opt(t.mem_total_bytes));
@@ -3227,6 +3455,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ram_buffers.set_text(&format_bytes_gib_opt(t.mem_buffers_bytes));
             ram_shared.set_text(&format_bytes_gib_opt(t.mem_shared_bytes));
             ram_anon.set_text(&format_bytes_gib_opt(t.mem_anon_bytes));
+            memory_cache_card.set_value(format_bytes_gib_opt(t.mem_cached_bytes));
+            memory_shared_card.set_value(format_bytes_gib_opt(t.mem_shared_bytes));
+            memory_buffers_card.set_value(format_bytes_gib_opt(t.mem_buffers_bytes));
+            memory_swap_card.set_value(format_bytes_gib_opt(t.swap_used_bytes));
+            memory_swap_card.set_subtitle(Some(&format!(
+                "of {}",
+                format_bytes_gib_opt(t.swap_total_bytes)
+            )));
 
             ram_swap_total.set_text(&format_bytes_gib_opt(t.swap_total_bytes));
             ram_swap_used.set_text(&format_bytes_gib_opt(t.swap_used_bytes));
@@ -3259,22 +3495,23 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ram_kernelstack.set_text(&format_bytes_mib_opt(t.mem_kernelstack_bytes));
 
             let rows = t.mem_top_processes_rows.as_deref().unwrap_or_default();
-            for (idx, (row, value)) in ram_top_rows.iter().enumerate() {
+            for (idx, (row, labels)) in ram_top_rows.iter().enumerate() {
                 if let Some(p) = rows.get(idx) {
-                    row.set_title(&p.name);
-                    value.set_text(&format!(
-                        "{} RSS | {} SWAP | pid {} | {}",
-                        format_bytes_human(p.rss_bytes),
-                        format_bytes_human(p.swap_bytes),
-                        p.pid,
-                        p.user
-                    ));
+                    labels[0].set_text(&p.name);
+                    labels[0].set_tooltip_text(Some(&p.name));
+                    labels[1].set_text(&p.pid.to_string());
+                    labels[2].set_text(&p.user);
+                    labels[3].set_text(&format_bytes_human(p.rss_bytes));
+                    labels[4].set_text(&format_bytes_human(p.swap_bytes));
+                    row.set_visible(true);
                 } else if idx == 0 {
-                    row.set_title("(n/a)");
-                    value.set_text("");
+                    labels[0].set_text("(n/a)");
+                    for label in labels.iter().skip(1) {
+                        label.set_text("");
+                    }
+                    row.set_visible(true);
                 } else {
-                    row.set_title("");
-                    value.set_text("");
+                    row.set_visible(false);
                 }
             }
 
@@ -3312,6 +3549,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             );
             details_fan_group_ref.set_visible(true);
         } else {
+            diag_sensor_cpu.set_text("Waiting for telemetry");
+            diag_sensor_gpu.set_text("Waiting for telemetry");
+            diag_sensor_fans.set_text("Waiting for telemetry");
+            diag_sensor_battery.set_text("Waiting for telemetry");
             gpu_temp_gauge.set_temp(None);
             gpu_temp_gauge.set_speed_metrics("Core Clock", None, Some("Memory Clock"), None);
             gpu_page_temp_card.set_value("—");
@@ -3687,6 +3928,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let charge_limit_read_failed = warning_detail(&warnings, "charge limit read failed: ");
 
         if !support_messages.is_empty() {
+            warning_banner.remove_css_class("warning-info");
+            warning_banner.remove_css_class("warning-warning");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class(if daemon_error.is_some() {
+                "warning-error"
+            } else {
+                "warning-warning"
+            });
             warning_banner.set_title(&support_banner_title(&caps, &cpu_caps));
             warning_banner.set_button_label(Some("Open Diagnostics"));
             warning_subtitle.set_text(if support_messages.len() == 1 {
@@ -3699,6 +3948,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
         } else if !warnings.is_empty() {
+            warning_banner.remove_css_class("warning-info");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class("warning-warning");
             warning_banner.set_title("Some readings need attention");
             warning_banner.set_button_label(Some("Open Diagnostics"));
             warning_subtitle.set_text(if warnings.len() == 1 {
@@ -3711,6 +3963,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
         } else {
+            warning_banner.remove_css_class("warning-warning");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class("warning-info");
             warning_banner.set_revealed(false);
             warning_subtitle.set_visible(false);
             warning_subtitle.set_text("");
@@ -3844,6 +4099,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ));
         }
 
+        if !caps.profile_access.is_available() {
+            gpu_page_profile_card.set_subtitle(Some("See Control Dependencies"));
+            gpu_page_profile_card.set_status_chip(Some("Control unavailable"));
+            gpu_page_profile_row.set_subtitle("Unavailable · see Control Dependencies");
+        }
+        if !caps.gpu_mode_access.is_available() {
+            gpu_page_mode_card.set_subtitle(Some("See Control Dependencies"));
+            gpu_page_mode_card.set_status_chip(Some("Control unavailable"));
+            gpu_page_mode_row.set_subtitle("Unavailable · see Control Dependencies");
+        }
+
         charge_limit_row.set_visible(true);
         if caps.charge_limit_access.is_available() {
             charge_limit_spin.set_sensitive(true);
@@ -3943,6 +4209,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 brightness_scale.set_value(l.brightness as f64);
             }
             let can_set = l.can_set;
+            lighting_capability_banner.set_title(if can_set {
+                "Lighting controls are available"
+            } else {
+                "Lighting telemetry is available, but controls are read-only"
+            });
+            lighting_capability_banner.set_revealed(!can_set);
             brightness_scale.set_sensitive(can_set);
             apply_lighting.set_sensitive(can_set);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
@@ -3954,6 +4226,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 Some(l),
                 &caps.kbd_backlight_access,
             ));
+            if !can_set {
+                brightness_row.set_subtitle("Unavailable · see capability status above");
+                mode_row.set_subtitle("Unavailable · see capability status above");
+                apply_row.set_subtitle("Unavailable · see capability status above");
+            }
 
             let mut modes = l.supported_modes.clone();
             if modes.is_empty() && l.backend.eq_ignore_ascii_case("sysfs-led") {
@@ -3984,6 +4261,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
             rgb_button.set_sensitive(can_set && l.supports_rgb);
             rgb_row.set_visible(l.supports_rgb);
+            lighting_rgb_note.set_visible(!l.supports_rgb);
             if let Some(rgba) = l
                 .rgb_hex
                 .as_deref()
@@ -3994,6 +4272,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
         } else {
+            lighting_capability_banner.set_title(&format!(
+                "Lighting controls unavailable · {}",
+                feature_value_label(&caps.kbd_backlight_access)
+            ));
+            lighting_capability_banner.set_revealed(true);
             lighting_backend.set_text(&feature_value_label(&caps.kbd_backlight_access));
             lighting_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_mode.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
@@ -4007,6 +4290,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             apply_lighting.set_sensitive(false);
             rgb_button.set_sensitive(false);
             rgb_row.set_visible(false);
+            lighting_rgb_note.set_visible(true);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
                 None,
                 &caps.kbd_backlight_access,
@@ -4014,6 +4298,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             mode_row.set_subtitle(&lighting_mode_subtitle(None, &caps.kbd_backlight_access));
             apply_row.set_subtitle(&lighting_apply_subtitle(None, &caps.kbd_backlight_access));
             rgb_row.set_subtitle(&lighting_rgb_subtitle(None, &caps.kbd_backlight_access));
+            brightness_row.set_subtitle("Unavailable · see capability status above");
+            mode_row.set_subtitle("Unavailable · see capability status above");
+            apply_row.set_subtitle("Unavailable · see capability status above");
             if !mode_combo.is_focus() {
                 mode_combo.remove_all();
                 last_supported_modes.borrow_mut().clear();
@@ -5979,41 +6266,6 @@ fn u64_from_value(v: &OwnedValue) -> Option<u64> {
         .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
 }
 
-fn format_battery_state(t: &TelemetrySnapshot) -> String {
-    let Some(s) = t.battery_state else {
-        return "(n/a)".to_string();
-    };
-
-    let label = match s {
-        BatteryState::Unknown => "Unknown",
-        BatteryState::Charging => "Charging",
-        BatteryState::Discharging => "Discharging",
-        BatteryState::Empty => "Empty",
-        BatteryState::Full => "Full",
-        BatteryState::PendingCharge => "Pending",
-        BatteryState::PendingDischarge => "Pending",
-        BatteryState::NotCharging => "Not charging",
-    };
-
-    match s {
-        BatteryState::Charging | BatteryState::PendingCharge => {
-            if let Some(secs) = t.battery_time_to_full_s {
-                format!("{label} ({})", format_duration_short(secs))
-            } else {
-                label.to_string()
-            }
-        }
-        BatteryState::Discharging | BatteryState::PendingDischarge => {
-            if let Some(secs) = t.battery_time_to_empty_s {
-                format!("{label} ({})", format_duration_short(secs))
-            } else {
-                label.to_string()
-            }
-        }
-        _ => label.to_string(),
-    }
-}
-
 fn format_duration_short(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -6935,13 +7187,14 @@ fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -
     let value = gtk::Label::new(Some("(n/a)"));
     value.set_xalign(1.0);
     value.set_halign(gtk::Align::End);
-    value.set_wrap(false);
-    value.set_single_line_mode(true);
-    value.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    value.set_wrap(true);
+    value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_single_line_mode(false);
+    value.set_ellipsize(gtk::pango::EllipsizeMode::None);
     value.set_justify(gtk::Justification::Right);
     value.set_width_chars(14);
-    value.set_max_width_chars(32);
-    value.set_size_request(128, -1);
+    value.set_max_width_chars(48);
+    value.set_size_request(150, -1);
     if monospace {
         value.add_css_class("monospace");
     }

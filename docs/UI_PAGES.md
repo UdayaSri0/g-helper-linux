@@ -2,7 +2,7 @@
 
 This document describes the current pages implemented in `crates/rog-ui/src/`.
 
-All nine pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, neutral card surfaces, spacing, and capability-state language.
+All nine pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, compact/standard/hero metric tiers, semantic status chips, neutral card surfaces, spacing, and capability-state language.
 
 For each page, it lists:
 
@@ -16,6 +16,7 @@ For each page, it lists:
 ### What it shows
 
 - CPU temperature
+- cached 60-second CPU utilisation sparkline
 - GPU temperature
 - battery percentage
 - power source
@@ -59,8 +60,8 @@ Current behavior:
 - CPU usage
 - CPU package power when available
 - average clock
-- native CPU usage and temperature history graphs backed by existing cached samples
-- CPU access-status banner when writes are blocked or partially unavailable
+- filled-area CPU usage and temperature history graphs backed by existing cached samples, with current/min/max and 60-second time labels
+- compact CPU control-capability panel when writes are blocked or partially unavailable
 - scaling driver
 - physical core count
 - logical thread count
@@ -105,8 +106,8 @@ Current behavior:
 - current ASUS performance profile
 - current GPU mode
 - GPU temperature when available
-- responsive overview cards for temperature, mode, and profile
-- GPU switch hint
+- responsive temperature-first overview cards for temperature, mode, and profile
+- one consolidated control-dependency group for `asusd`, `supergfxd`, and the GPU switch hint
 - support/status summary
 
 ### What it supports
@@ -122,8 +123,8 @@ Current behavior:
 
 Current behavior:
 
-- current-state rows and control subtitles now replace vague `(n/a)` or `Unavailable` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
-- current-state value labels wrap longer reason strings instead of clipping, and the control rows use consistent aligned selector/apply layouts
+- the dependency group replaces vague `(n/a)` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
+- unavailable selectors refer to the consolidated dependency group, while GPU temperature telemetry remains independent
 
 ### Missing or planned
 
@@ -134,16 +135,8 @@ Current behavior:
 
 ### What it shows
 
-- charge percentage
-- battery state
-- power source
-- AC online
-- charge power
-- discharge power
-- time to full
-- time to empty
-- battery health
-- cycle count
+- a charge hero with percentage, state, AC/source context, time estimate, and progress
+- a compact row for health, cycles, active power, time, and source
 
 ### What it supports
 
@@ -162,13 +155,14 @@ Current behavior:
 
 ### What it shows
 
-- total, used, available, free, cached, buffers, shared, and anonymous memory
-- prominent usage progress display with used, available, and total values
+- prominent usage progress display with used and total values
+- immediate cache, shared, buffers, and swap summaries
+- total, used, available, free, anonymous memory, and swap detail in a collapsed disclosure
 - swap totals and activity
 - zram usage
 - zswap state
 - PSI memory pressure and advanced kernel breakdown in a collapsed Advanced section
-- top memory users
+- top memory users in Process/PID/User/RAM/Swap columns
 
 ### What it supports
 
@@ -187,12 +181,10 @@ Current behavior:
 
 ### What it shows
 
-- current lighting backend
-- current brightness
-- current mode
-- current RGB colour when reported
+- controls-first layout with one capability banner for read-only/unavailable states
 - availability status
 - last action status
+- collapsed backend details for the current backend, brightness, mode, and RGB colour
 
 ### What it supports
 
@@ -226,13 +218,14 @@ Current behavior:
 
 - troubleshooting summary for current support and permission blockers
 - overview cards for daemon connection, available control groups, and warning count
+- structured Services, Permissions, Sensors, and Warnings groups
 - daemon endpoint summary
 - capability matrix
 - structured feature-access status and reason fields
 - endpoint list
 - notes
 - fan telemetry diagnostics, including detected hwmon device, raw `fan*_input` path, chosen display label, and current RPM or unavailable state
-- warnings
+- warnings and a collapsed raw technical report
 - CPU write-access report, including blocked sysfs paths and suggested checks
 
 ### What it supports
@@ -254,7 +247,7 @@ Current behavior:
 
 ### What it shows
 
-- app name
+- leading identity card with packaged icon, app name/subtitle, version, and description
 - binary name
 - version
 - license
@@ -287,7 +280,6 @@ Current behavior:
 
 ### Missing or planned
 
-- no packaged icon asset display
 - no distro package-manager integration or privileged updater
 - no scheduled background update checks
 - no general Settings page or persistent hardware/control rules yet
@@ -297,10 +289,10 @@ Current behavior:
 
 Current page. The internal page identifier remains `fans` for compatibility.
 
-- restrained Cooling header with backend/count/mode/mapping status pills
+- standard page header with compact backend/count/mode/mapping status pills
 - large CPU/GPU temperature gauges that sit side by side on normal laptop widths and stack on narrow windows
 - operating MHz display in the CPU/GPU gauge cards when telemetry is available
-- animated fan rotors in the hero dashboard, scaled from live RPM telemetry and limited to 20 FPS
+- animated fan rotors in the hero dashboard, scaled from live RPM telemetry, limited to 20 FPS, paused while unmapped, and reduced with GTK's animation setting
 - capability warning banner
 - sync toggle when multiple controllable fans exist
 - manual percentage slider when writable PWM support is confirmed

@@ -62,16 +62,24 @@ impl FanRotor {
 
     pub fn set_state(&self, rpm: Option<u32>, status: RotorStatus) {
         let mut state = self.state.borrow_mut();
+        if state.rpm == rpm && state.status == status {
+            return;
+        }
         state.rpm = rpm;
         state.status = status;
         if rpm.unwrap_or(0) == 0 {
             state.angle = 0.0;
         }
         drop(state);
-        self.area.queue_draw();
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
     }
 
     pub fn tick(&self, delta_seconds: f64, reduced_motion: bool) {
+        if !self.area.is_mapped() {
+            return;
+        }
         let mut state = self.state.borrow_mut();
         let rpm = state.rpm.unwrap_or(0) as f64;
         if rpm <= 0.0 {
@@ -115,7 +123,7 @@ impl TempGauge {
     pub fn new(label: &str, accent: GaugeAccent) -> Self {
         let area = gtk::DrawingArea::new();
         area.set_content_width(300);
-        area.set_content_height(260);
+        area.set_content_height(230);
         area.set_hexpand(true);
         area.add_css_class("fan-gauge-widget");
         area.set_tooltip_text(Some("Temperature gauge from daemon telemetry."));
@@ -142,8 +150,15 @@ impl TempGauge {
     }
 
     pub fn set_temp(&self, temp_c: Option<f32>) {
-        self.state.borrow_mut().temp_c = temp_c;
-        self.area.queue_draw();
+        let mut state = self.state.borrow_mut();
+        if state.temp_c == temp_c {
+            return;
+        }
+        state.temp_c = temp_c;
+        drop(state);
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
     }
 
     pub fn set_speed_metrics(
@@ -154,12 +169,22 @@ impl TempGauge {
         secondary_mhz: Option<u64>,
     ) {
         let mut state = self.state.borrow_mut();
+        let secondary_label = secondary_label.map(ToString::to_string);
+        if state.primary_speed_label == primary_label
+            && state.primary_speed_mhz == primary_mhz
+            && state.secondary_speed_label == secondary_label
+            && state.secondary_speed_mhz == secondary_mhz
+        {
+            return;
+        }
         state.primary_speed_label = primary_label.to_string();
         state.primary_speed_mhz = primary_mhz;
-        state.secondary_speed_label = secondary_label.map(ToString::to_string);
+        state.secondary_speed_label = secondary_label;
         state.secondary_speed_mhz = secondary_mhz;
         drop(state);
-        self.area.queue_draw();
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
     }
 }
 
@@ -211,8 +236,15 @@ impl CurvePreview {
     }
 
     pub fn set_enabled(&self, enabled: bool) {
-        self.state.borrow_mut().enabled = enabled;
-        self.area.queue_draw();
+        let mut state = self.state.borrow_mut();
+        if state.enabled == enabled {
+            return;
+        }
+        state.enabled = enabled;
+        drop(state);
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
     }
 }
 
@@ -337,20 +369,11 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
     draw_label(
         ctx,
         cx,
-        cy + radius * 0.48,
+        cy + radius * 0.60,
         &state.label,
-        size * 0.105,
+        size * 0.095,
         (1.0, 1.0, 1.0),
         0.82,
-    );
-    draw_label(
-        ctx,
-        cx,
-        cy + radius * 0.68,
-        "Temperature",
-        size * 0.066,
-        (1.0, 1.0, 1.0),
-        0.55,
     );
 
     let primary_speed = speed_line(&state.primary_speed_label, state.primary_speed_mhz);

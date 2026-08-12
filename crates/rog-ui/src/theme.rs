@@ -6,10 +6,13 @@ pub fn install() {
     let css = r#"
 window { background: #101318; }
 headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
+.brand-mark { color: #73b7ff; }
+.brand-title { color: #f4f7fb; font-size: 16px; font-weight: 750; }
+.brand-subtitle { color: alpha(white, 0.52); font-size: 11px; }
 .sidebar { background: #12161c; }
 .navigation-caption {
   color: alpha(white, 0.48);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 1.2px;
   margin: 0 12px 4px 12px;
@@ -26,6 +29,7 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   color: #d9ecff;
   box-shadow: inset 3px 0 #4da3ff;
 }
+.navigation-row:focus-visible { outline: 2px solid alpha(#4da3ff, 0.7); outline-offset: -2px; }
 .connection-status,
 .status-chip,
 .fans-status-pill {
@@ -44,8 +48,12 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   background: alpha(#ef5b68, 0.14);
   color: #ff9ba4;
 }
-.page-header { margin: 4px 0 8px 0; }
-.page-title { font-size: 28px; font-weight: 750; color: #f4f7fb; }
+.status-chip-success { background: alpha(#39c58a, 0.14); color: #7de0b2; }
+.status-chip-info { background: alpha(#4da3ff, 0.12); color: #b9dcff; }
+.status-chip-warning { background: alpha(#e9a23b, 0.16); color: #f4c775; }
+.status-chip-error { background: alpha(#ef5b68, 0.14); color: #ff9ba4; }
+.page-header { margin: 2px 0 4px 0; }
+.page-title { font-size: 27px; font-weight: 750; color: #f4f7fb; }
 .page-subtitle { font-size: 14px; color: alpha(white, 0.58); }
 .metric-card,
 .surface-card,
@@ -57,13 +65,14 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
 .fan-curve-card,
 .fan-diagnostics-box,
 .fans-gauge-card {
-  padding: 18px;
+  padding: 16px;
   border-radius: 12px;
   background: #1a1f27;
   border: 1px solid alpha(white, 0.07);
   box-shadow: 0 1px 3px alpha(black, 0.18);
 }
-.metric-card-primary { min-height: 126px; }
+.metric-card-primary { min-height: 104px; padding: 18px; }
+.metric-card-compact { padding: 12px 14px; }
 .metric-card-title { color: alpha(white, 0.58); font-size: 12px; font-weight: 650; }
 .metric-value { color: #f6f8fb; font-size: 30px; font-weight: 750; }
 .metric-unit { color: alpha(white, 0.50); font-size: 16px; font-weight: 600; padding-bottom: 3px; }
@@ -73,6 +82,22 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   background: alpha(black, 0.14);
   border: 1px solid alpha(white, 0.055);
 }
+.capability-panel {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: alpha(#4da3ff, 0.07);
+  border: 1px solid alpha(#4da3ff, 0.13);
+}
+.compact-banner { margin: 0; }
+.dashboard-warning.warning-info,
+.compact-banner,
+.fans-warning-banner { background: alpha(#4da3ff, 0.16); }
+.dashboard-warning.warning-warning { background: alpha(#e9a23b, 0.18); }
+.dashboard-warning.warning-error { background: alpha(#ef5b68, 0.18); }
+.about-identity { padding: 22px; }
+.about-icon { color: #73b7ff; }
+.process-header { color: alpha(white, 0.48); font-size: 11px; font-weight: 700; }
+.process-row { padding: 8px 12px; border-bottom: 1px solid alpha(white, 0.05); }
 .memory-progress progress,
 .battery-progress progress { background: #4da3ff; min-height: 10px; border-radius: 99px; }
 .memory-progress trough,
