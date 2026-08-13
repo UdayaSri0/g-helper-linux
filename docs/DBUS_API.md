@@ -99,8 +99,14 @@ early startup so start-minimized behavior is known before the DBus connection is
 - `fan_backend` -> `s`
 - `has_charge_limit` -> `bool`
 - `has_gpu_modes` -> `bool`
+- `gpu_backend` -> `s` (`supergfxd` or `none`)
+- `gpu_supported_modes` -> `as`, populated from the live supergfxd allow-list
+- `gpu_external_authorization` -> `s` (`external_service`, `denied_by_supergfxd`, or `unavailable`)
+- `gpu_switch_state` -> `s` (`unknown`, `ready`, `pending`, `logout_required`, `reboot_required`, `unsafe`, or `unavailable`)
+- `gpu_switch_hint` -> `s`
 - `has_aura` -> `bool`
 - `has_kbd_backlight` -> `bool`
+- `requires_logout_for_gpu_switch` -> `bool`
 - `requires_reboot_for_gpu_switch` -> `bool`
 - `profile_access_status` -> `s`
 - `profile_access_reason` -> `s`
@@ -517,13 +523,15 @@ Argument:
 
 - string GPU mode name
 
-Current accepted user-facing values:
+The UI uses `gpu_supported_modes` reported by supergfxd rather than inventing modes from laptop
+model assumptions. The daemon accepts those known supergfxd names and retains the friendly
+`Integrated`, `Hybrid`, and `Dedicated` aliases where the backend allow-list validates the target.
 
-- `Integrated`
-- `Hybrid`
-- `Dedicated`
-
-The daemon also normalizes a few related aliases such as `dynamic`, `optimus`, and `discrete`.
+Before a write, the provider reads supergfxd's pending-user-action state. A pending logout, reboot,
+or unsafe prerequisite blocks another switch. After a successful request, the daemon reads the
+actual mode and transition state again; it does not fabricate a completed mode when readback is
+unavailable. Authorization errors belong to supergfxd or its system policy and are never routed to
+`rog-helper-privileged`.
 
 ## `SetBatteryLimit`
 

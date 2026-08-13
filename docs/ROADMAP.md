@@ -110,12 +110,13 @@ Current status:
 
 - current mode read/write works
 - supported mode probing works
-- pending-action hinting exists
+- UI choices use the backend-reported supported modes
+- pending/logout/reboot/unsafe transition states are explicit
+- missing service and external authorization failures remain distinct from root-helper access
 
 Still evolving:
 
-- clearer UX around risky transitions
-- better busy or unsafe switching detection
+- richer backend-specific application-busy detail when future supergfxd APIs expose it
 
 ### CPU controls
 

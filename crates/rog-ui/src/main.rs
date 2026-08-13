@@ -19,8 +19,8 @@ use rog_core::{
     CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
     DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanInfo,
     FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor, SetupIssue,
-    SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
+    GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor,
+    SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -481,19 +481,27 @@ impl Tray for RogTray {
             self.summary.clone()
         };
 
-        let (has_profiles, has_gpu_modes, current_profile, current_gpu_mode, reboot_hint) = self
-            .shared
-            .lock()
-            .map(|st| {
-                (
-                    st.caps.has_profiles,
-                    st.caps.has_gpu_modes,
-                    st.profile.clone(),
-                    st.gpu_mode.clone(),
-                    st.caps.requires_reboot_for_gpu_switch,
-                )
-            })
-            .unwrap_or((false, false, None, None, false));
+        let (has_profiles, gpu_available, gpu_modes, current_profile, current_gpu_mode, gpu_hint) =
+            self.shared
+                .lock()
+                .map(|st| {
+                    (
+                        st.caps.has_profiles,
+                        st.caps.gpu_mode_access.is_available(),
+                        st.caps.gpu_supported_modes.clone(),
+                        st.profile.clone(),
+                        st.gpu_mode.clone(),
+                        gpu_switch_hint_text(&st.caps, &[]),
+                    )
+                })
+                .unwrap_or((
+                    false,
+                    false,
+                    Vec::new(),
+                    None,
+                    None,
+                    "supergfxd unavailable".to_string(),
+                ));
 
         let profile_selected = current_profile
             .as_deref()
@@ -501,8 +509,45 @@ impl Tray for RogTray {
             .unwrap_or(1);
         let gpu_selected = current_gpu_mode
             .as_deref()
-            .map(|v| gpu_mode_to_dropdown_index(v) as usize)
-            .unwrap_or(1);
+            .and_then(|mode| gpu_mode_index_in_supported(mode, &gpu_modes))
+            .unwrap_or(0);
+        let gpu_options = gpu_modes
+            .iter()
+            .map(|mode| RadioItem {
+                label: mode.clone(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let gpu_submenu = if gpu_options.is_empty() {
+            vec![StandardItem {
+                label: gpu_hint,
+                enabled: false,
+                ..Default::default()
+            }
+            .into()]
+        } else {
+            vec![
+                RadioGroup {
+                    selected: gpu_selected,
+                    select: Box::new(|this: &mut RogTray, index: usize| {
+                        if let Ok(mut st) = this.shared.lock() {
+                            if let Some(mode) = st.caps.gpu_supported_modes.get(index).cloned() {
+                                st.pending_gpu_mode = Some(mode);
+                                st.action_error = None;
+                            }
+                        }
+                    }),
+                    options: gpu_options,
+                }
+                .into(),
+                StandardItem {
+                    label: gpu_hint,
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            ]
+        };
 
         vec![
             StandardItem {
@@ -569,48 +614,8 @@ impl Tray for RogTray {
             .into(),
             SubMenu {
                 label: "GPU Mode".to_string(),
-                enabled: has_gpu_modes,
-                submenu: vec![
-                    RadioGroup {
-                        selected: gpu_selected,
-                        select: Box::new(|this: &mut RogTray, index: usize| {
-                            let mode = match index {
-                                0 => "Integrated",
-                                1 => "Hybrid",
-                                _ => "Dedicated",
-                            };
-                            if let Ok(mut st) = this.shared.lock() {
-                                st.pending_gpu_mode = Some(mode.to_string());
-                                st.action_error = None;
-                            }
-                        }),
-                        options: vec![
-                            RadioItem {
-                                label: "Integrated".to_string(),
-                                ..Default::default()
-                            },
-                            RadioItem {
-                                label: "Hybrid".to_string(),
-                                ..Default::default()
-                            },
-                            RadioItem {
-                                label: "Dedicated".to_string(),
-                                ..Default::default()
-                            },
-                        ],
-                    }
-                    .into(),
-                    StandardItem {
-                        label: if reboot_hint {
-                            "Switch may require reboot/logout".to_string()
-                        } else {
-                            "Switch applies immediately or with logout".to_string()
-                        },
-                        enabled: false,
-                        ..Default::default()
-                    }
-                    .into(),
-                ],
+                enabled: gpu_available,
+                submenu: gpu_submenu,
                 ..Default::default()
             }
             .into(),
@@ -961,7 +966,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     }
 
     let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
+    let gpu_mode_dropdown = gtk::DropDown::from_strings(&[]);
     style_dropdown_control(&gpu_mode_dropdown);
     gpu_mode_dropdown.set_sensitive(false);
     let gpu_apply_button = gtk::Button::with_label("Apply");
@@ -977,13 +982,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         let gpu_mode_dropdown = gpu_mode_dropdown.clone();
         gpu_apply_button.connect_clicked(move |_| {
-            let mode = match gpu_mode_dropdown.selected() {
-                0 => "Integrated",
-                1 => "Hybrid",
-                _ => "Dedicated",
+            let Some(item) = gpu_mode_dropdown.selected_item() else {
+                return;
+            };
+            let Ok(item) = item.downcast::<gtk::StringObject>() else {
+                return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_gpu_mode = Some(mode.to_string());
+                st.pending_gpu_mode = Some(item.string().to_string());
                 st.action_error = None;
             }
         });
@@ -1980,10 +1986,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let gpu_page_mode_combo = gtk::ComboBoxText::new();
     style_combo_control(&gpu_page_mode_combo);
-    for label in ["Integrated", "Hybrid", "Dedicated"] {
-        gpu_page_mode_combo.append(Some(label), label);
-    }
-    gpu_page_mode_combo.set_active_id(Some("Hybrid"));
     gpu_page_mode_combo.set_sensitive(false);
     let gpu_page_mode_apply = gtk::Button::with_label("Apply");
     style_apply_button(&gpu_page_mode_apply);
@@ -3606,6 +3608,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let update_check_available = app_metadata.repository_url.is_some();
     let update_action_available = app_metadata.releases_url.is_some();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_gpu_supported_modes =
+        std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_rendered_revision = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
@@ -5240,6 +5244,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             ));
         }
 
+        if *last_gpu_supported_modes.borrow() != caps.gpu_supported_modes {
+            let mode_refs = caps
+                .gpu_supported_modes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let model = gtk::StringList::new(&mode_refs);
+            gpu_mode_dropdown.set_model(Some(&model));
+            gpu_page_mode_combo.remove_all();
+            for mode in &caps.gpu_supported_modes {
+                gpu_page_mode_combo.append(Some(mode), mode);
+            }
+            *last_gpu_supported_modes.borrow_mut() = caps.gpu_supported_modes.clone();
+        }
+
         gpu_mode_row.set_visible(true);
         gpu_page_mode_combo.set_sensitive(caps.gpu_mode_access.is_available());
         gpu_page_mode_apply.set_sensitive(caps.gpu_mode_access.is_available());
@@ -5247,16 +5266,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             gpu_mode_dropdown.set_sensitive(true);
             gpu_apply_button.set_sensitive(true);
             if let Some(current) = gpu_mode.as_deref() {
-                gpu_mode_dropdown.set_selected(gpu_mode_to_dropdown_index(current));
+                if let Some(index) = gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
+                {
+                    gpu_mode_dropdown.set_selected(index as u32);
+                }
                 gpu_mode_row.set_subtitle(&format!("Current: {current}"));
                 gpu_page_mode_card.set_value(current);
                 gpu_page_mode_card.set_status_chip(Some("Available"));
                 if !gpu_page_mode_combo.has_focus() {
-                    match gpu_mode_to_dropdown_index(current) {
-                        0 => gpu_page_mode_combo.set_active_id(Some("Integrated")),
-                        1 => gpu_page_mode_combo.set_active_id(Some("Hybrid")),
-                        _ => gpu_page_mode_combo.set_active_id(Some("Dedicated")),
-                    };
+                    if let Some(index) =
+                        gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
+                    {
+                        gpu_page_mode_combo.set_active_id(Some(&caps.gpu_supported_modes[index]));
+                    }
                 }
             } else if gpu_mode_read_failed.is_some() {
                 gpu_mode_row
@@ -5714,9 +5736,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_gpu_mode.take());
                 if let Some(mode) = pending_gpu_mode {
-                    if let Err(e) = apply_gpu_mode(mode).await {
-                        if let Ok(mut st) = shared.lock() {
-                            st.action_error = Some(e);
+                    match apply_gpu_mode(mode).await {
+                        Ok(()) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = None;
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.action_error = Some(e);
+                            }
                         }
                     }
                 }
@@ -8164,18 +8193,36 @@ fn gpu_status_summary(caps: &DeviceCaps, warnings: &[String]) -> String {
     if !caps.gpu_mode_access.is_available() {
         return caps.gpu_mode_access.reason.clone();
     }
+    if !caps.gpu_switch_hint.trim().is_empty()
+        && !matches!(
+            caps.gpu_switch_state,
+            GpuSwitchState::Ready | GpuSwitchState::Unknown
+        )
+    {
+        return caps.gpu_switch_hint.clone();
+    }
     "Ready".to_string()
 }
 
 fn gpu_switch_hint_text(caps: &DeviceCaps, warnings: &[String]) -> String {
     if let Some(detail) = warning_detail(warnings, "GPU switch hint: ") {
         detail.to_string()
+    } else if !caps.gpu_switch_hint.trim().is_empty()
+        && !matches!(
+            caps.gpu_switch_state,
+            GpuSwitchState::Ready | GpuSwitchState::Unknown
+        )
+    {
+        caps.gpu_switch_hint.clone()
     } else if !caps.gpu_mode_access.is_available() {
         caps.gpu_mode_access.reason.clone()
+    } else if caps.requires_logout_for_gpu_switch {
+        "Logout will be required to complete the GPU transition.".to_string()
     } else if caps.requires_reboot_for_gpu_switch {
-        "Switch may require reboot or logout.".to_string()
+        "supergfxd reports that this configuration may require a reboot after switching."
+            .to_string()
     } else {
-        "Switch applies immediately or after logout.".to_string()
+        "supergfxd controls switch safety. Close applications using the discrete GPU if the external service asks, then follow any logout or reboot instruction.".to_string()
     }
 }
 
@@ -8293,6 +8340,25 @@ fn friendly_action_error(error: &str) -> String {
         "Charge-limit control requires asusd. Install or start asusd, then retry.".to_string()
     } else if lower.contains("gpu mode control requires supergfxd") {
         "GPU mode switching requires supergfxd. Install or start supergfxd, then retry.".to_string()
+    } else if lower.contains("set supergfx mode")
+        && (lower.contains("accessdenied")
+            || lower.contains("access denied")
+            || lower.contains("notauthorized")
+            || lower.contains("not authorized"))
+    {
+        "supergfxd or its system policy denied the GPU mode switch. Root access to ROG Helper is not a fallback; review the external service authorization.".to_string()
+    } else if lower.contains("logout required") && lower.contains("gpu switch") {
+        "Logout is required to complete the pending GPU switch. Another switch is unavailable until that transition completes."
+            .to_string()
+    } else if lower.contains("reboot required") && lower.contains("gpu switch") {
+        "A reboot is required to complete the pending GPU switch. Another switch is unavailable until that transition completes."
+            .to_string()
+    } else if lower.contains("pending gpu")
+        || lower.contains("gpu is busy")
+        || lower.contains("gpu is in use")
+    {
+        "supergfxd reports that the GPU transition cannot proceed yet. Close applications using the discrete GPU and follow any logout or reboot instruction."
+            .to_string()
     } else if lower.contains("lighting not supported on this system") {
         "No lighting backend is available on this machine.".to_string()
     } else if lower.contains("rgb colour requires asus aura support")
@@ -8571,14 +8637,16 @@ fn tray_profile_index_from_text(v: &str) -> usize {
     }
 }
 
-fn gpu_mode_to_dropdown_index(v: &str) -> u32 {
-    let key = normalize_label(v);
-    match key.as_str() {
-        "integrated" => 0,
-        "hybrid" => 1,
-        "dedicated" | "discrete" | "asusmuxdgpu" | "asusegpu" | "vfio" => 2,
-        _ => 1,
-    }
+fn gpu_mode_index_in_supported(current: &str, supported: &[String]) -> Option<usize> {
+    let current = normalize_label(current);
+    supported.iter().position(|candidate| {
+        let candidate = normalize_label(candidate);
+        current == candidate
+            || matches!(
+                (current.as_str(), candidate.as_str()),
+                ("dedicated", "asusmuxdgpu") | ("discrete", "asusmuxdgpu")
+            )
+    })
 }
 
 fn pref_value_row(group: &adw::PreferencesGroup, title: &str, monospace: bool) -> gtk::Label {
@@ -9663,6 +9731,21 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
         has_fan_boost: b(dbus_keys::caps::HAS_FAN_BOOST),
         fan_count: dbus_decode::unsigned_u32(map, dbus_keys::caps::FAN_COUNT).unwrap_or(0),
         fan_backend: dbus_decode::string(map, dbus_keys::caps::FAN_BACKEND).unwrap_or_default(),
+        gpu_backend: dbus_decode::string(map, dbus_keys::caps::GPU_BACKEND)
+            .unwrap_or_else(|| "none".to_string()),
+        gpu_supported_modes: dbus_decode::strings(map, dbus_keys::caps::GPU_SUPPORTED_MODES)
+            .unwrap_or_default(),
+        gpu_external_authorization: dbus_decode::string(
+            map,
+            dbus_keys::caps::GPU_EXTERNAL_AUTHORIZATION,
+        )
+        .unwrap_or_else(|| "unavailable".to_string()),
+        gpu_switch_state: dbus_decode::string(map, dbus_keys::caps::GPU_SWITCH_STATE)
+            .map(|value| GpuSwitchState::parse(&value))
+            .unwrap_or_default(),
+        gpu_switch_hint: dbus_decode::string(map, dbus_keys::caps::GPU_SWITCH_HINT)
+            .unwrap_or_default(),
+        requires_logout_for_gpu_switch: b(dbus_keys::caps::REQUIRES_LOGOUT_FOR_GPU_SWITCH),
         requires_reboot_for_gpu_switch: b(dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH),
         profile_access: feature_access_from_dbus(map, dbus_keys::PROFILE_ACCESS_PREFIX),
         charge_limit_access: feature_access_from_dbus(map, dbus_keys::CHARGE_LIMIT_ACCESS_PREFIX),
@@ -9737,6 +9820,10 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
         ("has_aura", b(&map, "has_aura")),
         ("has_kbd_backlight", b(&map, "has_kbd_backlight")),
         (
+            "requires_logout_for_gpu_switch",
+            b(&map, "requires_logout_for_gpu_switch"),
+        ),
+        (
             "requires_reboot_for_gpu_switch",
             b(&map, "requires_reboot_for_gpu_switch"),
         ),
@@ -9748,6 +9835,19 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
     }
     if let Some(backend) = s(&map, "fan_backend") {
         lines.push(format!("  fan_backend: {backend}"));
+    }
+    for key in [
+        "gpu_backend",
+        "gpu_external_authorization",
+        "gpu_switch_state",
+        "gpu_switch_hint",
+    ] {
+        if let Some(value) = s(&map, key) {
+            lines.push(format!("  {key}: {value}"));
+        }
+    }
+    if let Some(modes) = vec_string(&map, "gpu_supported_modes") {
+        lines.push(format!("  gpu_supported_modes: {}", modes.join(", ")));
     }
 
     lines.push("".to_string());
@@ -10452,6 +10552,30 @@ mod tests {
             ov("GPU mode switching needs supergfxd, but the system backend could not be reached right now.".to_string()),
         );
         map.insert(
+            dbus_keys::caps::GPU_BACKEND.to_string(),
+            ov("supergfxd".to_string()),
+        );
+        map.insert(
+            dbus_keys::caps::GPU_SUPPORTED_MODES.to_string(),
+            ov(vec!["Hybrid".to_string(), "Vfio".to_string()]),
+        );
+        map.insert(
+            dbus_keys::caps::GPU_EXTERNAL_AUTHORIZATION.to_string(),
+            ov("external_service".to_string()),
+        );
+        map.insert(
+            dbus_keys::caps::GPU_SWITCH_STATE.to_string(),
+            ov("reboot_required".to_string()),
+        );
+        map.insert(
+            dbus_keys::caps::GPU_SWITCH_HINT.to_string(),
+            ov("Reboot required to complete the pending GPU switch.".to_string()),
+        );
+        map.insert(
+            dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
             dbus_keys::feature_access_status_key(dbus_keys::KBD_BACKLIGHT_ACCESS_PREFIX),
             ov("permission_denied".to_string()),
         );
@@ -10482,6 +10606,23 @@ mod tests {
             caps.gpu_mode_access.reason,
             "GPU mode switching needs supergfxd, but the system backend could not be reached right now."
         );
+        assert_eq!(caps.gpu_backend, "supergfxd");
+        assert_eq!(caps.gpu_supported_modes, vec!["Hybrid", "Vfio"]);
+        assert_eq!(caps.gpu_external_authorization, "external_service");
+        assert_eq!(caps.gpu_switch_state, GpuSwitchState::RebootRequired);
+        assert!(caps.requires_reboot_for_gpu_switch);
+    }
+
+    #[test]
+    fn gpu_mode_selection_uses_only_backend_reported_modes() {
+        let modes = vec![
+            "Integrated".to_string(),
+            "Hybrid".to_string(),
+            "AsusMuxDgpu".to_string(),
+        ];
+        assert_eq!(gpu_mode_index_in_supported("Hybrid", &modes), Some(1));
+        assert_eq!(gpu_mode_index_in_supported("Dedicated", &modes), Some(2));
+        assert_eq!(gpu_mode_index_in_supported("Vfio", &modes), None);
     }
 
     #[test]

@@ -111,11 +111,25 @@ Depends on:
 
 - system DBus
 - a reachable and compatible `supergfxd`
+- any authorization enforced by `supergfxd` or its system-service policy
 
 Current effect of failure:
 
 - GPU mode controls are unavailable in the UI
 - diagnostics should still show the missing capability
+- missing `supergfxd` is reported as a missing external backend, not as a request for root access
+
+Architecture decision:
+
+- GPU telemetry remains unprivileged (`hwmon` and optional `nvidia-smi`)
+- GPU mode discovery, validation, switching, and transition safety remain authoritative in `supergfxd`
+- `rog-helper-privileged` deliberately exposes no GPU method
+- ROG Helper does not bind or unbind PCI devices, write GPU sysfs mode files, reload kernel
+  modules, power-cycle GPUs, issue raw ACPI calls, or execute commands for GPU switching
+
+“Privileged control” is therefore subsystem-specific. It does not mean every hardware operation
+belongs in ROG Helper's root helper. A mature external system service remains the correct boundary
+when it already owns the hardware operation and its safety policy.
 
 ### CPU controls
 

@@ -1,7 +1,7 @@
 # Graph Report - g-helper-linux  (2026-08-13)
 
 ## Corpus Check
-- 87 files · ~174,895 words
+- 87 files · ~174,930 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary

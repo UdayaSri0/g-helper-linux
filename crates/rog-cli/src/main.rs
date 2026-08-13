@@ -627,17 +627,33 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
             .push(format!("supergfxd:{}", supergfx.endpoint_tag()));
         match supergfx.probe_caps().await {
             Ok(gcaps) => {
+                caps.gpu_backend = "supergfxd".to_string();
                 caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
-                caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
-                caps.gpu_mode_access = if caps.has_gpu_modes {
-                    FeatureAvailability::new(
-                        FeatureAccessState::Available,
-                        "GPU mode switching is available through supergfxd.",
-                    )
-                } else {
+                caps.gpu_supported_modes = gcaps.raw_supported_modes.clone();
+                caps.gpu_external_authorization = "external_service".to_string();
+                caps.gpu_switch_state = gcaps.switch_state;
+                caps.gpu_switch_hint = gcaps.switch_hint.clone();
+                caps.requires_logout_for_gpu_switch =
+                    gcaps.switch_state == rog_core::GpuSwitchState::LogoutRequired;
+                caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint
+                    || gcaps.switch_state == rog_core::GpuSwitchState::RebootRequired;
+                caps.gpu_mode_access = if !caps.has_gpu_modes {
                     FeatureAvailability::new(
                         FeatureAccessState::Unsupported,
                         "supergfxd is available, but this machine does not expose switchable GPU modes.",
+                    )
+                } else if gcaps.switch_state.blocks_new_switch() {
+                    FeatureAvailability::new(
+                        FeatureAccessState::TemporarilyUnavailable,
+                        format!(
+                            "supergfxd is waiting for a GPU transition to complete: {}",
+                            gcaps.switch_hint
+                        ),
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "GPU mode switching is available through supergfxd; any authorization is owned by that external service.",
                     )
                 };
                 if !gcaps.raw_supported_modes.is_empty() {
@@ -648,6 +664,11 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
                 }
             }
             Err(e) => {
+                caps.gpu_backend = "supergfxd".to_string();
+                caps.gpu_external_authorization = "external_service".to_string();
+                caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+                caps.gpu_switch_hint =
+                    "supergfxd GPU capabilities could not be read right now.".to_string();
                 caps.gpu_mode_access = FeatureAvailability::new(
                     FeatureAccessState::TemporarilyUnavailable,
                     "supergfxd is present, but GPU mode support could not be confirmed right now.",
@@ -664,6 +685,11 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
             }
         }
     } else if let Some(err) = &supergfx_connect_error {
+        caps.gpu_backend = "none".to_string();
+        caps.gpu_external_authorization = "unavailable".to_string();
+        caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+        caps.gpu_switch_hint =
+            "supergfxd was detected indirectly but its system API was unreachable.".to_string();
         caps.gpu_mode_access = backend_access_from_connect_error(
             Some(err.as_str()),
             "Install and start supergfxd to enable GPU mode switching.",
@@ -671,6 +697,11 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
         );
         caps.notes.push(format!("supergfxd connect failed: {err}"));
     } else {
+        caps.gpu_backend = "none".to_string();
+        caps.gpu_external_authorization = "unavailable".to_string();
+        caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+        caps.gpu_switch_hint =
+            "supergfxd is not available; root access is not a substitute.".to_string();
         caps.gpu_mode_access = backend_access_from_connect_error(
             None,
             "Install and start supergfxd to enable GPU mode switching.",

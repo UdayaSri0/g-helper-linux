@@ -57,6 +57,51 @@ pub enum GpuMode {
     Other(String),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpuSwitchState {
+    #[default]
+    Unknown,
+    Ready,
+    Pending,
+    LogoutRequired,
+    RebootRequired,
+    Unsafe,
+    Unavailable,
+}
+
+impl GpuSwitchState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Ready => "ready",
+            Self::Pending => "pending",
+            Self::LogoutRequired => "logout_required",
+            Self::RebootRequired => "reboot_required",
+            Self::Unsafe => "unsafe",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ready" => Self::Ready,
+            "pending" => Self::Pending,
+            "logout_required" => Self::LogoutRequired,
+            "reboot_required" => Self::RebootRequired,
+            "unsafe" => Self::Unsafe,
+            "unavailable" => Self::Unavailable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn blocks_new_switch(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::LogoutRequired | Self::RebootRequired | Self::Unsafe
+        )
+    }
+}
+
 pub const DEFAULT_BATTERY_LIMIT_MIN_PERCENT: u8 = 40;
 pub const DEFAULT_BATTERY_LIMIT_MAX_PERCENT: u8 = 100;
 
@@ -1284,6 +1329,18 @@ pub struct DeviceCaps {
     pub has_fan_boost: bool,
     pub fan_count: u32,
     pub fan_backend: String,
+    #[serde(default)]
+    pub gpu_backend: String,
+    #[serde(default)]
+    pub gpu_supported_modes: Vec<String>,
+    #[serde(default)]
+    pub gpu_external_authorization: String,
+    #[serde(default)]
+    pub gpu_switch_state: GpuSwitchState,
+    #[serde(default)]
+    pub gpu_switch_hint: String,
+    #[serde(default)]
+    pub requires_logout_for_gpu_switch: bool,
     pub requires_reboot_for_gpu_switch: bool,
     pub profile_access: FeatureAvailability,
     pub charge_limit_access: FeatureAvailability,
@@ -1312,6 +1369,12 @@ impl DeviceCaps {
             has_fan_boost: false,
             fan_count: 0,
             fan_backend: "unknown".to_string(),
+            gpu_backend: "none".to_string(),
+            gpu_supported_modes: Vec::new(),
+            gpu_external_authorization: "unavailable".to_string(),
+            gpu_switch_state: GpuSwitchState::Unavailable,
+            gpu_switch_hint: "supergfxd availability has not been probed yet.".to_string(),
+            requires_logout_for_gpu_switch: false,
             requires_reboot_for_gpu_switch: false,
             profile_access: FeatureAvailability::unknown(),
             charge_limit_access: FeatureAvailability::unknown(),

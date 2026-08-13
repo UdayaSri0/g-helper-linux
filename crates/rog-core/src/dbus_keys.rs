@@ -120,6 +120,12 @@ pub mod caps {
     pub const HAS_FAN_BOOST: &str = "has_fan_boost";
     pub const FAN_COUNT: &str = "fan_count";
     pub const FAN_BACKEND: &str = "fan_backend";
+    pub const GPU_BACKEND: &str = "gpu_backend";
+    pub const GPU_SUPPORTED_MODES: &str = "gpu_supported_modes";
+    pub const GPU_EXTERNAL_AUTHORIZATION: &str = "gpu_external_authorization";
+    pub const GPU_SWITCH_STATE: &str = "gpu_switch_state";
+    pub const GPU_SWITCH_HINT: &str = "gpu_switch_hint";
+    pub const REQUIRES_LOGOUT_FOR_GPU_SWITCH: &str = "requires_logout_for_gpu_switch";
     pub const REQUIRES_REBOOT_FOR_GPU_SWITCH: &str = "requires_reboot_for_gpu_switch";
     pub const ENDPOINTS: &str = "endpoints";
     pub const NOTES: &str = "notes";

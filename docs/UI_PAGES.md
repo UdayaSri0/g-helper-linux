@@ -151,18 +151,21 @@ Current behavior:
 
 - profile controls depend on `has_profiles`
 - GPU mode controls depend on `has_gpu_modes`
-- reboot/logout hint depends on `requires_reboot_for_gpu_switch`
+- selectors are populated from `gpu_supported_modes` reported by supergfxd
+- pending/logout/reboot/unsafe UX depends on `gpu_switch_state` and `gpu_switch_hint`
 
 Current behavior:
 
 - the dependency group replaces vague `(n/a)` placeholders with short reason text when `asusd` or `supergfxd` is missing, unsupported, or temporarily unavailable
 - unavailable selectors refer to the consolidated dependency group, while all telemetry remains read-only and independent
 - NVIDIA metrics stay absent rather than showing invented zeroes when the GPU, driver, command, or individual field is unavailable
+- missing supergfxd is described as a missing external service, never as a request to run the UI or daemon as root
 
-### Missing or planned
+### Safety boundary
 
-- no advanced safe-switch workflow beyond current hints
-- no richer “busy/unsafe” model yet
+- supergfxd remains authoritative for available modes, external authorization, and switching
+- another switch is disabled while supergfxd reports a pending, logout, reboot, or unsafe transition
+- telemetry remains available independently of the switching service
 
 ## Battery
 

@@ -24,7 +24,8 @@ The project is split into four main runtime layers, plus a shared model layer an
    - Minimal root system service, activated on demand
    - Owns `io.github.roghelper.Privileged` on the system bus
    - Uses PolicyKit actions tied to the calling system-bus peer
-   - Exposes typed, validated CPU writes plus discovery and authorization probes
+   - Exposes typed, validated CPU, fan, and canonical keyboard-brightness writes plus probes
+   - Exposes no GPU operation: supergfxd remains the authoritative switching and safety service
 
 Shared model layer:
 
@@ -185,6 +186,7 @@ It also carries:
 
 - `endpoints`
 - `notes`
+- the authoritative `supergfxd` mode allow-list and GPU transition state
 
 These are used by the daemon and surfaced in the UI diagnostics view.
 

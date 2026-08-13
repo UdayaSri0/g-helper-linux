@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1786640897.3436036,
-    "ast_hash": "7948fca56b9039e4323dead82d625563",
+    "mtime": 1786640953.8579714,
+    "ast_hash": "e3b3722d70e697b2acd02e77a18bfd99",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {

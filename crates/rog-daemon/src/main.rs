@@ -12,9 +12,9 @@ use rog_core::{
     BatteryState, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest,
     CpuPathAccess, CpuPowerMode, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
     FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
-    FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode,
-    LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor, SetupIssue,
-    SetupStatus, TelemetrySnapshot,
+    FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState, LightingDiagnostics,
+    LightingMode, LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor,
+    SetupIssue, SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -26,7 +26,7 @@ use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
 use rog_providers::power_supply::PowerSupplySysfsProvider;
 use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
-use rog_providers::supergfx::SupergfxProvider;
+use rog_providers::supergfx::{SupergfxCaps, SupergfxProvider, SupergfxSwitchStatus};
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
@@ -335,6 +335,37 @@ impl RogHelperDaemon {
         guard.profile = profile;
         guard.gpu_mode = gpu_mode;
         guard.battery_limit = battery_limit;
+    }
+
+    fn update_gpu_switch_status(&self, status: &SupergfxSwitchStatus) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        apply_gpu_switch_status_to_caps(&mut guard.caps, status);
+    }
+
+    fn update_gpu_backend_error(&self, error: &rog_core::RogError) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        match error {
+            rog_core::RogError::PermissionDenied(_) => {
+                guard.caps.gpu_external_authorization = "denied_by_supergfxd".to_string();
+                guard.caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::PermissionDenied,
+                    "supergfxd or its system policy denied this mode switch. Authorization belongs to the external service; running ROG Helper as root is not a fallback.",
+                );
+            }
+            rog_core::RogError::DependencyMissing(_)
+            | rog_core::RogError::TransientFailure(_)
+            | rog_core::RogError::TemporarilyUnavailable(_)
+            | rog_core::RogError::Unexpected(_) => {
+                guard.caps.gpu_switch_state = GpuSwitchState::Unavailable;
+                guard.caps.gpu_switch_hint =
+                    "supergfxd could not complete the requested mode switch right now.".to_string();
+                guard.caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "supergfxd is present, but the requested GPU mode switch is currently unavailable.",
+                );
+            }
+            rog_core::RogError::NotSupported(_) | rog_core::RogError::InvalidInput(_) => {}
+        }
     }
 
     fn update_fan_control_state(
@@ -937,15 +968,26 @@ impl RogHelperDaemon {
             ));
         };
 
-        let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
-        supergfx
-            .set_mode(mode.clone())
-            .await
-            .map_err(map_rog_error_to_fdo)?;
+        if let Ok(status) = supergfx.switch_status().await {
+            self.update_gpu_switch_status(&status);
+            if status.state.blocks_new_switch() {
+                return Err(fdo::Error::Failed(status.hint));
+            }
+        }
 
-        let confirmed = supergfx.get_mode().await.unwrap_or(mode);
-        let mut guard = self.state.control.write().expect("rwlock poisoned");
-        guard.gpu_mode = Some(confirmed);
+        let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
+        if let Err(error) = supergfx.set_mode(mode).await {
+            self.update_gpu_backend_error(&error);
+            return Err(map_rog_error_to_fdo(error));
+        }
+
+        if let Ok(confirmed) = supergfx.get_mode().await {
+            let mut guard = self.state.control.write().expect("rwlock poisoned");
+            guard.gpu_mode = Some(confirmed);
+        }
+        if let Ok(status) = supergfx.switch_status().await {
+            self.update_gpu_switch_status(&status);
+        }
         Ok(())
     }
 
@@ -1325,19 +1367,7 @@ async fn main() -> anyhow::Result<()> {
                 .push(format!("supergfxd:{}", provider.endpoint_tag()));
             match provider.probe_caps().await {
                 Ok(gcaps) => {
-                    caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
-                    caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
-                    caps.gpu_mode_access = if caps.has_gpu_modes {
-                        FeatureAvailability::new(
-                            FeatureAccessState::Available,
-                            "GPU mode switching is available through supergfxd.",
-                        )
-                    } else {
-                        FeatureAvailability::new(
-                            FeatureAccessState::Unsupported,
-                            "supergfxd is available, but this machine does not expose switchable GPU modes.",
-                        )
-                    };
+                    apply_supergfx_probe_to_caps(&mut caps, &gcaps);
                     if !gcaps.raw_supported_modes.is_empty() {
                         caps.notes.push(format!(
                             "supergfxd supported modes: {}",
@@ -1346,6 +1376,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Err(e) => {
+                    caps.gpu_backend = "supergfxd".to_string();
+                    caps.gpu_external_authorization = "external_service".to_string();
+                    caps.gpu_switch_state = GpuSwitchState::Unavailable;
+                    caps.gpu_switch_hint =
+                        "supergfxd GPU capabilities could not be read right now.".to_string();
                     caps.gpu_mode_access = FeatureAvailability::new(
                         FeatureAccessState::TemporarilyUnavailable,
                         "supergfxd is present, but GPU mode support could not be confirmed right now.",
@@ -1364,17 +1399,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         None => {
+            apply_supergfx_unavailable_to_caps(&mut caps, supergfx_connect_error.is_some());
             if let Some(err) = &supergfx_connect_error {
-                caps.gpu_mode_access = FeatureAvailability::new(
-                    FeatureAccessState::TemporarilyUnavailable,
-                    "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
-                );
                 caps.notes.push(format!("supergfxd connect failed: {err}"));
             } else {
-                caps.gpu_mode_access = FeatureAvailability::new(
-                    FeatureAccessState::MissingBackend,
-                    "Install and start supergfxd to enable GPU mode switching.",
-                );
                 caps.notes
                     .push("supergfxd not detected; GPU mode controls disabled.".to_string());
             }
@@ -1751,8 +1779,16 @@ async fn main() -> anyhow::Result<()> {
                             Ok(v) => current_gpu_mode = Some(v),
                             Err(e) => warnings.push(format!("GPU mode read failed: {e}")),
                         }
-                        if let Ok(Some(hint)) = provider.can_switch_now().await {
-                            warnings.push(format!("GPU switch hint: {hint}"));
+                        match provider.switch_status().await {
+                            Ok(status) => {
+                                daemon.update_gpu_switch_status(&status);
+                                if status.state.blocks_new_switch() {
+                                    warnings.push(format!("GPU switch hint: {}", status.hint));
+                                }
+                            }
+                            Err(error) => warnings.push(format!(
+                                "GPU switch readiness unavailable from supergfxd: {error}"
+                            )),
                         }
                     }
                 }
@@ -1997,6 +2033,30 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     m.insert(
         dbus_keys::caps::FAN_BACKEND.to_string(),
         ov(c.fan_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_BACKEND.to_string(),
+        ov(c.gpu_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SUPPORTED_MODES.to_string(),
+        ov(c.gpu_supported_modes.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_EXTERNAL_AUTHORIZATION.to_string(),
+        ov(c.gpu_external_authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SWITCH_STATE.to_string(),
+        ov(c.gpu_switch_state.as_str().to_string()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SWITCH_HINT.to_string(),
+        ov(c.gpu_switch_hint.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::REQUIRES_LOGOUT_FOR_GPU_SWITCH.to_string(),
+        OwnedValue::from(c.requires_logout_for_gpu_switch),
     );
     m.insert(
         dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH.to_string(),
@@ -2900,12 +2960,81 @@ fn profile_to_str(profile: PerformanceProfile) -> &'static str {
     }
 }
 
-fn gpu_mode_to_str(mode: GpuMode) -> &'static str {
+fn apply_supergfx_probe_to_caps(caps: &mut DeviceCaps, probe: &SupergfxCaps) {
+    caps.gpu_backend = "supergfxd".to_string();
+    caps.gpu_supported_modes = probe.raw_supported_modes.clone();
+    caps.has_gpu_modes = !caps.gpu_supported_modes.is_empty();
+    caps.gpu_external_authorization = "external_service".to_string();
+    caps.requires_reboot_for_gpu_switch = probe.requires_reboot_hint;
+    apply_gpu_switch_status_to_caps(
+        caps,
+        &SupergfxSwitchStatus {
+            state: probe.switch_state,
+            hint: probe.switch_hint.clone(),
+        },
+    );
+}
+
+fn apply_supergfx_unavailable_to_caps(caps: &mut DeviceCaps, connect_failed: bool) {
+    caps.gpu_backend = "none".to_string();
+    caps.gpu_external_authorization = "unavailable".to_string();
+    caps.gpu_switch_state = GpuSwitchState::Unavailable;
+    if connect_failed {
+        caps.gpu_switch_hint =
+            "supergfxd was detected indirectly but its system API was unreachable.".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+        );
+    } else {
+        caps.gpu_switch_hint =
+            "supergfxd is not available; root access is not a substitute.".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::MissingBackend,
+            "Install and start supergfxd to enable GPU mode switching; running ROG Helper as root would not provide this backend.",
+        );
+    }
+}
+
+fn apply_gpu_switch_status_to_caps(caps: &mut DeviceCaps, status: &SupergfxSwitchStatus) {
+    caps.gpu_switch_state = status.state;
+    caps.gpu_switch_hint = status.hint.clone();
+    caps.requires_logout_for_gpu_switch = status.state == GpuSwitchState::LogoutRequired;
+    caps.requires_reboot_for_gpu_switch |= status.state == GpuSwitchState::RebootRequired;
+
+    if !caps.has_gpu_modes {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "supergfxd is available, but this machine does not expose switchable GPU modes.",
+        );
+    } else if status.state.blocks_new_switch() {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            format!(
+                "supergfxd is waiting for a GPU transition to complete: {}",
+                status.hint
+            ),
+        );
+    } else if status.state == GpuSwitchState::Unavailable {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "supergfxd is present, but GPU switching is currently unavailable.",
+        );
+    } else {
+        caps.gpu_external_authorization = "external_service".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "GPU mode switching is available through supergfxd; any authorization is owned by that external service.",
+        );
+    }
+}
+
+fn gpu_mode_to_str(mode: GpuMode) -> String {
     match mode {
-        GpuMode::Integrated => "Integrated",
-        GpuMode::Hybrid => "Hybrid",
-        GpuMode::Dedicated => "Dedicated",
-        GpuMode::Other(_) => "Other",
+        GpuMode::Integrated => "Integrated".to_string(),
+        GpuMode::Hybrid => "Hybrid".to_string(),
+        GpuMode::Dedicated => "Dedicated".to_string(),
+        GpuMode::Other(name) => name,
     }
 }
 
@@ -2939,10 +3068,14 @@ fn parse_gpu_mode_request(v: &str) -> Result<GpuMode, String> {
     match key.as_str() {
         "integrated" => Ok(GpuMode::Integrated),
         "hybrid" | "dynamic" | "optimus" => Ok(GpuMode::Hybrid),
-        "dedicated" | "discrete" | "asusmuxdgpu" | "asusegpu" | "vfio" => Ok(GpuMode::Dedicated),
-        "other" => Ok(GpuMode::Other("Other".to_string())),
+        "dedicated" | "discrete" => Ok(GpuMode::Dedicated),
+        "asusmuxdgpu" => Ok(GpuMode::Other("AsusMuxDgpu".to_string())),
+        "nvidianomodeset" => Ok(GpuMode::Other("NvidiaNoModeset".to_string())),
+        "asusegpu" => Ok(GpuMode::Other("AsusEgpu".to_string())),
+        "vfio" => Ok(GpuMode::Other("Vfio".to_string())),
+        "none" => Ok(GpuMode::Other("None".to_string())),
         _ => Err(format!(
-            "unknown GPU mode '{v}', expected Integrated|Hybrid|Dedicated"
+            "unknown GPU mode '{v}'; choose one of the modes reported by supergfxd"
         )),
     }
 }
@@ -3836,6 +3969,12 @@ mod tests {
             FeatureAccessState::Unsupported,
             "supergfxd is available, but this machine does not expose switchable GPU modes.",
         );
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.gpu_supported_modes = vec!["Hybrid".to_string(), "Integrated".to_string()];
+        caps.gpu_external_authorization = "external_service".to_string();
+        caps.gpu_switch_state = GpuSwitchState::LogoutRequired;
+        caps.gpu_switch_hint = "Logout required to complete the pending GPU switch.".to_string();
+        caps.requires_logout_for_gpu_switch = true;
         caps.kbd_backlight_access = FeatureAvailability::new(
             FeatureAccessState::PermissionDenied,
             "Keyboard backlight is detected, but writes are blocked for the current user.",
@@ -3874,6 +4013,121 @@ mod tests {
                 reason
             );
         }
+        assert_eq!(
+            value_as_str(&map, dbus_keys::caps::GPU_BACKEND),
+            "supergfxd"
+        );
+        assert_eq!(
+            value_as_str(&map, dbus_keys::caps::GPU_SWITCH_STATE),
+            "logout_required"
+        );
+        assert_eq!(
+            map.get(dbus_keys::caps::GPU_SUPPORTED_MODES)
+                .cloned()
+                .and_then(|value| Vec::<String>::try_from(value).ok()),
+            Some(vec!["Hybrid".to_string(), "Integrated".to_string()])
+        );
+        assert_eq!(
+            map.get(dbus_keys::caps::REQUIRES_LOGOUT_FOR_GPU_SWITCH)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn supergfx_available_probe_uses_reported_modes_and_transition_state() {
+        let probe = SupergfxCaps {
+            raw_supported_modes: vec!["Hybrid".to_string(), "Integrated".to_string()],
+            requires_reboot_hint: false,
+            switch_state: GpuSwitchState::Ready,
+            switch_hint: "supergfxd reports that no GPU transition action is pending.".to_string(),
+        };
+        let mut caps = DeviceCaps::unknown();
+
+        apply_supergfx_probe_to_caps(&mut caps, &probe);
+
+        assert_eq!(caps.gpu_backend, "supergfxd");
+        assert_eq!(caps.gpu_supported_modes, probe.raw_supported_modes);
+        assert_eq!(caps.gpu_switch_state, GpuSwitchState::Ready);
+        assert!(caps.has_gpu_modes);
+        assert!(caps.gpu_mode_access.is_available());
+        assert_eq!(caps.gpu_external_authorization, "external_service");
+    }
+
+    #[test]
+    fn missing_supergfx_is_a_missing_backend_not_a_root_requirement() {
+        let mut caps = DeviceCaps::unknown();
+        apply_supergfx_unavailable_to_caps(&mut caps, false);
+
+        assert_eq!(caps.gpu_backend, "none");
+        assert_eq!(caps.gpu_switch_state, GpuSwitchState::Unavailable);
+        assert_eq!(
+            caps.gpu_mode_access.status,
+            FeatureAccessState::MissingBackend
+        );
+        assert!(caps
+            .gpu_mode_access
+            .reason
+            .contains("running ROG Helper as root would not"));
+    }
+
+    #[test]
+    fn pending_gpu_transition_is_unavailable_until_logout_or_reboot() {
+        let mut caps = DeviceCaps::unknown();
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.has_gpu_modes = true;
+        caps.gpu_supported_modes = vec!["Hybrid".to_string()];
+        apply_gpu_switch_status_to_caps(
+            &mut caps,
+            &SupergfxSwitchStatus {
+                state: GpuSwitchState::RebootRequired,
+                hint: "Reboot required to complete the pending GPU switch.".to_string(),
+            },
+        );
+
+        assert_eq!(
+            caps.gpu_mode_access.status,
+            FeatureAccessState::TemporarilyUnavailable
+        );
+        assert!(caps.requires_reboot_for_gpu_switch);
+        assert!(caps.gpu_switch_state.blocks_new_switch());
+    }
+
+    #[test]
+    fn fresh_daemon_probe_reconstructs_gpu_state_without_persisted_assumptions() {
+        let probe = SupergfxCaps {
+            raw_supported_modes: vec!["Vfio".to_string()],
+            requires_reboot_hint: true,
+            switch_state: GpuSwitchState::LogoutRequired,
+            switch_hint: "Logout required to complete the pending GPU switch.".to_string(),
+        };
+        let mut before_restart = DeviceCaps::unknown();
+        let mut after_restart = DeviceCaps::unknown();
+        apply_supergfx_probe_to_caps(&mut before_restart, &probe);
+        apply_supergfx_probe_to_caps(&mut after_restart, &probe);
+
+        assert_eq!(before_restart.gpu_backend, after_restart.gpu_backend);
+        assert_eq!(
+            before_restart.gpu_supported_modes,
+            after_restart.gpu_supported_modes
+        );
+        assert_eq!(
+            before_restart.gpu_switch_state,
+            after_restart.gpu_switch_state
+        );
+        assert_eq!(
+            before_restart.gpu_mode_access.status,
+            after_restart.gpu_mode_access.status
+        );
+    }
+
+    #[test]
+    fn gpu_requests_preserve_exact_supergfx_modes() {
+        assert_eq!(
+            parse_gpu_mode_request("Vfio").unwrap(),
+            GpuMode::Other("Vfio".to_string())
+        );
+        assert!(parse_gpu_mode_request("model-guessed-mode").is_err());
     }
 
     #[test]
