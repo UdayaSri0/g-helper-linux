@@ -46,9 +46,10 @@ Current behavior:
 
 - disabled quick actions remain capability-driven; remediation guidance lives on Setup & Access rather than being duplicated below Dashboard controls
 - Quick Performance uses a two-column dashboard tile grid where space permits and wraps without changing capability gating
-- System Overview uses five columns at wide widths and an intentional 3+2 arrangement below its wide breakpoint; it never falls into a 4+1 layout
+- System Overview uses five columns at wide widths, an intentional 3+2 arrangement at medium widths, and one column at narrow widths; it never falls into a 4+1 layout
 - Cooling Snapshot is content-driven and ends directly after its last detected fan row
-- Current System Mode uses five columns when wide and 3+2 packing at medium widths
+- Current System Mode uses five columns when wide, 3+2 packing at medium widths, and one column at narrow widths
+- primary metrics, quick controls, cockpit panels, live trends, and system health share the same cached responsive mode so they reflow only when a breakpoint changes
 - CPU, GPU-temperature, and memory histories are bounded to 60 cached samples and never poll from a draw callback
 - highly prominent warning styling is reserved for daemon disconnection; optional capability gaps use compact warning language
 

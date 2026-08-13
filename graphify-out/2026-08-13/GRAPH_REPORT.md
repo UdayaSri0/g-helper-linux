@@ -1,16 +1,16 @@
 # Graph Report - g-helper-linux  (2026-08-13)
 
 ## Corpus Check
-- 79 files · ~158,637 words
+- 87 files · ~172,774 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1791 nodes · 4381 edges · 91 communities (86 shown, 5 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 32 edges (avg confidence: 0.74)
+- 2047 nodes · 5061 edges · 96 communities (91 shown, 5 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 44 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `0eb76383`
+- Built from commit: `622ececb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -46,7 +46,7 @@
 - README.md
 - Development
 - SharedUiState
-- FanCurve
+- PrivilegedError
 - Build
 - SetupStatus
 - Permissions
@@ -59,7 +59,7 @@
 - Architecture
 - Release Checklist
 - Copilot Instructions for rog-helper
-- String
+- dbus.rs
 - Hardware Support
 - Codex Prompt: Add Safe Fan Control Page, Individual Fan Controls, Sync Mode, Manual Boost, and Fan Curve Settings to g-helper-linux
 - 10. Manual control modes
@@ -84,10 +84,10 @@
 - postinst
 - postrm
 - MetricCard
-- String
+- PrivilegedService
 - build_shell
-- fetch_state
-- DependencyState
+- String
+- FeatureAvailability
 - Lighting
 - About
 - Battery
@@ -97,26 +97,33 @@
 - Memory
 - Diagnostics
 - Settings
-- dbus.rs
-- Fan-control backend discovery
+- DBus Notes
 - Q: Implement robust persistent configuration and a dedicated Settings page
-- FanInfo
-- DeviceCaps
+- DependencyKind
+- Option
+- dbus_decode.rs
+- DependencyState
+- Release Readiness Audit
+- check-release-metadata.py
+- DBus Contract Map
+- String
 
 ## God Nodes (most connected - your core abstractions)
-1. `build_ui()` - 103 edges
-2. `RogHelperDaemon` - 58 edges
-3. `CpuCaps` - 30 edges
-4. `FanInfo` - 29 edges
-5. `AuraProvider` - 28 edges
-6. `HwmonTelemetryProvider` - 28 edges
-7. `spawn_background()` - 24 edges
-8. `FeatureAvailability` - 23 edges
-9. `SharedUiState` - 23 edges
-10. `Troubleshooting` - 23 edges
+1. `build_ui()` - 104 edges
+2. `RogHelperDaemon` - 60 edges
+3. `CpuCaps` - 32 edges
+4. `HwmonTelemetryProvider` - 31 edges
+5. `FanInfo` - 30 edges
+6. `PrivilegedService` - 28 edges
+7. `AuraProvider` - 28 edges
+8. `spawn_background()` - 25 edges
+9. `SharedUiState` - 24 edges
+10. `Troubleshooting` - 24 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `cmd_setup_check()` --calls--> `probe_setup_status()`  [INFERRED]
+  crates/rog-cli/src/main.rs → crates/rog-providers/src/setup.rs
+- `cmd_hardware_report()` --calls--> `probe_setup_status()`  [INFERRED]
   crates/rog-cli/src/main.rs → crates/rog-providers/src/setup.rs
 - `main()` --calls--> `config_path()`  [INFERRED]
   crates/rog-daemon/src/main.rs → crates/rog-core/src/config.rs
@@ -124,49 +131,47 @@
   crates/rog-ui/src/main.rs → crates/rog-core/src/config.rs
 - `main()` --calls--> `legacy_ui_config_path()`  [INFERRED]
   crates/rog-daemon/src/main.rs → crates/rog-core/src/config.rs
-- `load_app_settings()` --calls--> `legacy_ui_config_path()`  [INFERRED]
-  crates/rog-ui/src/main.rs → crates/rog-core/src/config.rs
 
 ## Import Cycles
 - None detected.
 
-## Communities (91 total, 5 thin omitted)
+## Communities (96 total, 5 thin omitted)
 
 ### Community 0 - "rog-daemon/src/main.rs"
-Cohesion: 0.07
-Nodes (65): GpuMode, apply_fan_caps_to_device_caps(), battery_state_to_str(), caps_to_dbus(), caps_to_dbus_emits_feature_access_status_and_reason_keys(), ControlState, cpu_access_warning(), cpu_caps_to_dbus() (+57 more)
+Cohesion: 0.06
+Nodes (82): LightingState, apply_cpu_privilege_to_caps(), apply_fan_caps_to_device_caps(), apply_fan_privilege_to_state(), authorization_denial_is_preserved_as_permission_error(), battery_state_to_str(), caps_to_dbus(), caps_to_dbus_emits_feature_access_status_and_reason_keys() (+74 more)
 
 ### Community 1 - "aura.rs"
-Cohesion: 0.07
-Nodes (65): RogError, LightingMode, RgbColor, map_rog_error_to_fdo(), Error, attr_value(), aura_score(), AuraControls (+57 more)
+Cohesion: 0.08
+Nodes (61): LightingMode, RgbColor, attr_value(), aura_score(), AuraControls, AuraEndpoint, AuraProbeDiagnostics, AuraProbeResult (+53 more)
 
 ### Community 2 - "hwmon.rs"
-Cohesion: 0.10
-Nodes (41): FanCaps, FanControlRequest, auto_point_endpoints(), discover_asus_curve_points(), discovers_complete_asus_curve_as_read_only(), fan(), fan_index_from_input_name(), fan_label() (+33 more)
+Cohesion: 0.08
+Nodes (63): FanCaps, FanControlRequest, FanCurve, FanDomain, FanTelemetry, asus_channel_paths(), AsusCurveChannel, auto_point_endpoints() (+55 more)
 
 ### Community 3 - "package-common.sh"
 Cohesion: 0.07
-Nodes (45): append_path_dir(), download_tool(), log_section(), on_appimage_exit(), print_appdir_summary(), print_appimage_build_deps(), print_dir_listing(), print_failure_logs() (+37 more)
+Nodes (46): append_path_dir(), download_tool(), log_section(), on_appimage_exit(), print_appdir_summary(), print_appimage_build_deps(), print_dir_listing(), print_failure_logs() (+38 more)
 
 ### Community 4 - "rog-cli/src/main.rs"
-Cohesion: 0.08
-Nodes (39): backend_access_from_connect_error(), backend_connect_status_maps_error_to_temporarily_unavailable(), backend_connect_status_maps_missing_backend_without_error(), Cli, Cmd, cmd_caps(), cmd_dbus(), cmd_fan_caps() (+31 more)
+Cohesion: 0.06
+Nodes (56): backend_access_from_connect_error(), backend_connect_status_maps_error_to_temporarily_unavailable(), backend_connect_status_maps_missing_backend_without_error(), Cli, Cmd, cmd_caps(), cmd_dbus(), cmd_fan_caps() (+48 more)
 
 ### Community 5 - "cpu.rs"
-Cohesion: 0.11
-Nodes (48): CpuPathAccess, BoostPath, can_read(), choose_best_token(), collect_epp_values(), collect_governors(), control_access_from_paths(), count_physical_cores() (+40 more)
+Cohesion: 0.07
+Nodes (66): cpu_request_readback_matches(), CpuControlRequest, CpuFrequencyBounds, CpuPowerMode, frequency_bounds_and_inversion_are_rejected(), normalize_cpu_token(), Option, RogResult (+58 more)
 
 ### Community 6 - "AsusdPlatformProvider"
-Cohesion: 0.12
-Nodes (30): PerformanceProfile, AsusdCaps, AsusdEndpoint, AsusdPlatformProvider, classify_dbus_error(), map_dbus_error(), map_dbus_fdo_error(), normalize_word() (+22 more)
+Cohesion: 0.07
+Nodes (41): Cow, feature_access_reason_key(), feature_access_status_key(), String, ErrorCategory, RogError, Into, Self (+33 more)
 
 ### Community 7 - "rog-ui/src/main.rs"
-Cohesion: 0.07
-Nodes (42): autostart_desktop_entry(), autostart_enabled(), autostart_entry_supports_minimized_launch(), autostart_file_path(), can_stage_update_in_dir(), compare_versions(), Daemon1, dashboard_mode_columns() (+34 more)
+Cohesion: 0.10
+Nodes (35): Cell, FanInfo, autostart_desktop_entry(), autostart_entry_supports_minimized_launch(), Daemon1, dashboard_layout(), dashboard_mode_columns(), dashboard_secondary_columns() (+27 more)
 
 ### Community 8 - ".new"
-Cohesion: 0.13
-Nodes (27): apply_battery_limit(), apply_cpu_actions(), apply_fan_action(), apply_gpu_mode(), apply_lighting(), apply_profile(), clamped_scroller(), cpu_dashboard_summary() (+19 more)
+Cohesion: 0.09
+Nodes (46): Client, apply_battery_limit(), apply_cpu_actions(), apply_fan_action(), apply_gpu_mode(), apply_lighting(), apply_profile(), apply_update_action() (+38 more)
 
 ### Community 9 - "UI Pages"
 Cohesion: 0.29
@@ -185,8 +190,8 @@ Cohesion: 0.12
 Nodes (33): BatteryState, parse_battery_state(), pick_battery_dir(), PowerSupplyBatteryStatus, PowerSupplySysfsProvider, read_battery_health_percent(), read_i64(), read_power_w() (+25 more)
 
 ### Community 13 - "SupergfxProvider"
-Cohesion: 0.17
-Nodes (23): action_name_from_u32(), map_dbus_error(), mode_id_from_text(), mode_name_from_text(), mode_name_from_u32(), mode_name_from_value(), normalize_word(), owned_from_string() (+15 more)
+Cohesion: 0.16
+Nodes (26): GpuMode, action_name_from_u32(), classify_dbus_error(), map_dbus_error(), mode_id_from_text(), mode_name_from_text(), mode_name_from_u32(), mode_name_from_value() (+18 more)
 
 ### Community 14 - "setup.rs"
 Cohesion: 0.14
@@ -194,11 +199,11 @@ Nodes (30): DependencyStatus, best_unit_status(), binary_evidence(), bounded_pro
 
 ### Community 15 - "memory.rs"
 Cohesion: 0.15
-Nodes (24): format_bytes_short(), MemorySnapshot, MemoryTelemetryProvider, parse_kib_to_bytes(), parse_meminfo_bytes(), parse_proc_status(), parse_psi_avgs(), ProcMem (+16 more)
+Nodes (25): TopProcessMem, format_bytes_short(), MemorySnapshot, MemoryTelemetryProvider, parse_kib_to_bytes(), parse_meminfo_bytes(), parse_proc_status(), parse_psi_avgs() (+17 more)
 
 ### Community 16 - "DBus API"
 Cohesion: 0.06
-Nodes (33): Additional memory breakdown keys, Configuration, Core telemetry keys, CPU Setter Methods, DBus API, Design Notes, Errors, Fan state map (+25 more)
+Nodes (35): Additional memory breakdown keys, Configuration, Core telemetry keys, CPU Setter Methods, DBus API, Design Notes, Errors, Fan state map (+27 more)
 
 ### Community 17 - "Codex Prompt: Redesign Fans Page UI with RPM Gauges, Animated Fan Rotors, Individual Fan Cards, and Safe Control UX"
 Cohesion: 0.07
@@ -209,32 +214,32 @@ Cohesion: 0.08
 Nodes (25): 10. State parsing and telemetry extension, 1. Make CPU/GPU gauges bigger, 2. Put CPU and GPU gauges side by side, 3. Add operating speed / MHz display, 4. Add richer gauge card content, 5. Improve gauge drawing, 6. Reposition the Cooling Mode card, 7. Clean up fan rotor cards if needed (+17 more)
 
 ### Community 19 - "config.rs"
-Cohesion: 0.13
+Cohesion: 0.12
 Nodes (39): AppConfig, atomic_save_replaces_complete_file_and_cleans_temporary_file(), bool_field(), CloseBehavior, config_path(), config_to_toml(), ConfigLoad, ConfigSource (+31 more)
 
 ### Community 20 - "Self"
-Cohesion: 0.17
-Nodes (3): FeatureAccessState, Into, Self
+Cohesion: 0.18
+Nodes (6): lighting_diagnostics_explains_asusd_without_aura(), lighting_diagnostics_explains_potential_unimplemented_aura_interface(), lighting_diagnostics_formats_read_only_sysfs_warning(), lighting_diagnostics_formats_sysfs_only_brightness_report(), Into, Self
 
 ### Community 21 - "Troubleshooting"
-Cohesion: 0.09
-Nodes (23): asusd Present, But Fan Curves Unsupported, Battery, Profile, or GPU Controls Still Unavailable, Boost Failed or Restored Auto, `Cargo.lock` parse error (`version = 4`), CPU Counts Look Wrong On A Hybrid CPU, CPU Telemetry Works, But CPU Controls Are Read-Only, Daemon Not Running, Diagnostics Commands (+15 more)
+Cohesion: 0.08
+Nodes (24): asusd Present, But Fan Curves Unsupported, Battery, Profile, or GPU Controls Still Unavailable, Boost Failed or Restored Auto, `Cargo.lock` parse error (`version = 4`), CPU Counts Look Wrong On A Hybrid CPU, CPU Telemetry Works, But CPU Controls Are Read-Only, Daemon Not Running, Diagnostics Commands (+16 more)
 
 ### Community 22 - "build_ui"
-Cohesion: 0.06
-Nodes (62): ActionRow, Application, Button, ComboBoxText, CpuCaps, append_detail_row(), build_detail_rows(), build_fan_card_slot() (+54 more)
+Cohesion: 0.08
+Nodes (50): ActionRow, Application, Button, ComboBoxText, append_detail_row(), build_detail_rows(), build_fan_card_slot(), build_fan_visual_slot() (+42 more)
 
 ### Community 23 - ".as_str"
 Cohesion: 0.13
-Nodes (7): CpuAccessState, CpuControlAccess, CpuControlKind, display_backend_name(), FanControlMode, FanMappingConfidence, normalize_lighting_word()
+Nodes (6): CpuAccessState, CpuAuthorization, CpuControlAccess, CpuControlKind, FanControlMode, FanMappingConfidence
 
 ### Community 24 - "rog-helper"
 Cohesion: 0.10
 Nodes (21): AppImage Usage, Arch Linux Installation, Architecture Summary, Build, Build and Run Basics, Current Missing or Incomplete Features, Currently Implemented Features, Debian / Ubuntu / Mint Installation (+13 more)
 
 ### Community 25 - "model.rs"
-Cohesion: 0.11
-Nodes (10): empty_fan_curve_is_rejected(), lighting_diagnostics_explains_asusd_without_aura(), lighting_diagnostics_explains_potential_unimplemented_aura_interface(), lighting_diagnostics_formats_read_only_sysfs_warning(), lighting_diagnostics_formats_sysfs_only_brightness_report(), out_of_range_percent_request_is_rejected(), rpm_target_rejected_when_unsupported(), SetupIssue (+2 more)
+Cohesion: 0.09
+Nodes (18): BatteryLimitPercent, empty_fan_curve_is_rejected(), fan_curve_sanitize_clamps(), fan_curve_sanitize_sorts_and_enforces_monotonic(), FanCurvePolicy, FanPoint, out_of_range_percent_request_is_rejected(), parse_hex_byte() (+10 more)
 
 ### Community 26 - "Current Pages"
 Cohesion: 0.09
@@ -250,31 +255,31 @@ Nodes (19): Build and Validation Commands, Common Contributor Workflow, Current 
 
 ### Community 30 - "SharedUiState"
 Cohesion: 0.08
-Nodes (27): Client, apply_update_action(), AppMetadata, build_github_client(), check_for_updates(), friendly_update_error(), github_repo_from_url(), gpu_mode_to_dropdown_index() (+19 more)
+Nodes (24): detect_maintainer_name(), gpu_mode_to_dropdown_index(), initial_update_state(), open_uri_with_feedback(), OpenLinkRequest, package_authors(), package_value(), PendingCpuAction (+16 more)
 
-### Community 31 - "FanCurve"
-Cohesion: 0.14
-Nodes (15): BatteryLimitPercent, fan_curve_sanitize_clamps(), fan_curve_sanitize_sorts_and_enforces_monotonic(), FanCurve, FanCurvePolicy, FanDomain, FanPoint, parse_hex_byte() (+7 more)
+### Community 31 - "PrivilegedError"
+Cohesion: 0.08
+Nodes (34): B, AuthorizationState, capabilities_round_trip_and_reject_unknown_values(), denied_authorization_has_a_stable_error(), PrivilegedCapabilities, PrivilegedCategory, PrivilegedError, PrivilegedErrorCode (+26 more)
 
 ### Community 32 - "Build"
 Cohesion: 0.11
 Nodes (18): Build, Build Commands, CLI, Daemon, Install From Release Artifacts, Install Locally, Optional Desktop Launcher Install, Packaging Helpers (+10 more)
 
 ### Community 33 - "SetupStatus"
-Cohesion: 0.12
-Nodes (6): DependencyKind, PermissionKind, PermissionState, PermissionStatus, SetupStatus, fan_permission_status()
+Cohesion: 0.18
+Nodes (6): PermissionKind, PermissionStatus, SetupIssue, SetupSeverity, SetupStatus, fan_permission_status()
 
 ### Community 34 - "Permissions"
 Cohesion: 0.11
-Nodes (18): ASUS profile and battery-limit control, CPU controls, Current Permission Boundaries, GPU mode control, Keyboard backlight brightness, Permissions, Practical Guidance, Read-Only Degradation Behavior (+10 more)
+Nodes (19): ASUS profile and battery-limit control, CPU controls, Current Permission Boundaries, GPU mode control, Keyboard backlight brightness, Permissions, Practical Guidance, Privileged Helper Trust Boundary (+11 more)
 
 ### Community 35 - "rog-helper v0.2.2"
 Cohesion: 0.12
 Nodes (15): AppImage, Debian, Ubuntu, Linux Mint, Developer Notes, Direct binaries, Fedora-style RPM systems, Full Changelog, Hardware Support Notes, Highlights (+7 more)
 
 ### Community 36 - "PowerSource"
-Cohesion: 0.12
-Nodes (19): Cow, feature_access_reason_key(), feature_access_status_key(), String, Into, Self, String, ValidationWarning (+11 more)
+Cohesion: 0.26
+Nodes (11): PowerSource, debounce_blocks_rapid_reapply(), manual_override_pauses_auto(), PolicyAction, PolicyConfig, PolicyEvent, PolicyState, Default (+3 more)
 
 ### Community 37 - "nvidia_smi.rs"
 Cohesion: 0.16
@@ -304,9 +309,9 @@ Nodes (12): Build, Test, and Static Checks, Cargo Metadata, Documentation, Featu
 Cohesion: 0.17
 Nodes (11): Architecture & Layer Boundaries, Async & Concurrency, Common Tasks, Copilot Instructions for rog-helper, DBus & IPC, Development Workflow, Error Handling, Key Files to Know (+3 more)
 
-### Community 44 - "String"
-Cohesion: 0.10
-Nodes (43): FanState, FeatureAvailability, canonicalize_git_remote_url(), dashboard_control_subtitle(), detect_git_remote_repository_url(), detect_maintainer_name(), detect_repository_url(), fan_banner_title() (+35 more)
+### Community 44 - "dbus.rs"
+Cohesion: 0.31
+Nodes (14): DbusIntrospection, list_system_bus_names(), list_system_bus_names_matching(), parse_introspection(), OwnedObjectPath, RogResult, String, Vec (+6 more)
 
 ### Community 45 - "Hardware Support"
 Cohesion: 0.20
@@ -362,7 +367,7 @@ Nodes (5): Core validation tests, Daemon tests, Provider tests, Testing requirem
 
 ### Community 58 - "ASUS Aura / RGB Backend Discovery"
 Cohesion: 0.13
-Nodes (12): ASUS Aura / RGB Backend Discovery, Data needed next, Evidence, Implemented safety boundary, Provider hierarchy, Result, Aura/RGB discovery rule, DBus Notes (+4 more)
+Nodes (12): ASUS Aura / RGB Backend Discovery, Data needed next, Evidence, Implemented safety boundary, Provider hierarchy, Result, Current implementation decision, Fan-control backend discovery (+4 more)
 
 ### Community 59 - "Unreleased"
 Cohesion: 0.50
@@ -392,17 +397,21 @@ Nodes (3): 1. New shared fan domain model in `rog-core`, 2. Validation rules, Fe
 Cohesion: 0.10
 Nodes (21): AsRef, draw_history_graph(), HistoryGraph, HistoryGraphState, MetricCard, page_container(), page_header(), page_header_group() (+13 more)
 
-### Community 72 - "String"
-Cohesion: 0.19
-Nodes (15): AppState, CpuCoreTelemetry, CpuTelemetry, FanTelemetry, LightingDiagnostics, LightingState, list_text(), opt_text() (+7 more)
+### Community 72 - "PrivilegedService"
+Cohesion: 0.12
+Nodes (24): check_polkit_authorization(), fan_domain(), main(), map_cpu_error(), map_fan_error(), map_privileged_error(), optional_u32(), owned_value() (+16 more)
 
 ### Community 73 - "build_shell"
 Cohesion: 0.40
 Nodes (5): build_shell(), NavigationItem, Label, ViewStack, ToolbarView
 
-### Community 75 - "fetch_state"
-Cohesion: 0.16
-Nodes (26): caps_from_dbus(), caps_from_dbus_parses_feature_access_status_and_reason_keys(), caps_text_from_dbus(), cpu_caps_from_dbus(), cpu_caps_from_dbus_parses_structured_control_access_rows(), cpu_control_access_from_dbus(), cpu_path_access_from_dbus(), cpu_telemetry_from_dbus() (+18 more)
+### Community 75 - "String"
+Cohesion: 0.10
+Nodes (54): AppState, CpuCaps, CpuCoreTelemetry, CpuTelemetry, DeviceCaps, FanState, Vec, TelemetrySnapshot (+46 more)
+
+### Community 76 - "FeatureAvailability"
+Cohesion: 0.21
+Nodes (16): FeatureAvailability, dashboard_control_subtitle(), feature_control_subtitle(), feature_state_value(), feature_status_label(), feature_value_label(), lighting_apply_subtitle(), lighting_availability_label() (+8 more)
 
 ### Community 77 - "Lighting"
 Cohesion: 0.33
@@ -440,50 +449,66 @@ Nodes (5): Capability dependencies, Diagnostics, Missing or planned, What it sho
 Cohesion: 0.50
 Nodes (4): Persistence and safety, Settings, What it shows, What it supports
 
-### Community 86 - "dbus.rs"
-Cohesion: 0.38
-Nodes (13): DbusIntrospection, list_system_bus_names(), list_system_bus_names_matching(), parse_introspection(), OwnedObjectPath, RogResult, String, Vec (+5 more)
-
-### Community 87 - "Fan-control backend discovery"
-Cohesion: 0.18
-Nodes (11): Cooling UI, Current decision, Data still required before fan writes, Fan-control backend discovery, Implementation plan after the write gate is satisfied, References, `rog-core`, `rog-daemon` and DBus (+3 more)
+### Community 87 - "DBus Notes"
+Cohesion: 0.33
+Nodes (6): Aura/RGB discovery rule, DBus Notes, Fan-control discovery rule, Milestone 1, Phase 0 Discovery Commands, Rule (important)
 
 ### Community 88 - "Q: Implement robust persistent configuration and a dedicated Settings page"
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: Implement robust persistent configuration and a dedicated Settings page, Source Nodes
 
-### Community 89 - "FanInfo"
-Cohesion: 0.44
-Nodes (11): FanInfo, fan_card_tooltip(), fan_endpoint_details(), fan_mapping_uncertain(), fan_rpm_text(), fan_status_text(), fan_warning_text(), rotor_status() (+3 more)
+### Community 90 - "Option"
+Cohesion: 0.10
+Nodes (30): can_stage_update_in_dir(), canonicalize_git_remote_url(), compare_versions(), detect_git_remote_repository_url(), detect_repository_url(), detect_update_capability(), format_bool_opt(), format_bytes_gib_opt() (+22 more)
 
-### Community 90 - "DeviceCaps"
-Cohesion: 0.43
-Nodes (7): DeviceCaps, combined_asusd_issue(), gpu_status_summary(), gpu_switch_hint_text(), support_messages(), troubleshooting_summary_text(), warning_detail()
+### Community 91 - "dbus_decode.rs"
+Cohesion: 0.25
+Nodes (16): boolean(), float(), missing_and_wrong_type_fields_remain_absent(), nested_map(), ov(), rows(), Option, OwnedValue (+8 more)
+
+### Community 92 - "DependencyState"
+Cohesion: 0.11
+Nodes (4): ContractStatus, DependencyState, FeatureAccessState, PermissionState
+
+### Community 93 - "Release Readiness Audit"
+Cohesion: 0.18
+Nodes (10): Build, Test, and Static Checks, Cargo Metadata, Documentation, Feature Verification, Hardware Validation Evidence and Scenarios, Icons and Assets, Manual Runtime Verification, Release Readiness Audit (+2 more)
+
+### Community 94 - "check-release-metadata.py"
+Cohesion: 0.57
+Nodes (6): main(), parse_desktop(), png_size(), Path, require(), text()
+
+### Community 95 - "DBus Contract Map"
+Cohesion: 0.33
+Nodes (6): Complete Response-Key Inventory, Consumer Summary, Contract Tests, DBus Contract Map, Default and Duplication Findings, Non-map Responses and Setter Requests
+
+### Community 96 - "String"
+Cohesion: 0.14
+Nodes (9): CpuPathAccess, display_backend_name(), LightingDiagnostics, list_text(), normalize_lighting_word(), opt_text(), opt_u32(), Option (+1 more)
 
 ## Knowledge Gaps
-- **432 isolated node(s):** `LightingProvider`, `TelemetryProvider`, `Daemon1`, `rog-helper-apprun-hook.sh script`, `PATH` (+427 more)
+- **445 isolated node(s):** `LightingProvider`, `TelemetryProvider`, `Daemon1`, `rog-helper-apprun-hook.sh script`, `PATH` (+440 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Work-memory lessons
 
 **Preferred sources** — corroborated by past sessions; start here.
-- `RogHelperDaemon` (2× useful, score=1.999014621) _(code changed — re-verify)_
+- `RogHelperDaemon` (2× useful, score=1.998289323) _(code changed — re-verify)_
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `FanInfo` connect `FanInfo` to `rog-daemon/src/main.rs`, `hwmon.rs`, `rog-cli/src/main.rs`, `String`, `fetch_state`, `String`, `Self`, `.as_str`, `model.rs`, `FanCurve`?**
-  _High betweenness centrality (0.024) - this node is a cross-community bridge._
-- **Why does `CpuCaps` connect `build_ui` to `rog-daemon/src/main.rs`, `cpu.rs`, `String`, `fetch_state`, `setup.rs`, `.as_str`, `model.rs`, `DeviceCaps`, `SharedUiState`?**
-  _High betweenness centrality (0.024) - this node is a cross-community bridge._
-- **Why does `RogHelperDaemon` connect `rog-daemon/src/main.rs` to `aura.rs`, `hwmon.rs`, `rog-cli/src/main.rs`, `cpu.rs`, `AsusdPlatformProvider`, `SupergfxProvider`, `FanCurve`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
+- **Why does `CpuTelemetryProvider` connect `cpu.rs` to `rog-daemon/src/main.rs`, `PrivilegedService`?**
+  _High betweenness centrality (0.034) - this node is a cross-community bridge._
+- **Why does `TopProcessMem` connect `memory.rs` to `String`, `rog-daemon/src/main.rs`, `.new`, `String`, `model.rs`?**
+  _High betweenness centrality (0.031) - this node is a cross-community bridge._
+- **Why does `build_ui()` connect `build_ui` to `rog-ui/src/main.rs`, `.new`, `MetricCard`, `String`, `FeatureAvailability`, `update_diagnostics_buffer`, `Option`, `SharedUiState`?**
+  _High betweenness centrality (0.029) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `build_ui()` (e.g. with `page_container()` and `page_header()`) actually correct?**
   _`build_ui()` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `LightingProvider`, `TelemetryProvider`, `Daemon1` to the rest of the system?**
-  _432 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _445 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `rog-daemon/src/main.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.0657979407979408 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05608042635658915 - nodes in this community are weakly interconnected._
 - **Should `aura.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.07083333333333333 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07572861920688008 - nodes in this community are weakly interconnected._

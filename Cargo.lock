@@ -1440,11 +1440,26 @@ dependencies = [
  "regex",
  "rog-core",
  "rog-providers",
+ "serde",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",
+]
+
+[[package]]
+name = "rog-privileged"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "rog-core",
+ "rog-providers",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+ "zvariant",
 ]
 
 [[package]]

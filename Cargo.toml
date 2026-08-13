@@ -4,6 +4,7 @@ members = [
   "crates/rog-core",
   "crates/rog-providers",
   "crates/rog-daemon",
+  "crates/rog-privileged",
   "crates/rog-ui",
   "crates/rog-cli",
 ]

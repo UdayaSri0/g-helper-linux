@@ -1,0 +1,30 @@
+[Unit]
+Description=ROG Helper privileged control service
+Documentation=https://github.com/UdayaSri0/g-helper-linux/blob/Dev/docs/PERMISSIONS.md
+
+[Service]
+Type=dbus
+BusName=io.github.roghelper.Privileged
+ExecStart=@PRIVILEGED_EXEC@
+User=root
+Group=root
+Restart=no
+TimeoutStopSec=10s
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=no
+ReadWritePaths=/sys/devices/system/cpu /sys/class/hwmon -/sys/devices/platform/asus-nb-wmi
+RuntimeDirectory=rog-helper
+RuntimeDirectoryMode=0755
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

@@ -1,10 +1,12 @@
 # Feature Matrix
 
-This matrix reflects the current implementation in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-ui`, and `crates/rog-cli`.
+This matrix reflects the current implementation in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 | Feature | Backend / provider | Read / Write | Current status | Notes / limitations |
 | --- | --- | --- | --- | --- |
 | Session daemon API | `rog-daemon` | Read + Write | Implemented | Session bus API exposed at `io.github.roghelper.Daemon` |
+| Privileged CPU helper | `rog-privileged` + PolicyKit | Write | Implemented | On-demand system service exposes typed CPU operations only; every write uses `io.github.roghelper.cpu.control` and caller-bound PolicyKit authorization |
+| Privileged helper diagnostics | `rog-daemon` + `rog-cli privileged-status` | Read | Implemented | Distinguishes missing, unreachable, incompatible, PolicyKit unavailable, authorization denied, and backend/category unsupported states without breaking telemetry |
 | Diagnostics CLI | `rog-cli` + provider layer | Read | Implemented | Includes consolidated `setup-check` plus service, DBus, sensor, capability, fan, and keyboard lighting/RGB inspection |
 | Setup & Access readiness | `setup` provider + daemon DBus + GTK UI | Read | Implemented | Verifies expected APIs, distinguishes missing/unreachable services from read-only/unsupported controls, and exposes advanced evidence without privilege escalation |
 | Capability probing | `rog-daemon` startup + providers | Read | Implemented, partial | Fan capability keys now include reading, manual percent, RPM target, curves, sync, boost, count, and backend; writable support is still hardware/backend-dependent |
@@ -21,7 +23,7 @@ This matrix reflects the current implementation in the repository today. It is b
 | Sync fan control | daemon fan state | Write | Implemented when possible | Available when more than one controllable fan is detected; read-only fans remain visible |
 | Boost mode | daemon + writable manual percent backend | Write | Implemented | Time-limited full-speed boost restores Auto/BIOS mode after timeout |
 | CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, cached 60-second filled history/sparkline presentation, physical-core/logical-thread counts, and per-logical-CPU state |
-| CPU controls | `cpu` sysfs backend | Read + Write | Implemented | Write access depends on sysfs permissions and platform support; daemon reports per-control access state, blocked paths, and suggested checks |
+| CPU controls | `cpu` sysfs backend + privileged fallback | Read + Write | Implemented | Direct writes are preferred; only permission-blocked supported controls fall back to the helper, with validation and readback |
 | Battery and power telemetry | `UPower` + `power_supply` | Read | Implemented | Best-effort combined view; sysfs fills gaps `UPower` may not expose |
 | Memory and swap telemetry | `memory` provider | Read | Implemented | Includes RAM, swap, PSI, zram, zswap, and top processes |
 | NVIDIA GPU telemetry | `nvidia-smi` | Read | Implemented | One daemon-side query every three seconds provides optional utilisation, VRAM, clocks, power, identity, and temperature; hwmon temperature stays preferred and all fields degrade independently |

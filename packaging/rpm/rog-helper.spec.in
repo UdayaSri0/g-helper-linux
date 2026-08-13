@@ -28,14 +28,29 @@ cd %{name}-%{version}
 mkdir -p %{buildroot}
 cp -a usr %{buildroot}/
 
+%post
+/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
+%preun
+if [ "$1" -eq 0 ]; then
+  /bin/systemctl stop rog-helper-privileged.service >/dev/null 2>&1 || :
+fi
+
+%postun
+/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+
 %files
 %license %{_docdir}/%{name}/LICENSE-APACHE
 %license %{_docdir}/%{name}/LICENSE-MIT
 %{_bindir}/rog-helper
 %{_bindir}/rog-helper-ui
 %{_bindir}/rog-helperd
+%{_libexecdir}/rog-helper-privileged
 %{_datadir}/applications/rog-helper.desktop
 %{_datadir}/dbus-1/services/io.github.roghelper.Daemon.service
+%{_datadir}/dbus-1/system-services/io.github.roghelper.Privileged.service
+%{_datadir}/dbus-1/system.d/io.github.roghelper.Privileged.conf
+%{_datadir}/polkit-1/actions/io.github.roghelper.policy
 %{_datadir}/icons/hicolor/16x16/apps/rog-helper.png
 %{_datadir}/icons/hicolor/24x24/apps/rog-helper.png
 %{_datadir}/icons/hicolor/32x32/apps/rog-helper.png
@@ -48,6 +63,7 @@ cp -a usr %{buildroot}/
 %{_datadir}/metainfo/io.github.roghelper.UI.metainfo.xml
 %{_datadir}/pixmaps/rog-helper.png
 /usr/lib/systemd/user/rog-helperd.service
+%{_unitdir}/rog-helper-privileged.service
 
 %changelog
 * @CHANGELOG_DATE@ @MAINTAINER@ - @VERSION@-@RPM_RELEASE@

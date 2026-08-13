@@ -108,6 +108,29 @@ Important note:
 - `.deb` installs render an absolute `ExecStart=/usr/bin/rog-helperd`
 - packaged desktop installs also ship session DBus activation metadata, so launching the UI can start the daemon even before the user service is enabled
 
+## Privileged Helper or PolicyKit Unavailable
+
+Run the read-only status path through the session daemon:
+
+```bash
+cargo run -p rog-cli -- privileged-status
+systemctl status rog-helper-privileged.service --no-pager
+busctl --system list | rg -n "io\.github\.roghelper\.Privileged|PolicyKit1"
+```
+
+Interpretation:
+
+- `helper installed: no`: the system D-Bus activation file is not installed
+- `helper reachable: no`: activation failed, policy blocked the call, or the service exited/faulted
+- `helper compatible: no`: the helper API version is not supported by this daemon
+- `authorization available: no`: PolicyKit is missing or unavailable
+- `authorization state: denied`: the non-interactive probe was denied or would require authentication
+- `privileged categories available: cpu`: the typed CPU fallback is installed and compatible
+
+Inspect service logs with `journalctl -u rog-helper-privileged.service`. The helper is activated on
+demand and exits after being idle; an inactive unit by itself is not a fault. Do not run the GTK UI
+or `rog-helperd` as root, and do not add local D-Bus rules granting generic root operations.
+
 ## Tray Not Visible
 
 The tray uses StatusNotifierItem through `ksni`.
@@ -206,7 +229,9 @@ Then compare the `*_access_status` and `*_access_reason` fields with what the Da
 
 ## CPU Telemetry Works, But CPU Controls Are Read-Only
 
-This is expected behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
+CPU telemetry remains available when the daemon cannot write a control. With a compatible helper,
+the UI reports `authorization_required` and Apply opens the normal PolicyKit flow. Without it, the
+same supported control reports `helper_missing` or `read_only`, not unsupported hardware.
 
 ## Fans Visible, But Controls Disabled
 
@@ -291,9 +316,9 @@ Typical signs:
 
 - CPU telemetry is visible
 - the CPU page keeps the control rows visible
-- affected controls are disabled
-- the CPU banner says writes are blocked or backend support is missing
-- Diagnostics reports `permission_denied` for one or more CPU control groups
+- permission-blocked supported controls remain actionable when the helper is ready
+- the CPU banner distinguishes authorization required/denied, helper missing, read-only, and unsupported
+- Diagnostics reports `direct_write`, `privileged_write`, and `authorization` per control
 
 Check:
 
@@ -310,23 +335,19 @@ ls -l /sys/devices/system/cpu/cpu*/online
 Expected current behavior:
 
 - telemetry remains visible
-- only the affected controls are disabled
-- Diagnostics lists the real sysfs paths and whether each one is readable or writable
+- Apply uses direct access when available and otherwise requests `io.github.roghelper.cpu.control`
+- denial or cancellation shows an error and refreshes the actual value
+- Diagnostics lists the real sysfs paths and per-control access source
 - there is no fake `Fix permissions` action
 
 What to do:
 
-- inspect the exact blocked paths in Diagnostics
-- grant `rog-helperd` write access only to the specific files you actually want writable
-- restart the user daemon after changing local policy:
+- inspect helper and PolicyKit status:
 
 ```bash
-systemctl --user restart rog-helperd
+cargo run -p rog-cli -- privileged-status
+systemctl status rog-helper-privileged.service --no-pager
 ```
-
-Important note:
-
-- the repository does not ship an automatic privilege escalation or permission-repair path for CPU sysfs writes
 
 ## CPU Counts Look Wrong On A Hybrid CPU
 
@@ -389,7 +410,7 @@ What to do:
 - if you want sysfs writes, create a local admin-managed permission change for the relevant LED `brightness` file
 - restart `rog-helperd` after changing local policy
 
-The repository does not currently ship a bundled udev rule or privileged helper for this path.
+The repository does not ship a bundled udev rule or a privileged lighting-write method for this path.
 
 ## Keyboard RGB / Aura Diagnostics
 

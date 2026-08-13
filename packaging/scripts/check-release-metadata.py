@@ -55,6 +55,7 @@ def main() -> int:
     expected_binaries = {
         "rog-cli": "rog-helper",
         "rog-daemon": "rog-helperd",
+        "rog-privileged": "rog-helper-privileged",
         "rog-ui": "rog-helper-ui",
     }
     for manifest_path in sorted((ROOT / "crates").glob("*/Cargo.toml")):
@@ -77,13 +78,38 @@ def main() -> int:
     require(metainfo.findtext("launchable") == "rog-helper.desktop", "AppStream desktop ID drift")
     require(metainfo.find("url[@type='homepage']").text == REPOSITORY, "AppStream repository URL drift")
     provided = {node.text for node in metainfo.findall("./provides/binary")}
-    require(provided == set(expected_binaries.values()), "AppStream binary list drift")
+    desktop_binaries = {name for name in expected_binaries.values() if name != "rog-helper-privileged"}
+    require(provided == desktop_binaries, "AppStream binary list drift")
 
     systemd = text("packaging/systemd-user/rog-helperd.service")
     require("ExecStart=rog-helperd" in systemd, "systemd daemon binary drift")
     dbus = text("packaging/dbus-session/io.github.roghelper.Daemon.service")
     require("Name=io.github.roghelper.Daemon" in dbus, "DBus service name drift")
     require("Exec=rog-helperd" in dbus, "DBus daemon binary drift")
+
+    privileged_dbus = text("packaging/dbus-system/io.github.roghelper.Privileged.service")
+    require("Name=io.github.roghelper.Privileged" in privileged_dbus, "privileged DBus service name drift")
+    require("SystemdService=rog-helper-privileged.service" in privileged_dbus, "privileged DBus/systemd activation drift")
+    privileged_bus_policy = ET.fromstring(text("packaging/dbus-system/io.github.roghelper.Privileged.conf"))
+    allow_rules = privileged_bus_policy.findall("./policy/allow")
+    require(any(rule.get("own") == "io.github.roghelper.Privileged" for rule in allow_rules), "privileged DBus ownership policy missing")
+    require(any(rule.get("send_destination") == "io.github.roghelper.Privileged" for rule in allow_rules), "privileged DBus send policy missing")
+
+    privileged_systemd = text("packaging/systemd-system/rog-helper-privileged.service")
+    require("Type=dbus" in privileged_systemd, "privileged service must use Type=dbus")
+    require("BusName=io.github.roghelper.Privileged" in privileged_systemd, "privileged systemd bus name drift")
+    require("User=root" in privileged_systemd, "privileged service user drift")
+
+    polkit = ET.fromstring(text("packaging/polkit/io.github.roghelper.policy"))
+    action_ids = {action.get("id") for action in polkit.findall("./action")}
+    expected_actions = {
+        "io.github.roghelper.cpu.control",
+        "io.github.roghelper.fans.control",
+        "io.github.roghelper.lighting.control",
+        "io.github.roghelper.system.configure",
+    }
+    require(action_ids == expected_actions, "privileged PolicyKit action set drift")
+    require("io.github.roghelper.root" not in action_ids, "generic root PolicyKit action is forbidden")
 
     resource_path = ROOT / "crates/rog-ui/resources/rog-ui.gresource.xml"
     resource_root = ET.parse(resource_path).getroot()

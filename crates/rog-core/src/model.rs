@@ -135,6 +135,18 @@ pub struct FanInfo {
     pub min_rpm: Option<u32>,
     pub max_rpm: Option<u32>,
     pub current_percent: Option<u8>,
+    #[serde(default)]
+    pub rpm_readable: bool,
+    #[serde(default)]
+    pub pwm_endpoint_verified: bool,
+    #[serde(default)]
+    pub direct_write: bool,
+    #[serde(default)]
+    pub privileged_write: bool,
+    #[serde(default)]
+    pub authorization: String,
+    #[serde(default)]
+    pub access_state: String,
     pub controllable: bool,
     pub supports_manual_percent: bool,
     pub supports_manual_rpm_target: bool,
@@ -161,6 +173,12 @@ impl FanInfo {
             min_rpm: None,
             max_rpm: None,
             current_percent: None,
+            rpm_readable: telemetry.rpm.is_some(),
+            pwm_endpoint_verified: false,
+            direct_write: false,
+            privileged_write: false,
+            authorization: "not_required".to_string(),
+            access_state: "telemetry_only".to_string(),
             controllable: false,
             supports_manual_percent: false,
             supports_manual_rpm_target: false,
@@ -285,7 +303,9 @@ impl FanCaps {
             has_fan_reading,
             has_fan_curves,
             fan_curve_readable: has_fan_curves,
-            fan_curve_writable: has_fan_curves,
+            fan_curve_writable: fans
+                .iter()
+                .any(|fan| fan.supports_curve && fan.controllable),
             has_fan_manual_percent,
             has_fan_manual_rpm_target,
             has_individual_fan_control: controllable_count > 0,
@@ -362,6 +382,8 @@ pub struct FanCurvePolicy {
     pub duty_max_percent: u8,
     pub enforce_monotonic: bool,
     pub safe_floor: Option<SafeFloor>,
+    /// Exact number of points required by a verified backend ABI, when known.
+    pub exact_point_count: Option<usize>,
 }
 
 impl Default for FanCurvePolicy {
@@ -377,6 +399,7 @@ impl Default for FanCurvePolicy {
                 temp_c: 85,
                 min_duty_percent: 70,
             }),
+            exact_point_count: None,
         }
     }
 }
@@ -512,6 +535,13 @@ pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) ->
         return Err(RogError::InvalidInput(
             "fan curve must not be empty".to_string(),
         ));
+    }
+    if let Some(expected) = policy.exact_point_count {
+        if points.len() != expected {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve requires exactly {expected} points for this backend"
+            )));
+        }
     }
 
     let mut last_temp = None;
@@ -1953,6 +1983,10 @@ impl CpuTelemetry {
 pub enum CpuAccessState {
     Unknown,
     Available,
+    AuthorizationRequired,
+    AuthorizationDenied,
+    HelperMissing,
+    ReadOnly,
     Unsupported,
     MissingBackend,
     PermissionDenied,
@@ -1964,6 +1998,10 @@ impl CpuAccessState {
         match self {
             Self::Unknown => "unknown",
             Self::Available => "available",
+            Self::AuthorizationRequired => "authorization_required",
+            Self::AuthorizationDenied => "authorization_denied",
+            Self::HelperMissing => "helper_missing",
+            Self::ReadOnly => "read_only",
             Self::Unsupported => "unsupported",
             Self::MissingBackend => "missing_backend",
             Self::PermissionDenied => "permission_denied",
@@ -1974,6 +2012,10 @@ impl CpuAccessState {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "available" => Self::Available,
+            "authorization_required" => Self::AuthorizationRequired,
+            "authorization_denied" => Self::AuthorizationDenied,
+            "helper_missing" => Self::HelperMissing,
+            "read_only" => Self::ReadOnly,
             "unsupported" => Self::Unsupported,
             "missing_backend" => Self::MissingBackend,
             "permission_denied" => Self::PermissionDenied,
@@ -1986,14 +2028,61 @@ impl CpuAccessState {
         matches!(self, Self::Available)
     }
 
+    pub fn is_actionable(self) -> bool {
+        matches!(
+            self,
+            Self::Available | Self::AuthorizationRequired | Self::AuthorizationDenied
+        )
+    }
+
     pub fn contract_status(self) -> ContractStatus {
         match self {
             Self::Unknown => ContractStatus::Unknown,
             Self::Available => ContractStatus::Available,
+            Self::AuthorizationRequired | Self::AuthorizationDenied => {
+                ContractStatus::PermissionDenied
+            }
+            Self::HelperMissing => ContractStatus::MissingDependency,
+            Self::ReadOnly => ContractStatus::PermissionDenied,
             Self::Unsupported => ContractStatus::Unsupported,
             Self::MissingBackend => ContractStatus::MissingDependency,
             Self::PermissionDenied => ContractStatus::PermissionDenied,
             Self::TemporarilyUnavailable => ContractStatus::TransientFailure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CpuAuthorization {
+    #[default]
+    NotApplicable,
+    NotRequired,
+    Required,
+    Authorized,
+    Denied,
+    Unavailable,
+}
+
+impl CpuAuthorization {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::NotRequired => "not_required",
+            Self::Required => "required",
+            Self::Authorized => "authorized",
+            Self::Denied => "denied",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "not_required" => Self::NotRequired,
+            "required" => Self::Required,
+            "authorized" => Self::Authorized,
+            "denied" => Self::Denied,
+            "unavailable" => Self::Unavailable,
+            _ => Self::NotApplicable,
         }
     }
 }
@@ -2056,6 +2145,12 @@ pub struct CpuControlAccess {
     pub kind: CpuControlKind,
     pub status: CpuAccessState,
     pub reason: String,
+    #[serde(default)]
+    pub direct_write: bool,
+    #[serde(default)]
+    pub privileged_write: bool,
+    #[serde(default)]
+    pub authorization: CpuAuthorization,
     pub paths: Vec<CpuPathAccess>,
 }
 
@@ -2113,6 +2208,10 @@ impl CpuCaps {
 
     pub fn control_writable(&self, kind: CpuControlKind) -> bool {
         self.control_state(kind).is_writable()
+    }
+
+    pub fn control_actionable(&self, kind: CpuControlKind) -> bool {
+        self.control_state(kind).is_actionable()
     }
 }
 
@@ -2328,6 +2427,12 @@ mod tests {
             min_rpm: None,
             max_rpm: None,
             current_percent: None,
+            rpm_readable: true,
+            pwm_endpoint_verified: true,
+            direct_write: true,
+            privileged_write: false,
+            authorization: "not_required".to_string(),
+            access_state: "direct".to_string(),
             controllable: true,
             supports_manual_percent: true,
             supports_manual_rpm_target: false,

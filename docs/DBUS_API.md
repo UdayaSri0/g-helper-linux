@@ -61,6 +61,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
 | `GetCpuDiagnostics` | none | `s` | Returns formatted text diagnostics for CPU support and state |
 | `GetSetupStatus` | none | `a{sv}` | Runs bounded, read-only service/API and permission readiness checks |
+| `GetPrivilegedStatus` | none | `a{sv}` | Bounded optional-helper, compatibility, PolicyKit, authorization, and category diagnostics |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
 | `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
@@ -155,6 +156,48 @@ Dependency states are `connected`, `ready`, `not_available`, `inactive`, `unreac
 `not_relevant`, or `unknown`. Permission states are `writable`, `read_only`, `unsupported`,
 `unavailable`, or `unknown`. Probes are bounded and unprivileged; this method performs no repair,
 installation, or permission change.
+
+### Privileged status map
+
+`GetPrivilegedStatus` keeps all system-bus access inside `rog-helperd`. Its keys are:
+
+- `privileged_helper_installed` -> `b`
+- `privileged_helper_reachable` -> `b`
+- `privileged_helper_compatible` -> `b`
+- `privileged_helper_version` -> `s` (empty when unavailable)
+- `polkit_available` -> `b`
+- `authorization_backend` -> `s` (`polkit` or `unavailable`)
+- `authorization_state` -> `s` (`authorized`, `denied`, `unavailable`, or `not_checked`)
+- `privileged_categories_available` -> `as`
+
+Missing, stopped, policy-blocked, and incompatible helpers are returned as status values rather
+than daemon startup failures.
+
+## Privileged system API
+
+`rog-helper-privileged` exports a separate system-bus interface:
+
+- Bus name: `io.github.roghelper.Privileged`
+- Object path: `/io/github/roghelper/Privileged`
+- Interface: `io.github.roghelper.Privileged1`
+
+| DBus method | Arguments | Response | Notes |
+| --- | --- | --- | --- |
+| `Ping` | none | `b` | Reachability only |
+| `GetVersion` | none | `s` | Package version |
+| `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories; currently `cpu` |
+| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list |
+| `SetCpuTurbo` | `b` | `()` | Validated turbo toggle |
+| `SetCpuPowerMode` | `s` | `()` | Validated preset mapped to detected governor/EPP choices |
+| `SetCpuGovernor` | `s` | `()` | Value must be in every affected policy's detected allow-list |
+| `SetCpuEpp` | `s` | `()` | Value must be in every affected policy's detected allow-list |
+| `SetCpuFrequencyLimits` | `tt` | `()` | MHz limits; zero means omitted; bounds and ordering are validated |
+| `SetCpuCoreOnline` | `tb` | `()` | Validated logical CPU ID; boot CPU 0 cannot be offlined |
+
+The helper does not expose generic file, sysfs, process, command, or shell methods. Write methods
+use specific schemas and return stable sanitized errors: `not_authorized`,
+`not_supported`, `invalid_input`, `hardware_unavailable`, `permission_denied`, `backend_failure`,
+or `unexpected`.
 
 ### Lighting map
 
@@ -352,7 +395,7 @@ The optional GPU usage, VRAM, clock, power, and identity keys are best-effort va
 - `sysfs_paths`
 - `control_access`
 
-`policy_writable` is a coarse any-writable summary. The release-grade source of truth for CPU write availability is `control_access`.
+`policy_writable` is a coarse any-actionable summary. The source of truth for CPU write availability is `control_access`.
 
 Count semantics:
 
@@ -362,8 +405,11 @@ Count semantics:
 `control_access` is currently a list of row maps with:
 
 - `kind` -> `boost` | `power_mode` | `governor` | `epp` | `freq_limits` | `core_online`
-- `status` -> `available` | `unsupported` | `missing_backend` | `permission_denied` | `temporarily_unavailable`
+- `status` -> `available` | `authorization_required` | `authorization_denied` | `helper_missing` | `read_only` | `unsupported` | `missing_backend` | `permission_denied` | `temporarily_unavailable`
 - `reason` -> string
+- `direct_write` -> `b`
+- `privileged_write` -> `b`
+- `authorization` -> `not_applicable` | `not_required` | `required` | `authorized` | `denied` | `unavailable`
 - `paths` -> list of row maps
 
 Each `paths` row currently includes:
@@ -490,6 +536,11 @@ Range note:
 - this is a product-policy restriction, not a decoding default; out-of-range requests return an error
 
 ## CPU Setter Methods
+
+The session daemon always tries the unprivileged provider first. Only `permission_denied` falls
+back to the corresponding privileged system method. Unsupported hardware and invalid input do not
+cross the privilege boundary. Successful calls are refreshed and checked against telemetry when
+readback is available.
 
 ### `SetCpuTurbo`
 

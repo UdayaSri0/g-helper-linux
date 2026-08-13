@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -5,7 +6,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
-    DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability, LightingDiagnostics,
+    dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
+    LightingDiagnostics,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -79,6 +81,8 @@ enum Cmd {
     LightingDiagnostics,
     /// Print a read-only Markdown record for hardware validation.
     HardwareReport,
+    /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
+    PrivilegedStatus,
 }
 
 #[tokio::main]
@@ -120,9 +124,104 @@ async fn main() -> anyhow::Result<()> {
         Cmd::FanCaps => cmd_fan_caps().await?,
         Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
         Cmd::HardwareReport => cmd_hardware_report().await?,
+        Cmd::PrivilegedStatus => cmd_privileged_status().await?,
     }
 
     Ok(())
+}
+
+async fn cmd_privileged_status() -> anyhow::Result<()> {
+    use dbus_keys::privileged_status as keys;
+    use zbus::zvariant::OwnedValue;
+
+    let connection = match zbus::Connection::session().await {
+        Ok(connection) => connection,
+        Err(_) => {
+            println!("rog-helperd: unavailable (session D-Bus could not be reached)");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+    let proxy = match zbus::Proxy::new(
+        &connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            println!("rog-helperd: unavailable");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+    let status: HashMap<String, OwnedValue> = match proxy.call("GetPrivilegedStatus", &()).await {
+        Ok(status) => status,
+        Err(_) => {
+            println!("rog-helperd: unavailable or incompatible");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+
+    println!("Privileged control status:");
+    print_bool_status(&status, keys::HELPER_INSTALLED, "helper installed");
+    print_bool_status(&status, keys::HELPER_REACHABLE, "helper reachable");
+    print_bool_status(&status, keys::HELPER_COMPATIBLE, "helper compatible");
+    println!(
+        "  helper version: {}",
+        map_string(&status, keys::HELPER_VERSION)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    print_bool_status(&status, keys::POLKIT_AVAILABLE, "authorization available");
+    println!(
+        "  authorization backend: {}",
+        map_string(&status, keys::AUTHORIZATION_BACKEND)
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    println!(
+        "  authorization state: {}",
+        map_string(&status, keys::AUTHORIZATION_STATE).unwrap_or_else(|| "unavailable".to_string())
+    );
+    let categories = status
+        .get(keys::CATEGORIES_AVAILABLE)
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
+    println!(
+        "  privileged categories available: {}",
+        if categories.is_empty() {
+            "none".to_string()
+        } else {
+            categories.join(", ")
+        }
+    );
+    Ok(())
+}
+
+fn print_bool_status(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+    label: &str,
+) {
+    let value = map
+        .get(key)
+        .and_then(|value| bool::try_from(value).ok())
+        .map(|value| if value { "yes" } else { "no" })
+        .unwrap_or("unknown");
+    println!("  {label}: {value}");
+}
+
+fn map_string(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<String> {
+    map.get(key)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(str::to_string)
 }
 
 async fn cmd_setup_check() -> anyhow::Result<()> {
@@ -1136,6 +1235,12 @@ mod tests {
     fn hardware_report_is_a_first_class_cli_command() {
         let cli = Cli::try_parse_from(["rog-helper", "hardware-report"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::HardwareReport));
+    }
+
+    #[test]
+    fn privileged_status_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["rog-helper", "privileged-status"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::PrivilegedStatus));
     }
 
     #[test]

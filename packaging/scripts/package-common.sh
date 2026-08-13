@@ -12,6 +12,10 @@ DESKTOP_FILE="$REPO_ROOT/packaging/desktop/rog-helper.desktop"
 APPSTREAM_FILE="$REPO_ROOT/packaging/metainfo/io.github.roghelper.UI.metainfo.xml"
 DBUS_SESSION_SERVICE="$REPO_ROOT/packaging/dbus-session/io.github.roghelper.Daemon.service"
 SYSTEMD_USER_SERVICE="$REPO_ROOT/packaging/systemd-user/rog-helperd.service"
+DBUS_SYSTEM_SERVICE="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privileged.service"
+DBUS_SYSTEM_POLICY="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privileged.conf"
+SYSTEMD_SYSTEM_SERVICE="$REPO_ROOT/packaging/systemd-system/rog-helper-privileged.service"
+POLKIT_POLICY="$REPO_ROOT/packaging/polkit/io.github.roghelper.policy"
 LICENSE_FILES=("$REPO_ROOT/LICENSE-APACHE" "$REPO_ROOT/LICENSE-MIT")
 ICON_SIZES=(16 24 32 48 64 128 256 512)
 
@@ -239,6 +243,25 @@ install_user_service() {
     "$exec_path"
 }
 
+install_privileged_integration() {
+  local prefix_root="$1"
+  local exec_path="$2"
+  render_template_file \
+    "$DBUS_SYSTEM_SERVICE" \
+    "$prefix_root/share/dbus-1/system-services/io.github.roghelper.Privileged.service" \
+    "PRIVILEGED_EXEC=$exec_path"
+  install -Dm0644 \
+    "$DBUS_SYSTEM_POLICY" \
+    "$prefix_root/share/dbus-1/system.d/io.github.roghelper.Privileged.conf"
+  render_template_file \
+    "$SYSTEMD_SYSTEM_SERVICE" \
+    "$prefix_root/lib/systemd/system/rog-helper-privileged.service" \
+    "PRIVILEGED_EXEC=$exec_path"
+  install -Dm0644 \
+    "$POLKIT_POLICY" \
+    "$prefix_root/share/polkit-1/actions/io.github.roghelper.policy"
+}
+
 install_license_docs() {
   local prefix_root="$1"
   for license_file in "${LICENSE_FILES[@]}"; do
@@ -324,7 +347,8 @@ EOF
     dpkg-shlibdeps -O \
       "$stage_root/usr/bin/rog-helper-ui" \
       "$stage_root/usr/bin/rog-helperd" \
-      "$stage_root/usr/bin/rog-helper" |
+      "$stage_root/usr/bin/rog-helper" \
+      "$stage_root/usr/libexec/rog-helper-privileged" |
       sed -n 's/^shlibs:Depends=//p'
   )"
   rm -rf "$workdir"
@@ -347,7 +371,8 @@ write_sha256sums() {
       for asset in \
         "$PACKAGE_NAME" \
         "${PACKAGE_NAME}d" \
-        "${PACKAGE_NAME}-ui"; do
+        "${PACKAGE_NAME}-ui" \
+        "${PACKAGE_NAME}-privileged"; do
         [[ -f "$asset" ]] && printf '%s\0' "$asset"
       done
       find . -maxdepth 1 -type f \

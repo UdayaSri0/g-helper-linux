@@ -1,10 +1,10 @@
 # Architecture
 
-This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-ui`, and `crates/rog-cli`.
+This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 ## Layered Structure
 
-The project is split into three main runtime layers, plus a shared model layer and a diagnostics CLI:
+The project is split into four main runtime layers, plus a shared model layer and a diagnostics CLI:
 
 1. UI (`rog-helper-ui`)
    - Unprivileged GTK4/libadwaita desktop application
@@ -20,6 +20,11 @@ The project is split into three main runtime layers, plus a shared model layer a
    - System DBus clients
    - Sysfs/procfs readers and writers
    - Optional external-command NVIDIA telemetry
+4. Privileged helper (`rog-helper-privileged`)
+   - Minimal root system service, activated on demand
+   - Owns `io.github.roghelper.Privileged` on the system bus
+   - Uses PolicyKit actions tied to the calling system-bus peer
+   - Exposes typed, validated CPU writes plus discovery and authorization probes
 
 Shared model layer:
 
@@ -45,9 +50,11 @@ The current runtime flow is:
 GTK UI / tray
   -> session DBus (`io.github.roghelper.Daemon`)
   -> rog-helperd
-  -> provider modules
-  -> system DBus (`asusd`, `supergfxd`, `UPower`)
-     and sysfs/procfs / `nvidia-smi`
+     -> provider modules
+        -> system DBus (`asusd`, `supergfxd`, `UPower`)
+           and sysfs/procfs / `nvidia-smi`
+     -> system DBus (`io.github.roghelper.Privileged`)
+        -> rog-helper-privileged (PolicyKit-gated, approved operations only)
 ```
 
 More concretely:
@@ -233,7 +240,14 @@ Current permission reality:
 - Some sysfs files may be readable but not writable by the user.
 - CPU controls and keyboard backlight writes may therefore degrade to read-only behavior.
 
-There is no privileged helper and no polkit workflow in the current repository.
+The privileged boundary handles only supported CPU controls that fail the normal provider route with
+a write-permission error. Telemetry and directly writable controls stay unprivileged. The helper
+discovers fixed CPU sysfs endpoints itself and never accepts caller-provided paths.
+`rog-helperd` probes it only when diagnostics are requested and continues normally when it is
+missing, blocked, incompatible, or unavailable. The helper cannot receive filesystem paths,
+program names, shell text, or arbitrary values to write. Future control methods must map a
+validated domain operation to a fixed internal endpoint and authorize the original system-bus
+caller with the matching application-specific PolicyKit action.
 
 ## DBus Contract Shape
 

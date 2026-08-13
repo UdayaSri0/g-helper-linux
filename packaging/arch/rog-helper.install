@@ -1,6 +1,8 @@
 post_install() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
   cat <<'EOF'
 rog-helper installs a user service at /usr/lib/systemd/user/rog-helperd.service.
+The root helper is activated on demand over system D-Bus; do not enable it manually.
 
 Enable it for your user if you want the daemon to start with your login session:
   systemctl --user daemon-reload
@@ -9,12 +11,18 @@ EOF
 }
 
 post_upgrade() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
   post_install
 }
 
 post_remove() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
   cat <<'EOF'
 If you had rog-helperd enabled, reload your user manager:
   systemctl --user daemon-reload
 EOF
+}
+
+pre_remove() {
+  systemctl stop rog-helper-privileged.service >/dev/null 2>&1 || true
 }

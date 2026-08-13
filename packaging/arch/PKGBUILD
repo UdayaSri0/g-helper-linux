@@ -71,6 +71,8 @@ package() {
   install -Dm0755 "${srcdir}/target/release/rog-helper-ui" "${pkgdir}/usr/bin/rog-helper-ui"
   install -Dm0755 "${srcdir}/target/release/rog-helperd" "${pkgdir}/usr/bin/rog-helperd"
   install -Dm0755 "${srcdir}/target/release/rog-helper" "${pkgdir}/usr/bin/rog-helper"
+  install -Dm0755 "${srcdir}/target/release/rog-helper-privileged" \
+    "${pkgdir}/usr/libexec/rog-helper-privileged"
 
   install -Dm0644 packaging/desktop/rog-helper.desktop \
     "${pkgdir}/usr/share/applications/rog-helper.desktop"
@@ -88,6 +90,12 @@ package() {
   install -Dm0644 crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg \
     "${pkgdir}/usr/share/icons/hicolor/scalable/actions/rog-fan-symbolic.svg"
 
+  install -d \
+    "${pkgdir}/usr/share/dbus-1/services" \
+    "${pkgdir}/usr/share/dbus-1/system-services" \
+    "${pkgdir}/usr/lib/systemd/user" \
+    "${pkgdir}/usr/lib/systemd/system"
+
   sed "s#rog-helperd#/usr/bin/rog-helperd#g" \
     packaging/dbus-session/io.github.roghelper.Daemon.service \
     > "${pkgdir}/usr/share/dbus-1/services/io.github.roghelper.Daemon.service"
@@ -97,6 +105,19 @@ package() {
     packaging/systemd-user/rog-helperd.service \
     > "${pkgdir}/usr/lib/systemd/user/rog-helperd.service"
   chmod 0644 "${pkgdir}/usr/lib/systemd/user/rog-helperd.service"
+
+  sed "s#@PRIVILEGED_EXEC@#/usr/libexec/rog-helper-privileged#g" \
+    packaging/dbus-system/io.github.roghelper.Privileged.service \
+    > "${pkgdir}/usr/share/dbus-1/system-services/io.github.roghelper.Privileged.service"
+  chmod 0644 "${pkgdir}/usr/share/dbus-1/system-services/io.github.roghelper.Privileged.service"
+  install -Dm0644 packaging/dbus-system/io.github.roghelper.Privileged.conf \
+    "${pkgdir}/usr/share/dbus-1/system.d/io.github.roghelper.Privileged.conf"
+  sed "s#@PRIVILEGED_EXEC@#/usr/libexec/rog-helper-privileged#g" \
+    packaging/systemd-system/rog-helper-privileged.service \
+    > "${pkgdir}/usr/lib/systemd/system/rog-helper-privileged.service"
+  chmod 0644 "${pkgdir}/usr/lib/systemd/system/rog-helper-privileged.service"
+  install -Dm0644 packaging/polkit/io.github.roghelper.policy \
+    "${pkgdir}/usr/share/polkit-1/actions/io.github.roghelper.policy"
 
   install -Dm0644 LICENSE-APACHE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
   install -Dm0644 LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"

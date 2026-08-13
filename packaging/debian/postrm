@@ -2,6 +2,14 @@
 set -e
 
 case "${1:-}" in
+    remove|purge)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop rog-helper-privileged.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+case "${1:-}" in
     remove|purge|upgrade|failed-upgrade|disappear)
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database -q /usr/share/applications || true
@@ -11,5 +19,9 @@ case "${1:-}" in
         fi
         ;;
 esac
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+fi
 
 exit 0

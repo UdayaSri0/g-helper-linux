@@ -15,15 +15,15 @@ use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_config, parse_config,
     parse_legacy_ui_config, validate_config, AppConfig, BatteryState, CloseBehavior,
-    ContractStatus, CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry,
-    CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps,
-    ErrorCategory, FanCaps, FanControlMode, FanInfo, FanMappingConfidence, FanState, FanTelemetry,
-    FeatureAccessState, FeatureAvailability, PermissionKind, PermissionState, PermissionStatus,
-    PowerSource, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
-    TopProcessMem,
+    ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind,
+    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
+    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanInfo,
+    FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
+    PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor, SetupIssue,
+    SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
 mod dbus_decode;
@@ -193,6 +193,7 @@ struct OpenLinkRequest {
 
 #[derive(Debug)]
 struct SharedUiState {
+    render_revision: u64,
     telemetry: Option<TelemetrySnapshot>,
     cpu: Option<CpuTelemetry>,
     cpu_caps: CpuCaps,
@@ -242,6 +243,7 @@ struct SharedUiState {
 impl Default for SharedUiState {
     fn default() -> Self {
         Self {
+            render_revision: 1,
             telemetry: None,
             cpu: None,
             cpu_caps: CpuCaps::unknown(),
@@ -287,6 +289,12 @@ impl Default for SharedUiState {
             show_gpu_page: false,
             quit: false,
         }
+    }
+}
+
+impl SharedUiState {
+    fn mark_render_dirty(&mut self) {
+        self.render_revision = self.render_revision.wrapping_add(1);
     }
 }
 
@@ -350,6 +358,10 @@ enum PendingFanAction {
     Boost {
         fan_id: String,
         duration_seconds: u64,
+    },
+    Curve {
+        fan_id: String,
+        points: Vec<(u8, u8)>,
     },
     Sync(bool),
 }
@@ -735,6 +747,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let stack = adw::ViewStack::new();
     stack.set_vexpand(true);
+    stack.set_hhomogeneous(false);
+    stack.set_vhomogeneous(false);
 
     let cpu_card = MetricCard::new("CPU");
     let gpu_card = MetricCard::new("GPU");
@@ -945,7 +959,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_control_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let gpu_mode_dropdown = gtk::DropDown::from_strings(&["Integrated", "Hybrid", "Dedicated"]);
     style_dropdown_control(&gpu_mode_dropdown);
-    gpu_mode_dropdown.set_size_request(154, -1);
     gpu_mode_dropdown.set_sensitive(false);
     let gpu_apply_button = gtk::Button::with_label("Apply");
     style_apply_button(&gpu_apply_button);
@@ -1406,7 +1419,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .map(|st| st.cpu_caps.clone())
                 .unwrap_or_else(CpuCaps::unknown);
 
-            if caps.control_writable(CpuControlKind::Boost) {
+            if caps.control_actionable(CpuControlKind::Boost) {
                 actions.push(PendingCpuAction::Turbo(cpu_turbo_switch.is_active()));
             }
 
@@ -1417,11 +1430,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 "Performance"
             };
-            if caps.control_writable(CpuControlKind::PowerMode) {
+            if caps.control_actionable(CpuControlKind::PowerMode) {
                 actions.push(PendingCpuAction::PowerMode(mode.to_string()));
             }
 
-            if caps.control_writable(CpuControlKind::FreqLimits)
+            if caps.control_actionable(CpuControlKind::FreqLimits)
                 && (caps.has_min_freq_limit || caps.has_max_freq_limit)
             {
                 let min_mhz = if caps.has_min_freq_limit {
@@ -1505,13 +1518,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .map(|st| st.cpu_caps.clone())
                 .unwrap_or_else(CpuCaps::unknown);
             if let Ok(mut st) = shared.lock() {
-                if caps.control_writable(CpuControlKind::Governor) {
+                if caps.control_actionable(CpuControlKind::Governor) {
                     if let Some(gov) = cpu_governor_combo.active_id() {
                         st.pending_cpu_actions
                             .push(PendingCpuAction::Governor(gov.to_string()));
                     }
                 }
-                if caps.control_writable(CpuControlKind::Epp) {
+                if caps.control_actionable(CpuControlKind::Epp) {
                     if let Some(epp) = cpu_epp_combo.active_id() {
                         st.pending_cpu_actions
                             .push(PendingCpuAction::Epp(epp.to_string()));
@@ -2098,6 +2111,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if let Ok(mut state) = shared.lock() {
                 state.pending_setup_refresh = true;
                 state.setup_refreshing = true;
+                state.mark_render_dirty();
             }
         });
     }
@@ -2469,6 +2483,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     reset_settings_row.set_activatable(false);
     reset_group.add(&reset_settings_row);
     settings_page.append(&reset_group);
+    let settings = clamped_scroller(&settings_page);
 
     let about_project_group = adw::PreferencesGroup::builder().title("Project").build();
     let about_authors = pref_value_row(&about_project_group, "Authors", false);
@@ -2783,6 +2798,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     "Checking GitHub for the latest release...".to_string();
                 st.update_state.last_result_text =
                     "Waiting for the latest release information from GitHub.".to_string();
+                st.mark_render_dirty();
             }
         });
     }
@@ -2806,10 +2822,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     st.update_state.status_text = "Preparing the update...".to_string();
                     st.update_state.last_result_text =
                         "Downloading the latest release asset.".to_string();
+                    st.mark_render_dirty();
                     None
                 } else {
                     st.update_state.last_result_text =
                         "Automatic in-place update is not supported for this installation. Opening the latest release page instead.".to_string();
+                    st.mark_render_dirty();
                     st.update_state
                         .release_page_url
                         .clone()
@@ -3344,6 +3362,38 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     curve_card.append(curve_preview.widget());
     curve_card.append(&curve_actions);
     fans_root.append(&curve_card);
+    {
+        let shared = shared.clone();
+        let preview = curve_preview.clone();
+        curve_apply.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                let fan_id = state
+                    .fan_state
+                    .fans
+                    .iter()
+                    .find(|fan| fan.supports_curve && fan.controllable)
+                    .map(|fan| fan.id.clone());
+                if let Some(fan_id) = fan_id {
+                    state.pending_fan_action = Some(PendingFanAction::Curve {
+                        fan_id,
+                        points: preview.points(),
+                    });
+                    state.action_error = None;
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        curve_reset.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                state.pending_fan_action = Some(PendingFanAction::Auto {
+                    fan_id: String::new(),
+                });
+                state.action_error = None;
+            }
+        });
+    }
 
     let fan_cards_title = gtk::Label::new(Some("Detected Fans"));
     fan_cards_title.set_xalign(0.0);
@@ -3399,7 +3449,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
     stack.add_titled_with_icon(&fans, Some("fans"), "Cooling", ICON_FANS);
     stack.add_titled_with_icon(&setup, Some("setup"), "Setup & Access", ICON_DIAGNOSTICS);
-    stack.add_titled_with_icon(&settings_page, Some("settings"), "Settings", ICON_SETTINGS);
+    stack.add_titled_with_icon(&settings, Some("settings"), "Settings", ICON_SETTINGS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
 
@@ -3472,9 +3522,23 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         .default_width(1180)
         .default_height(800)
         .build();
-    win.set_size_request(900, 650);
     win.set_icon_name(Some(APP_ICON_NAME));
     win.set_content(Some(&toast_overlay));
+
+    {
+        let stack = stack.clone();
+        win.connect_maximized_notify(move |window| {
+            debug!(
+                maximized = window.is_maximized(),
+                width = window.width(),
+                height = window.height(),
+                default_width = window.default_width(),
+                default_height = window.default_height(),
+                visible_page = stack.visible_child_name().as_deref().unwrap_or("unknown"),
+                "top-level window maximize state changed"
+            );
+        });
+    }
 
     let app_keepalive = app.hold();
     {
@@ -3540,6 +3604,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_rendered_revision = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
+    let last_dashboard_layout = std::rc::Rc::new(std::cell::Cell::new(None::<DashboardLayout>));
     let detail_fan_rows_ref = detail_fan_rows.clone();
     let details_fan_group_ref = details_fan_group.clone();
     let fan_animation_rotors = hero_fan_slots
@@ -3600,6 +3666,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             show_gpu_page,
             pending_toast,
             quit,
+            render_revision,
         ) = {
             let mut st = match shared_clone.lock() {
                 Ok(st) => st,
@@ -3644,6 +3711,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 show_gpu_page,
                 pending_toast,
                 st.quit,
+                st.render_revision,
             )
         };
 
@@ -3672,7 +3740,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             return glib::ControlFlow::Break;
         }
 
-        update_dashboard_flow_layout(&secondary_metrics_grid, &current_mode_flow);
+        update_dashboard_flow_layout(
+            dash.width(),
+            &primary_metrics_grid,
+            &secondary_metrics_grid,
+            &current_mode_flow,
+            &quick_performance_grid,
+            &cockpit_middle_grid,
+            &live_performance_grid,
+            &cockpit_lower_grid,
+            &last_dashboard_layout,
+        );
+        if last_rendered_revision.get() == Some(render_revision) {
+            return glib::ControlFlow::Continue;
+        }
+        last_rendered_revision.set(Some(render_revision));
+
         system_health_panel.set_visible(settings.dashboard.show_system_health);
         cooling_snapshot_panel.set_visible(settings.dashboard.show_cooling_snapshot);
         dash_root.set_spacing(if settings.dashboard.compact { 12 } else { 20 });
@@ -4072,18 +4155,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         fan_auto_button.set_sensitive(fan_state.caps.has_individual_fan_control);
         fan_mode_combo.set_sensitive(
             fan_state.caps.has_fan_manual_percent
-                || fan_state.caps.has_fan_curves
+                || fan_state.caps.fan_curve_writable
                 || fan_state.caps.has_fan_boost,
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
-        curve_preview.set_enabled(fan_state.caps.has_fan_curves);
-        curve_apply.set_sensitive(fan_state.caps.has_fan_curves);
-        curve_reset.set_sensitive(fan_state.caps.has_fan_curves);
-        curve_status.set_text(if fan_state.caps.has_fan_curves {
-            "Curve editing is available for the active backend."
-        } else {
-            "Fan curve editing is not available on this backend."
-        });
+        curve_preview.set_enabled(fan_state.caps.fan_curve_writable);
+        curve_apply.set_sensitive(fan_state.caps.fan_curve_writable);
+        curve_reset.set_sensitive(fan_state.caps.fan_curve_writable);
+        curve_status.set_text(
+            if fan_state
+                .fans
+                .iter()
+                .any(|fan| fan.access_state == "authorization_required")
+            {
+                "Administrator access required. Authentication starts only when Apply is used."
+            } else if fan_state.caps.fan_curve_writable {
+                "Curve editing is available for the active backend."
+            } else if fan_state.caps.has_fan_curves {
+                "Fan curves are supported, but the privileged helper is unavailable."
+            } else {
+                "Fan curve editing is not available on this backend."
+            },
+        );
         fan_sync_row.set_subtitle(&fan_sync_subtitle(&fan_state));
         fan_manual_row.set_subtitle(&fan_manual_subtitle(&fan_state));
         fan_boost_row.set_subtitle(&fan_boost_subtitle(&fan_state));
@@ -4680,12 +4773,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_cpu_count.set_text(&cpu_caps.cpu_count.to_string());
             cpu_thread_count.set_text(&cpu_caps.thread_count.to_string());
 
-            let turbo_writable = cpu_caps.control_writable(CpuControlKind::Boost);
-            let power_mode_writable = cpu_caps.control_writable(CpuControlKind::PowerMode);
-            let governor_writable = cpu_caps.control_writable(CpuControlKind::Governor);
-            let epp_writable = cpu_caps.control_writable(CpuControlKind::Epp);
-            let freq_limits_writable = cpu_caps.control_writable(CpuControlKind::FreqLimits);
-            let core_online_writable = cpu_caps.control_writable(CpuControlKind::CoreOnline);
+            let turbo_writable = cpu_caps.control_actionable(CpuControlKind::Boost);
+            let power_mode_writable = cpu_caps.control_actionable(CpuControlKind::PowerMode);
+            let governor_writable = cpu_caps.control_actionable(CpuControlKind::Governor);
+            let epp_writable = cpu_caps.control_actionable(CpuControlKind::Epp);
+            let freq_limits_writable = cpu_caps.control_actionable(CpuControlKind::FreqLimits);
+            let core_online_writable = cpu_caps.control_actionable(CpuControlKind::CoreOnline);
             let quick_sensitive = turbo_writable || power_mode_writable || freq_limits_writable;
             let turbo_available_text = match cpu_data.turbo_boost_enabled {
                 Some(true) => "Currently enabled. Toggle to stage a change.".to_string(),
@@ -5492,6 +5585,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
             Err(e) => {
                 if let Ok(mut st) = shared.lock() {
                     st.daemon_error = Some(format!("failed to start tokio runtime: {e}"));
+                    st.mark_render_dirty();
                 }
                 return;
             }
@@ -5520,6 +5614,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     st.pending_toast =
                         Some(("Tray is unavailable; keeping the main window open.".to_string(), true));
                 }
+                st.mark_render_dirty();
             }
 
             match fetch_configuration().await {
@@ -5530,6 +5625,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     if let Ok(mut st) = shared.lock() {
                         if st.pending_config_save.is_none() && !st.pending_config_reset {
                             st.settings = config;
+                            st.mark_render_dirty();
                         }
                     }
                 }
@@ -5557,6 +5653,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 st.pending_config_save = None;
                                 st.pending_toast =
                                     Some(("Settings reset to defaults.".to_string(), false));
+                                st.mark_render_dirty();
                             }
                         }
                         Err(error) => {
@@ -5582,6 +5679,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 st.settings = config;
                             }
                             st.pending_toast = Some((error, true));
+                            st.mark_render_dirty();
                         }
                     }
                 }
@@ -5690,6 +5788,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             if let Ok(mut st) = shared.lock() {
                                 st.update_state = update_state;
                                 st.update_check_in_progress = false;
+                                st.mark_render_dirty();
                             }
                         }
                         Err(error) => {
@@ -5704,6 +5803,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 st.update_check_in_progress = false;
                                 st.pending_toast =
                                     Some(("Unable to check for updates right now.".to_string(), true));
+                                st.mark_render_dirty();
                             }
                         }
                     }
@@ -5741,6 +5841,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     ),
                                     false,
                                 ));
+                                st.mark_render_dirty();
                             }
                         }
                         Ok(UpdateActionOutcome::OpenReleasePage { url, message }) => {
@@ -5756,6 +5857,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                             .to_string(),
                                 });
                                 st.pending_toast = Some((message, false));
+                                st.mark_render_dirty();
                             }
                         }
                         Err(error) => {
@@ -5766,6 +5868,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                         .to_string();
                                 st.update_state.last_result_text = error.clone();
                                 st.pending_toast = Some((error, true));
+                                st.mark_render_dirty();
                             }
                         }
                     }
@@ -5827,6 +5930,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.lighting = lighting;
                             st.fan_state = fan_state;
                             st.daemon_error = None;
+                            st.mark_render_dirty();
                         }
                     }
                     Err(e) => {
@@ -5834,6 +5938,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         if let Ok(mut st) = shared.lock() {
                             st.setup_status = SetupStatus::daemon_unavailable(e.clone());
                             st.daemon_error = Some(e);
+                            st.mark_render_dirty();
                         }
                     }
                 }
@@ -5846,6 +5951,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                 if refresh_setup {
                     if let Ok(mut state) = shared.lock() {
                         state.setup_refreshing = true;
+                        state.mark_render_dirty();
                     }
                     match fetch_setup_status().await {
                         Ok(status) => {
@@ -5856,6 +5962,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     "Setup and access checks refreshed.".to_string(),
                                     false,
                                 ));
+                                state.mark_render_dirty();
                             }
                         }
                         Err(error) => {
@@ -5866,6 +5973,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     "Setup checks could not reach rog-helperd.".to_string(),
                                     true,
                                 ));
+                                state.mark_render_dirty();
                             }
                         }
                     }
@@ -6098,6 +6206,29 @@ async fn apply_fan_action(action: PendingFanAction) -> Result<(), String> {
             .set_fan_boost(&fan_id, 100, duration_seconds)
             .await
             .map_err(|e| format!("daemon SetFanBoost failed: {e}"))?,
+        PendingFanAction::Curve { fan_id, points } => {
+            let rows = points
+                .into_iter()
+                .map(|(temp_c, duty_percent)| {
+                    let mut row = HashMap::new();
+                    row.insert(
+                        dbus_keys::fan_curves::TEMP_C.to_string(),
+                        OwnedValue::from(u64::from(temp_c)),
+                    );
+                    row.insert(
+                        dbus_keys::fan_curves::SPEED_PERCENT.to_string(),
+                        OwnedValue::from(u64::from(duty_percent)),
+                    );
+                    row
+                })
+                .collect::<Vec<_>>();
+            let mut curve = HashMap::new();
+            curve.insert(dbus_keys::fan_curves::POINTS.to_string(), ov(rows));
+            proxy
+                .set_fan_curve(&fan_id, curve)
+                .await
+                .map_err(|e| format!("daemon SetFanCurve failed: {e}"))?;
+        }
         PendingFanAction::Sync(enabled) => proxy
             .set_fan_sync(enabled)
             .await
@@ -6917,6 +7048,7 @@ where
         .map_err(|_| "Unable to update settings right now.".to_string())?;
     st.settings = next.clone();
     st.pending_config_save = Some(next.clone());
+    st.mark_render_dirty();
     Ok(next)
 }
 
@@ -7958,12 +8090,25 @@ fn support_messages(caps: &DeviceCaps, cpu_caps: &CpuCaps) -> Vec<String> {
     if cpu_caps
         .control_access
         .iter()
-        .any(|control| control.status == CpuAccessState::PermissionDenied)
+        .any(|control| control.status == CpuAccessState::AuthorizationRequired)
     {
         messages.push(
-            "CPU telemetry is available, but CPU writes are blocked by sysfs permissions."
+            "Administrator access is required for some CPU controls. Authentication starts only when Apply is used."
                 .to_string(),
         );
+    } else if cpu_caps.control_access.iter().any(|control| {
+        matches!(
+            control.status,
+            CpuAccessState::PermissionDenied | CpuAccessState::AuthorizationDenied
+        )
+    }) {
+        messages.push("A CPU write was denied. Telemetry remains available.".to_string());
+    } else if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::HelperMissing)
+    {
+        messages.push("Some supported CPU controls need the privileged helper.".to_string());
     } else if cpu_caps
         .control_access
         .iter()
@@ -8043,12 +8188,19 @@ fn troubleshooting_summary_text(
     if cpu_caps
         .control_access
         .iter()
-        .any(|control| control.status == CpuAccessState::PermissionDenied)
+        .any(|control| control.status == CpuAccessState::AuthorizationRequired)
     {
         issues.push(
-            "CPU Writes: permission_denied (CPU telemetry works, but sysfs control files are not writable by the current user.)"
+            "CPU Writes: authorization_required (Use Apply to request administrator access.)"
                 .to_string(),
         );
+    } else if cpu_caps.control_access.iter().any(|control| {
+        matches!(
+            control.status,
+            CpuAccessState::PermissionDenied | CpuAccessState::AuthorizationDenied
+        )
+    }) {
+        issues.push("CPU Writes: authorization_denied (Telemetry remains available.)".to_string());
     } else if cpu_caps
         .control_access
         .iter()
@@ -8098,7 +8250,19 @@ fn troubleshooting_summary_text(
 
 fn friendly_action_error(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
-    if lower.contains("profile control requires asusd") {
+    if lower.contains("fan control was denied or cancelled") {
+        "Administrator authorization was denied or cancelled. Fan telemetry is still available."
+            .to_string()
+    } else if lower.contains("privileged fan helper is unavailable") {
+        "The privileged fan helper is unavailable. Fan telemetry is still available.".to_string()
+    } else if lower.contains("not_authorized")
+        || lower.contains("authorization was denied or cancelled")
+    {
+        "Administrator authorization was denied or cancelled. CPU telemetry is still available."
+            .to_string()
+    } else if lower.contains("privileged cpu helper is unavailable") {
+        "The privileged CPU helper is unavailable. CPU telemetry is still available.".to_string()
+    } else if lower.contains("profile control requires asusd") {
         "Performance profiles require asusd. Install or start asusd, then retry.".to_string()
     } else if lower.contains("battery limit control requires asusd") {
         "Charge-limit control requires asusd. Install or start asusd, then retry.".to_string()
@@ -8155,6 +8319,10 @@ fn cpu_has_access_issue(caps: &CpuCaps) -> bool {
         matches!(
             control.status,
             CpuAccessState::PermissionDenied
+                | CpuAccessState::AuthorizationRequired
+                | CpuAccessState::AuthorizationDenied
+                | CpuAccessState::HelperMissing
+                | CpuAccessState::ReadOnly
                 | CpuAccessState::MissingBackend
                 | CpuAccessState::TemporarilyUnavailable
         )
@@ -8165,8 +8333,27 @@ fn cpu_banner_title(caps: &CpuCaps) -> String {
     if caps
         .control_access
         .iter()
-        .any(|control| control.status == CpuAccessState::PermissionDenied)
+        .any(|control| control.status == CpuAccessState::AuthorizationRequired)
     {
+        "Administrator access required for some CPU controls".to_string()
+    } else if caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationDenied)
+    {
+        "Administrator authorization was denied or cancelled".to_string()
+    } else if caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::HelperMissing)
+    {
+        "The privileged CPU helper is unavailable".to_string()
+    } else if caps.control_access.iter().any(|control| {
+        matches!(
+            control.status,
+            CpuAccessState::PermissionDenied | CpuAccessState::ReadOnly
+        )
+    }) {
         "CPU controls are visible, but writes are blocked".to_string()
     } else if caps
         .control_access
@@ -8195,11 +8382,22 @@ fn cpu_access_report_text(caps: &CpuCaps) -> String {
     }
 
     for control in &caps.control_access {
+        let supported = !matches!(
+            control.status,
+            CpuAccessState::Unknown | CpuAccessState::Unsupported | CpuAccessState::MissingBackend
+        );
+        out.push_str(&format!("{}:\n", control.kind.as_str()));
+        out.push_str(&format!("  supported: {supported}\n"));
+        out.push_str(&format!("  direct_write: {}\n", control.direct_write));
         out.push_str(&format!(
-            "{}: {}",
-            control.kind.label(),
-            control.status.as_str()
+            "  privileged_write: {}\n",
+            control.privileged_write
         ));
+        out.push_str(&format!(
+            "  authorization: {}\n",
+            control.authorization.as_str()
+        ));
+        out.push_str(&format!("  status: {}", control.status.as_str()));
         if !control.reason.is_empty() {
             out.push_str(&format!(" ({})", control.reason));
         }
@@ -8226,9 +8424,8 @@ fn cpu_access_report_text(caps: &CpuCaps) -> String {
     out.push_str("  ls -l /sys/devices/system/cpu/intel_pstate/no_turbo\n");
     out.push_str("  ls -l /sys/devices/system/cpu/cpu*/online\n");
     out.push_str("  systemctl --user restart rog-helperd\n");
-    out.push_str(
-        "\nrog-helper does not bundle an automatic privilege escalation path for CPU sysfs writes. To make these controls writable in the app, grant the daemon write access only to the specific CPU sysfs files above, then restart the user daemon.\n",
-    );
+    out.push_str("  systemctl status rog-helper-privileged.service\n");
+    out.push_str("\nDirect writes are preferred. Supported permission-blocked controls use the typed privileged helper only after Apply is selected.\n");
 
     out
 }
@@ -8499,7 +8696,6 @@ fn dashboard_panel(title: &str, icon_name: &str) -> (gtk::Box, gtk::Box) {
     root.set_hexpand(true);
     root.set_vexpand(false);
     root.set_valign(gtk::Align::Start);
-    root.set_size_request(300, -1);
 
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let icon = gtk::Image::from_icon_name(icon_name);
@@ -8519,32 +8715,72 @@ fn dashboard_panel(title: &str, icon_name: &str) -> (gtk::Box, gtk::Box) {
     (root, body)
 }
 
-fn update_dashboard_flow_layout(secondary_metrics: &gtk::FlowBox, current_modes: &gtk::FlowBox) {
-    let secondary_max = dashboard_secondary_columns(secondary_metrics.width());
-    if secondary_metrics.max_children_per_line() != secondary_max {
-        secondary_metrics.set_max_children_per_line(secondary_max);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardLayout {
+    Narrow,
+    Medium,
+    Wide,
+}
+
+fn dashboard_layout(width: i32) -> DashboardLayout {
+    match width {
+        ..640 => DashboardLayout::Narrow,
+        640..1160 => DashboardLayout::Medium,
+        _ => DashboardLayout::Wide,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_dashboard_flow_layout(
+    width: i32,
+    primary_metrics: &gtk::FlowBox,
+    secondary_metrics: &gtk::FlowBox,
+    current_modes: &gtk::FlowBox,
+    quick_performance: &gtk::FlowBox,
+    cockpit_middle: &gtk::FlowBox,
+    live_performance: &gtk::FlowBox,
+    cockpit_lower: &gtk::FlowBox,
+    previous: &std::cell::Cell<Option<DashboardLayout>>,
+) {
+    if width <= 0 {
+        return;
     }
 
-    let mode_max = dashboard_mode_columns(current_modes.width());
-    if current_modes.max_children_per_line() != mode_max {
-        current_modes.set_max_children_per_line(mode_max);
+    let layout = dashboard_layout(width);
+    if previous.replace(Some(layout)) == Some(layout) {
+        return;
+    }
+
+    let secondary_columns = dashboard_secondary_columns(width);
+    let mode_columns = dashboard_mode_columns(width);
+    let columns = match layout {
+        DashboardLayout::Narrow => [1, secondary_columns, mode_columns, 1, 1, 1, 1],
+        DashboardLayout::Medium => [2, secondary_columns, mode_columns, 2, 1, 2, 1],
+        DashboardLayout::Wide => [3, secondary_columns, mode_columns, 2, 2, 2, 2],
+    };
+    for (flow, max) in [
+        (primary_metrics, columns[0]),
+        (secondary_metrics, columns[1]),
+        (current_modes, columns[2]),
+        (quick_performance, columns[3]),
+        (cockpit_middle, columns[4]),
+        (live_performance, columns[5]),
+        (cockpit_lower, columns[6]),
+    ] {
+        flow.set_max_children_per_line(max);
     }
 }
 
 fn dashboard_secondary_columns(width: i32) -> u32 {
-    if width >= 1160 {
-        5
-    } else {
-        3
+    match dashboard_layout(width) {
+        DashboardLayout::Narrow => 1,
+        DashboardLayout::Medium => 3,
+        DashboardLayout::Wide => 5,
     }
 }
 
 fn dashboard_mode_columns(width: i32) -> u32 {
-    if width >= 760 {
-        5
-    } else {
-        3
-    }
+    dashboard_secondary_columns(width)
 }
 
 fn dashboard_mode_item(title: &str) -> (gtk::Box, gtk::Label) {
@@ -8603,7 +8839,6 @@ fn style_linked_toggle_row(row: &gtk::Box) {
 fn style_dropdown_control(dropdown: &gtk::DropDown) {
     dropdown.set_halign(gtk::Align::End);
     dropdown.set_valign(gtk::Align::Center);
-    dropdown.set_size_request(190, -1);
 }
 
 fn style_apply_button(button: &gtk::Button) {
@@ -8627,14 +8862,13 @@ fn style_spin_control(spin: &gtk::SpinButton, width_chars: i32) {
 
 fn style_scale_control(scale: &gtk::Scale) {
     scale.set_digits(0);
-    scale.set_size_request(260, -1);
+    scale.set_hexpand(true);
     scale.set_valign(gtk::Align::Center);
 }
 
 fn style_combo_control(combo: &gtk::ComboBoxText) {
     combo.set_halign(gtk::Align::End);
     combo.set_valign(gtk::Align::Center);
-    combo.set_size_request(190, -1);
 }
 
 fn format_cpu_freq_value(mhz: Option<u32>) -> String {
@@ -8712,7 +8946,7 @@ fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
         CpuControlKind::FreqLimits,
     ]
     .into_iter()
-    .filter(|kind| caps.control_writable(*kind))
+    .filter(|kind| caps.control_actionable(*kind))
     .count();
 
     match writable_controls {
@@ -8723,8 +8957,8 @@ fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
 }
 
 fn cpu_policy_apply_subtitle(caps: &CpuCaps) -> String {
-    let governor_writable = caps.control_writable(CpuControlKind::Governor);
-    let epp_writable = caps.control_writable(CpuControlKind::Epp);
+    let governor_writable = caps.control_actionable(CpuControlKind::Governor);
+    let epp_writable = caps.control_actionable(CpuControlKind::Epp);
 
     match (governor_writable, epp_writable) {
         (true, true) => "Apply governor and EPP together.".to_string(),
@@ -8750,6 +8984,18 @@ fn cpu_control_subtitle(
 
     match caps.control_state(kind) {
         CpuAccessState::Available => available_text.to_string(),
+        CpuAccessState::AuthorizationRequired => access_reason
+            .unwrap_or("Administrator access required. Apply to authenticate.")
+            .to_string(),
+        CpuAccessState::AuthorizationDenied => access_reason
+            .unwrap_or("Administrator authorization was denied or cancelled. Apply to retry.")
+            .to_string(),
+        CpuAccessState::HelperMissing => access_reason
+            .unwrap_or("The privileged CPU helper is unavailable.")
+            .to_string(),
+        CpuAccessState::ReadOnly => access_reason
+            .unwrap_or("This supported CPU control is read-only.")
+            .to_string(),
         CpuAccessState::PermissionDenied => access_reason
             .unwrap_or("Readable, but not writable by the current user.")
             .to_string(),
@@ -9046,6 +9292,14 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         min_rpm: u32v(&map, dbus_keys::FAN_INFO_MIN_RPM_KEY),
         max_rpm: u32v(&map, dbus_keys::FAN_INFO_MAX_RPM_KEY),
         current_percent: u8v(&map, dbus_keys::FAN_INFO_CURRENT_PERCENT_KEY),
+        rpm_readable: b(&map, dbus_keys::FAN_INFO_RPM_READABLE_KEY),
+        pwm_endpoint_verified: b(&map, dbus_keys::FAN_INFO_PWM_ENDPOINT_VERIFIED_KEY),
+        direct_write: b(&map, dbus_keys::FAN_INFO_DIRECT_WRITE_KEY),
+        privileged_write: b(&map, dbus_keys::FAN_INFO_PRIVILEGED_WRITE_KEY),
+        authorization: s(&map, dbus_keys::FAN_INFO_AUTHORIZATION_KEY)
+            .unwrap_or_else(|| "not_checked".to_string()),
+        access_state: s(&map, dbus_keys::FAN_INFO_ACCESS_STATE_KEY)
+            .unwrap_or_else(|| "telemetry_only".to_string()),
         controllable: b(&map, dbus_keys::FAN_INFO_CONTROLLABLE_KEY),
         supports_manual_percent: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_PERCENT_KEY),
         supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
@@ -9202,6 +9456,19 @@ fn cpu_control_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<Cpu
         .and_then(|value| <&str>::try_from(value).ok())
         .unwrap_or_default()
         .to_string();
+    let direct_write = map
+        .get(dbus_keys::CPU_CONTROL_DIRECT_WRITE_KEY)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(status == CpuAccessState::Available);
+    let privileged_write = map
+        .get(dbus_keys::CPU_CONTROL_PRIVILEGED_WRITE_KEY)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    let authorization = map
+        .get(dbus_keys::CPU_CONTROL_AUTHORIZATION_KEY)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(CpuAuthorization::parse)
+        .unwrap_or_default();
     let paths = map
         .get(dbus_keys::CPU_CONTROL_PATHS_KEY)
         .cloned()
@@ -9215,6 +9482,9 @@ fn cpu_control_access_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<Cpu
         kind,
         status,
         reason,
+        direct_write,
+        privileged_write,
+        authorization,
         paths,
     })
 }
@@ -9599,6 +9869,15 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
             fan.supports_curve,
             fan.supports_auto
         ));
+        lines.push(format!(
+            "  rpm_readable: {}; pwm_endpoint_verified: {}; direct_write: {}; privileged_write: {}; authorization: {}; access: {}",
+            fan.rpm_readable,
+            fan.pwm_endpoint_verified,
+            fan.direct_write,
+            fan.privileged_write,
+            fan.authorization,
+            fan.access_state,
+        ));
         if !fan.endpoints.is_empty() {
             lines.push(format!("  endpoints: {}", fan.endpoints.join(", ")));
         }
@@ -9706,7 +9985,6 @@ fn build_fans_gauge_card(gauge: &TempGauge) -> gtk::Box {
     root.add_css_class("fans-gauge-card");
     root.add_css_class("fans-gauge-card-large");
     root.set_hexpand(true);
-    root.set_size_request(300, -1);
     root.append(gauge.widget());
     root
 }
@@ -9716,7 +9994,6 @@ fn build_fan_visual_slot() -> FanVisualSlot {
     root.add_css_class("fan-visual-card");
     root.add_css_class("fan-rotor-card");
     root.set_hexpand(true);
-    root.set_size_request(150, -1);
 
     let rotor = FanRotor::new(false);
     let label = gtk::Label::new(Some("Fan"));
@@ -9748,7 +10025,6 @@ fn build_fan_card_slot() -> FanCardSlot {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.add_css_class("fan-card");
     root.set_hexpand(true);
-    root.set_size_request(320, -1);
 
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let rotor = FanRotor::new(true);
@@ -9993,7 +10269,23 @@ fn update_backend_pill_class(label: &gtk::Label, backend: &str) {
 }
 
 fn fan_controls_hint(state: &FanState) -> String {
-    if state.caps.has_fan_manual_percent || state.caps.has_fan_boost || state.caps.has_fan_curves {
+    if state
+        .fans
+        .iter()
+        .any(|fan| fan.access_state == "authorization_required")
+    {
+        "Administrator access required for fan control. Authentication starts only when Apply is used. Auto/BIOS restore remains available.".to_string()
+    } else if state
+        .fans
+        .iter()
+        .any(|fan| fan.access_state == "authorization_denied")
+    {
+        "Administrator authorization was denied or cancelled. RPM telemetry remains available."
+            .to_string()
+    } else if state.caps.has_fan_manual_percent
+        || state.caps.has_fan_boost
+        || state.caps.fan_curve_writable
+    {
         "Writable fan-control support was detected. Use these controls carefully; Auto/BIOS restore remains available.".to_string()
     } else if state.caps.has_fan_reading {
         "Fan RPM telemetry is available, but no writable fan-control endpoint was confirmed. Controls will be enabled automatically when a supported backend is detected.".to_string()
@@ -10445,10 +10737,17 @@ mod tests {
         assert_eq!(dashboard_secondary_columns(1260), 5);
         assert_eq!(dashboard_secondary_columns(1160), 5);
         assert_eq!(dashboard_secondary_columns(1159), 3);
+        assert_eq!(dashboard_secondary_columns(641), 3);
+        assert_eq!(dashboard_secondary_columns(640), 3);
+        assert_eq!(dashboard_secondary_columns(639), 1);
         assert_eq!(dashboard_secondary_columns(780), 3);
 
-        assert_eq!(dashboard_mode_columns(900), 5);
-        assert_eq!(dashboard_mode_columns(759), 3);
+        assert_eq!(dashboard_mode_columns(1161), 5);
+        assert_eq!(dashboard_mode_columns(1160), 5);
+        assert_eq!(dashboard_mode_columns(1159), 3);
+        assert_eq!(dashboard_mode_columns(641), 3);
+        assert_eq!(dashboard_mode_columns(640), 3);
+        assert_eq!(dashboard_mode_columns(639), 1);
     }
 
     #[test]

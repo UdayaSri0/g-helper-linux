@@ -19,8 +19,9 @@ The current top-level structure uses:
 - a compact 202 px left navigation sidebar with symbolic icons, hover/focus treatment, and a strong selected state
 - a compact header with an application mark, title/subtitle identity, and daemon connection status
 - vertically scrollable page containers clamped at 1260 px
+- long pages, including Settings, scroll vertically instead of contributing their full content height to the top-level minimum
 
-The default window is 1180 x 800 with a 900 x 650 minimum. Flow-box metric grids reflow as space changes; the current layouts are checked at both default and minimum sizes.
+The default window is 1180 x 800. It does not impose a desktop-sized minimum: the visible page supplies its natural minimum, and flow-box groups reflow through wide, medium, and narrow layouts as space changes.
 
 Shared presentation rules:
 
@@ -63,6 +64,7 @@ The current UI behavior is polling-based:
 
 - a background Tokio runtime polls daemon state once per second
 - a GTK timeout refreshes widgets every 250 ms from cached state
+- one-shot tray/window actions and responsive breakpoint checks remain prompt, while bulk widget rendering runs only when the cached UI revision changes
 
 This matches the current daemon polling model and is the expected behavior unless the architecture changes.
 
@@ -105,8 +107,8 @@ Current behavior:
 - fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
 - when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
 - CPU, GPU, Battery, Cooling, and Memory cards provide keyboard-accessible navigation with visible hover/focus feedback
-- System Overview uses five cards across when at least 1160 px is available to the group and intentionally caps at three columns below that point, preventing an accidental 4+1 wrap
-- other responsive `GtkFlowBox` groups wrap naturally to two or one column without horizontal scrolling; Current System Mode uses 5-wide or 3+2 packing
+- System Overview uses five cards across at wide widths, three at medium widths, and one at narrow widths, preventing accidental 4+1 packing
+- the remaining major `GtkFlowBox` groups transition together through wide, medium, and narrow modes without horizontal scrolling; Current System Mode uses 5-wide, 3+2, or a single stacked column
 - GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
 - Settings can hide Advanced System Health, the conditional NVMe card, or Cooling Snapshot and can enable a compact vertical layout
 

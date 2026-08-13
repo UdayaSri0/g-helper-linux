@@ -31,6 +31,12 @@ pub const FAN_INFO_CURRENT_RPM_KEY: &str = "current_rpm";
 pub const FAN_INFO_MIN_RPM_KEY: &str = "min_rpm";
 pub const FAN_INFO_MAX_RPM_KEY: &str = "max_rpm";
 pub const FAN_INFO_CURRENT_PERCENT_KEY: &str = "current_percent";
+pub const FAN_INFO_RPM_READABLE_KEY: &str = "rpm_readable";
+pub const FAN_INFO_PWM_ENDPOINT_VERIFIED_KEY: &str = "pwm_endpoint_verified";
+pub const FAN_INFO_DIRECT_WRITE_KEY: &str = "direct_write";
+pub const FAN_INFO_PRIVILEGED_WRITE_KEY: &str = "privileged_write";
+pub const FAN_INFO_AUTHORIZATION_KEY: &str = "authorization";
+pub const FAN_INFO_ACCESS_STATE_KEY: &str = "access_state";
 pub const FAN_INFO_CONTROLLABLE_KEY: &str = "controllable";
 pub const FAN_INFO_SUPPORTS_MANUAL_PERCENT_KEY: &str = "supports_manual_percent";
 pub const FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY: &str = "supports_manual_rpm_target";
@@ -45,6 +51,9 @@ pub const CPU_CONTROL_ACCESS_KEY: &str = "control_access";
 pub const CPU_CONTROL_KIND_KEY: &str = "kind";
 pub const CPU_CONTROL_STATUS_KEY: &str = "status";
 pub const CPU_CONTROL_REASON_KEY: &str = "reason";
+pub const CPU_CONTROL_DIRECT_WRITE_KEY: &str = "direct_write";
+pub const CPU_CONTROL_PRIVILEGED_WRITE_KEY: &str = "privileged_write";
+pub const CPU_CONTROL_AUTHORIZATION_KEY: &str = "authorization";
 pub const CPU_CONTROL_PATHS_KEY: &str = "paths";
 pub const CPU_PATH_PATH_KEY: &str = "path";
 pub const CPU_PATH_READABLE_KEY: &str = "readable";
@@ -266,6 +275,17 @@ pub mod setup {
     pub const CHECKED_AT_MS: &str = "checked_at_ms";
 }
 
+pub mod privileged_status {
+    pub const HELPER_INSTALLED: &str = "privileged_helper_installed";
+    pub const HELPER_REACHABLE: &str = "privileged_helper_reachable";
+    pub const HELPER_COMPATIBLE: &str = "privileged_helper_compatible";
+    pub const HELPER_VERSION: &str = "privileged_helper_version";
+    pub const POLKIT_AVAILABLE: &str = "polkit_available";
+    pub const AUTHORIZATION_BACKEND: &str = "authorization_backend";
+    pub const AUTHORIZATION_STATE: &str = "authorization_state";
+    pub const CATEGORIES_AVAILABLE: &str = "privileged_categories_available";
+}
+
 pub mod fan_curves {
     pub const SUPPORTED: &str = "supported";
     pub const REASON: &str = "reason";
@@ -288,5 +308,9 @@ mod tests {
         assert_eq!(cpu_caps::CONTROL_ACCESS, CPU_CONTROL_ACCESS_KEY);
         assert_eq!(lighting::RGB_HEX, "rgb_hex");
         assert_eq!(fan_curves::DUTY_PERCENT_COMPAT, "duty_percent");
+        assert_eq!(
+            privileged_status::HELPER_INSTALLED,
+            "privileged_helper_installed"
+        );
     }
 }

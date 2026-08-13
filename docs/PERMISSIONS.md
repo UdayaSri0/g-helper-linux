@@ -30,6 +30,37 @@ Important current note:
 
 - the daemon is not a privileged helper
 - it does not bypass kernel, sysfs, or system-DBus permission rules
+- it is the only application component that calls the optional root helper
+
+## Privileged Helper Trust Boundary
+
+Packaged installs include `rog-helper-privileged`, an on-demand root service on the system bus.
+The UI remains unprivileged and never connects to it directly. The application architecture is:
+
+```text
+GTK UI -> session DBus -> rog-helperd -> system DBus -> rog-helper-privileged
+```
+
+Its system identity is `io.github.roghelper.Privileged`, object
+`/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
+a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU operations. It does
+not expose privileged fan, lighting, GPU, or generic system writes.
+
+The helper has no generic file, sysfs, command, program, argument, or shell API. Its methods
+accept a narrowly defined domain operation, validate it, select a fixed endpoint internally,
+authorize the D-Bus caller, and return a sanitized domain error. Raw root/backend errors must not
+cross the boundary.
+
+The PolicyKit actions are:
+
+- `io.github.roghelper.cpu.control`
+- `io.github.roghelper.fans.control`
+- `io.github.roghelper.lighting.control`
+- `io.github.roghelper.system.configure`
+
+There is deliberately no generic “root” permission. Interactive authorization for CPU control
+methods is delegated to the desktop PolicyKit agent; the GTK application must not ask for or
+handle a password.
 
 ## Current Permission Boundaries
 
@@ -93,7 +124,7 @@ Backend:
 
 Depends on:
 
-- writable CPU sysfs files
+- readable CPU sysfs controls, with either direct write permission or the packaged privileged helper
 
 Examples:
 
@@ -107,8 +138,9 @@ Current effect of failure:
 
 - CPU telemetry can still work
 - `policy_writable` may become false as a coarse summary
-- daemon diagnostics report per-control `available` / `unsupported` / `missing_backend` / `permission_denied` / `temporarily_unavailable` state
-- the UI disables only the affected CPU controls and exposes copyable diagnostics for the blocked sysfs paths
+- daemon diagnostics report direct and privileged write routes plus authorization state per control
+- supported permission-blocked controls stay actionable and request PolicyKit authorization only on Apply
+- denied or failed writes refresh actual state and never stop telemetry
 
 ### Keyboard backlight brightness
 
@@ -128,14 +160,15 @@ Current effect of failure:
 
 ## Sysfs Write Limitations
 
-The repository does not currently ship any special privilege escalation or policy configuration for sysfs writes.
+The repository ships a typed PolicyKit CPU fallback. Existing direct provider behavior remains the
+first choice; the helper is called only after a supported operation fails for write permission.
 
 That means:
 
 - keyboard brightness may be readable but not writable
-- CPU controls may be visible but not writable
+- CPU controls may require administrator authorization when direct writes are blocked
 - behavior depends on the current distro, kernel, udev rules, and file ownership
-- the app does not attempt an automatic CPU permission repair path
+- the app does not change ownership, modes, udev rules, or sysfs permissions
 
 This is expected behavior in the current design.
 
@@ -146,8 +179,9 @@ changing them. They perform read-only service/API probes and filesystem access c
 presence and systemd state are diagnostic evidence only; a dependency is marked ready only after
 its expected API responds.
 
-These checks never run `sudo`, install packages, modify sysfs permissions, create udev/polkit
-rules, or bypass system DBus authorization. Remediation falls back to installation and
+These checks never run `sudo`, install packages, modify sysfs permissions, create udev rules, or
+bypass system DBus authorization. The privileged-status probe only asks PolicyKit for a
+non-interactive decision. Remediation falls back to installation and
 troubleshooting documentation when the repository has no verified distro-specific command.
 
 ## System DBus Expectations
@@ -172,7 +206,7 @@ The current implementation prefers graceful degradation over hidden failure.
 Current examples:
 
 - feature capability is false -> UI disables or hides the control
-- telemetry available but writes not allowed -> UI shows per-control read-only state plus diagnostics and suggested checks
+- telemetry available but direct writes not allowed -> UI shows authorization-required, helper-missing, or read-only state plus diagnostics
 - backend missing -> warnings and diagnostics expose the condition
 - session daemon missing -> UI surfaces daemon connectivity problems
 
@@ -182,13 +216,12 @@ This is the intended current behavior and should be preserved when adding new ba
 
 The repository does not currently include:
 
-- a privileged helper binary
-- bundled polkit rules
 - bundled udev rules
-- a root daemon
 - a custom permission broker
+- privileged fan, lighting, GPU, or generic sysfs write methods
 
-If such a system is added later, this document should be updated to reflect the new trust and permission boundaries.
+`rog-helper-privileged` is a narrowly scoped root service, not a privileged replacement for the
+session daemon. It exits after an idle timeout and is optional on unsupported distributions.
 
 ## Practical Guidance
 

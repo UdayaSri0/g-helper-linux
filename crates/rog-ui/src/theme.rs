@@ -84,13 +84,11 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   box-shadow: 0 1px 3px alpha(black, 0.18);
 }
 .metric-card-primary {
-  min-width: 260px;
   min-height: 148px;
   padding: 18px;
   background-image: linear-gradient(145deg, alpha(#4da3ff, 0.08), alpha(#1a1f27, 0.0) 62%);
 }
 .metric-card-compact { padding: 12px 14px; }
-.dashboard-secondary-card { min-width: 176px; }
 .metric-card-icon,
 .dashboard-panel-icon,
 .dashboard-fan-icon { color: #73b7ff; }
@@ -120,13 +118,9 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   font-size: 12px;
   padding-top: 2px;
 }
-.dashboard-panel { min-width: 300px; }
-.dashboard-quick-panel { min-width: 540px; }
-.dashboard-cooling-panel { min-width: 320px; }
 .dashboard-panel-title { color: #f4f7fb; font-size: 15px; font-weight: 700; }
 .dashboard-mode-strip { padding: 12px 14px; }
 .dashboard-mode-item {
-  min-width: 118px;
   padding: 7px 10px;
   border-radius: 8px;
   background: alpha(black, 0.12);
@@ -145,7 +139,6 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   color: #f4c775;
 }
 .dashboard-control-tile {
-  min-width: 238px;
   padding: 10px 12px;
   border-radius: 9px;
   background: alpha(black, 0.12);
@@ -177,7 +170,6 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
 .dashboard-status-value.status-error,
 .dashboard-status-indicator.status-error { color: #ff9ba4; }
 .dashboard-trend-card {
-  min-width: 150px;
   padding: 10px 12px;
   box-shadow: none;
   background: alpha(black, 0.10);
@@ -212,13 +204,11 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
 .cpu-toggle-title { font-weight: 600; }
 .cpu-toggle-subtitle { opacity: 0.78; }
 .fans-page { background: transparent; }
-.fans-gauge-card-large { min-width: 280px; }
 .fans-status-pill-read-only { background: alpha(#6fa8d6, 0.14); color: #a8cdea; }
 .fans-status-pill-controllable { background: alpha(#39c58a, 0.14); color: #7de0b2; }
 .fans-status-pill-warning { background: alpha(#e9a23b, 0.16); color: #f4c775; }
 .fans-status-pill-error { background: alpha(#ef5b68, 0.14); color: #ff9ba4; }
 .fans-warning-banner { border-radius: 10px; }
-.fan-rotor-card { min-width: 145px; }
 .fan-card-read-only { border-color: alpha(#6fa8d6, 0.13); }
 .fan-card-controllable { border-color: alpha(#39c58a, 0.20); }
 .fan-rpm-large { font-size: 22px; font-weight: 700; }

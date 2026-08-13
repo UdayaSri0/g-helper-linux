@@ -20,7 +20,6 @@ impl MetricCard {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("metric-card");
         root.set_hexpand(true);
-        root.set_size_request(180, -1);
 
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
@@ -286,7 +285,6 @@ impl HistoryGraph {
         color: (f64, f64, f64),
     ) -> Self {
         let area = gtk::DrawingArea::new();
-        area.set_content_width(420);
         area.set_content_height(190);
         area.set_hexpand(true);
         area.add_css_class("history-graph");

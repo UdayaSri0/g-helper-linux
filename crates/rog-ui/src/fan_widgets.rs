@@ -122,7 +122,6 @@ pub struct TempGauge {
 impl TempGauge {
     pub fn new(label: &str, accent: GaugeAccent) -> Self {
         let area = gtk::DrawingArea::new();
-        area.set_content_width(300);
         area.set_content_height(230);
         area.set_hexpand(true);
         area.add_css_class("fan-gauge-widget");
@@ -203,8 +202,8 @@ pub struct CurvePreview {
 impl CurvePreview {
     pub fn new() -> Self {
         let area = gtk::DrawingArea::new();
-        area.set_content_width(420);
         area.set_content_height(220);
+        area.set_hexpand(true);
         area.add_css_class("fan-curve-widget");
         area.set_tooltip_text(Some(
             "Safe fan curve preview. Disabled until curve support is available.",
@@ -245,6 +244,10 @@ impl CurvePreview {
         if self.area.is_mapped() {
             self.area.queue_draw();
         }
+    }
+
+    pub fn points(&self) -> Vec<(u8, u8)> {
+        self.state.borrow().points.clone()
     }
 }
 

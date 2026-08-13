@@ -40,85 +40,68 @@ attributes, but their exact behavior remains driver-specific. The `asus_wmi` sou
 CPU, GPU, and Mid fan-curve availability and restore paths. This is credible evidence for a readable
 ASUS kernel interface, not sufficient evidence for a safe application write contract.
 
-## Current decision
+## Current implementation decision
 
 - `has_fan_reading=true`
 - `fan_count=4` (three ASUS-labelled rows plus one separate unlabeled ACPI row)
 - `fan_mapping_confidence=unknown` overall; the three ASUS rows individually report `hardware_label`
 - `fan_curve_readable=true`
-- `fan_curve_writable=false`
-- `has_fan_curves=false` because the existing UI interprets this as an actionable curve backend
-- manual percentage, RPM target, individual control, sync control, and boost remain false
+- `fan_curve_writable=true` only when the verified direct or privileged route is available
+- `has_fan_curves=true` only for safely mapped ASUS WMI channels with the complete eight-point ABI
+- manual percentage, RPM target, sync control, and boost remain false; individual Auto/curve
+  control is true only for the verified labelled channels
 
-Generic `pwmN`, `pwmN_enable`, and `fanN_target` discovery is diagnostic-only. A provider no longer
-opens a candidate file for writing merely to probe it, and setter calls are rejected before sysfs.
+Generic `pwmN`, `pwmN_enable`, and `fanN_target` discovery remains diagnostic-only. Manual percent,
+RPM-target control, fan sync, and boost are not exposed on this machine because no verified endpoint
+implements those semantics.
 
-## Implementation plan after the write gate is satisfied
+The implemented ASUS WMI route additionally requires the `asus` RPM device and
+`asus_custom_fan_curve` device to resolve to the same kernel device, exact CPU/GPU/Mid hardware
+labels, eight complete readable point pairs, and enable state 1 or 2. IDs are semantic
+(`asus-wmi:cpu`, `asus-wmi:gpu`, `asus-wmi:mid`) and callers never provide a path.
 
-### `rog-core`
+Curve writes validate all eight points, write and read back every temperature and PWM value, and
+enable the curve only after the complete payload succeeds. Any partial failure attempts the driver's
+factory-default/Auto command. Auto and reset use the verified driver command directly. Permission
+failures fall back to `rog-helper-privileged` and PolicyKit action
+`io.github.roghelper.fans.control`; telemetry does not contact PolicyKit.
 
-- Keep reading, curve reading, and curve writing as separate capabilities.
-- Model the backend's exact fixed point count and raw ranges; do not silently interpolate or discard
-  points.
-- Retain strict increasing-temperature validation, non-decreasing duty validation, conservative
-  high-temperature floors, and add backend-reported bounds before serialization.
-- Represent CPU/GPU/Mid mapping confidence explicitly; never promote index correlation alone to an
-  authoritative mapping.
+The helper records active custom control in `/run/rog-helper/fan-control-active`. If the helper is
+restarted after an interruption, reaches its idle timeout, or shuts down cleanly, it restores every
+currently verified channel to Auto before clearing the marker. A hard failure that prevents both
+the kernel and the restarted helper from running cannot be recovered in-process; firmware reboot
+behavior remains the final safety boundary.
 
-### `rog-providers`
+## Safety validation and remaining hardware work
 
-- Add a dedicated ASUS WMI curve provider, selected only by a positive driver/device probe and a
-  supported ABI layout. Do not put writes back into the generic hwmon telemetry provider.
-- Read all points and enable state before a transaction. Reject partial layouts, missing pairs,
-  unexpected point counts, values outside the driver range, and unsupported channels.
-- When writing is eventually authorized, stage and verify every point, then enable the curve only
-  after the complete payload succeeds. On any error, invoke the verified firmware/BIOS Auto restore
-  operation and confirm its state.
-- Do not claim writable based on mode bits. Require a deliberate privilege design (for example a
-  narrowly scoped system service/polkit method) and verify actual access without probe writes.
+- Shared validation enforces exact point count, temperature and percentage bounds, strictly
+  increasing temperatures, non-decreasing duty, and conservative high-temperature floors.
+- Provider writes are serialized. Discovery reads the complete layout before each write; each
+  staged value is read back, enable happens last, and any failure invokes Auto reset.
+- The daemon tries the unprivileged provider first and falls back only on `PermissionDenied`.
+  Unsupported or unsafe mappings never invoke the helper.
+- The UI distinguishes direct, authorization-required, authorization-denied, helper-missing,
+  unsafe/read-only, telemetry-only, and unsupported states. Curve Apply is enabled only when an
+  actionable route exists.
+- Filesystem tests cover complete/incomplete layouts, trusted IDs, point-count rejection, direct
+  success, readback conversion, Auto reset, fallback preference, authorization denial, and helper
+  unavailability.
+- Remaining hardware work is the supervised matrix below, especially real sysfs rollback behavior,
+  helper interruption, suspend/resume, and firmware ownership interactions.
 
-### `rog-daemon` and DBus
+## Manual hardware validation still required
 
-- Keep the current string-keyed maps and add keys without renaming old ones.
-- Expose fixed point count, channel identity evidence, supported raw ranges, current curves, current
-  enable state, and restore support.
-- Serialize fan writes through one transaction lock. Re-read after apply. Return `NotSupported` for
-  unverified hardware, `InvalidArgs` for malformed/safety-violating curves, and `AccessDenied` for a
-  verified backend lacking privilege.
-- Cache the pre-change state and restore firmware Auto on partial failure, critical-temperature
-  safety events, and orderly daemon shutdown. Startup must never apply a saved curve implicitly.
-
-### Cooling UI
-
-- Show the currently readable firmware curves as read-only only after channel mapping is verified;
-  until then show candidate channel numbers and mapping confidence.
-- Enable editing/apply/reset controls only when `fan_curve_writable=true`, restore support is true,
-  and backend bounds are present.
-- Preview validation errors before submission, require an explicit Apply action, and show the
-  verified post-write state. RPM telemetry alone must never enable curve controls.
-
-### Tests and fallback behavior
-
-- Use filesystem fixtures; tests must not require ASUS hardware or root.
-- Cover complete and incomplete point sets, unreadable/non-numeric values, unexpected channels,
-  label confidence, monotonicity, bounds, partial transaction failure, read-back mismatch, and Auto
-  restore.
-- Add a fake backend transaction test proving that failure at every write step restores Auto and
-  never leaves an incomplete curve enabled.
-- On unsupported ABI, permission loss, mapping uncertainty, or restore failure, keep telemetry
-  visible, disable all controls, emit actionable diagnostics, and prefer firmware/BIOS Auto.
-
-## Data still required before fan writes
-
-1. Confirm the exact `asus_wmi` ABI semantics and raw units for this kernel version from the matching
-   kernel source/config, including the meaning of enable values and factory-default/Auto restoration.
-2. Establish and test a least-privilege daemon write path; the current user cannot write the files.
-3. Verify the relationship between the three labelled RPM sensors and the three curve channels by
-   authoritative driver/device evidence, not index coincidence alone.
-4. Capture read-only state before/after normal firmware profile changes to understand ownership and
-   whether another service or firmware rewrites curves.
-5. Test apply, read-back, partial-failure recovery, daemon shutdown, suspend/resume, and reboot on
-   disposable hardware under thermal supervision before exposing UI controls.
+1. Confirm RPM-only telemetry with the helper stopped.
+2. Install/start the helper and confirm diagnostics change to authorization-required.
+3. Apply the conservative eight-point preview curve while thermally supervised.
+4. Verify all eight point readbacks and the enabled state.
+5. Return the selected fan to Auto and confirm firmware control resumes.
+6. Deny and cancel separate PolicyKit prompts; confirm values remain unchanged and telemetry lives.
+7. Stop and restart the daemon while a curve is active; confirm the helper remains the safety owner.
+8. Stop the helper cleanly while a curve is active; confirm Auto restoration.
+9. Kill and restart the helper with its marker armed; confirm startup restoration.
+10. Exercise malformed curves and simulate an unavailable endpoint; confirm Auto is attempted and no
+    incomplete curve is enabled.
 
 ## References
 
@@ -126,6 +109,6 @@ opens a candidate file for writing merely to probe it, and setter calls are reje
 - [Current Linux `asus-wmi.c` source](https://codebrowser.dev/linux/linux/drivers/platform/x86/asus-wmi.c.html)
 - [Original ASUS custom fan-curve driver patch discussion](https://lkml.iu.edu/hypermail/linux/kernel/2109.0/03504.html)
 
-**FAN WRITES IMPLEMENTED: NO.** The target exposes a credible readable kernel curve ABI, but lacks an
-installed service contract, current-user write access, authoritative curve-channel mapping, and a
-fully tested failure/Auto-restore transaction.
+**FAN WRITES IMPLEMENTED: NARROWLY.** Only verified ASUS WMI eight-point curves and Auto/reset are
+implemented. Generic PWM, manual percent, RPM target, software curves, sync, and boost remain
+unsupported. Hardware testing is required before release.

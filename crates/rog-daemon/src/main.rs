@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,13 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use regex::Regex;
 use rog_core::{
-    config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_or_migrate,
-    save_config_atomic, validate_config, AppConfig, AppState, BatteryLimitPercent, BatteryState,
-    CpuAccessState, CpuCaps, CpuControlAccess, CpuPathAccess, CpuTelemetry, DependencyStatus,
-    DeviceCaps, FanCaps, FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState,
-    FanTelemetry, FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics,
-    LightingMode, LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor,
-    SetupIssue, SetupStatus, TelemetrySnapshot,
+    config_path, config_to_toml, cpu_request_readback_matches, dbus_keys, legacy_ui_config_path,
+    load_or_migrate, save_config_atomic, validate_config, AppConfig, AppState, BatteryLimitPercent,
+    BatteryState, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest,
+    CpuPathAccess, CpuPowerMode, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
+    FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, GpuMode, LightingDiagnostics, LightingMode,
+    LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor, SetupIssue,
+    SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -33,6 +35,8 @@ use zbus::fdo;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{connection, interface};
 
+mod privileged_client;
+
 const DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
@@ -43,6 +47,96 @@ struct SharedState {
     control: RwLock<ControlState>,
     config: RwLock<AppConfig>,
     config_path: Option<PathBuf>,
+    cpu_privilege: RwLock<CpuPrivilegeState>,
+    fan_authorization: RwLock<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CpuPrivilegeState {
+    status: rog_core::PrivilegedStatus,
+    authorization: CpuAuthorization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuWriteSource {
+    Direct,
+    Privileged,
+}
+
+async fn with_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_cpu_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn map_privileged_cpu_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
+            "administrator authorization was denied or cancelled".to_string(),
+        ),
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged CPU helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged CPU helper failed unexpectedly".to_string(),
+        ),
+    }
+}
+
+fn map_privileged_fan_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
+            "administrator authorization for fan control was denied or cancelled".to_string(),
+        ),
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged fan helper is unavailable; fan telemetry remains available".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged fan helper failed; Auto restore was attempted".to_string(),
+        ),
+    }
+}
+
+async fn with_fan_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_fan_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,12 +221,33 @@ impl RogHelperDaemon {
         guard.cpu = cpu;
     }
 
-    fn set_cpu_caps(&self, caps: CpuCaps) {
+    fn set_cpu_caps(&self, mut caps: CpuCaps) {
+        let privilege = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        apply_cpu_privilege_to_caps(&mut caps, &privilege);
         let mut guard = self.state.inner.write().expect("rwlock poisoned");
         guard.cpu_caps = caps;
     }
 
     fn set_fan_state(&self, mut fan_state: FanState) {
+        let privilege = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .fan_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        apply_fan_privilege_to_state(&mut fan_state, &privilege, &authorization);
         let control = self.read_control_state();
         fan_state.sync_enabled = control.fan_sync_enabled;
         fan_state.mode = control.fan_mode;
@@ -202,6 +317,47 @@ impl RogHelperDaemon {
         };
         let cpu = self.cpu.read_snapshot(timestamp_ms, temp_c)?;
         self.set_cpu_telemetry(cpu);
+        Ok(())
+    }
+
+    async fn apply_cpu_control(&self, request: CpuControlRequest) -> rog_core::RogResult<()> {
+        let result = with_privileged_fallback(
+            || self.cpu.apply_control(&request),
+            || privileged_client::apply_cpu(&request),
+        )
+        .await;
+
+        {
+            let mut privilege = self.state.cpu_privilege.write().expect("rwlock poisoned");
+            match &result {
+                Ok(CpuWriteSource::Privileged) => {
+                    privilege.authorization = CpuAuthorization::Authorized;
+                }
+                Err(rog_core::RogError::PermissionDenied(message))
+                    if message.contains("authorization") =>
+                {
+                    privilege.authorization = CpuAuthorization::Denied;
+                }
+                Err(rog_core::RogError::TemporarilyUnavailable(message))
+                    if message.contains("helper") =>
+                {
+                    privilege.status.privileged_helper_reachable = false;
+                    privilege.authorization = CpuAuthorization::Unavailable;
+                }
+                _ => {}
+            }
+        }
+
+        let refresh = self.refresh_cpu_state();
+        self.set_cpu_caps(self.cpu.probe_caps());
+        result?;
+        refresh?;
+        let state = self.read_state();
+        if cpu_request_readback_matches(&request, &state.cpu) == Some(false) {
+            return Err(rog_core::RogError::TransientFailure(
+                "CPU control readback did not confirm the requested value".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -320,6 +476,10 @@ impl RogHelperDaemon {
         setup_status_to_dbus(&setup)
     }
 
+    async fn get_privileged_status(&self) -> HashMap<String, OwnedValue> {
+        privileged_status_to_dbus(&privileged_client::probe().await)
+    }
+
     fn get_fan_caps(&self) -> HashMap<String, OwnedValue> {
         fan_caps_to_dbus(&self.read_state().fan_state.caps)
     }
@@ -345,19 +505,38 @@ impl RogHelperDaemon {
     }
 
     async fn set_fan_auto(&self, fan_id: &str) -> fdo::Result<()> {
-        self.hwmon
-            .set_fan_auto(if fan_id.trim().is_empty() {
-                None
-            } else {
-                Some(fan_id)
-            })
-            .map_err(map_rog_error_to_fdo)?;
+        let target = (!fan_id.trim().is_empty()).then_some(fan_id);
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_auto(target),
+            || privileged_client::set_fan_auto(fan_id),
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Returned fan control to Auto/BIOS mode.",
             None,
         );
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
@@ -402,11 +581,33 @@ impl RogHelperDaemon {
         curve: HashMap<String, OwnedValue>,
     ) -> fdo::Result<()> {
         let curve = fan_curve_from_dbus(fan_id, &curve).map_err(map_rog_error_to_fdo)?;
-        self.hwmon
-            .set_fan_curve(fan_id, curve)
-            .map_err(map_rog_error_to_fdo)?;
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_curve(fan_id, curve.clone()),
+            || privileged_client::set_fan_curve(fan_id, &curve),
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(FanControlMode::Curve, "Applied fan curve.", None);
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
@@ -473,15 +674,37 @@ impl RogHelperDaemon {
     }
 
     async fn reset_fans_to_auto(&self) -> fdo::Result<()> {
-        self.hwmon
-            .set_fan_auto(None)
-            .map_err(map_rog_error_to_fdo)?;
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_auto(None),
+            privileged_client::reset_fans_to_auto,
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Reset all controllable fans to Auto/BIOS mode.",
             None,
         );
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
@@ -709,31 +932,28 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_turbo(&self, enabled: bool) -> fdo::Result<()> {
-        self.cpu.set_boost(enabled).map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Turbo(enabled))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_power_mode(&self, mode: &str) -> fdo::Result<()> {
-        self.cpu
-            .set_power_mode(mode)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        let mode = CpuPowerMode::parse(mode).map_err(map_rog_error_to_fdo)?;
+        self.apply_cpu_control(CpuControlRequest::PowerMode(mode))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_governor(&self, governor: &str) -> fdo::Result<()> {
-        self.cpu
-            .set_governor(governor)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Governor(governor.to_string()))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_epp(&self, epp: &str) -> fdo::Result<()> {
-        self.cpu.set_epp(epp).map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Epp(epp.to_string()))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_freq_limits(&self, min_mhz: u64, max_mhz: u64) -> fdo::Result<()> {
@@ -752,22 +972,21 @@ impl RogHelperDaemon {
             })?)
         };
 
-        self.cpu
-            .set_freq_limits(min, max)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::FrequencyLimits {
+            min_mhz: min,
+            max_mhz: max,
+        })
+        .await
+        .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
         let core_id = u32::try_from(core_id).map_err(|_| {
             fdo::Error::InvalidArgs("logical CPU id does not fit into u32".to_string())
         })?;
-        self.cpu
-            .set_core_online(core_id, online)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::CoreOnline { core_id, online })
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 }
 
@@ -1133,6 +1352,24 @@ async fn main() -> anyhow::Result<()> {
     let has_profiles = caps.has_profiles;
     let has_charge_limit = caps.has_charge_limit;
     let has_gpu_modes = caps.has_gpu_modes;
+    let privileged_status = privileged_client::probe().await;
+    let cpu_authorization = if privileged_status.privileged_helper_reachable
+        && privileged_status.privileged_helper_compatible
+        && privileged_status.polkit_available
+        && privileged_status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Cpu)
+    {
+        if privileged_status.authorization_state == rog_core::AuthorizationState::Authorized {
+            CpuAuthorization::Authorized
+        } else {
+            CpuAuthorization::Required
+        }
+    } else {
+        CpuAuthorization::Unavailable
+    };
+    let mut initial_fan_state = initial_fan_state;
+    apply_fan_privilege_to_state(&mut initial_fan_state, &privileged_status, "not_checked");
     let mut init_state = AppState::new(caps, hw_snapshot);
     init_state.fan_state = initial_fan_state;
     init_state.cpu_caps = cpu_caps.clone();
@@ -1142,6 +1379,11 @@ async fn main() -> anyhow::Result<()> {
         control: RwLock::new(control_state),
         config: RwLock::new(app_config),
         config_path: app_config_path,
+        cpu_privilege: RwLock::new(CpuPrivilegeState {
+            status: privileged_status,
+            authorization: cpu_authorization,
+        }),
+        fan_authorization: RwLock::new("not_checked".to_string()),
     });
 
     // Export DBus service on the session bus.
@@ -1684,6 +1926,52 @@ fn apply_fan_caps_to_device_caps(caps: &mut DeviceCaps, fan_caps: &FanCaps) {
     caps.fan_backend = fan_caps.fan_backend.clone();
 }
 
+fn apply_fan_privilege_to_state(
+    state: &mut FanState,
+    status: &rog_core::PrivilegedStatus,
+    authorization: &str,
+) {
+    let helper_ready = status.privileged_helper_reachable
+        && status.privileged_helper_compatible
+        && status.polkit_available
+        && status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Fans);
+    for fan in &mut state.fans {
+        if !fan.pwm_endpoint_verified || (!fan.supports_curve && !fan.supports_auto) {
+            continue;
+        }
+        if fan.direct_write {
+            fan.controllable = true;
+            fan.privileged_write = false;
+            fan.authorization = "not_required".to_string();
+            fan.access_state = "direct".to_string();
+        } else if helper_ready {
+            fan.controllable = true;
+            fan.privileged_write = true;
+            fan.authorization = authorization.to_string();
+            fan.access_state = match authorization {
+                "denied" => "authorization_denied",
+                "authorized" => "curve_control_available",
+                _ => "authorization_required",
+            }
+            .to_string();
+        } else {
+            fan.controllable = false;
+            fan.privileged_write = false;
+            fan.authorization = "unavailable".to_string();
+            fan.access_state =
+                if !status.privileged_helper_installed || !status.privileged_helper_reachable {
+                    "helper_missing"
+                } else {
+                    "unsafe_read_only"
+                }
+                .to_string();
+        }
+    }
+    state.caps = FanCaps::from_fans(&state.fans);
+}
+
 fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert(
@@ -1804,6 +2092,30 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
             OwnedValue::from(v as u64),
         );
     }
+    m.insert(
+        dbus_keys::FAN_INFO_RPM_READABLE_KEY.to_string(),
+        OwnedValue::from(fan.rpm_readable),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_PWM_ENDPOINT_VERIFIED_KEY.to_string(),
+        OwnedValue::from(fan.pwm_endpoint_verified),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_DIRECT_WRITE_KEY.to_string(),
+        OwnedValue::from(fan.direct_write),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_PRIVILEGED_WRITE_KEY.to_string(),
+        OwnedValue::from(fan.privileged_write),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_AUTHORIZATION_KEY.to_string(),
+        ov(fan.authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_ACCESS_STATE_KEY.to_string(),
+        ov(fan.access_state.clone()),
+    );
     m.insert(
         dbus_keys::FAN_INFO_CONTROLLABLE_KEY.to_string(),
         OwnedValue::from(fan.controllable),
@@ -1945,6 +2257,18 @@ fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, Own
     m.insert(
         dbus_keys::CPU_CONTROL_REASON_KEY.to_string(),
         ov(control.reason.clone()),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_DIRECT_WRITE_KEY.to_string(),
+        OwnedValue::from(control.direct_write),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_PRIVILEGED_WRITE_KEY.to_string(),
+        OwnedValue::from(control.privileged_write),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_AUTHORIZATION_KEY.to_string(),
+        ov(control.authorization.as_str().to_string()),
     );
     m.insert(
         dbus_keys::CPU_CONTROL_PATHS_KEY.to_string(),
@@ -2519,6 +2843,10 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
             matches!(
                 control.status,
                 CpuAccessState::PermissionDenied
+                    | CpuAccessState::AuthorizationRequired
+                    | CpuAccessState::AuthorizationDenied
+                    | CpuAccessState::HelperMissing
+                    | CpuAccessState::ReadOnly
                     | CpuAccessState::MissingBackend
                     | CpuAccessState::TemporarilyUnavailable
             )
@@ -2527,6 +2855,36 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
 
     if blocked.is_empty() {
         return None;
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationRequired)
+    {
+        return Some(
+            "Administrator access is required for some supported CPU controls; authorization occurs only when Apply is used."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationDenied)
+    {
+        return Some(
+            "Administrator authorization was denied or cancelled for a CPU control. Apply again to retry."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::HelperMissing)
+    {
+        return Some(
+            "Some supported CPU controls need rog-helper-privileged, but the helper is unavailable."
+                .to_string(),
+        );
     }
 
     if blocked
@@ -2562,6 +2920,57 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
     None
 }
 
+fn apply_cpu_privilege_to_caps(caps: &mut CpuCaps, privilege: &CpuPrivilegeState) {
+    let helper_ready = privilege.status.privileged_helper_reachable
+        && privilege.status.privileged_helper_compatible
+        && privilege.status.polkit_available
+        && privilege
+            .status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Cpu);
+    for control in &mut caps.control_access {
+        control.direct_write = control.status == CpuAccessState::Available;
+        if control.direct_write {
+            control.privileged_write = false;
+            control.authorization = CpuAuthorization::NotRequired;
+            continue;
+        }
+        if control.status != CpuAccessState::PermissionDenied {
+            continue;
+        }
+        if helper_ready {
+            control.privileged_write = true;
+            control.authorization = privilege.authorization;
+            control.status = if privilege.authorization == CpuAuthorization::Denied {
+                CpuAccessState::AuthorizationDenied
+            } else {
+                CpuAccessState::AuthorizationRequired
+            };
+            control.reason = if privilege.authorization == CpuAuthorization::Denied {
+                "Administrator authorization was denied or cancelled. Apply to retry.".to_string()
+            } else {
+                "Administrator access is required. Apply to authenticate.".to_string()
+            };
+        } else if !privilege.status.privileged_helper_installed
+            || !privilege.status.privileged_helper_reachable
+        {
+            control.status = CpuAccessState::HelperMissing;
+            control.authorization = CpuAuthorization::Unavailable;
+            control.reason =
+                "The privileged CPU helper is not installed or cannot be reached.".to_string();
+        } else {
+            control.status = CpuAccessState::ReadOnly;
+            control.authorization = CpuAuthorization::Unavailable;
+            control.reason = "The CPU control is supported, but no compatible authorized write route is available."
+                .to_string();
+        }
+    }
+    caps.policy_writable = caps
+        .control_access
+        .iter()
+        .any(|control| control.status.is_actionable());
+}
+
 fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     let mut out = String::new();
     out.push_str("CPU Diagnostics\n");
@@ -2593,11 +3002,24 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
         out.push_str("\nWrite Access\n");
         out.push_str("------------\n");
         for control in &caps.control_access {
+            let supported = !matches!(
+                control.status,
+                CpuAccessState::Unknown
+                    | CpuAccessState::Unsupported
+                    | CpuAccessState::MissingBackend
+            );
+            out.push_str(&format!("{}:\n", control.kind.as_str()));
+            out.push_str(&format!("  supported: {supported}\n"));
+            out.push_str(&format!("  direct_write: {}\n", control.direct_write));
             out.push_str(&format!(
-                "{}: {}",
-                control.kind.label(),
-                control.status.as_str()
+                "  privileged_write: {}\n",
+                control.privileged_write
             ));
+            out.push_str(&format!(
+                "  authorization: {}\n",
+                control.authorization.as_str()
+            ));
+            out.push_str(&format!("  status: {}", control.status.as_str()));
             if !control.reason.is_empty() {
                 out.push_str(&format!(" ({})", control.reason));
             }
@@ -2787,6 +3209,49 @@ fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
         rog_core::RogError::TemporarilyUnavailable(msg) => fdo::Error::Failed(msg),
         rog_core::RogError::Unexpected(msg) => fdo::Error::Failed(msg),
     }
+}
+
+fn privileged_status_to_dbus(status: &rog_core::PrivilegedStatus) -> HashMap<String, OwnedValue> {
+    use dbus_keys::privileged_status as keys;
+
+    let mut map = HashMap::new();
+    map.insert(
+        keys::HELPER_INSTALLED.to_string(),
+        OwnedValue::from(status.privileged_helper_installed),
+    );
+    map.insert(
+        keys::HELPER_REACHABLE.to_string(),
+        OwnedValue::from(status.privileged_helper_reachable),
+    );
+    map.insert(
+        keys::HELPER_COMPATIBLE.to_string(),
+        OwnedValue::from(status.privileged_helper_compatible),
+    );
+    map.insert(
+        keys::HELPER_VERSION.to_string(),
+        ov(status.privileged_helper_version.clone().unwrap_or_default()),
+    );
+    map.insert(
+        keys::POLKIT_AVAILABLE.to_string(),
+        OwnedValue::from(status.polkit_available),
+    );
+    map.insert(
+        keys::AUTHORIZATION_BACKEND.to_string(),
+        ov(status.authorization_backend.clone()),
+    );
+    map.insert(
+        keys::AUTHORIZATION_STATE.to_string(),
+        ov(status.authorization_state.as_str().to_string()),
+    );
+    map.insert(
+        keys::CATEGORIES_AVAILABLE.to_string(),
+        ov(status
+            .privileged_categories_available
+            .iter()
+            .map(|category| category.as_str().to_string())
+            .collect::<Vec<_>>()),
+    );
+    map
 }
 
 impl RogHelperDaemon {
@@ -3020,6 +3485,36 @@ mod tests {
     }
 
     #[test]
+    fn privileged_status_map_exposes_required_diagnostics() {
+        use dbus_keys::privileged_status as keys;
+
+        let status = rog_core::PrivilegedStatus {
+            privileged_helper_installed: true,
+            privileged_helper_reachable: true,
+            privileged_helper_compatible: true,
+            privileged_helper_version: Some("0.2.2".to_string()),
+            polkit_available: true,
+            authorization_backend: "polkit".to_string(),
+            authorization_state: rog_core::AuthorizationState::Denied,
+            privileged_categories_available: vec![rog_core::PrivilegedCategory::Cpu],
+        };
+        let map = privileged_status_to_dbus(&status);
+
+        assert_eq!(
+            map.get(keys::HELPER_INSTALLED)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(value_as_str(&map, keys::AUTHORIZATION_STATE), "denied");
+        assert_eq!(
+            map.get(keys::CATEGORIES_AVAILABLE)
+                .cloned()
+                .and_then(|value| Vec::<String>::try_from(value).ok()),
+            Some(vec!["cpu".to_string()])
+        );
+    }
+
+    #[test]
     fn caps_to_dbus_emits_feature_access_status_and_reason_keys() {
         let mut caps = DeviceCaps::unknown();
         caps.profile_access = FeatureAvailability::new(
@@ -3225,6 +3720,9 @@ mod tests {
             kind: rog_core::CpuControlKind::Governor,
             status: CpuAccessState::PermissionDenied,
             reason: "Governor paths are readable but not writable by the current user.".to_string(),
+            direct_write: false,
+            privileged_write: false,
+            authorization: CpuAuthorization::NotApplicable,
             paths: vec![CpuPathAccess {
                 path: "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor".to_string(),
                 readable: true,
@@ -3389,5 +3887,150 @@ mod tests {
 
         assert_eq!(access.status, FeatureAccessState::Unsupported);
         assert!(access.reason.contains("No keyboard lighting control"));
+    }
+
+    #[tokio::test]
+    async fn direct_cpu_write_is_preferred() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let source = with_privileged_fallback(
+            || Ok(()),
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn permission_failure_uses_successful_privileged_write() {
+        let source = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+    }
+
+    #[tokio::test]
+    async fn authorization_denial_is_preserved_as_permission_error() {
+        let error = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async {
+                Err(rog_core::PrivilegedError::new(
+                    rog_core::PrivilegedErrorCode::NotAuthorized,
+                    "denied",
+                ))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
+        assert!(error.to_string().contains("denied or cancelled"));
+    }
+
+    #[tokio::test]
+    async fn helper_unavailable_is_a_transient_failure() {
+        let error = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async {
+                Err(rog_core::PrivilegedError::new(
+                    rog_core::PrivilegedErrorCode::BackendFailure,
+                    "unavailable",
+                ))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            rog_core::RogError::TemporarilyUnavailable(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsupported_cpu_control_never_uses_privileged_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let error = with_privileged_fallback(
+            || Err(rog_core::RogError::NotSupported("hardware".to_string())),
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::NotSupported(_)));
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fan_fallback_prefers_direct_and_preserves_helper_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let source = with_fan_privileged_fallback(
+            || Ok(()),
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let source = with_fan_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+
+        for (code, permission_denied) in [
+            (rog_core::PrivilegedErrorCode::NotAuthorized, true),
+            (rog_core::PrivilegedErrorCode::BackendFailure, false),
+        ] {
+            let error = with_fan_privileged_fallback(
+                || {
+                    Err(rog_core::RogError::PermissionDenied(
+                        "read-only".to_string(),
+                    ))
+                },
+                || async { Err(rog_core::PrivilegedError::new(code, "failure")) },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                matches!(error, rog_core::RogError::PermissionDenied(_)),
+                permission_denied
+            );
+        }
     }
 }

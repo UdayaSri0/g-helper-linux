@@ -703,6 +703,9 @@ mod tests {
             kind: CpuControlKind::Governor,
             status: CpuAccessState::PermissionDenied,
             reason: "blocked".to_string(),
+            direct_write: false,
+            privileged_write: false,
+            authorization: rog_core::CpuAuthorization::NotApplicable,
             paths: vec![CpuPathAccess {
                 path: "/sys/example".to_string(),
                 readable: true,

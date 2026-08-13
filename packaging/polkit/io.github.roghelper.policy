@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>ROG Helper</vendor>
+  <vendor_url>https://github.com/UdayaSri0/g-helper-linux</vendor_url>
+
+  <action id="io.github.roghelper.cpu.control">
+    <description>Control supported CPU settings with ROG Helper</description>
+    <message>Authentication is required to change supported CPU settings</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.roghelper.fans.control">
+    <description>Control supported fan settings with ROG Helper</description>
+    <message>Authentication is required to change supported fan settings</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.roghelper.lighting.control">
+    <description>Control supported lighting settings with ROG Helper</description>
+    <message>Authentication is required to change supported lighting settings</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.roghelper.system.configure">
+    <description>Configure supported system settings with ROG Helper</description>
+    <message>Authentication is required to change supported system settings</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>
