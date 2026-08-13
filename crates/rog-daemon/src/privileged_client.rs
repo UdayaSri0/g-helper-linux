@@ -168,6 +168,24 @@ pub async fn reset_fans_to_auto() -> Result<(), PrivilegedError> {
     call_fan("ResetFansToAuto", &()).await
 }
 
+pub async fn set_keyboard_backlight_brightness(level: u32) -> Result<(), PrivilegedError> {
+    let connection = Connection::system()
+        .await
+        .map_err(|_| lighting_helper_unavailable())?;
+    let helper = Proxy::new(
+        &connection,
+        PRIVILEGED_DBUS_NAME,
+        PRIVILEGED_DBUS_PATH,
+        PRIVILEGED_DBUS_INTERFACE,
+    )
+    .await
+    .map_err(|_| lighting_helper_unavailable())?;
+    helper
+        .call::<_, _, ()>("SetKeyboardBacklightBrightness", &(u64::from(level),))
+        .await
+        .map_err(|error| map_zbus_error_or(error, lighting_helper_unavailable))
+}
+
 async fn call_fan<B>(method: &str, body: &B) -> Result<(), PrivilegedError>
 where
     B: serde::ser::Serialize + zbus::zvariant::DynamicType,
@@ -203,7 +221,14 @@ fn fan_helper_unavailable() -> PrivilegedError {
     )
 }
 
-fn map_zbus_error(error: zbus::Error) -> PrivilegedError {
+fn lighting_helper_unavailable() -> PrivilegedError {
+    PrivilegedError::new(
+        PrivilegedErrorCode::BackendFailure,
+        "the privileged lighting helper is unavailable",
+    )
+}
+
+fn map_zbus_error_or(error: zbus::Error, fallback: fn() -> PrivilegedError) -> PrivilegedError {
     let text = error.to_string();
     for code in PrivilegedErrorCode::ALL {
         let marker = format!("{}:", code.as_str());
@@ -211,7 +236,11 @@ fn map_zbus_error(error: zbus::Error) -> PrivilegedError {
             return PrivilegedError::new(code, message.trim());
         }
     }
-    helper_unavailable()
+    fallback()
+}
+
+fn map_zbus_error(error: zbus::Error) -> PrivilegedError {
+    map_zbus_error_or(error, helper_unavailable)
 }
 
 #[cfg(test)]

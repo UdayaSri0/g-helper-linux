@@ -771,6 +771,16 @@ pub struct LightingState {
     #[serde(default)]
     pub supported_zones: Vec<String>,
     pub writable: bool,
+    #[serde(default)]
+    pub direct_writable: bool,
+    #[serde(default)]
+    pub privileged_writable: bool,
+    #[serde(default)]
+    pub authorization_required: bool,
+    #[serde(default)]
+    pub authorization: String,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
     pub status: String,
     pub last_error: Option<String>,
 }
@@ -799,6 +809,10 @@ pub struct LightingDiagnostics {
     pub keyboard_backlight_max_brightness: Option<u32>,
     pub keyboard_backlight_readable: bool,
     pub keyboard_backlight_writable: bool,
+    pub keyboard_backlight_direct_writable: bool,
+    pub keyboard_backlight_privileged_writable: bool,
+    pub keyboard_backlight_authorization_required: bool,
+    pub keyboard_backlight_authorization: String,
 
     pub supports_brightness: bool,
     pub supports_modes: bool,
@@ -854,6 +868,10 @@ impl LightingDiagnostics {
             keyboard_backlight_max_brightness: None,
             keyboard_backlight_readable: false,
             keyboard_backlight_writable: false,
+            keyboard_backlight_direct_writable: false,
+            keyboard_backlight_privileged_writable: false,
+            keyboard_backlight_authorization_required: false,
+            keyboard_backlight_authorization: "not_applicable".to_string(),
             supports_brightness: false,
             supports_modes: false,
             supported_modes: Vec::new(),
@@ -1014,6 +1032,22 @@ impl LightingDiagnostics {
         lines.push(format!(
             "- Writable: {}",
             yes_no(self.keyboard_backlight_writable)
+        ));
+        lines.push(format!(
+            "- Direct writable: {}",
+            yes_no(self.keyboard_backlight_direct_writable)
+        ));
+        lines.push(format!(
+            "- Privileged writable: {}",
+            yes_no(self.keyboard_backlight_privileged_writable)
+        ));
+        lines.push(format!(
+            "- Authorization required: {}",
+            yes_no(self.keyboard_backlight_authorization_required)
+        ));
+        lines.push(format!(
+            "- Authorization: {}",
+            self.keyboard_backlight_authorization
         ));
         lines.push(format!(
             "- Supported modes: {}",

@@ -81,6 +81,17 @@ impl PrivilegedCapabilities {
         }
     }
 
+    pub fn implemented_controls() -> Self {
+        Self {
+            api_version: PRIVILEGED_API_VERSION,
+            categories: vec![
+                PrivilegedCategory::Cpu,
+                PrivilegedCategory::Fans,
+                PrivilegedCategory::Lighting,
+            ],
+        }
+    }
+
     pub fn supports(&self, category: PrivilegedCategory) -> bool {
         self.api_version == PRIVILEGED_API_VERSION && self.categories.contains(&category)
     }

@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
-    "mtime": 1786639389.9336154,
-    "ast_hash": "666b4817564632df58104f4cd9140ac0",
+    "mtime": 1786640552.5310369,
+    "ast_hash": "b09d17420c7140958a61ff501a81dedd",
     "semantic_hash": ""
   },
   "crates/rog-core/src/error.rs": {
@@ -25,8 +25,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/model.rs": {
-    "mtime": 1786639471.22188,
-    "ast_hash": "c83bceafd26a1a8ec5eccdf4ab457a44",
+    "mtime": 1786640328.8409665,
+    "ast_hash": "0d03969ea285263c38610f35531d2d68",
     "semantic_hash": ""
   },
   "crates/rog-core/src/policy.rs": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1786639685.1980357,
-    "ast_hash": "ae01a6b766b8b8f312427bea9816c74e",
+    "mtime": 1786640897.3436036,
+    "ast_hash": "7948fca56b9039e4323dead82d625563",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -45,8 +45,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/aura.rs": {
-    "mtime": 1786568355.3619854,
-    "ast_hash": "a6f16f1a45b0f4eac6a93e7d19ac5f6a",
+    "mtime": 1786640347.5979323,
+    "ast_hash": "506a90ddb986c4e3dfc6f91abb2042bd",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/cpu.rs": {
@@ -65,8 +65,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/kbd_backlight.rs": {
-    "mtime": 1786568355.3629854,
-    "ast_hash": "91c7168c5fd9043ad3891f3cb0a9d202",
+    "mtime": 1786640759.7378206,
+    "ast_hash": "aa760dcbfa7e32b839932631d6113a44",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/lib.rs": {
@@ -75,8 +75,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/lighting.rs": {
-    "mtime": 1786568112.3782985,
-    "ast_hash": "a602be33debf8be9d955f5b37aa927c5",
+    "mtime": 1786640341.0419433,
+    "ast_hash": "4221a2ea1e3dad57271ba6bb6eb8defd",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/memory.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1786639748.7009323,
-    "ast_hash": "d370d02d14a090289b6d3e5e2660d59c",
+    "mtime": 1786640874.8614643,
+    "ast_hash": "e1d15edd6fc78abccf78ae611ec48222",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -220,8 +220,8 @@
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1786637178.590312,
-    "ast_hash": "8723f01e5e413a4263b6431c7a85faeb",
+    "mtime": 1786640721.3946357,
+    "ast_hash": "65ccdef898f091d4da796f837256b862",
     "semantic_hash": ""
   },
   "docs/BUILD.md": {
@@ -230,8 +230,8 @@
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1786637178.5913122,
-    "ast_hash": "0e851874cb2cd464608d4ae062fa4de7",
+    "mtime": 1786640738.042714,
+    "ast_hash": "a66fc6ffde5d2250b9afd842868c1875",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -265,8 +265,8 @@
     "semantic_hash": ""
   },
   "docs/PERMISSIONS.md": {
-    "mtime": 1786637200.3500836,
-    "ast_hash": "fe5a9cc93ed74a9797fcf125aae71f55",
+    "mtime": 1786640865.131405,
+    "ast_hash": "fb48e2c19eaadbc9d67229dc61794a7a",
     "semantic_hash": ""
   },
   "docs/PROVIDER_MATRIX.md": {
@@ -540,18 +540,18 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/privileged.rs": {
-    "mtime": 1786639253.0178907,
-    "ast_hash": "1924cccc0a43f0927267ece70e70c389",
+    "mtime": 1786640353.1299238,
+    "ast_hash": "244d443eb6638ca0670957055feddc51",
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/privileged_client.rs": {
-    "mtime": 1786639685.2000358,
-    "ast_hash": "82c4864ebf1326d54d9b3f8c27a4c7a8",
+    "mtime": 1786640759.6898205,
+    "ast_hash": "8cbbbffee18810cfe97517f4acf7480c",
     "semantic_hash": ""
   },
   "crates/rog-privileged/src/main.rs": {
-    "mtime": 1786639958.9127958,
-    "ast_hash": "246adfdbe6cb4458a08243be0af2faa2",
+    "mtime": 1786640759.6958203,
+    "ast_hash": "775b71fab23131ecaf6b4309991afed2",
     "semantic_hash": ""
   },
   "crates/rog-core/src/cpu_control.rs": {

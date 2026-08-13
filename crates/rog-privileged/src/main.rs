@@ -9,10 +9,12 @@ use rog_core::{
     require_authorized, validate_polkit_action, CpuControlRequest, CpuPowerMode, FanCurve,
     FanCurvePolicy, FanDomain, FanPoint, PrivilegedCapabilities, PrivilegedError,
     PrivilegedErrorCode, RogError, POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_FANS_CONTROL,
-    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
+    POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME,
+    PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::{HwmonTelemetryProvider, ASUS_WMI_CURVE_POINTS};
+use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use tokio::time::interval;
 use tracing::info;
 use zbus::message::Header;
@@ -30,6 +32,7 @@ struct PrivilegedService {
     last_activity: Arc<Mutex<Instant>>,
     cpu: CpuTelemetryProvider,
     fans: HwmonTelemetryProvider,
+    keyboard_backlight: Option<KbdBacklightSysfs>,
     fan_safety_marker: PathBuf,
 }
 
@@ -39,6 +42,7 @@ impl PrivilegedService {
             last_activity: Arc::new(Mutex::new(Instant::now())),
             cpu: CpuTelemetryProvider::default(),
             fans: HwmonTelemetryProvider::default(),
+            keyboard_backlight: KbdBacklightSysfs::probe_approved_asus().ok().flatten(),
             fan_safety_marker: PathBuf::from(FAN_SAFETY_MARKER),
         }
     }
@@ -70,7 +74,7 @@ impl PrivilegedService {
     #[zbus(out_args("api_version", "categories"))]
     fn get_capabilities(&self) -> (u32, Vec<String>) {
         self.touch();
-        PrivilegedCapabilities::cpu_and_fan_control().encode()
+        PrivilegedCapabilities::implemented_controls().encode()
     }
 
     /// Non-interactive diagnostic probe. Real control methods added later must use
@@ -238,9 +242,55 @@ impl PrivilegedService {
         self.fans.set_fan_auto(None).map_err(map_fan_error)?;
         self.clear_fan_safety_marker().map_err(map_fan_error)
     }
+
+    async fn set_keyboard_backlight_brightness(
+        &self,
+        level: u64,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<()> {
+        let level = u32::try_from(level).map_err(|_| {
+            map_privileged_error(PrivilegedError::new(
+                PrivilegedErrorCode::InvalidInput,
+                "keyboard brightness does not fit into u32",
+            ))
+        })?;
+        let keyboard = self.keyboard_backlight.as_ref().ok_or_else(|| {
+            map_lighting_error(RogError::NotSupported(
+                "approved ASUS keyboard backlight endpoint was not found".to_string(),
+            ))
+        })?;
+        keyboard
+            .validate_brightness(level)
+            .map_err(map_lighting_error)?;
+        self.authorize_lighting(connection, &header).await?;
+        keyboard.set_brightness(level).map_err(map_lighting_error)
+    }
 }
 
 impl PrivilegedService {
+    async fn authorize_lighting(
+        &self,
+        connection: &Connection,
+        header: &Header<'_>,
+    ) -> fdo::Result<()> {
+        self.touch();
+        let sender = header.sender().ok_or_else(|| {
+            map_privileged_error(PrivilegedError::new(
+                PrivilegedErrorCode::Unexpected,
+                "D-Bus caller identity is unavailable",
+            ))
+        })?;
+        let authorized = check_polkit_authorization(
+            connection,
+            sender.as_str(),
+            POLKIT_ACTION_LIGHTING_CONTROL,
+            true,
+        )
+        .await?;
+        require_authorized(authorized).map_err(map_privileged_error)
+    }
+
     async fn authorize_fans(
         &self,
         connection: &Connection,
@@ -396,6 +446,35 @@ fn map_fan_error(error: RogError) -> fdo::Error {
     map_privileged_error(privileged)
 }
 
+fn map_lighting_error(error: RogError) -> fdo::Error {
+    let privileged = match error {
+        RogError::NotSupported(_) => PrivilegedError::new(
+            PrivilegedErrorCode::NotSupported,
+            "no approved ASUS keyboard brightness endpoint is available",
+        ),
+        RogError::InvalidInput(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::InvalidInput, message)
+        }
+        RogError::PermissionDenied(_) => PrivilegedError::new(
+            PrivilegedErrorCode::PermissionDenied,
+            "the approved keyboard brightness endpoint could not be written",
+        ),
+        RogError::TemporarilyUnavailable(_) => PrivilegedError::new(
+            PrivilegedErrorCode::HardwareUnavailable,
+            "the keyboard backlight is temporarily unavailable",
+        ),
+        RogError::DependencyMissing(_) | RogError::TransientFailure(_) => PrivilegedError::new(
+            PrivilegedErrorCode::BackendFailure,
+            "the privileged keyboard backlight backend is unavailable",
+        ),
+        RogError::Unexpected(_) => PrivilegedError::new(
+            PrivilegedErrorCode::Unexpected,
+            "the keyboard brightness write or readback failed",
+        ),
+    };
+    map_privileged_error(privileged)
+}
+
 fn map_privileged_error(error: PrivilegedError) -> fdo::Error {
     let message = format!("{}: {}", error.code.as_str(), error.message);
     match error.code {
@@ -509,13 +588,13 @@ mod tests {
     use super::*;
     use rog_core::{
         require_authorized, PrivilegedErrorCode, POLKIT_ACTION_CPU_CONTROL,
-        POLKIT_ACTION_SYSTEM_CONFIGURE,
+        POLKIT_ACTION_LIGHTING_CONTROL, POLKIT_ACTION_SYSTEM_CONFIGURE,
     };
 
     #[test]
     fn helper_advertises_only_implemented_write_categories() {
-        let (_, categories) = PrivilegedCapabilities::cpu_and_fan_control().encode();
-        assert_eq!(categories, vec!["cpu", "fans"]);
+        let (_, categories) = PrivilegedCapabilities::implemented_controls().encode();
+        assert_eq!(categories, vec!["cpu", "fans", "lighting"]);
     }
 
     #[test]
@@ -530,6 +609,7 @@ mod tests {
     fn intended_probe_actions_are_allow_listed() {
         assert!(validate_polkit_action(POLKIT_ACTION_CPU_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_FANS_CONTROL).is_ok());
+        assert!(validate_polkit_action(POLKIT_ACTION_LIGHTING_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_SYSTEM_CONFIGURE).is_ok());
     }
 }

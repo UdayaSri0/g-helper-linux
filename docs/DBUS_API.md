@@ -65,7 +65,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
 | `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
-| `SetLighting` | `a{sv}` | `()` | Uses the verified sysfs brightness/Off/Static backend; Aura/RGB remains gated on an exact tested DBus contract |
+| `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then direct sysfs brightness, then the typed privileged ASUS keyboard-brightness fallback |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
 | `SetBatteryLimit` | `t` (`u64`) | `()` | Uses `asusd` when available |
@@ -185,7 +185,7 @@ than daemon startup failures.
 | --- | --- | --- | --- |
 | `Ping` | none | `b` | Reachability only |
 | `GetVersion` | none | `s` | Package version |
-| `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories; currently `cpu` |
+| `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories: `cpu`, `fans`, and `lighting` |
 | `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list |
 | `SetCpuTurbo` | `b` | `()` | Validated turbo toggle |
 | `SetCpuPowerMode` | `s` | `()` | Validated preset mapped to detected governor/EPP choices |
@@ -193,6 +193,10 @@ than daemon startup failures.
 | `SetCpuEpp` | `s` | `()` | Value must be in every affected policy's detected allow-list |
 | `SetCpuFrequencyLimits` | `tt` | `()` | MHz limits; zero means omitted; bounds and ordering are validated |
 | `SetCpuCoreOnline` | `tb` | `()` | Validated logical CPU ID; boot CPU 0 cannot be offlined |
+| `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
+| `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
+| `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
+| `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 
 The helper does not expose generic file, sysfs, process, command, or shell methods. Write methods
 use specific schemas and return stable sanitized errors: `not_authorized`,
@@ -217,6 +221,9 @@ When present, `lighting` includes:
 - `supported_speeds` -> `as`
 - `supported_zones` -> `as`
 - `can_set` / `writable` -> `b`
+- `direct_writable` / `privileged_writable` -> `b`
+- `authorization_required` -> `b`
+- `authorization` -> `s`, such as `not_required`, `not_checked`, `authorized`, `denied`, or `unavailable`
 - `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
 - `last_error` -> optional `s`
 - `diagnostics_summary` -> `s`
@@ -482,11 +489,12 @@ Current accepted keys:
 
 Current behavior:
 
-- the current verified backend is sysfs keyboard brightness, with `Off` and `Static` only
+- verified asusd Aura operations are preferred whenever that API exposes the requested control
+- brightness falls back to directly writable sysfs, then to `SetKeyboardBacklightBrightness(t)` on `rog-helper-privileged` only for the canonical ASUS WMI LED
 - brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
 - unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`
-- Aura routing remains disabled until an exact introspected control contract is captured and tested
-- a future verified Aura backend may still use the sysfs brightness fallback when Aura does not expose brightness
+- PolicyKit action `io.github.roghelper.lighting.control` is requested only after Apply and only when direct sysfs returns a permission error
+- RGB never uses the privileged helper; without a verified asusd Aura contract it remains unsupported
 
 ## `SetProfile`
 

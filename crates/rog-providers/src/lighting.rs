@@ -61,6 +61,14 @@ pub fn build_lighting_diagnostics(
         diagnostics.keyboard_backlight_max_brightness = Some(kbd.max_brightness());
         diagnostics.keyboard_backlight_readable = current_brightness.is_some();
         diagnostics.keyboard_backlight_writable = kbd.can_set_brightness();
+        diagnostics.keyboard_backlight_direct_writable = kbd.can_set_brightness();
+        diagnostics.keyboard_backlight_privileged_writable = false;
+        diagnostics.keyboard_backlight_authorization_required = false;
+        diagnostics.keyboard_backlight_authorization = if kbd.can_set_brightness() {
+            "not_required".to_string()
+        } else {
+            "unavailable".to_string()
+        };
         diagnostics.supports_brightness = true;
 
         if !diagnostics.keyboard_backlight_writable {

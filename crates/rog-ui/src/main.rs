@@ -321,6 +321,10 @@ struct LightingInfo {
     brightness: u64,
     max_brightness: u64,
     can_set: bool,
+    direct_writable: bool,
+    privileged_writable: bool,
+    authorization_required: bool,
+    authorization: String,
     mode: String,
     supports_brightness: bool,
     supports_modes: bool,
@@ -5368,7 +5372,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 let can_set_brightness = l.can_set && l.supports_brightness;
                 kbd_brightness_spin.set_sensitive(can_set_brightness);
                 kbd_apply_button.set_sensitive(can_set_brightness);
-                if can_set_brightness {
+                if l.authorization_required {
+                    kbd_backlight_row.set_subtitle(
+                        "Administrator access required to change keyboard lighting. Apply opens the PolicyKit prompt.",
+                    );
+                } else if can_set_brightness {
                     kbd_backlight_row.set_subtitle("Adjust brightness");
                 } else {
                     kbd_backlight_row
@@ -5408,12 +5416,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 brightness_scale.set_value(l.brightness as f64);
             }
             let can_set = l.can_set;
-            lighting_capability_banner.set_title(if can_set {
+            lighting_capability_banner.set_title(if l.authorization_required {
+                "Administrator access required to change keyboard lighting"
+            } else if l.authorization == "denied" {
+                "Administrator authorization was denied or cancelled"
+            } else if can_set {
                 "Lighting controls are available"
             } else {
                 "Lighting telemetry is available, but controls are read-only"
             });
-            lighting_capability_banner.set_revealed(!can_set);
+            lighting_capability_banner
+                .set_revealed(!can_set || l.authorization_required || l.authorization == "denied");
             brightness_row.set_visible(l.supports_brightness);
             brightness_scale.set_sensitive(can_set && l.supports_brightness);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
@@ -7917,7 +7930,10 @@ fn lighting_brightness_subtitle(
     access: &FeatureAvailability,
 ) -> String {
     if let Some(lighting) = lighting {
-        if lighting.can_set {
+        if lighting.authorization_required {
+            "Administrator access required to change keyboard lighting. Authentication starts only when Apply is used."
+                .to_string()
+        } else if lighting.can_set {
             format!(
                 "Current: {}. Drag to stage a change.",
                 lighting_current_label(lighting)
@@ -7955,7 +7971,10 @@ fn lighting_apply_subtitle(
     lighting: Option<&LightingInfo>,
     access: &FeatureAvailability,
 ) -> String {
-    if matches!(lighting, Some(lighting) if lighting.can_set) {
+    if matches!(lighting, Some(lighting) if lighting.authorization_required) {
+        "Apply the staged brightness and open the normal administrator authorization flow."
+            .to_string()
+    } else if matches!(lighting, Some(lighting) if lighting.can_set) {
         "Apply the staged lighting change.".to_string()
     } else {
         feature_control_subtitle(access, "Apply the staged lighting change.")
@@ -8250,7 +8269,13 @@ fn troubleshooting_summary_text(
 
 fn friendly_action_error(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
-    if lower.contains("fan control was denied or cancelled") {
+    if lower.contains("keyboard lighting was denied or cancelled") {
+        "Administrator authorization was denied or cancelled. Keyboard brightness remains readable."
+            .to_string()
+    } else if lower.contains("privileged lighting helper is unavailable") {
+        "The privileged lighting helper is unavailable. Keyboard brightness remains readable."
+            .to_string()
+    } else if lower.contains("fan control was denied or cancelled") {
         "Administrator authorization was denied or cancelled. Fan telemetry is still available."
             .to_string()
     } else if lower.contains("privileged fan helper is unavailable") {
@@ -9132,6 +9157,17 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         brightness: dbus_decode::unsigned(&map, dbus_keys::lighting::BRIGHTNESS).unwrap_or(0),
         max_brightness,
         can_set: dbus_decode::boolean(&map, dbus_keys::lighting::CAN_SET).unwrap_or(false),
+        direct_writable: dbus_decode::boolean(&map, dbus_keys::lighting::DIRECT_WRITABLE)
+            .unwrap_or(false),
+        privileged_writable: dbus_decode::boolean(&map, dbus_keys::lighting::PRIVILEGED_WRITABLE)
+            .unwrap_or(false),
+        authorization_required: dbus_decode::boolean(
+            &map,
+            dbus_keys::lighting::AUTHORIZATION_REQUIRED,
+        )
+        .unwrap_or(false),
+        authorization: dbus_decode::string(&map, dbus_keys::lighting::AUTHORIZATION)
+            .unwrap_or_else(|| "not_applicable".to_string()),
         mode: dbus_decode::string(&map, dbus_keys::lighting::MODE)
             .unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_brightness,
@@ -10348,6 +10384,20 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
         lighting.rgb_hex.as_deref().unwrap_or("(not reported)")
     ));
     lines.push(format!("writable: {}", lighting.can_set));
+    lines.push(format!("direct_writable: {}", lighting.direct_writable));
+    lines.push(format!(
+        "privileged_writable: {}",
+        lighting.privileged_writable
+    ));
+    lines.push(format!(
+        "authorization_required: {}",
+        lighting.authorization_required
+    ));
+    lines.push(format!("authorization: {}", lighting.authorization));
+    lines.push(format!(
+        "fallback_reason: {}",
+        lighting.fallback_reason.as_deref().unwrap_or("(none)")
+    ));
     lines.push(format!("status: {}", lighting.status));
     if let Some(error) = &lighting.last_error {
         lines.push(format!("last_error: {error}"));
@@ -10440,6 +10490,10 @@ mod tests {
         map.insert("backend".to_string(), ov("verified-aura".to_string()));
         map.insert("device".to_string(), ov("test-endpoint".to_string()));
         map.insert("can_set".to_string(), OwnedValue::from(true));
+        map.insert("direct_writable".to_string(), OwnedValue::from(false));
+        map.insert("privileged_writable".to_string(), OwnedValue::from(true));
+        map.insert("authorization_required".to_string(), OwnedValue::from(true));
+        map.insert("authorization".to_string(), ov("not_checked".to_string()));
         map.insert("supports_brightness".to_string(), OwnedValue::from(false));
         map.insert("supports_modes".to_string(), OwnedValue::from(true));
         map.insert("supports_rgb".to_string(), OwnedValue::from(true));
@@ -10462,6 +10516,10 @@ mod tests {
         assert!(lighting.supports_modes);
         assert!(lighting.supports_rgb);
         assert!(lighting.supports_speed);
+        assert!(!lighting.direct_writable);
+        assert!(lighting.privileged_writable);
+        assert!(lighting.authorization_required);
+        assert_eq!(lighting.authorization, "not_checked");
         assert_eq!(lighting.supported_modes, ["Static", "Breathe"]);
         assert_eq!(lighting.supported_speeds, ["Medium"]);
         assert_eq!(lighting.supported_zones, ["Keyboard"]);

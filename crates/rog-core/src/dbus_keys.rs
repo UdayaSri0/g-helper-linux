@@ -132,6 +132,10 @@ pub mod lighting {
     pub const MAX_BRIGHTNESS: &str = "max_brightness";
     pub const CAN_SET: &str = "can_set";
     pub const WRITABLE: &str = "writable";
+    pub const DIRECT_WRITABLE: &str = "direct_writable";
+    pub const PRIVILEGED_WRITABLE: &str = "privileged_writable";
+    pub const AUTHORIZATION_REQUIRED: &str = "authorization_required";
+    pub const AUTHORIZATION: &str = "authorization";
     pub const MODE: &str = "mode";
     pub const SUPPORTED_MODES: &str = "supported_modes";
     pub const SUPPORTS_BRIGHTNESS: &str = "supports_brightness";

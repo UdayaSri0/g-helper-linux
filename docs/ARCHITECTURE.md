@@ -238,11 +238,14 @@ Current permission reality:
 - The daemon is also unprivileged.
 - Some system DBus services may reject writes.
 - Some sysfs files may be readable but not writable by the user.
-- CPU controls and keyboard backlight writes may therefore degrade to read-only behavior.
+- CPU controls and keyboard backlight writes may require a typed privileged fallback; telemetry
+  remains unprivileged and missing-helper systems degrade to read-only behavior.
 
-The privileged boundary handles only supported CPU controls that fail the normal provider route with
-a write-permission error. Telemetry and directly writable controls stay unprivileged. The helper
-discovers fixed CPU sysfs endpoints itself and never accepts caller-provided paths.
+The privileged boundary handles supported CPU controls, verified ASUS fan curves, and the canonical
+ASUS WMI keyboard brightness endpoint only after the normal provider route fails with a
+write-permission error. Telemetry and directly writable controls stay unprivileged. The helper
+discovers fixed sysfs endpoints itself and never accepts caller-provided paths. Aura/RGB continues
+to use verified asusd system APIs and has no privileged raw-device fallback.
 `rog-helperd` probes it only when diagnostics are requested and continues normally when it is
 missing, blocked, incompatible, or unavailable. The helper cannot receive filesystem paths,
 program names, shell text, or arbitrary values to write. Future control methods must map a

@@ -43,8 +43,9 @@ GTK UI -> session DBus -> rog-helperd -> system DBus -> rog-helper-privileged
 
 Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
-a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU operations. It does
-not expose privileged fan, lighting, GPU, or generic system writes.
+a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan, and
+keyboard-brightness operations. Lighting privilege is limited to the canonical ASUS WMI keyboard
+LED; it does not expose RGB, HID, USB, GPU, or generic system writes.
 
 The helper has no generic file, sysfs, command, program, argument, or shell API. Its methods
 accept a narrowly defined domain operation, validate it, select a fixed endpoint internally,
@@ -58,7 +59,7 @@ The PolicyKit actions are:
 - `io.github.roghelper.lighting.control`
 - `io.github.roghelper.system.configure`
 
-There is deliberately no generic “root” permission. Interactive authorization for CPU control
+There is deliberately no generic “root” permission. Interactive authorization for control
 methods is delegated to the desktop PolicyKit agent; the GTK application must not ask for or
 handle a password.
 
@@ -218,7 +219,7 @@ The repository does not currently include:
 
 - bundled udev rules
 - a custom permission broker
-- privileged fan, lighting, GPU, or generic sysfs write methods
+- privileged RGB/HID/USB, GPU, or generic sysfs write methods
 
 `rog-helper-privileged` is a narrowly scoped root service, not a privileged replacement for the
 session daemon. It exits after an idle timeout and is optional on unsupported distributions.
@@ -232,6 +233,15 @@ When a feature is visible but not writable, inspect:
 - `crates/rog-providers/src/kbd_backlight.rs`
 - `crates/rog-providers/src/asusd.rs`
 - `crates/rog-providers/src/supergfx.rs`
+
+### Keyboard lighting manual validation
+
+On supervised ASUS hardware, verify the detected `max_brightness` and test the existing Apply flow
+at `0`, the minimum visible level (`1` on the canonical three-level ASUS WMI LED), a middle level,
+and the reported maximum. After every write, confirm the daemon reports the same readback and the UI
+continues normal operation. Repeat with direct sysfs access, with the helper installed, with PolicyKit
+denied/cancelled, and with the helper unavailable. RGB must remain disabled unless the verified asusd
+Aura API reports it writable.
 
 When documenting a new feature, always note:
 

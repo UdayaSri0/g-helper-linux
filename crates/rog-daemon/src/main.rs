@@ -49,6 +49,7 @@ struct SharedState {
     config_path: Option<PathBuf>,
     cpu_privilege: RwLock<CpuPrivilegeState>,
     fan_authorization: RwLock<String>,
+    lighting_authorization: RwLock<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +134,44 @@ where
         Ok(()) => Ok(CpuWriteSource::Direct),
         Err(rog_core::RogError::PermissionDenied(_)) => {
             privileged().await.map_err(map_privileged_fan_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
+            "administrator authorization for keyboard lighting was denied or cancelled".to_string(),
+        ),
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged lighting helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged keyboard brightness write or readback failed".to_string(),
+        ),
+    }
+}
+
+async fn with_lighting_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_lighting_error)?;
             Ok(CpuWriteSource::Privileged)
         }
         Err(error) => Err(error),
@@ -827,7 +866,8 @@ impl RogHelperDaemon {
                         .await
                         .map_err(map_rog_error_to_fdo)?;
                 } else if let Some(kbd) = &self.kbd_backlight {
-                    kbd.set_brightness(brightness)
+                    self.set_sysfs_keyboard_brightness(kbd, brightness)
+                        .await
                         .map_err(map_rog_error_to_fdo)?;
                 }
             }
@@ -865,7 +905,8 @@ impl RogHelperDaemon {
                 None => kbd.read_brightness().map_err(map_rog_error_to_fdo)?,
             }
         };
-        kbd.set_brightness(brightness)
+        self.set_sysfs_keyboard_brightness(kbd, brightness)
+            .await
             .map_err(map_rog_error_to_fdo)?;
         Ok(())
     }
@@ -1118,7 +1159,7 @@ async fn main() -> anyhow::Result<()> {
         .map(KbdBacklightSysfs::can_set_brightness)
         .unwrap_or(false);
     caps.kbd_backlight_access = lighting_access_from_backend_flags(
-        caps.has_aura,
+        aura.as_ref().is_some_and(AuraProvider::can_set_brightness),
         kbd_backlight.is_some(),
         sysfs_writable,
         kbd_backlight_detected,
@@ -1368,6 +1409,12 @@ async fn main() -> anyhow::Result<()> {
     } else {
         CpuAuthorization::Unavailable
     };
+    caps.kbd_backlight_access = lighting_access_with_privilege(
+        aura.as_ref().is_some_and(AuraProvider::can_set_brightness),
+        kbd_backlight.as_ref(),
+        &privileged_status,
+        "not_checked",
+    );
     let mut initial_fan_state = initial_fan_state;
     apply_fan_privilege_to_state(&mut initial_fan_state, &privileged_status, "not_checked");
     let mut init_state = AppState::new(caps, hw_snapshot);
@@ -1384,6 +1431,7 @@ async fn main() -> anyhow::Result<()> {
             authorization: cpu_authorization,
         }),
         fan_authorization: RwLock::new("not_checked".to_string()),
+        lighting_authorization: RwLock::new("not_checked".to_string()),
     });
 
     // Export DBus service on the session bus.
@@ -1799,6 +1847,70 @@ fn lighting_access_from_backend_flags(
         FeatureAvailability::new(
             FeatureAccessState::Unsupported,
             "No keyboard lighting control was detected on this machine.",
+        )
+    }
+}
+
+fn lighting_helper_ready(status: &rog_core::PrivilegedStatus) -> bool {
+    status.privileged_helper_reachable
+        && status.privileged_helper_compatible
+        && status.polkit_available
+        && status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Lighting)
+}
+
+fn lighting_access_with_privilege(
+    aura_brightness_writable: bool,
+    keyboard: Option<&KbdBacklightSysfs>,
+    status: &rog_core::PrivilegedStatus,
+    authorization: &str,
+) -> FeatureAvailability {
+    if aura_brightness_writable {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard lighting is writable through the verified asusd Aura API.",
+        );
+    }
+    let Some(keyboard) = keyboard else {
+        return FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard brightness backend was detected on this machine.",
+        );
+    };
+    if keyboard.can_set_brightness() {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard backlight is directly writable through the sysfs LED backend.",
+        );
+    }
+    if !keyboard.privileged_write_approved() {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is readable, but this device is not approved for privileged writes.",
+        );
+    }
+    if authorization == "denied" {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Administrator authorization for keyboard lighting was denied or cancelled.",
+        );
+    }
+    if authorization == "unavailable" {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is read-only because the privileged lighting helper is unavailable.",
+        );
+    }
+    if lighting_helper_ready(status) {
+        FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Administrator access required to change keyboard lighting. Authentication starts only when Apply is used.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is read-only because the privileged lighting helper is unavailable.",
         )
     }
 }
@@ -3255,11 +3367,118 @@ fn privileged_status_to_dbus(status: &rog_core::PrivilegedStatus) -> HashMap<Str
 }
 
 impl RogHelperDaemon {
+    async fn set_sysfs_keyboard_brightness(
+        &self,
+        keyboard: &KbdBacklightSysfs,
+        brightness: u32,
+    ) -> rog_core::RogResult<()> {
+        let result = with_lighting_privileged_fallback(
+            || keyboard.set_brightness(brightness),
+            || privileged_client::set_keyboard_backlight_brightness(brightness),
+        )
+        .await;
+        let authorization = match &result {
+            Ok(CpuWriteSource::Direct) => "not_required",
+            Ok(CpuWriteSource::Privileged) => "authorized",
+            Err(rog_core::RogError::PermissionDenied(_)) => "denied",
+            Err(rog_core::RogError::TemporarilyUnavailable(_)) => "unavailable",
+            _ => "not_checked",
+        };
+        *self
+            .state
+            .lighting_authorization
+            .write()
+            .expect("rwlock poisoned") = authorization.to_string();
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        self.state
+            .inner
+            .write()
+            .expect("rwlock poisoned")
+            .caps
+            .kbd_backlight_access = lighting_access_with_privilege(
+            self.aura
+                .as_ref()
+                .is_some_and(AuraProvider::can_set_brightness),
+            self.kbd_backlight.as_ref(),
+            &status,
+            authorization,
+        );
+        result.map(|_| ())
+    }
+
+    fn apply_lighting_privilege_to_state(&self, state: &mut LightingState) {
+        let Some(keyboard) = self.kbd_backlight.as_ref() else {
+            return;
+        };
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .lighting_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        let aura_brightness_writable = self
+            .aura
+            .as_ref()
+            .is_some_and(AuraProvider::can_set_brightness);
+        let direct = aura_brightness_writable || keyboard.can_set_brightness();
+        let privileged = !direct
+            && authorization != "unavailable"
+            && keyboard.privileged_write_approved()
+            && lighting_helper_ready(&status);
+        state.direct_writable |= direct;
+        state.privileged_writable = privileged;
+        state.authorization_required = privileged && authorization != "authorized";
+        state.authorization = if direct {
+            "not_required".to_string()
+        } else if privileged {
+            authorization
+        } else {
+            "unavailable".to_string()
+        };
+        state.writable |= privileged;
+        if direct && state.backend == "sysfs-led" {
+            state.status = "sysfs_direct_writable".to_string();
+        } else if privileged {
+            state.fallback_reason = Some(
+                "The verified asusd API does not provide this brightness write, so Apply may use the approved privileged ASUS keyboard LED fallback."
+                    .to_string(),
+            );
+            if state.authorization == "denied" {
+                state.status = "authorization_denied".to_string();
+            } else if state.authorization_required {
+                state.status = "authorization_required".to_string();
+            } else {
+                state.status = "sysfs_privileged_writable".to_string();
+            }
+        } else if !direct {
+            state.status = if keyboard.privileged_write_approved() {
+                "read_only_helper_missing"
+            } else {
+                "read_only"
+            }
+            .to_string();
+        }
+    }
+
     async fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
         if let Some(aura) = &self.aura {
             match aura.read_state().await {
                 Ok(mut state) => {
                     self.merge_sysfs_brightness(&mut state);
+                    self.apply_lighting_privilege_to_state(&mut state);
                     let diagnostics = self.lighting_diagnostics(Some(&state), None);
                     return Some(lighting_state_to_dbus(&state, &diagnostics));
                 }
@@ -3267,6 +3486,7 @@ impl RogHelperDaemon {
                     let error = e.to_string();
                     let diagnostics = self.lighting_diagnostics(None, Some(error.as_str()));
                     if let Some(mut state) = self.sysfs_lighting_state() {
+                        self.apply_lighting_privilege_to_state(&mut state);
                         state.status = "aura_backend_error".to_string();
                         state.last_error = Some(format!("Aura backend read failed: {error}"));
                         return Some(lighting_state_to_dbus(&state, &diagnostics));
@@ -3289,6 +3509,13 @@ impl RogHelperDaemon {
                             writable: aura.supports_rgb()
                                 || aura.can_set_mode()
                                 || aura.can_set_brightness(),
+                            direct_writable: aura.supports_rgb()
+                                || aura.can_set_mode()
+                                || aura.can_set_brightness(),
+                            privileged_writable: false,
+                            authorization_required: false,
+                            authorization: "not_required".to_string(),
+                            fallback_reason: None,
                             rgb: None,
                             status: "backend_error".to_string(),
                             last_error: Some(format!("Aura backend read failed: {error}")),
@@ -3299,7 +3526,8 @@ impl RogHelperDaemon {
             }
         }
 
-        self.sysfs_lighting_state().map(|state| {
+        self.sysfs_lighting_state().map(|mut state| {
+            self.apply_lighting_privilege_to_state(&mut state);
             let diagnostics = self.lighting_diagnostics(Some(&state), None);
             lighting_state_to_dbus(&state, &diagnostics)
         })
@@ -3310,7 +3538,7 @@ impl RogHelperDaemon {
         state: Option<&LightingState>,
         aura_state_error: Option<&str>,
     ) -> LightingDiagnostics {
-        build_lighting_diagnostics(
+        let mut diagnostics = build_lighting_diagnostics(
             self.kbd_backlight.as_ref(),
             self.kbd_backlight_detected,
             self.kbd_backlight_probe_error.as_deref(),
@@ -3318,7 +3546,53 @@ impl RogHelperDaemon {
             &self.aura_probe_diagnostics,
             state,
             aura_state_error,
-        )
+        );
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .lighting_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        if let Some(keyboard) = self.kbd_backlight.as_ref() {
+            let direct = self
+                .aura
+                .as_ref()
+                .is_some_and(AuraProvider::can_set_brightness)
+                || keyboard.can_set_brightness();
+            let privileged = !direct
+                && authorization != "unavailable"
+                && keyboard.privileged_write_approved()
+                && lighting_helper_ready(&status);
+            diagnostics.keyboard_backlight_direct_writable = direct;
+            diagnostics.keyboard_backlight_privileged_writable = privileged;
+            diagnostics.keyboard_backlight_writable = direct || privileged;
+            diagnostics.keyboard_backlight_authorization_required =
+                privileged && authorization != "authorized";
+            diagnostics.keyboard_backlight_authorization = if direct {
+                "not_required".to_string()
+            } else if privileged {
+                authorization
+            } else {
+                "unavailable".to_string()
+            };
+            if privileged {
+                diagnostics.permission_warning = Some(
+                    "Administrator access required to change keyboard lighting; Apply starts the normal PolicyKit flow."
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(reason) = state.and_then(|state| state.fallback_reason.clone()) {
+            diagnostics.fallback_reason = Some(reason);
+        }
+        diagnostics
     }
 
     fn merge_sysfs_brightness(&self, state: &mut LightingState) {
@@ -3334,6 +3608,7 @@ impl RogHelperDaemon {
         if state.max_brightness.is_none() {
             state.max_brightness = Some(kbd.max_brightness());
         }
+        state.supports_brightness = true;
         state.writable |= kbd.can_set_brightness();
     }
 
@@ -3361,6 +3636,18 @@ impl RogHelperDaemon {
             supported_speeds: Vec::new(),
             supported_zones: Vec::new(),
             writable: kbd.can_set_brightness(),
+            direct_writable: kbd.can_set_brightness(),
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: if kbd.can_set_brightness() {
+                "not_required".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+            fallback_reason: Some(
+                "The verified asusd Aura API is unavailable; keyboard brightness uses sysfs."
+                    .to_string(),
+            ),
             status: "rgb_unsupported".to_string(),
             last_error: None,
         })
@@ -3395,6 +3682,22 @@ fn lighting_state_to_dbus(
     m.insert(
         dbus_keys::lighting::WRITABLE.to_string(),
         OwnedValue::from(state.writable),
+    );
+    m.insert(
+        dbus_keys::lighting::DIRECT_WRITABLE.to_string(),
+        OwnedValue::from(state.direct_writable),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_WRITABLE.to_string(),
+        OwnedValue::from(state.privileged_writable),
+    );
+    m.insert(
+        dbus_keys::lighting::AUTHORIZATION_REQUIRED.to_string(),
+        OwnedValue::from(state.authorization_required),
+    );
+    m.insert(
+        dbus_keys::lighting::AUTHORIZATION.to_string(),
+        ov(state.authorization.clone()),
     );
     if let Some(mode) = state.mode_label() {
         m.insert(dbus_keys::lighting::MODE.to_string(), ov(mode));
@@ -3453,6 +3756,10 @@ fn lighting_state_to_dbus(
             dbus_keys::lighting::FALLBACK_REASON.to_string(),
             ov(reason.clone()),
         );
+    }
+    if let Some(reason) = &state.fallback_reason {
+        m.entry(dbus_keys::lighting::FALLBACK_REASON.to_string())
+            .or_insert_with(|| ov(reason.clone()));
     }
     if let Some(reason) = &diagnostics.unavailable_reason {
         m.insert(
@@ -3841,6 +4148,11 @@ mod tests {
             supported_speeds: vec!["Medium".to_string()],
             supported_zones: vec!["Keyboard".to_string()],
             writable: true,
+            direct_writable: true,
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "not_required".to_string(),
+            fallback_reason: None,
             status: "available".to_string(),
             last_error: None,
         };
@@ -3870,6 +4182,16 @@ mod tests {
             map.get("rgb_hex")
                 .and_then(|value| <&str>::try_from(value).ok()),
             Some("#010203")
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::DIRECT_WRITABLE)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::PRIVILEGED_WRITABLE)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
         );
     }
 
@@ -4032,5 +4354,89 @@ mod tests {
                 permission_denied
             );
         }
+    }
+
+    #[tokio::test]
+    async fn lighting_fallback_prefers_direct_then_uses_privileged_permission_route() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let source = with_lighting_privileged_fallback(
+            || Ok(()),
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let source = with_lighting_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+    }
+
+    #[tokio::test]
+    async fn lighting_authorization_denial_and_cancellation_are_readable_permission_errors() {
+        for message in ["denied", "cancelled"] {
+            let error = with_lighting_privileged_fallback(
+                || {
+                    Err(rog_core::RogError::PermissionDenied(
+                        "read-only".to_string(),
+                    ))
+                },
+                || async {
+                    Err(rog_core::PrivilegedError::new(
+                        rog_core::PrivilegedErrorCode::NotAuthorized,
+                        message,
+                    ))
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
+            assert!(error.to_string().contains("denied or cancelled"));
+        }
+    }
+
+    #[test]
+    fn missing_lighting_helper_does_not_turn_rgb_into_a_privileged_capability() {
+        let status = rog_core::PrivilegedStatus::unavailable(false, true);
+        assert!(!lighting_helper_ready(&status));
+        let state = LightingState {
+            backend: "sysfs-led".to_string(),
+            device: "asus::kbd_backlight".to_string(),
+            brightness: Some(1),
+            max_brightness: Some(3),
+            mode: Some(LightingMode::Static),
+            supports_brightness: true,
+            supports_modes: true,
+            supported_modes: vec![LightingMode::Off, LightingMode::Static],
+            supports_rgb: false,
+            rgb: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
+            writable: false,
+            direct_writable: false,
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "unavailable".to_string(),
+            fallback_reason: None,
+            status: "rgb_unsupported".to_string(),
+            last_error: None,
+        };
+        assert!(!state.supports_rgb);
+        assert!(!state.privileged_writable);
     }
 }

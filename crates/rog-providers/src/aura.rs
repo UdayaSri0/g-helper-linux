@@ -310,6 +310,11 @@ impl AuraProvider {
             supported_speeds: Vec::new(),
             supported_zones: self.supported_zones(),
             writable: self.controls.can_set_any(),
+            direct_writable: self.controls.can_set_any(),
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "not_required".to_string(),
+            fallback_reason: None,
             status: status.to_string(),
             last_error,
         })
