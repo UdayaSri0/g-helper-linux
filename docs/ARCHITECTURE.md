@@ -24,7 +24,8 @@ The project is split into four main runtime layers, plus a shared model layer an
    - Minimal root system service, activated on demand
    - Owns `io.github.roghelper.Privileged` on the system bus
    - Uses PolicyKit actions tied to the calling system-bus peer
-   - Exposes typed, validated CPU, fan, and canonical keyboard-brightness writes plus probes
+   - Exposes typed, validated CPU, fan, canonical keyboard-brightness, and standard
+     battery-threshold writes plus probes
    - Exposes no GPU operation: supergfxd remains the authoritative switching and safety service
 
 Shared model layer:
@@ -187,13 +188,15 @@ It also carries:
 - `endpoints`
 - `notes`
 - the authoritative `supergfxd` mode allow-list and GPU transition state
+- battery charge-limit backend, direct/privileged write state, and authorization source
+- a consolidated per-operation control/privilege matrix in the DBus capability payload
 
 These are used by the daemon and surfaced in the UI diagnostics view.
 
 Important implementation note:
 
 - `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are actively populated today.
-- `has_fan_curves` exists in the model, but the current daemon does not probe it to true.
+- `has_fan_curves` becomes true only for a verified backend; generic hwmon candidates do not count.
 
 That means the capability model is broader than the current provider coverage.
 
@@ -219,7 +222,7 @@ These modules cover:
 - system DBus integration
 - CPU sysfs reads and writes
 - keyboard backlight sysfs reads and writes
-- battery sysfs reads
+  - battery sysfs reads and a narrowly validated standard charge-threshold fallback
 - memory telemetry from procfs and sysfs
 - DBus diagnostics helpers
 
@@ -240,19 +243,33 @@ Current permission reality:
 - The daemon is also unprivileged.
 - Some system DBus services may reject writes.
 - Some sysfs files may be readable but not writable by the user.
-- CPU controls and keyboard backlight writes may require a typed privileged fallback; telemetry
-  remains unprivileged and missing-helper systems degrade to read-only behavior.
+- CPU controls, verified fan controls, canonical keyboard backlight writes, and a standard battery
+  threshold may require typed privileged fallbacks; telemetry remains unprivileged and
+  missing-helper systems degrade to read-only behavior.
 
-The privileged boundary handles supported CPU controls, verified ASUS fan curves, and the canonical
-ASUS WMI keyboard brightness endpoint only after the normal provider route fails with a
-write-permission error. Telemetry and directly writable controls stay unprivileged. The helper
-discovers fixed sysfs endpoints itself and never accepts caller-provided paths. Aura/RGB continues
-to use verified asusd system APIs and has no privileged raw-device fallback.
+The privileged boundary handles supported CPU controls, verified ASUS fan controls, the canonical
+ASUS WMI keyboard brightness endpoint, and one unambiguous standard Linux battery charge threshold
+only after the preferred backend/direct route is unavailable or fails with write permission.
+Battery charge limits still prefer asusd; the kernel fallback is considered only when asusd is
+unavailable or lacks the feature. Telemetry and directly writable controls stay unprivileged. The
+helper discovers fixed sysfs endpoints itself and never accepts caller-provided paths. Aura/RGB
+continues to use verified asusd system APIs and has no privileged raw-device fallback.
+
+The control/privilege matrix makes this policy observable. GPU and profile rows report
+`external-service` access rather than implying that root access to ROG Helper would help. Battery,
+CPU, fan, and keyboard rows distinguish direct, privileged, read-only, and unsupported states.
+User configuration and login integration report direct user-session access and are never routed
+through the root helper.
 `rog-helperd` probes it only when diagnostics are requested and continues normally when it is
 missing, blocked, incompatible, or unavailable. The helper cannot receive filesystem paths,
 program names, shell text, or arbitrary values to write. Future control methods must map a
 validated domain operation to a fixed internal endpoint and authorize the original system-bus
 caller with the matching application-specific PolicyKit action.
+
+The helper runs in a hardened systemd sandbox and uses four non-retained PolicyKit actions. CPU,
+fan, keyboard LED, and battery endpoint identities are revalidated at write time. The rationale for
+UID 0, writable sysfs exceptions, enabled/rejected directives, and residual risks is maintained in
+[PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
 
 ## DBus Contract Shape
 

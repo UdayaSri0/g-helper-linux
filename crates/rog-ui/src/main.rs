@@ -14,13 +14,14 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_config, parse_config,
-    parse_legacy_ui_config, validate_config, AppConfig, BatteryState, CloseBehavior,
-    ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind,
-    CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
+    parse_legacy_ui_config, validate_config, AppConfig, AuthorizationState, BatteryState,
+    CloseBehavior, ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess,
+    CpuControlKind, CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
     DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanInfo,
     FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource, RgbColor,
-    SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
+    GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource,
+    PrivilegedCategory, PrivilegedStatus, RgbColor, SetupIssue, SetupSeverity, SetupStatus,
+    TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -77,6 +78,7 @@ trait Daemon1 {
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
     fn get_setup_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_privileged_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_curves(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -206,6 +208,7 @@ struct SharedUiState {
     caps: DeviceCaps,
     caps_text: String,
     setup_status: SetupStatus,
+    privileged_status: Option<PrivilegedStatus>,
     pending_setup_refresh: bool,
     setup_refreshing: bool,
     warnings: Vec<String>,
@@ -256,6 +259,7 @@ impl Default for SharedUiState {
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
             setup_status: SetupStatus::unknown(),
+            privileged_status: None,
             pending_setup_refresh: true,
             setup_refreshing: false,
             warnings: Vec::new(),
@@ -296,6 +300,78 @@ impl SharedUiState {
     fn mark_render_dirty(&mut self) {
         self.render_revision = self.render_revision.wrapping_add(1);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessUiState {
+    Available,
+    AvailableWithAdministrator,
+    Authorized,
+    AuthorizationDenied,
+    NotRequired,
+    ReadOnly,
+    BackendMissing,
+    PrivilegedHelperMissing,
+    UnsupportedHardware,
+    UnsafeMapping,
+    SetupRequired,
+    ExternalServiceRequired,
+    Unavailable,
+    Checking,
+}
+
+impl AccessUiState {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Available => "Available",
+            Self::AvailableWithAdministrator => "Administrator access required",
+            Self::Authorized => "Authorized",
+            Self::AuthorizationDenied => "Authorization denied",
+            Self::NotRequired => "Not required",
+            Self::ReadOnly => "Read only",
+            Self::BackendMissing => "Backend missing",
+            Self::PrivilegedHelperMissing => "Privileged helper missing",
+            Self::UnsupportedHardware => "Unsupported hardware",
+            Self::UnsafeMapping => "Unsafe mapping",
+            Self::SetupRequired => "Setup required",
+            Self::ExternalServiceRequired => "External service required",
+            Self::Unavailable => "Unavailable",
+            Self::Checking => "Checking",
+        }
+    }
+
+    const fn css_class(self) -> &'static str {
+        match self {
+            Self::Available | Self::Authorized | Self::NotRequired => "status-ok",
+            Self::AvailableWithAdministrator
+            | Self::ReadOnly
+            | Self::BackendMissing
+            | Self::PrivilegedHelperMissing
+            | Self::UnsafeMapping
+            | Self::SetupRequired
+            | Self::ExternalServiceRequired => "status-warning",
+            Self::AuthorizationDenied | Self::Unavailable => "status-error",
+            Self::UnsupportedHardware | Self::Checking => "status-info",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SetupAccessRow {
+    row: adw::ActionRow,
+    value: gtk::Label,
+}
+
+#[derive(Clone)]
+struct AdministratorAccessRows {
+    helper: SetupAccessRow,
+    system_bus: SetupAccessRow,
+    polkit: SetupAccessRow,
+    cpu: SetupAccessRow,
+    fans: SetupAccessRow,
+    lighting: SetupAccessRow,
+    gpu: SetupAccessRow,
+    battery: SetupAccessRow,
 }
 
 #[derive(Debug, Clone)]
@@ -2055,6 +2131,24 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         setup_pref_row(&setup_session_group, "rog-helperd");
     setup_root.append(&setup_session_group);
 
+    let setup_administrator_group = adw::PreferencesGroup::builder()
+        .title("Administrator Access")
+        .description(
+            "Authorization is requested per operation. Opening this page never starts authentication.",
+        )
+        .build();
+    let administrator_access_rows = AdministratorAccessRows {
+        helper: setup_access_row(&setup_administrator_group, "Privileged helper"),
+        system_bus: setup_access_row(&setup_administrator_group, "System DBus"),
+        polkit: setup_access_row(&setup_administrator_group, "PolicyKit"),
+        cpu: setup_access_row(&setup_administrator_group, "CPU privileged controls"),
+        fans: setup_access_row(&setup_administrator_group, "Fan privileged controls"),
+        lighting: setup_access_row(&setup_administrator_group, "Lighting privileged controls"),
+        gpu: setup_access_row(&setup_administrator_group, "GPU switching"),
+        battery: setup_access_row(&setup_administrator_group, "Battery limit"),
+    };
+    setup_root.append(&setup_administrator_group);
+
     let setup_services_group = adw::PreferencesGroup::builder()
         .title("Control Services")
         .description("A live API check is required; a binary alone is not considered ready.")
@@ -2134,6 +2228,27 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
+    let copy_privilege_button = gtk::Button::with_label("Copy privilege diagnostics");
+    {
+        let shared = shared.clone();
+        copy_privilege_button.connect_clicked(move |_| {
+            let text = shared
+                .lock()
+                .map(|state| {
+                    privilege_diagnostics_text(
+                        state.privileged_status.as_ref(),
+                        &state.cpu_caps,
+                        &state.fan_state,
+                        state.lighting.as_ref(),
+                        &state.caps,
+                    )
+                })
+                .unwrap_or_else(|_| "Privilege diagnostics unavailable".to_string());
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&text);
+            }
+        });
+    }
     let setup_open_diagnostics = gtk::Button::with_label("Open full Diagnostics");
     {
         let stack = stack.clone();
@@ -2141,11 +2256,18 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             stack.set_visible_child_name("diagnostics");
         });
     }
-    let setup_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let setup_actions = gtk::FlowBox::new();
+    setup_actions.set_selection_mode(gtk::SelectionMode::None);
+    setup_actions.set_min_children_per_line(1);
+    setup_actions.set_max_children_per_line(2);
+    setup_actions.set_column_spacing(8);
+    setup_actions.set_row_spacing(8);
+    setup_actions.set_homogeneous(false);
     setup_actions.set_halign(gtk::Align::Start);
-    setup_actions.append(&refresh_setup_button);
-    setup_actions.append(&copy_setup_button);
-    setup_actions.append(&setup_open_diagnostics);
+    setup_actions.insert(&refresh_setup_button, -1);
+    setup_actions.insert(&copy_setup_button, -1);
+    setup_actions.insert(&copy_privilege_button, -1);
+    setup_actions.insert(&setup_open_diagnostics, -1);
     setup_root.append(&setup_actions);
 
     let setup_advanced_buffer = gtk::TextBuffer::new(None);
@@ -2184,7 +2306,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         copy_diag_button.connect_clicked(move |_| {
             let text = shared
                 .lock()
-                .map(|st| st.caps_text.clone())
+                .map(|st| {
+                    format!(
+                        "{}\n\n{}",
+                        st.caps_text,
+                        privilege_diagnostics_text(
+                            st.privileged_status.as_ref(),
+                            &st.cpu_caps,
+                            &st.fan_state,
+                            st.lighting.as_ref(),
+                            &st.caps,
+                        )
+                    )
+                })
                 .unwrap_or_default();
             let Some(display) = gtk::gdk::Display::default() else {
                 return;
@@ -3654,6 +3788,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             caps,
             caps_text,
             setup_status,
+            privileged_status,
             setup_refreshing,
             warnings,
             profile,
@@ -3699,6 +3834,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.caps.clone(),
                 st.caps_text.clone(),
                 st.setup_status.clone(),
+                st.privileged_status.clone(),
                 st.setup_refreshing,
                 st.warnings.clone(),
                 st.profile.clone(),
@@ -3854,6 +3990,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &setup_fans_row,
             &setup_fans_value,
         );
+        update_administrator_access_rows(
+            privileged_status.as_ref(),
+            &cpu_caps,
+            &fan_state,
+            lighting.as_ref(),
+            &caps,
+            &administrator_access_rows,
+        );
         refresh_setup_button.set_sensitive(!setup_refreshing);
         refresh_setup_button.set_label(if setup_refreshing {
             "Refreshing…"
@@ -3879,14 +4023,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .join("\n"),
             );
         }
-        setup_profiles_value.set_text(feature_status_label(caps.profile_access.status));
-        setup_profiles_row.set_subtitle(&caps.profile_access.reason);
-        setup_charge_value.set_text(feature_status_label(caps.charge_limit_access.status));
-        setup_charge_row.set_subtitle(&caps.charge_limit_access.reason);
-        setup_gpu_value.set_text(feature_status_label(caps.gpu_mode_access.status));
-        setup_gpu_row.set_subtitle(&caps.gpu_mode_access.reason);
-        setup_kbd_support_value.set_text(feature_status_label(caps.kbd_backlight_access.status));
-        setup_kbd_support_row.set_subtitle(&caps.kbd_backlight_access.reason);
+        update_setup_feature_row(
+            &setup_profiles_row,
+            &setup_profiles_value,
+            &caps.profile_access,
+        );
+        update_setup_feature_row(
+            &setup_charge_row,
+            &setup_charge_value,
+            &caps.charge_limit_access,
+        );
+        update_setup_feature_row(&setup_gpu_row, &setup_gpu_value, &caps.gpu_mode_access);
+        update_setup_feature_row(
+            &setup_kbd_support_row,
+            &setup_kbd_support_value,
+            &caps.kbd_backlight_access,
+        );
         setup_fan_support_value.set_text(if fan_state.caps.has_individual_fan_control {
             "Available"
         } else if !fan_state.fans.is_empty() {
@@ -4154,8 +4306,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             fan_sync_switch.set_active(fan_state.sync_enabled);
         }
         let manual_available = fan_state.caps.has_fan_manual_percent;
+        let fan_authorization_required = fan_state
+            .fans
+            .iter()
+            .any(|fan| fan.access_state == "authorization_required");
         fan_manual_scale.set_sensitive(manual_available);
         fan_manual_apply.set_sensitive(manual_available);
+        fan_manual_apply.set_label(if fan_authorization_required {
+            "Unlock & Apply"
+        } else {
+            "Apply"
+        });
         fan_boost_5.set_sensitive(fan_state.caps.has_fan_boost);
         fan_boost_10.set_sensitive(fan_state.caps.has_fan_boost);
         fan_boost_15.set_sensitive(fan_state.caps.has_fan_boost);
@@ -4169,22 +4330,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         controls_hint.set_text(&fan_controls_hint(&fan_state));
         curve_preview.set_enabled(fan_state.caps.fan_curve_writable);
         curve_apply.set_sensitive(fan_state.caps.fan_curve_writable);
+        curve_apply.set_label(if fan_authorization_required {
+            "Unlock & Apply curve"
+        } else {
+            "Apply curve"
+        });
         curve_reset.set_sensitive(fan_state.caps.fan_curve_writable);
-        curve_status.set_text(
-            if fan_state
-                .fans
-                .iter()
-                .any(|fan| fan.access_state == "authorization_required")
-            {
-                "Administrator access required. Authentication starts only when Apply is used."
-            } else if fan_state.caps.fan_curve_writable {
-                "Curve editing is available for the active backend."
-            } else if fan_state.caps.has_fan_curves {
-                "Fan curves are supported, but the privileged helper is unavailable."
-            } else {
-                "Fan curve editing is not available on this backend."
-            },
-        );
+        curve_status.set_text(if fan_authorization_required {
+            "Administrator access required. Authentication starts only when Apply is used."
+        } else if fan_state.caps.fan_curve_writable {
+            "Curve editing is available for the active backend."
+        } else if fan_state.caps.has_fan_curves {
+            "Fan curves are supported, but the privileged helper is unavailable."
+        } else {
+            "Fan curve editing is not available on this backend."
+        });
         fan_sync_row.set_subtitle(&fan_sync_subtitle(&fan_state));
         fan_manual_row.set_subtitle(&fan_manual_subtitle(&fan_state));
         fan_boost_row.set_subtitle(&fan_boost_subtitle(&fan_state));
@@ -4830,6 +4990,20 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_power_balanced.set_sensitive(power_mode_writable);
             cpu_power_perf.set_sensitive(power_mode_writable);
             cpu_apply_quick.set_sensitive(quick_sensitive);
+            cpu_apply_quick.set_label(
+                if cpu_controls_require_authorization(
+                    &cpu_caps,
+                    &[
+                        CpuControlKind::Boost,
+                        CpuControlKind::PowerMode,
+                        CpuControlKind::FreqLimits,
+                    ],
+                ) {
+                    "Unlock & Apply"
+                } else {
+                    "Apply"
+                },
+            );
             cpu_power_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
                 CpuControlKind::PowerMode,
@@ -4890,6 +5064,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Energy Performance Preference is not supported on this system.",
             ));
             cpu_apply_policy.set_sensitive(governor_writable || epp_writable);
+            cpu_apply_policy.set_label(
+                if cpu_controls_require_authorization(
+                    &cpu_caps,
+                    &[CpuControlKind::Governor, CpuControlKind::Epp],
+                ) {
+                    "Unlock & Apply"
+                } else {
+                    "Apply"
+                },
+            );
             cpu_apply_policy_row.set_subtitle(&cpu_policy_apply_subtitle(&cpu_caps));
 
             {
@@ -5070,15 +5254,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             cpu_access_report.set_text(&cpu_access_report_text(&cpu_caps));
         }
 
-        update_diagnostics_buffer(
-            &diag_buffer,
-            &diag_scroller,
-            if caps_text.is_empty() {
-                "Loading diagnostics..."
-            } else {
-                &caps_text
-            },
-        );
+        let full_diagnostics = if caps_text.is_empty() {
+            "Loading diagnostics...".to_string()
+        } else {
+            format!(
+                "{caps_text}\n\n{}",
+                privilege_diagnostics_text(
+                    privileged_status.as_ref(),
+                    &cpu_caps,
+                    &fan_state,
+                    lighting.as_ref(),
+                    &caps,
+                )
+            )
+        };
+        update_diagnostics_buffer(&diag_buffer, &diag_scroller, &full_diagnostics);
 
         if daemon_error.is_some() {
             status_label.set_text(
@@ -5337,6 +5527,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             charge_apply_button.set_sensitive(true);
             battery_charge_spin.set_sensitive(true);
             battery_charge_apply.set_sensitive(true);
+            let battery_authorization_required = caps.battery_limit_backend == "power_supply_sysfs"
+                && caps.battery_limit_privileged_write
+                && caps.battery_limit_authorization != "authorized";
+            battery_charge_apply.set_label(if battery_authorization_required {
+                "Unlock & Apply"
+            } else {
+                "Apply"
+            });
+            charge_apply_button.set_label(if battery_authorization_required {
+                "Unlock & Apply"
+            } else {
+                "Apply"
+            });
             if let Some(limit) = battery_limit {
                 if !charge_limit_spin.has_focus() {
                     charge_limit_spin.set_value(limit as f64);
@@ -5441,7 +5644,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             lighting_capability_banner.set_title(if l.authorization_required {
                 "Administrator access required to change keyboard lighting"
             } else if l.authorization == "denied" {
-                "Administrator authorization was denied or cancelled"
+                "Administrator authorization was denied"
             } else if can_set {
                 "Lighting controls are available"
             } else {
@@ -5498,6 +5701,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             lighting_controls_group.set_visible(has_visible_controls);
             apply_row.set_visible(can_set && has_visible_controls);
             apply_lighting.set_sensitive(can_set && has_visible_controls);
+            apply_lighting.set_label(if l.authorization_required {
+                "Unlock & Apply lighting"
+            } else {
+                "Apply lighting"
+            });
             lighting_rgb_note.set_visible(!l.supports_rgb);
             if let Some(rgba) = l
                 .rgb_hex
@@ -5995,7 +6203,14 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         state.setup_refreshing = true;
                         state.mark_render_dirty();
                     }
-                    match fetch_setup_status().await {
+                    let (setup_result, privileged_result) =
+                        tokio::join!(fetch_setup_status(), fetch_privileged_status());
+                    if let Ok(mut state) = shared.lock() {
+                        state.privileged_status = Some(privileged_result.unwrap_or_else(|_| {
+                            PrivilegedStatus::unavailable(false, false)
+                        }));
+                    }
+                    match setup_result {
                         Ok(status) => {
                             if let Ok(mut state) = shared.lock() {
                                 state.setup_status = status;
@@ -6043,6 +6258,20 @@ async fn fetch_setup_status() -> Result<SetupStatus, String> {
         .await
         .map_err(|error| format!("daemon GetSetupStatus failed: {error}"))?;
     Ok(setup_status_from_dbus(&map))
+}
+
+async fn fetch_privileged_status() -> Result<PrivilegedStatus, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let map = proxy
+        .get_privileged_status()
+        .await
+        .map_err(|error| format!("daemon GetPrivilegedStatus failed: {error}"))?;
+    Ok(privileged_status_from_dbus(&map))
 }
 
 async fn save_configuration(config: &AppConfig) -> Result<(), String> {
@@ -8316,24 +8545,35 @@ fn troubleshooting_summary_text(
 
 fn friendly_action_error(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
-    if lower.contains("keyboard lighting was denied or cancelled") {
-        "Administrator authorization was denied or cancelled. Keyboard brightness remains readable."
+    if lower.contains("authentication was cancelled") || lower.contains("authorization cancelled") {
+        "Authentication was cancelled. No changes were applied; telemetry remains available."
             .to_string()
-    } else if lower.contains("privileged lighting helper is unavailable") {
-        "The privileged lighting helper is unavailable. Keyboard brightness remains readable."
-            .to_string()
-    } else if lower.contains("fan control was denied or cancelled") {
-        "Administrator authorization was denied or cancelled. Fan telemetry is still available."
-            .to_string()
-    } else if lower.contains("privileged fan helper is unavailable") {
-        "The privileged fan helper is unavailable. Fan telemetry is still available.".to_string()
-    } else if lower.contains("not_authorized")
-        || lower.contains("authorization was denied or cancelled")
+    } else if lower.contains("keyboard lighting")
+        && (lower.contains("authorization was denied") || lower.contains("not_authorized"))
     {
-        "Administrator authorization was denied or cancelled. CPU telemetry is still available."
+        "Administrator authorization was denied. Keyboard brightness remains readable.".to_string()
+    } else if lower.contains("privileged lighting helper is unavailable") {
+        "ROG Helper privileged service is not installed or is unavailable. Keyboard brightness remains readable."
             .to_string()
+    } else if lower.contains("fan control")
+        && (lower.contains("authorization was denied") || lower.contains("not_authorized"))
+    {
+        "Administrator authorization was denied. Fan telemetry is still available.".to_string()
+    } else if lower.contains("privileged fan helper is unavailable") {
+        "ROG Helper privileged service is not installed or is unavailable. Fan telemetry is still available."
+            .to_string()
+    } else if lower.contains("battery control")
+        && (lower.contains("authorization was denied") || lower.contains("not_authorized"))
+    {
+        "Administrator authorization was denied. Battery telemetry remains available.".to_string()
+    } else if lower.contains("privileged battery helper is unavailable") {
+        "ROG Helper privileged service is not installed or is unavailable. Battery telemetry remains available."
+            .to_string()
+    } else if lower.contains("not_authorized") || lower.contains("authorization was denied") {
+        "Administrator authorization was denied. CPU telemetry is still available.".to_string()
     } else if lower.contains("privileged cpu helper is unavailable") {
-        "The privileged CPU helper is unavailable. CPU telemetry is still available.".to_string()
+        "ROG Helper privileged service is not installed or is unavailable. CPU telemetry is still available."
+            .to_string()
     } else if lower.contains("profile control requires asusd") {
         "Performance profiles require asusd. Install or start asusd, then retry.".to_string()
     } else if lower.contains("battery limit control requires asusd") {
@@ -8381,7 +8621,7 @@ fn friendly_action_error(error: &str) -> String {
     } else {
         match ErrorCategory::classify_message(error) {
             ErrorCategory::PermissionDenied => {
-                "Permission denied. Open Diagnostics for the affected paths and backend details."
+                "This write was blocked by the active backend. Review Setup & Access to see whether administrator authorization or an external service is required."
                     .to_string()
             }
             ErrorCategory::ReadOnly => {
@@ -8432,13 +8672,13 @@ fn cpu_banner_title(caps: &CpuCaps) -> String {
         .iter()
         .any(|control| control.status == CpuAccessState::AuthorizationDenied)
     {
-        "Administrator authorization was denied or cancelled".to_string()
+        "Administrator authorization was denied".to_string()
     } else if caps
         .control_access
         .iter()
         .any(|control| control.status == CpuAccessState::HelperMissing)
     {
-        "The privileged CPU helper is unavailable".to_string()
+        "ROG Helper privileged service is unavailable or not installed".to_string()
     } else if caps.control_access.iter().any(|control| {
         matches!(
             control.status,
@@ -8703,6 +8943,480 @@ fn setup_pref_row(group: &adw::PreferencesGroup, title: &str) -> (adw::ActionRow
     row.set_activatable(false);
     group.add(&row);
     (row, value)
+}
+
+fn setup_access_row(group: &adw::PreferencesGroup, title: &str) -> SetupAccessRow {
+    let (row, value) = setup_pref_row(group, title);
+    SetupAccessRow { row, value }
+}
+
+fn set_setup_access(row: &SetupAccessRow, state: AccessUiState, subtitle: &str) {
+    set_setup_access_label(row, state, state.label(), subtitle);
+}
+
+fn set_setup_access_label(row: &SetupAccessRow, state: AccessUiState, label: &str, subtitle: &str) {
+    row.value.set_text(label);
+    set_setup_value_status(&row.value, state.css_class());
+    row.row.set_subtitle(subtitle);
+}
+
+fn feature_access_ui_state(access: &FeatureAvailability) -> AccessUiState {
+    match access.status {
+        FeatureAccessState::Unknown => AccessUiState::Checking,
+        FeatureAccessState::Available => AccessUiState::Available,
+        FeatureAccessState::Unsupported => AccessUiState::UnsupportedHardware,
+        FeatureAccessState::MissingBackend => AccessUiState::BackendMissing,
+        FeatureAccessState::PermissionDenied => AccessUiState::ReadOnly,
+        FeatureAccessState::TemporarilyUnavailable => AccessUiState::Unavailable,
+    }
+}
+
+fn update_setup_feature_row(
+    row: &adw::ActionRow,
+    value: &gtk::Label,
+    access: &FeatureAvailability,
+) {
+    let state = feature_access_ui_state(access);
+    value.set_text(state.label());
+    set_setup_value_status(value, state.css_class());
+    row.set_subtitle(&access.reason);
+}
+
+fn helper_access_state(status: Option<&PrivilegedStatus>) -> AccessUiState {
+    let Some(status) = status else {
+        return AccessUiState::Checking;
+    };
+    if !status.system_bus_connected {
+        AccessUiState::Unavailable
+    } else if !status.privileged_helper_installed {
+        AccessUiState::PrivilegedHelperMissing
+    } else if !status.privileged_helper_reachable || !status.privileged_helper_compatible {
+        AccessUiState::SetupRequired
+    } else {
+        AccessUiState::Available
+    }
+}
+
+fn cpu_privileged_access_state(
+    status: Option<&PrivilegedStatus>,
+    cpu_caps: &CpuCaps,
+) -> AccessUiState {
+    let hardware_supported = cpu_caps.control_access.iter().any(|control| {
+        !matches!(
+            control.status,
+            CpuAccessState::Unknown | CpuAccessState::Unsupported | CpuAccessState::MissingBackend
+        )
+    });
+    if !hardware_supported {
+        return AccessUiState::UnsupportedHardware;
+    }
+    if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationDenied)
+    {
+        return AccessUiState::AuthorizationDenied;
+    }
+    if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.authorization == CpuAuthorization::Authorized)
+    {
+        return AccessUiState::Authorized;
+    }
+    if cpu_caps.control_access.iter().any(|control| {
+        control.status == CpuAccessState::AuthorizationRequired
+            || control.authorization == CpuAuthorization::Required
+    }) {
+        return AccessUiState::AvailableWithAdministrator;
+    }
+    if cpu_caps
+        .control_access
+        .iter()
+        .any(|control| control.status == CpuAccessState::HelperMissing)
+    {
+        return AccessUiState::PrivilegedHelperMissing;
+    }
+    match status {
+        Some(status)
+            if status
+                .privileged_categories_available
+                .contains(&PrivilegedCategory::Cpu) =>
+        {
+            AccessUiState::Available
+        }
+        Some(_) => AccessUiState::PrivilegedHelperMissing,
+        None => AccessUiState::Checking,
+    }
+}
+
+fn fan_privileged_access_state(
+    status: Option<&PrivilegedStatus>,
+    fan_state: &FanState,
+) -> AccessUiState {
+    if fan_state.fans.is_empty() {
+        return AccessUiState::UnsupportedHardware;
+    }
+    let safe_mapping = fan_state.fans.iter().any(|fan| {
+        fan.pwm_endpoint_verified && (fan.supports_auto || fan.supports_curve || fan.controllable)
+    });
+    if !safe_mapping {
+        return AccessUiState::UnsafeMapping;
+    }
+    if fan_state
+        .fans
+        .iter()
+        .any(|fan| fan.authorization == "denied")
+    {
+        return AccessUiState::AuthorizationDenied;
+    }
+    if fan_state
+        .fans
+        .iter()
+        .any(|fan| fan.authorization == "authorized")
+    {
+        return AccessUiState::Authorized;
+    }
+    if fan_state
+        .fans
+        .iter()
+        .any(|fan| fan.access_state == "authorization_required")
+    {
+        return AccessUiState::AvailableWithAdministrator;
+    }
+    if fan_state.fans.iter().any(|fan| fan.direct_write) {
+        return AccessUiState::NotRequired;
+    }
+    match status {
+        Some(status)
+            if status
+                .privileged_categories_available
+                .contains(&PrivilegedCategory::Fans) =>
+        {
+            AccessUiState::ReadOnly
+        }
+        Some(_) => AccessUiState::PrivilegedHelperMissing,
+        None => AccessUiState::Checking,
+    }
+}
+
+fn lighting_privileged_access_state(
+    status: Option<&PrivilegedStatus>,
+    lighting: Option<&LightingInfo>,
+    caps: &DeviceCaps,
+) -> AccessUiState {
+    if !caps.has_kbd_backlight && lighting.is_none() {
+        return AccessUiState::UnsupportedHardware;
+    }
+    if let Some(lighting) = lighting {
+        if lighting.direct_writable {
+            return AccessUiState::NotRequired;
+        }
+        if lighting.authorization == "denied" {
+            return AccessUiState::AuthorizationDenied;
+        }
+        if lighting.authorization == "authorized" {
+            return AccessUiState::Authorized;
+        }
+        if lighting.privileged_writable && lighting.authorization_required {
+            return AccessUiState::AvailableWithAdministrator;
+        }
+        if lighting.privileged_writable {
+            return AccessUiState::Available;
+        }
+    }
+    match status {
+        Some(status)
+            if status
+                .privileged_categories_available
+                .contains(&PrivilegedCategory::Lighting) =>
+        {
+            AccessUiState::ReadOnly
+        }
+        Some(_) => AccessUiState::PrivilegedHelperMissing,
+        None => AccessUiState::Checking,
+    }
+}
+
+fn update_administrator_access_rows(
+    status: Option<&PrivilegedStatus>,
+    cpu_caps: &CpuCaps,
+    fan_state: &FanState,
+    lighting: Option<&LightingInfo>,
+    caps: &DeviceCaps,
+    rows: &AdministratorAccessRows,
+) {
+    let helper_state = helper_access_state(status);
+    let helper_label = match helper_state {
+        AccessUiState::Available => "Installed",
+        AccessUiState::PrivilegedHelperMissing => "Missing",
+        _ => helper_state.label(),
+    };
+    let helper_detail = match status {
+        Some(status) if status.privileged_helper_reachable && status.privileged_helper_compatible => {
+            "The on-demand service is compatible. It is used only for validated per-operation fallbacks."
+        }
+        Some(status) if status.privileged_helper_installed => {
+            "The service is installed but could not be reached or its API is incompatible."
+        }
+        Some(_) => {
+            "Install the packaged rog-helper-privileged service to unlock supported permission-blocked controls."
+        }
+        None => "Refresh checks to inspect the optional privileged service.",
+    };
+    set_setup_access_label(&rows.helper, helper_state, helper_label, helper_detail);
+
+    let system_bus_state = match status {
+        Some(status) if status.system_bus_connected => AccessUiState::Available,
+        Some(_) => AccessUiState::Unavailable,
+        None => AccessUiState::Checking,
+    };
+    set_setup_access_label(
+        &rows.system_bus,
+        system_bus_state,
+        if system_bus_state == AccessUiState::Available {
+            "Connected"
+        } else {
+            system_bus_state.label()
+        },
+        "System services and the privileged helper communicate over the system bus.",
+    );
+
+    let polkit_state = match status {
+        Some(status) if status.polkit_available => AccessUiState::Available,
+        Some(_) => AccessUiState::Unavailable,
+        None => AccessUiState::Checking,
+    };
+    set_setup_access(
+        &rows.polkit,
+        polkit_state,
+        "PolicyKit authorizes the original DBus caller only when a privileged action is attempted.",
+    );
+
+    let cpu_state = cpu_privileged_access_state(status, cpu_caps);
+    set_setup_access(
+        &rows.cpu,
+        cpu_state,
+        match cpu_state {
+            AccessUiState::AvailableWithAdministrator => {
+                "Supported CPU controls stay enabled. Use Apply to authenticate for the selected change."
+            }
+            AccessUiState::Authorized => "A CPU control was authorized during this session.",
+            AccessUiState::AuthorizationDenied => {
+                "Administrator authorization was denied. Apply again to retry."
+            }
+            AccessUiState::PrivilegedHelperMissing => {
+                "Supported CPU controls need rog-helper-privileged because direct sysfs writes are blocked."
+            }
+            AccessUiState::UnsupportedHardware => {
+                "No supported CPU write endpoint was detected; CPU telemetry remains available."
+            }
+            _ => "Direct CPU writes remain preferred; the helper is only a permission fallback.",
+        },
+    );
+
+    let fan_state_value = fan_privileged_access_state(status, fan_state);
+    set_setup_access(
+        &rows.fans,
+        fan_state_value,
+        match fan_state_value {
+            AccessUiState::UnsafeMapping => {
+                "Fan RPM telemetry is available, but no safe writable fan interface was confirmed."
+            }
+            AccessUiState::ReadOnly => {
+                "A safe fan interface is detected, but it is not currently writable."
+            }
+            AccessUiState::AvailableWithAdministrator => {
+                "Use a fan Apply action to authenticate; simply opening Cooling never prompts."
+            }
+            AccessUiState::PrivilegedHelperMissing => {
+                "A verified fan interface needs rog-helper-privileged for writes."
+            }
+            _ => "Only verified fan mappings can cross the privileged boundary.",
+        },
+    );
+
+    let lighting_state = lighting_privileged_access_state(status, lighting, caps);
+    set_setup_access(
+        &rows.lighting,
+        lighting_state,
+        match lighting_state {
+            AccessUiState::NotRequired => {
+                "The verified asusd or directly writable LED backend handles lighting."
+            }
+            AccessUiState::AvailableWithAdministrator => {
+                "Use Apply lighting to authenticate for the approved keyboard-brightness fallback."
+            }
+            AccessUiState::PrivilegedHelperMissing => {
+                "Keyboard brightness is readable, but the optional lighting helper is unavailable."
+            }
+            AccessUiState::UnsupportedHardware => {
+                "No supported keyboard-lighting interface was detected."
+            }
+            _ => "RGB and Aura modes never use a generic root hardware API.",
+        },
+    );
+
+    let gpu_state = if caps.gpu_backend == "supergfxd" {
+        AccessUiState::Available
+    } else {
+        AccessUiState::ExternalServiceRequired
+    };
+    set_setup_access_label(
+        &rows.gpu,
+        gpu_state,
+        "Handled by supergfxd",
+        if caps.gpu_backend == "supergfxd" {
+            "supergfxd owns GPU mode validation, switching, authorization, and transition safety."
+        } else {
+            "supergfxd is required for GPU mode switching; root access to ROG Helper is not a substitute."
+        },
+    );
+
+    let (battery_state, battery_label, battery_detail) = match caps.battery_limit_backend.as_str() {
+        "asusd" => (
+            AccessUiState::Available,
+            "Handled by asusd",
+            "asusd remains the preferred battery charge-limit backend and owns its service authorization.",
+        ),
+        "power_supply_sysfs" if caps.battery_limit_direct_write => (
+            AccessUiState::NotRequired,
+            "Direct kernel interface",
+            "asusd does not expose this feature; the validated standard battery threshold is directly writable.",
+        ),
+        "power_supply_sysfs" if caps.battery_limit_privileged_write => (
+            AccessUiState::AvailableWithAdministrator,
+            "Administrator access required",
+            "asusd does not expose this feature; Apply may use the validated standard battery-threshold fallback.",
+        ),
+        _ if caps.charge_limit_access.status == FeatureAccessState::MissingBackend => (
+            AccessUiState::ExternalServiceRequired,
+            "asusd required",
+            "Install or start asusd when no safe standard kernel fallback is available.",
+        ),
+        _ => (
+            AccessUiState::UnsupportedHardware,
+            "Unsupported hardware",
+            "No maintainable battery charge-limit backend was detected.",
+        ),
+    };
+    set_setup_access_label(&rows.battery, battery_state, battery_label, battery_detail);
+}
+
+fn privilege_diagnostics_text(
+    status: Option<&PrivilegedStatus>,
+    cpu_caps: &CpuCaps,
+    fan_state: &FanState,
+    lighting: Option<&LightingInfo>,
+    caps: &DeviceCaps,
+) -> String {
+    let mut lines = vec![
+        "ROG Helper Privilege Diagnostics".to_string(),
+        "================================".to_string(),
+        String::new(),
+    ];
+    if let Some(status) = status {
+        lines.extend([
+            format!("system_bus_connected: {}", status.system_bus_connected),
+            format!(
+                "privileged_helper_installed: {}",
+                status.privileged_helper_installed
+            ),
+            format!(
+                "privileged_helper_reachable: {}",
+                status.privileged_helper_reachable
+            ),
+            format!(
+                "privileged_helper_compatible: {}",
+                status.privileged_helper_compatible
+            ),
+            format!("polkit_available: {}", status.polkit_available),
+            format!(
+                "authorization_state: {}",
+                status.authorization_state.as_str()
+            ),
+            format!(
+                "categories: {}",
+                status
+                    .privileged_categories_available
+                    .iter()
+                    .map(|category| category.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ]);
+    } else {
+        lines.push("privileged_status: not received".to_string());
+    }
+
+    lines.push(String::new());
+    lines.push("CPU controls:".to_string());
+    if cpu_caps.control_access.is_empty() {
+        lines.push("  no structured access rows".to_string());
+    } else {
+        for control in &cpu_caps.control_access {
+            lines.push(format!(
+                "  {}: status={}, direct={}, privileged={}, authorization={}",
+                control.kind.as_str(),
+                control.status.as_str(),
+                control.direct_write,
+                control.privileged_write,
+                control.authorization.as_str()
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Fan controls:".to_string());
+    if fan_state.fans.is_empty() {
+        lines.push("  unsupported: no fan interface detected".to_string());
+    } else {
+        for fan in &fan_state.fans {
+            lines.push(format!(
+                "  {}: safe_mapping={}, direct={}, privileged={}, authorization={}, access={}",
+                fan.id,
+                fan.pwm_endpoint_verified,
+                fan.direct_write,
+                fan.privileged_write,
+                fan.authorization,
+                fan.access_state
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Lighting controls:".to_string());
+    if let Some(lighting) = lighting {
+        lines.push(format!(
+            "  backend={}, direct={}, privileged={}, authorization={}, status={}",
+            lighting.backend,
+            lighting.direct_writable,
+            lighting.privileged_writable,
+            lighting.authorization,
+            lighting.status
+        ));
+    } else {
+        lines.push("  no lighting state received".to_string());
+    }
+
+    lines.push(String::new());
+    lines.push(format!(
+        "GPU mode: backend={}, access=external-service",
+        caps.gpu_backend
+    ));
+    lines.push(format!(
+        "Battery limit: backend={}, direct={}, privileged={}, authorization={}",
+        caps.battery_limit_backend,
+        caps.battery_limit_direct_write,
+        caps.battery_limit_privileged_write,
+        caps.battery_limit_authorization
+    ));
+    lines.push(String::new());
+    lines.push(
+        "Authorization is per operation. This report does not perform an authorization check."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 fn update_setup_dependency_row(
@@ -9049,6 +9763,14 @@ fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
     }
 }
 
+fn cpu_controls_require_authorization(caps: &CpuCaps, kinds: &[CpuControlKind]) -> bool {
+    caps.control_access.iter().any(|control| {
+        kinds.contains(&control.kind)
+            && (control.status == CpuAccessState::AuthorizationRequired
+                || control.authorization == CpuAuthorization::Required)
+    })
+}
+
 fn cpu_policy_apply_subtitle(caps: &CpuCaps) -> String {
     let governor_writable = caps.control_actionable(CpuControlKind::Governor);
     let epp_writable = caps.control_actionable(CpuControlKind::Epp);
@@ -9081,7 +9803,7 @@ fn cpu_control_subtitle(
             .unwrap_or("Administrator access required. Apply to authenticate.")
             .to_string(),
         CpuAccessState::AuthorizationDenied => access_reason
-            .unwrap_or("Administrator authorization was denied or cancelled. Apply to retry.")
+            .unwrap_or("Administrator authorization was denied. Apply to retry.")
             .to_string(),
         CpuAccessState::HelperMissing => access_reason
             .unwrap_or("The privileged CPU helper is unavailable.")
@@ -9713,6 +10435,31 @@ fn setup_status_from_dbus(map: &HashMap<String, OwnedValue>) -> SetupStatus {
     }
 }
 
+fn privileged_status_from_dbus(map: &HashMap<String, OwnedValue>) -> PrivilegedStatus {
+    use dbus_keys::privileged_status as keys;
+
+    let boolean = |key| dbus_decode::boolean(map, key).unwrap_or(false);
+    let text = |key| dbus_decode::string(map, key).unwrap_or_default();
+    let categories = dbus_decode::strings(map, keys::CATEGORIES_AVAILABLE)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| PrivilegedCategory::parse(&value).ok())
+        .collect();
+    let version = text(keys::HELPER_VERSION);
+
+    PrivilegedStatus {
+        system_bus_connected: boolean(keys::SYSTEM_BUS_CONNECTED),
+        privileged_helper_installed: boolean(keys::HELPER_INSTALLED),
+        privileged_helper_reachable: boolean(keys::HELPER_REACHABLE),
+        privileged_helper_compatible: boolean(keys::HELPER_COMPATIBLE),
+        privileged_helper_version: (!version.is_empty()).then_some(version),
+        polkit_available: boolean(keys::POLKIT_AVAILABLE),
+        authorization_backend: text(keys::AUTHORIZATION_BACKEND),
+        authorization_state: AuthorizationState::parse(&text(keys::AUTHORIZATION_STATE)),
+        privileged_categories_available: categories,
+    }
+}
+
 fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
     let b = |key| dbus_decode::boolean(map, key).unwrap_or(false);
 
@@ -9733,6 +10480,15 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
         fan_backend: dbus_decode::string(map, dbus_keys::caps::FAN_BACKEND).unwrap_or_default(),
         gpu_backend: dbus_decode::string(map, dbus_keys::caps::GPU_BACKEND)
             .unwrap_or_else(|| "none".to_string()),
+        battery_limit_backend: dbus_decode::string(map, dbus_keys::caps::BATTERY_LIMIT_BACKEND)
+            .unwrap_or_else(|| "none".to_string()),
+        battery_limit_direct_write: b(dbus_keys::caps::BATTERY_LIMIT_DIRECT_WRITE),
+        battery_limit_privileged_write: b(dbus_keys::caps::BATTERY_LIMIT_PRIVILEGED_WRITE),
+        battery_limit_authorization: dbus_decode::string(
+            map,
+            dbus_keys::caps::BATTERY_LIMIT_AUTHORIZATION,
+        )
+        .unwrap_or_else(|| "not_required".to_string()),
         gpu_supported_modes: dbus_decode::strings(map, dbus_keys::caps::GPU_SUPPORTED_MODES)
             .unwrap_or_default(),
         gpu_external_authorization: dbus_decode::string(
@@ -9837,12 +10593,22 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
         lines.push(format!("  fan_backend: {backend}"));
     }
     for key in [
+        "battery_limit_backend",
+        "battery_limit_authorization",
         "gpu_backend",
         "gpu_external_authorization",
         "gpu_switch_state",
         "gpu_switch_hint",
     ] {
         if let Some(value) = s(&map, key) {
+            lines.push(format!("  {key}: {value}"));
+        }
+    }
+    for key in [
+        "battery_limit_direct_write",
+        "battery_limit_privileged_write",
+    ] {
+        if let Some(value) = b(&map, key) {
             lines.push(format!("  {key}: {value}"));
         }
     }
@@ -9863,6 +10629,28 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
         let reason = s(&map, &dbus_keys::feature_access_reason_key(prefix))
             .unwrap_or_else(|| "(n/a)".to_string());
         lines.push(format!("  {label}: {status} ({reason})"));
+    }
+
+    if let Some(rows) = map
+        .get(dbus_keys::caps::CONTROL_PRIVILEGE_MATRIX)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
+    {
+        lines.push("".to_string());
+        lines.push("Control / privilege matrix:".to_string());
+        for row in rows {
+            let operation = s(&row, "operation").unwrap_or_else(|| "unknown".to_string());
+            let backend = s(&row, "current_backend").unwrap_or_else(|| "none".to_string());
+            let access = s(&row, "access").unwrap_or_else(|| "unknown".to_string());
+            let supported = b(&row, "supported").unwrap_or(false);
+            let decision = s(&row, "implementation_decision").unwrap_or_default();
+            lines.push(format!(
+                "  {operation}: supported={supported}, backend={backend}, access={access}"
+            ));
+            if !decision.is_empty() {
+                lines.push(format!("    decision: {decision}"));
+            }
+        }
     }
 
     if let Some(endpoints) = vec_string(&map, "endpoints") {
@@ -10416,8 +11204,7 @@ fn fan_controls_hint(state: &FanState) -> String {
         .iter()
         .any(|fan| fan.access_state == "authorization_denied")
     {
-        "Administrator authorization was denied or cancelled. RPM telemetry remains available."
-            .to_string()
+        "Administrator authorization was denied. RPM telemetry remains available.".to_string()
     } else if state.caps.has_fan_manual_percent
         || state.caps.has_fan_boost
         || state.caps.fan_curve_writable
@@ -10522,6 +11309,119 @@ mod tests {
         T: Into<Value<'static>>,
     {
         OwnedValue::try_from(value.into()).expect("OwnedValue conversion should succeed")
+    }
+
+    #[test]
+    fn privileged_status_decoder_preserves_access_infrastructure_state() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::privileged_status::SYSTEM_BUS_CONNECTED.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::privileged_status::HELPER_INSTALLED.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::privileged_status::HELPER_REACHABLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::privileged_status::HELPER_COMPATIBLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::privileged_status::POLKIT_AVAILABLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::privileged_status::AUTHORIZATION_STATE.to_string(),
+            ov("denied".to_string()),
+        );
+        map.insert(
+            dbus_keys::privileged_status::CATEGORIES_AVAILABLE.to_string(),
+            ov(vec!["cpu".to_string(), "fans".to_string()]),
+        );
+
+        let status = privileged_status_from_dbus(&map);
+        assert!(status.system_bus_connected);
+        assert!(status.privileged_helper_installed);
+        assert!(status.privileged_helper_reachable);
+        assert!(status.privileged_helper_compatible);
+        assert!(status.polkit_available);
+        assert_eq!(status.authorization_state, AuthorizationState::Denied);
+        assert_eq!(
+            status.privileged_categories_available,
+            [PrivilegedCategory::Cpu, PrivilegedCategory::Fans]
+        );
+    }
+
+    #[test]
+    fn reusable_access_states_distinguish_backend_permission_and_hardware() {
+        assert_eq!(
+            feature_access_ui_state(&FeatureAvailability::new(
+                FeatureAccessState::MissingBackend,
+                "supergfxd is required",
+            )),
+            AccessUiState::BackendMissing
+        );
+        assert_eq!(
+            feature_access_ui_state(&FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "read only",
+            )),
+            AccessUiState::ReadOnly
+        );
+        assert_eq!(
+            feature_access_ui_state(&FeatureAvailability::new(
+                FeatureAccessState::Unsupported,
+                "unsupported",
+            )),
+            AccessUiState::UnsupportedHardware
+        );
+    }
+
+    #[test]
+    fn cpu_unlock_label_is_limited_to_controls_that_need_authorization() {
+        let mut caps = CpuCaps::unknown();
+        caps.control_access.push(CpuControlAccess {
+            kind: CpuControlKind::Governor,
+            status: CpuAccessState::AuthorizationRequired,
+            reason: "Administrator access required".to_string(),
+            direct_write: false,
+            privileged_write: true,
+            authorization: CpuAuthorization::Required,
+            paths: Vec::new(),
+        });
+
+        assert!(cpu_controls_require_authorization(
+            &caps,
+            &[CpuControlKind::Governor]
+        ));
+        assert!(!cpu_controls_require_authorization(
+            &caps,
+            &[CpuControlKind::Boost]
+        ));
+    }
+
+    #[test]
+    fn privilege_failures_have_distinct_user_messages() {
+        assert!(friendly_action_error("Authentication was cancelled")
+            .starts_with("Authentication was cancelled."));
+        assert!(
+            friendly_action_error("keyboard lighting: Administrator authorization was denied")
+                .starts_with("Administrator authorization was denied.")
+        );
+        assert!(
+            friendly_action_error("the privileged fan helper is unavailable")
+                .contains("not installed or is unavailable")
+        );
+        assert!(friendly_action_error("GPU mode control requires supergfxd")
+            .starts_with("GPU mode switching requires supergfxd."));
+        assert!(
+            friendly_action_error("battery limit control requires asusd")
+                .starts_with("Charge-limit control requires asusd.")
+        );
     }
 
     #[test]

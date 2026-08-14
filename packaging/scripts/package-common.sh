@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Payload permissions must not depend on a developer's process umask. This is
+# especially important for root-consumed systemd and system-D-Bus metadata.
+umask 0022
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
@@ -122,6 +126,7 @@ for pair in sys.argv[3:]:
 
 dest_path.parent.mkdir(parents=True, exist_ok=True)
 dest_path.write_text(text)
+dest_path.chmod(0o644)
 PY
 }
 

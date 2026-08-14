@@ -108,6 +108,68 @@ impl CpuTelemetryProvider {
         }
     }
 
+    /// Re-discovers and validates every endpoint and parameter without opening a
+    /// write handle. The privileged service uses this before starting PolicyKit
+    /// interaction, then `apply_control` repeats validation at write time.
+    pub fn validate_control(&self, request: &CpuControlRequest) -> RogResult<()> {
+        match request {
+            CpuControlRequest::Turbo(_) => {
+                let boost = detect_boost_path().ok_or_else(|| {
+                    RogError::NotSupported("turbo boost control is not supported".to_string())
+                })?;
+                validate_cpu_endpoint(&boost.path)
+            }
+            CpuControlRequest::PowerMode(mode) => {
+                let policies = read_policies();
+                if policies.is_empty() {
+                    return Err(RogError::NotSupported(
+                        "cpufreq policies were not detected".to_string(),
+                    ));
+                }
+                let governor =
+                    choose_best_token(mode.governor_preferences(), &collect_governors(&policies));
+                let epp = choose_best_token(mode.epp_preferences(), &collect_epp_values(&policies));
+                if governor.is_none() && epp.is_none() {
+                    return Err(RogError::NotSupported(
+                        "CPU power mode requires governor and/or EPP support".to_string(),
+                    ));
+                }
+                for policy in &policies {
+                    if let Some(governor) = governor.as_deref() {
+                        if policy.path.join("scaling_governor").exists() {
+                            validate_cpu_choice(governor, &policy.governors_available, "governor")?;
+                            validate_cpu_endpoint(&policy.path.join("scaling_governor"))?;
+                        }
+                    }
+                    if let Some(epp) = epp.as_deref() {
+                        if policy.path.join("energy_performance_preference").exists() {
+                            validate_cpu_choice(epp, &policy.epp_available, "EPP")?;
+                            validate_cpu_endpoint(
+                                &policy.path.join("energy_performance_preference"),
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            CpuControlRequest::Governor(governor) => {
+                validate_policy_choice(governor, CpuControlKind::Governor)
+            }
+            CpuControlRequest::Epp(epp) => validate_policy_choice(epp, CpuControlKind::Epp),
+            CpuControlRequest::FrequencyLimits { min_mhz, max_mhz } => {
+                validate_frequency_request(*min_mhz, *max_mhz).map(|_| ())
+            }
+            CpuControlRequest::CoreOnline { core_id, online } => {
+                validate_cpu_core_request(*core_id, *online, &read_core_ids())?;
+                let path = PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{core_id}/online"));
+                if !path.exists() && *core_id == 0 && *online {
+                    return Ok(());
+                }
+                validate_cpu_endpoint(&path)
+            }
+        }
+    }
+
     pub fn probe_caps(&self) -> CpuCaps {
         let policies = read_policies();
         let boost = detect_boost_path();
@@ -652,8 +714,8 @@ impl CpuTelemetryProvider {
             let current_max = p.max_freq_khz.ok_or_else(|| {
                 RogError::TemporarilyUnavailable("current CPU maximum is unavailable".to_string())
             })?;
-            let target_min = min_mhz.map(|v| u64::from(v) * 1000).unwrap_or(current_min);
-            let target_max = max_mhz.map(|v| u64::from(v) * 1000).unwrap_or(current_max);
+            let (target_min, target_max) =
+                effective_frequency_range(min_mhz, max_mhz, current_min, current_max)?;
 
             if target_max < current_min {
                 write_sysfs(&min_path, &target_min.to_string())?;
@@ -719,6 +781,116 @@ impl CpuTelemetryProvider {
             None
         }
     }
+}
+
+fn validate_policy_choice(value: &str, kind: CpuControlKind) -> RogResult<()> {
+    let policies = read_policies();
+    if policies.is_empty() {
+        return Err(RogError::NotSupported(
+            "cpufreq policies were not detected".to_string(),
+        ));
+    }
+    let (leaf, label) = match kind {
+        CpuControlKind::Governor => ("scaling_governor", "governor"),
+        CpuControlKind::Epp => ("energy_performance_preference", "EPP"),
+        _ => {
+            return Err(RogError::InvalidInput(
+                "invalid CPU policy choice category".to_string(),
+            ));
+        }
+    };
+    let endpoints = policies
+        .iter()
+        .filter(|policy| policy.path.join(leaf).exists())
+        .collect::<Vec<_>>();
+    if endpoints.is_empty() {
+        return Err(RogError::NotSupported(format!(
+            "{label} controls were not detected"
+        )));
+    }
+    for policy in endpoints {
+        let allowed = match kind {
+            CpuControlKind::Governor => &policy.governors_available,
+            CpuControlKind::Epp => &policy.epp_available,
+            _ => unreachable!(),
+        };
+        validate_cpu_choice(value, allowed, label)?;
+        validate_cpu_endpoint(&policy.path.join(leaf))?;
+    }
+    Ok(())
+}
+
+fn validate_frequency_request(min_mhz: Option<u32>, max_mhz: Option<u32>) -> RogResult<()> {
+    let policies = read_policies();
+    let endpoints = policies
+        .iter()
+        .filter(|policy| {
+            policy.path.join("scaling_min_freq").exists()
+                && policy.path.join("scaling_max_freq").exists()
+        })
+        .collect::<Vec<_>>();
+    if endpoints.is_empty() {
+        return Err(RogError::NotSupported(
+            "CPU frequency limit controls were not detected".to_string(),
+        ));
+    }
+    let hardware_min = endpoints
+        .iter()
+        .filter_map(|policy| policy.info_min_freq_khz.and_then(khz_to_mhz_u32))
+        .max()
+        .ok_or_else(|| {
+            RogError::TemporarilyUnavailable(
+                "CPU minimum hardware frequency is unavailable".to_string(),
+            )
+        })?;
+    let hardware_max = endpoints
+        .iter()
+        .filter_map(|policy| policy.info_max_freq_khz.and_then(khz_to_mhz_u32))
+        .min()
+        .ok_or_else(|| {
+            RogError::TemporarilyUnavailable(
+                "CPU maximum hardware frequency is unavailable".to_string(),
+            )
+        })?;
+    validate_cpu_frequency_limits(
+        min_mhz,
+        max_mhz,
+        CpuFrequencyBounds::new(hardware_min, hardware_max)?,
+    )?;
+    for policy in endpoints {
+        let min_path = policy.path.join("scaling_min_freq");
+        let max_path = policy.path.join("scaling_max_freq");
+        validate_cpu_endpoint(&min_path)?;
+        validate_cpu_endpoint(&max_path)?;
+        let current_min = policy.min_freq_khz.ok_or_else(|| {
+            RogError::TemporarilyUnavailable("current CPU minimum is unavailable".to_string())
+        })?;
+        let current_max = policy.max_freq_khz.ok_or_else(|| {
+            RogError::TemporarilyUnavailable("current CPU maximum is unavailable".to_string())
+        })?;
+        effective_frequency_range(min_mhz, max_mhz, current_min, current_max)?;
+    }
+    Ok(())
+}
+
+fn effective_frequency_range(
+    min_mhz: Option<u32>,
+    max_mhz: Option<u32>,
+    current_min_khz: u64,
+    current_max_khz: u64,
+) -> RogResult<(u64, u64)> {
+    let target_min = min_mhz
+        .map(|value| u64::from(value) * 1000)
+        .unwrap_or(current_min_khz);
+    let target_max = max_mhz
+        .map(|value| u64::from(value) * 1000)
+        .unwrap_or(current_max_khz);
+    if target_min > target_max {
+        return Err(RogError::InvalidInput(
+            "requested CPU frequency limit would invert the active policy range".to_string(),
+        ));
+    }
+    Ok((target_min, target_max))
 }
 
 fn cpu_status(temp_c: Option<f32>, package_power_w: Option<f32>) -> Option<String> {
@@ -1264,6 +1436,10 @@ fn preflight_writable(
 }
 
 fn validate_cpu_endpoint(path: &Path) -> RogResult<()> {
+    validate_cpu_endpoint_under(path, Path::new(CPU_SYSFS_ROOT))
+}
+
+fn validate_cpu_endpoint_under(path: &Path, cpu_root: &Path) -> RogResult<()> {
     let allowed_leaf = matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(
@@ -1276,9 +1452,68 @@ fn validate_cpu_endpoint(path: &Path) -> RogResult<()> {
                 | "online"
         )
     );
-    if !path.starts_with(CPU_SYSFS_ROOT) || !allowed_leaf {
+    let parent = path.parent().ok_or_else(|| {
+        RogError::InvalidInput(
+            "CPU control endpoint is outside the approved sysfs hierarchy".to_string(),
+        )
+    })?;
+    let parent_name = parent.file_name().and_then(|name| name.to_str());
+    let leaf = path.file_name().and_then(|name| name.to_str());
+    let valid_shape = match leaf {
+        Some("no_turbo") => parent == cpu_root.join("intel_pstate"),
+        Some("boost") => parent == cpu_root.join("cpufreq"),
+        Some(
+            "scaling_governor"
+            | "energy_performance_preference"
+            | "scaling_min_freq"
+            | "scaling_max_freq",
+        ) => {
+            parent.parent() == Some(cpu_root.join("cpufreq").as_path())
+                && parent_name.is_some_and(|name| {
+                    name.strip_prefix("policy")
+                        .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+                })
+        }
+        Some("online") => {
+            parent.parent() == Some(cpu_root)
+                && parent_name.is_some_and(|name| {
+                    name.strip_prefix("cpu")
+                        .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+                })
+        }
+        _ => false,
+    };
+    if !path.starts_with(cpu_root) || !allowed_leaf || !valid_shape {
         return Err(RogError::InvalidInput(
             "CPU control endpoint is outside the approved sysfs hierarchy".to_string(),
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            RogError::TemporarilyUnavailable(
+                "a detected CPU control endpoint disappeared".to_string(),
+            )
+        } else {
+            RogError::Unexpected("CPU control endpoint metadata could not be read".to_string())
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(RogError::InvalidInput(
+            "CPU control endpoint has an unexpected file type".to_string(),
+        ));
+    }
+    let canonical_root = cpu_root.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable("CPU sysfs hierarchy is unavailable".to_string())
+    })?;
+    let canonical_path = path.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable(
+            "a detected CPU control endpoint could not be resolved".to_string(),
+        )
+    })?;
+    if !canonical_path.starts_with(canonical_root) || canonical_path.file_name() != path.file_name()
+    {
+        return Err(RogError::InvalidInput(
+            "CPU control endpoint escaped the approved sysfs hierarchy".to_string(),
         ));
     }
     Ok(())
@@ -1329,5 +1564,90 @@ fn write_sysfs(path: &Path, value: &str) -> RogResult<()> {
         } else {
             RogError::Unexpected(format!("failed to write {}: {e}", path.display()))
         }
-    })
+    })?;
+    drop(file);
+    let actual = read_to_string(path).map_err(|_| {
+        RogError::TemporarilyUnavailable(
+            "CPU control endpoint disappeared before readback".to_string(),
+        )
+    })?;
+    if actual.trim() != value {
+        return Err(RogError::Unexpected(
+            "CPU control write did not match readback".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn partial_frequency_request_cannot_invert_active_limits() {
+        assert!(effective_frequency_range(Some(3000), None, 800_000, 2_500_000).is_err());
+        assert!(effective_frequency_range(None, Some(600), 800_000, 2_500_000).is_err());
+        assert_eq!(
+            effective_frequency_range(Some(1200), None, 800_000, 2_500_000).unwrap(),
+            (1_200_000, 2_500_000)
+        );
+    }
+
+    #[test]
+    fn cpu_write_endpoint_requires_exact_shape_and_regular_file() {
+        let root = temp_cpu_root("endpoint");
+        let policy = root.join("cpufreq/policy0");
+        std::fs::create_dir_all(&policy).unwrap();
+        let governor = policy.join("scaling_governor");
+        std::fs::write(&governor, "powersave\n").unwrap();
+
+        assert!(validate_cpu_endpoint_under(&governor, &root).is_ok());
+        let unexpected = policy.join("arbitrary_control");
+        std::fs::write(&unexpected, "1\n").unwrap();
+        assert!(matches!(
+            validate_cpu_endpoint_under(&unexpected, &root),
+            Err(RogError::InvalidInput(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cpu_write_endpoint_rejects_final_symlink_escape() {
+        let root = temp_cpu_root("symlink");
+        let policy = root.join("cpufreq/policy0");
+        std::fs::create_dir_all(&policy).unwrap();
+        let outside = root.parent().unwrap().join(format!(
+            "rog-helper-cpu-outside-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&outside, "powersave\n").unwrap();
+        let governor = policy.join("scaling_governor");
+        symlink(&outside, &governor).unwrap();
+
+        assert!(matches!(
+            validate_cpu_endpoint_under(&governor, &root),
+            Err(RogError::InvalidInput(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
+    }
+
+    fn temp_cpu_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rog-helper-cpu-test-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
 }

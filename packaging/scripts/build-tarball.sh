@@ -29,7 +29,9 @@ install_app_symbolic_icons "$BUNDLE_ROOT"
 install_metainfo "$BUNDLE_ROOT"
 install_dbus_activation "$BUNDLE_ROOT" "rog-helperd"
 install_user_service "$BUNDLE_ROOT" "rog-helperd"
-install_privileged_integration "$BUNDLE_ROOT" "rog-helper-privileged"
+# The documented portable install target is /usr/local. Root activation must
+# never rely on PATH lookup for the privileged executable.
+install_privileged_integration "$BUNDLE_ROOT" "/usr/local/libexec/rog-helper-privileged"
 install_license_docs "$BUNDLE_ROOT"
 
 normalize_tree_timestamps "$BUNDLE_ROOT"

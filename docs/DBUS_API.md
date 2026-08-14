@@ -68,17 +68,17 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then direct sysfs brightness, then the typed privileged ASUS keyboard-brightness fallback |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
-| `SetBatteryLimit` | `t` (`u64`) | `()` | Uses `asusd` when available |
+| `SetBatteryLimit` | `t` (`u64`) | `()` | Prefers asusd; otherwise uses one validated standard power-supply threshold, direct before helper |
 | `SetCpuTurbo` | `b` | `()` | Generic CPU sysfs backend |
 | `SetCpuPowerMode` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuGovernor` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
-| `SetFanAuto` | `s` | `()` | Reserved for a verified backend; empty string means all controllable fans |
+| `SetFanAuto` | `s` | `()` | Uses only verified ASUS WMI curve channels; empty string means all safely mapped channels |
 | `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
 | `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
-| `SetFanCurve` | `sa{sv}` | `()` | Validates conservative points, then returns `NotSupported` until a verified curve backend exists |
+| `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
 | `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
 | `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
@@ -98,6 +98,10 @@ early startup so start-minimized behavior is known before the DBus connection is
 - `fan_count` -> `t`
 - `fan_backend` -> `s`
 - `has_charge_limit` -> `bool`
+- `battery_limit_backend` -> `s` (`asusd`, `power_supply_sysfs`, or `none`)
+- `battery_limit_direct_write` -> `bool`
+- `battery_limit_privileged_write` -> `bool`
+- `battery_limit_authorization` -> `s`
 - `has_gpu_modes` -> `bool`
 - `gpu_backend` -> `s` (`supergfxd` or `none`)
 - `gpu_supported_modes` -> `as`, populated from the live supergfxd allow-list
@@ -118,6 +122,10 @@ early startup so start-minimized behavior is known before the DBus connection is
 - `kbd_backlight_access_reason` -> `s`
 - `endpoints` -> `as`
 - `notes` -> `as`
+- `control_privilege_matrix` -> array of `a{sv}` rows; each row includes `operation`,
+  `supported`, `current_backend`, `access`, `requires_privilege`, `existing_system_daemon`,
+  `direct_user_write`, `privileged_fallback_appropriate`, `security_risk`, and
+  `implementation_decision`
 
 Important note:
 
@@ -191,8 +199,8 @@ than daemon startup failures.
 | --- | --- | --- | --- |
 | `Ping` | none | `b` | Reachability only |
 | `GetVersion` | none | `s` | Package version |
-| `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories: `cpu`, `fans`, and `lighting` |
-| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list |
+| `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories: `cpu`, `battery`, `fans`, and `lighting` |
+| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list and never prompts |
 | `SetCpuTurbo` | `b` | `()` | Validated turbo toggle |
 | `SetCpuPowerMode` | `s` | `()` | Validated preset mapped to detected governor/EPP choices |
 | `SetCpuGovernor` | `s` | `()` | Value must be in every affected policy's detected allow-list |
@@ -203,11 +211,16 @@ than daemon startup failures.
 | `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
 | `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
+| `SetBatteryChargeLimit` | `t` | `t` actual value | Validates 20..=100, discovers one exact Battery threshold internally, writes, and returns readback |
 
 The helper does not expose generic file, sysfs, process, command, or shell methods. Write methods
 use specific schemas and return stable sanitized errors: `not_authorized`,
 `not_supported`, `invalid_input`, `hardware_unavailable`, `permission_denied`, `backend_failure`,
 or `unexpected`.
+
+Each write method derives its caller from the system-D-Bus message header and checks one fixed
+category action against a PolicyKit `system-bus-name` subject. Caller identity and action IDs are
+not accepted as write-method arguments. The shipped policy does not use retained authorization.
 
 ### Lighting map
 
@@ -542,12 +555,16 @@ Argument:
 Current behavior:
 
 - converted to `u8` by the daemon
-- applied through `asusd`
-- current backend validation ultimately depends on the `asusd` provider
+- applied through asusd when that backend exposes the feature
+- otherwise applied to one exact present `type=Battery` device exposing the documented
+  `charge_control_end_threshold` ABI
+- direct sysfs is preferred; only write permission denial invokes
+  `SetBatteryChargeLimit` with `io.github.roghelper.battery.control`
+- actual state is read back; the requested value is never reported optimistically
 
 Range note:
 
-- the asusd wire backend accepts its verified `20..=100` range
+- asusd and the standard fallback share the verified `20..=100` request range
 - the UI and persistent preferred-limit configuration deliberately expose the narrower `40..=100` policy range
 - this is a product-policy restriction, not a decoding default; out-of-range requests return an error
 
@@ -610,7 +627,8 @@ existing DBus errors or status strings.
 
 The following features are not part of the current daemon API:
 
-- a verified fan-curve read/write backend (the method surface exists, but writes are capability-gated off)
+- generic manual fan percentage, RPM-target, or boost writes (method compatibility surfaces exist,
+  but unverified hwmon candidates are capability-gated off)
 - auto rules setter
 - diagnostics bundle export DBus method (a read-only Markdown export is available from
   `rog-helper hardware-report`)

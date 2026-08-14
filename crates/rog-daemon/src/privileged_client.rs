@@ -26,7 +26,9 @@ async fn probe_inner() -> PrivilegedStatus {
         return PrivilegedStatus::unavailable(false, false);
     };
     let Ok(bus) = Proxy::new(&connection, DBUS_NAME, DBUS_PATH, DBUS_INTERFACE).await else {
-        return PrivilegedStatus::unavailable(false, false);
+        let mut status = PrivilegedStatus::unavailable(false, false);
+        status.system_bus_connected = true;
+        return status;
     };
 
     let activatable: Vec<String> = bus
@@ -53,12 +55,16 @@ async fn probe_inner() -> PrivilegedStatus {
     )
     .await
     else {
-        return PrivilegedStatus::unavailable(helper_installed, polkit_available);
+        let mut status = PrivilegedStatus::unavailable(helper_installed, polkit_available);
+        status.system_bus_connected = true;
+        return status;
     };
 
     let ping: Result<bool, _> = helper.call("Ping", &()).await;
     if !matches!(ping, Ok(true)) {
-        return PrivilegedStatus::unavailable(helper_installed, polkit_available);
+        let mut status = PrivilegedStatus::unavailable(helper_installed, polkit_available);
+        status.system_bus_connected = true;
+        return status;
     }
 
     let version = helper.call::<_, _, String>("GetVersion", &()).await.ok();
@@ -84,12 +90,13 @@ async fn probe_inner() -> PrivilegedStatus {
             .await
         {
             Ok(true) => AuthorizationState::Authorized,
-            Ok(false) => AuthorizationState::Denied,
+            Ok(false) => AuthorizationState::NotChecked,
             Err(_) => AuthorizationState::Unavailable,
         }
     };
 
     PrivilegedStatus {
+        system_bus_connected: true,
         privileged_helper_installed: true,
         privileged_helper_reachable: true,
         privileged_helper_compatible: compatible,
@@ -186,6 +193,30 @@ pub async fn set_keyboard_backlight_brightness(level: u32) -> Result<(), Privile
         .map_err(|error| map_zbus_error_or(error, lighting_helper_unavailable))
 }
 
+pub async fn set_battery_charge_limit(limit: u8) -> Result<u8, PrivilegedError> {
+    let connection = Connection::system()
+        .await
+        .map_err(|_| battery_helper_unavailable())?;
+    let helper = Proxy::new(
+        &connection,
+        PRIVILEGED_DBUS_NAME,
+        PRIVILEGED_DBUS_PATH,
+        PRIVILEGED_DBUS_INTERFACE,
+    )
+    .await
+    .map_err(|_| battery_helper_unavailable())?;
+    let actual = helper
+        .call::<_, _, u64>("SetBatteryChargeLimit", &(u64::from(limit),))
+        .await
+        .map_err(|error| map_zbus_error_or(error, battery_helper_unavailable))?;
+    u8::try_from(actual).map_err(|_| {
+        PrivilegedError::new(
+            PrivilegedErrorCode::Unexpected,
+            "the privileged battery helper returned an invalid percentage",
+        )
+    })
+}
+
 async fn call_fan<B>(method: &str, body: &B) -> Result<(), PrivilegedError>
 where
     B: serde::ser::Serialize + zbus::zvariant::DynamicType,
@@ -225,6 +256,13 @@ fn lighting_helper_unavailable() -> PrivilegedError {
     PrivilegedError::new(
         PrivilegedErrorCode::BackendFailure,
         "the privileged lighting helper is unavailable",
+    )
+}
+
+fn battery_helper_unavailable() -> PrivilegedError {
+    PrivilegedError::new(
+        PrivilegedErrorCode::BackendFailure,
+        "the privileged battery helper is unavailable",
     )
 }
 

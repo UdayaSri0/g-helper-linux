@@ -12,7 +12,17 @@
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.roghelper.battery.control">
+    <description>Control a supported battery charge limit with ROG Helper</description>
+    <message>Authentication is required to change the battery charge limit</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 
@@ -22,7 +32,7 @@
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 
@@ -32,17 +42,8 @@
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 
-  <action id="io.github.roghelper.system.configure">
-    <description>Configure supported system settings with ROG Helper</description>
-    <message>Authentication is required to change supported system settings</message>
-    <defaults>
-      <allow_any>no</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
 </policyconfig>

@@ -65,6 +65,8 @@ Current behavior:
 
 - live readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and `nvidia-smi` when relevant
 - the controls each service enables and whether the expected API actually responded
+- an Administrator Access section for the privileged helper, system DBus, PolicyKit, CPU, fans, lighting, GPU switching, and battery-limit ownership
+- reusable access language: Available, Administrator access required, Authorized, Authorization denied, Read only, Backend missing, Privileged helper missing, Unsupported hardware, Setup required, and External service required
 - CPU policy, keyboard-lighting, and fan-control write states as Writable, Read-only, Unsupported, Unavailable, or Checking
 - a hardware-support summary that preserves unsupported states instead of treating them as permission failures
 - human-readable next steps without unverified package-manager commands
@@ -74,11 +76,15 @@ Current behavior:
 
 - Refresh checks
 - Copy setup diagnostics
+- Copy privilege diagnostics, without exposing raw privileged endpoint paths
 - Open full Diagnostics
 
 ### Safety and discovery behavior
 
 - checks are unprivileged and read-only
+- opening or refreshing the page never requests authorization; a PolicyKit prompt can start only from a meaningful Apply action
+- there is no global root or permanent unlock mode; authorization stays scoped to the operation category
+- shipped PolicyKit actions do not retain authorization; every privileged write performs its category check
 - service readiness requires a working DBus/API query; binary presence and systemd state are supporting evidence only
 - the page never runs `sudo`, installs packages, changes sysfs modes, or bypasses DBus authorization
 - Dashboard Review actions navigate here and show only a compact issue count
@@ -114,6 +120,7 @@ Current behavior:
 Current behavior:
 
 - quick CPU controls are staged in grouped apply rows so the scope of each Apply button is clear
+- a group Apply action is labelled `Unlock & Apply` when one of its selected controls requires administrator authorization
 - disabled or read-only controls stay visible with short reason text instead of looking broken
 - logical CPU toggle rows show the logical CPU id plus topology context, and the confirmation dialog spells out that the change can affect responsiveness and thermals
 
@@ -177,6 +184,7 @@ Current behavior:
 ### What it supports
 
 - battery charge-limit changes through the existing daemon/asusd path
+- `Unlock & Apply` only when the validated kernel fallback requires administrator authorization
 
 ### Capability dependencies
 

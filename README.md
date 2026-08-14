@@ -6,7 +6,7 @@ This repository was reviewed and its markdown docs were refreshed against the cu
 
 ## Overview
 
-`rog-helper` is designed to provide a single Linux-native control surface for ASUS laptop features that are otherwise split across multiple services and system interfaces.
+`rog-helper` is designed to provide a single Linux-native control surface for ASUS laptop features that are otherwise split across multiple services and system interfaces. Packaged installs also include an optional, PolicyKit-gated root helper for a small set of typed hardware writes; the UI and session daemon remain unprivileged.
 
 The current codebase implements:
 
@@ -25,8 +25,9 @@ The current runtime architecture is:
 UI / tray
   -> session DBus (`io.github.roghelper.Daemon`)
   -> rog-helperd
-  -> providers
-  -> system DBus (`asusd`, `supergfxd`, `UPower`) and sysfs/procfs / `nvidia-smi`
+  -> providers / system DBus (`asusd`, `supergfxd`, `UPower`)
+  -> direct user-writable sysfs when safe
+  -> optional system DBus + PolicyKit -> rog-helper-privileged -> approved sysfs ABI
 ```
 
 High-level responsibilities:
@@ -36,6 +37,7 @@ High-level responsibilities:
 - `rog-providers`: DBus/sysfs/procfs integration layer
 - `rog-core`: shared domain model, validation, and policy types
 - `rog-cli`: diagnostics and probing tool
+- `rog-privileged`: on-demand root service with path-free CPU, verified fan, keyboard-brightness, and battery-threshold methods
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime architecture.
 
@@ -60,10 +62,15 @@ Start with [docs/QUICK_START.md](docs/QUICK_START.md) for the shortest path to:
   - `rog-helper-ui` GTK4/libadwaita desktop application and tray
 - `crates/rog-cli`
   - `rog-helper` diagnostics CLI
+- `crates/rog-privileged`
+  - Optional root system service; callers never provide paths, commands, programs, or raw hardware payloads
 
 Basic packaging assets are also included under `packaging/`:
 
 - `packaging/systemd-user/rog-helperd.service`
+- `packaging/systemd-system/rog-helper-privileged.service`
+- `packaging/dbus-system/`
+- `packaging/polkit/io.github.roghelper.policy`
 - `packaging/desktop/rog-helper.desktop`
 - `packaging/dbus-session/io.github.roghelper.Daemon.service`
 - `packaging/metainfo/io.github.roghelper.UI.metainfo.xml`
@@ -112,8 +119,9 @@ Current source-backed features include:
 - Fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - polished RPM monitoring dashboard with animated fan rotors, larger CPU/GPU gauges, and best-effort operating MHz display
   - best-effort dynamic RPM telemetry for 0..N fans
-  - manual percentage control only when writable PWM endpoints are confirmed
-  - optional RPM target, sync mode, time-limited boost, and Auto/BIOS restore when supported
+  - verified eight-point ASUS WMI fan curves with direct or PolicyKit-gated writes
+  - Auto/BIOS restore and curve sync when the exact ASUS device identity and channel mapping are confirmed
+  - generic PWM, RPM-target, and boost candidates remain disabled even when a file appears writable
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
 - Diagnostics UI and diagnostics CLI
@@ -121,6 +129,7 @@ Current source-backed features include:
 - Limited UI lifecycle preferences for close-to-tray behavior, launch-on-login autostart, and start-minimized-to-tray behavior
 - Official `rog-helper` logo wired into desktop packaging, launcher metadata, tray/window icon naming, and packaging scripts
 - Session DBus API for the UI and other local clients
+- Optional typed privileged fallback with separate CPU, fan, lighting, and battery PolicyKit actions; direct/asusd/supergfxd routes remain preferred
 
 See:
 
@@ -129,12 +138,13 @@ See:
 - [docs/DBUS_CONTRACT_MAP.md](docs/DBUS_CONTRACT_MAP.md)
 - [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)
 - [docs/UI_PAGES.md](docs/UI_PAGES.md)
+- [docs/PRIVILEGED_SECURITY_REVIEW.md](docs/PRIVILEGED_SECURITY_REVIEW.md)
 
 ## Current Missing or Incomplete Features
 
 Important gaps in the current implementation:
 
-- Verified ASUS/asusd fan-curve backend and graphical fan-curve editor
+- Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions
 - Live auto mode / policy automation integration
 - Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
@@ -231,6 +241,7 @@ The Debian-family package installs:
 - AppStream metadata under `/usr/share/metainfo`
 - session D-Bus activation under `/usr/share/dbus-1/services`
 - the user service under `/usr/lib/systemd/user`
+- the root-owned `rog-helper-privileged` binary under `/usr/libexec`, plus its systemd, system-D-Bus, and PolicyKit integration
 
 Remove cleanly with:
 

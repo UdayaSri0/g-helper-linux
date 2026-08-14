@@ -99,17 +99,63 @@ def main() -> int:
     require("Type=dbus" in privileged_systemd, "privileged service must use Type=dbus")
     require("BusName=io.github.roghelper.Privileged" in privileged_systemd, "privileged systemd bus name drift")
     require("User=root" in privileged_systemd, "privileged service user drift")
+    for directive in [
+        "NoNewPrivileges=yes",
+        "PrivateTmp=yes",
+        "PrivateDevices=yes",
+        "ProtectHome=yes",
+        "ProtectSystem=strict",
+        "ProtectKernelModules=yes",
+        "ProtectControlGroups=yes",
+        "ProtectKernelLogs=yes",
+        "ProtectClock=yes",
+        "ProtectHostname=yes",
+        "ProtectProc=invisible",
+        "ProcSubset=pid",
+        "RestrictAddressFamilies=AF_UNIX",
+        "RestrictNamespaces=yes",
+        "LockPersonality=yes",
+        "MemoryDenyWriteExecute=yes",
+        "RestrictRealtime=yes",
+        "RestrictSUIDSGID=yes",
+        "SystemCallFilter=@system-service",
+        "Restart=on-failure",
+        "RuntimeDirectoryMode=0700",
+        "UMask=0077",
+    ]:
+        require(directive in privileged_systemd, f"privileged service hardening drift: {directive}")
+    require("ProtectKernelTunables=no" in privileged_systemd, "required sysfs-write exception is undocumented in the unit")
+
+    package_common = text("packaging/scripts/package-common.sh")
+    require("umask 0022" in package_common, "package payload modes must not inherit a permissive builder umask")
+    require("dest_path.chmod(0o644)" in package_common, "rendered root-consumed metadata must be mode 0644")
+    tarball_builder = text("packaging/scripts/build-tarball.sh")
+    require(
+        'install_privileged_integration "$BUNDLE_ROOT" "/usr/local/libexec/rog-helper-privileged"'
+        in tarball_builder,
+        "portable root helper activation must use an absolute executable path",
+    )
 
     polkit = ET.fromstring(text("packaging/polkit/io.github.roghelper.policy"))
-    action_ids = {action.get("id") for action in polkit.findall("./action")}
+    actions = polkit.findall("./action")
+    action_ids = {action.get("id") for action in actions}
     expected_actions = {
         "io.github.roghelper.cpu.control",
+        "io.github.roghelper.battery.control",
         "io.github.roghelper.fans.control",
         "io.github.roghelper.lighting.control",
-        "io.github.roghelper.system.configure",
     }
     require(action_ids == expected_actions, "privileged PolicyKit action set drift")
     require("io.github.roghelper.root" not in action_ids, "generic root PolicyKit action is forbidden")
+    for action in actions:
+        action_id = action.get("id") or "(missing id)"
+        require(bool((action.findtext("description") or "").strip()), f"{action_id}: missing PolicyKit description")
+        require(bool((action.findtext("message") or "").strip()), f"{action_id}: missing PolicyKit message")
+        defaults = action.find("defaults")
+        require(defaults is not None, f"{action_id}: missing PolicyKit defaults")
+        require(defaults.findtext("allow_any") == "no", f"{action_id}: arbitrary users must not be authorized")
+        require(defaults.findtext("allow_inactive") == "auth_admin", f"{action_id}: inactive policy drift")
+        require(defaults.findtext("allow_active") == "auth_admin", f"{action_id}: retained authorization is forbidden")
 
     resource_path = ROOT / "crates/rog-ui/resources/rog-ui.gresource.xml"
     resource_root = ET.parse(resource_path).getroot()

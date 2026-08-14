@@ -164,7 +164,9 @@ systemctl --user enable --now rog-helperd
 
 Notes:
 
-- the tarball contains `bin/`, `share/`, and `lib/systemd/user/` content laid out for a prefix such as `/usr/local`
+- the tarball contains `bin/`, `libexec/`, `share/`, and systemd content laid out for the documented
+  `/usr/local` prefix; privileged activation uses the fixed absolute
+  `/usr/local/libexec/rog-helper-privileged` path and therefore must not be relocated casually
 - direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
 - verify release assets with the published SHA256 file before installing them
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
@@ -239,6 +241,10 @@ packaging/scripts/build-deb.sh
 ```
 
 This builds release binaries, installs the desktop entry, AppStream metadata, session DBus activation, hicolor icons, all three binaries, license files, and the systemd user service into a Debian package under `dist/`.
+
+It also installs `/usr/libexec/rog-helper-privileged` as root-owned mode `0755` together with its
+system service, system-D-Bus activation/policy, and PolicyKit actions. Validate the generated file
+ownership and modes with `dpkg-deb --contents` before publishing.
 
 Requirements:
 
@@ -470,3 +476,8 @@ Common examples:
 - `asusd` or `supergfxd` controls are missing because the service is not installed or not reachable
 
 See [PERMISSIONS.md](PERMISSIONS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more detail.
+
+The privileged service's systemd hardening decisions and required sysfs exceptions are documented
+in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md). Run
+`python3 packaging/scripts/check-release-metadata.py` to enforce the expected PolicyKit action set
+and hardening baseline.

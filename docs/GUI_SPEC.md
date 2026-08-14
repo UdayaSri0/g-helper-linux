@@ -121,13 +121,14 @@ Purpose:
 
 Current content and behavior:
 
-- grouped Session Daemon, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
+- grouped Session Daemon, Administrator Access, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
 - verified readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and relevant `nvidia-smi` support
 - live API checks are authoritative; executable and systemd-unit discovery is advanced evidence
-- explicit Writable, Read-only, Unsupported, and Unavailable permission language
-- Refresh checks, Copy setup diagnostics, and Open full Diagnostics actions
+- explicit available, administrator-required, authorized, denied, read-only, missing-backend/helper, external-service, unsupported, and unavailable language
+- Refresh checks, Copy setup diagnostics, Copy privilege diagnostics, and Open full Diagnostics actions
 - sysfs paths and endpoint details remain collapsed under Advanced details
 - all checks are read-only; the UI does not invoke `sudo`, install packages, change permissions, or execute remediation commands
+- opening or refreshing this page never prompts; only a meaningful `Unlock & Apply` operation may invoke PolicyKit
 
 ### CPU
 

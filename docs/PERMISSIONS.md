@@ -43,9 +43,11 @@ GTK UI -> session DBus -> rog-helperd -> system DBus -> rog-helper-privileged
 
 Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
-a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan, and
-keyboard-brightness operations. Lighting privilege is limited to the canonical ASUS WMI keyboard
-LED; it does not expose RGB, HID, USB, GPU, or generic system writes.
+a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan,
+keyboard-brightness, and standard battery-threshold operations. Lighting privilege is limited to
+the canonical ASUS WMI keyboard LED. Battery privilege is limited to one unambiguous
+`type=Battery` power-supply device exposing the documented `charge_control_end_threshold` ABI. It
+does not expose RGB, HID, USB, GPU, caller-selected paths, or generic system writes.
 
 The helper has no generic file, sysfs, command, program, argument, or shell API. Its methods
 accept a narrowly defined domain operation, validate it, select a fixed endpoint internally,
@@ -55,13 +57,17 @@ cross the boundary.
 The PolicyKit actions are:
 
 - `io.github.roghelper.cpu.control`
+- `io.github.roghelper.battery.control`
 - `io.github.roghelper.fans.control`
 - `io.github.roghelper.lighting.control`
-- `io.github.roghelper.system.configure`
 
 There is deliberately no generic “root” permission. Interactive authorization for control
 methods is delegated to the desktop PolicyKit agent; the GTK application must not ask for or
-handle a password.
+handle a password. The packaged policy uses `auth_admin` rather than `auth_admin_keep`, so ROG
+Helper does not intentionally retain authorization for later writes.
+
+The complete root method/resource inventory, filesystem checks, hardening decisions, and residual
+risks are recorded in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
 
 ## Current Permission Boundaries
 
@@ -98,8 +104,11 @@ Depends on:
 
 Current effect of failure:
 
-- the daemon marks the feature unavailable
-- the UI disables or hides the relevant controls
+- profile control remains unavailable because asusd is authoritative for profiles
+- charge-limit control checks the standard kernel power-supply fallback only when asusd is absent,
+  unreachable, or does not expose the feature
+- a permission-blocked standard threshold may use the typed battery helper; an absent or ambiguous
+  threshold remains unsupported/read-only
 
 ### GPU mode control
 
@@ -165,7 +174,7 @@ Backend:
 
 Depends on:
 
-- writable LED brightness sysfs entry
+- verified asusd API, a user-writable LED brightness entry, or the approved ASUS LED helper route
 
 Current effect of failure:
 
@@ -173,14 +182,56 @@ Current effect of failure:
 - current backend remains visible
 - UI shows the control as read-only or reports a write failure
 
+### Battery charge-limit fallback
+
+Backend:
+
+- `crates/rog-providers/src/power_supply.rs`
+
+Rules:
+
+- asusd remains the first choice
+- the fallback uses Linux's documented `charge_control_end_threshold` power-supply ABI
+- discovery requires an exact present `type=Battery` device and rejects ambiguous multi-battery
+  write targets
+- callers provide only a percentage; the helper discovers the endpoint internally
+- requests use the shared 20..=100 application contract and the actual value is read back because
+  kernel drivers may round thresholds
+- telemetry and detection never request authentication
+- the dedicated action is `io.github.roghelper.battery.control`
+
+Reference: [Linux power-supply class ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-power).
+
+## Consolidated control / privilege matrix
+
+The same decisions are exported by `GetCaps` as `control_privilege_matrix`. Each structured row
+contains operation, support, backend, access, privilege requirement, existing system daemon,
+direct-user-write state, fallback suitability, risk, and implementation decision.
+
+| Operation | Current backend / priority | Privilege? | Existing daemon owns privilege? | Direct user write | Helper fallback appropriate? | Risk | Decision |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| CPU boost, governor, EPP, frequency limits, core online, power mode | validated CPU sysfs | Sometimes | No | Preferred when permitted | Yes, typed operation after permission denial | Medium; core online high | Keep telemetry unprivileged; validate choices, bounds, core IDs, and readback |
+| GPU mode | `supergfxd` | External service policy | Yes, `supergfxd` | No | No | High | Keep supergfxd authoritative; no PCI/module/ACPI/direct-mode helper methods |
+| Battery telemetry | `UPower` + power-supply sysfs | No | UPower for part of telemetry | Read-only | No | Low | Always unprivileged |
+| Battery charge limit | `asusd`, then standard power-supply threshold | Sometimes | Prefer `asusd` | Yes when kernel attribute permits | Yes only for one validated standard threshold | Medium | Never replace working asusd; validate 20..=100 and return readback |
+| Keyboard brightness | verified asusd, LED sysfs, approved ASUS LED helper | Sometimes | Prefer `asusd` | Preferred | Yes for canonical approved LED only | Low | No caller path and no generic lighting write |
+| Aura/RGB/modes | verified asusd DBus contract | External service policy | Yes, `asusd` | No raw-device route | No | High | No generic root USB/HID access; unsupported when no verified contract exists |
+| Fan RPM | hwmon | No | No | Read-only | No | Low | Telemetry remains unprivileged |
+| Fan curve/Auto | verified ASUS WMI hwmon ABI | Sometimes | No | Preferred when permitted | Yes only for verified endpoints | High | Reject generic PWM/RPM-target guesses; preserve Auto restore safety |
+| Fan manual percent/RPM target/boost | generic hwmon candidates only | Not authorized | No | Deliberately unused | No | High | Compatibility methods return unsupported; no privileged method exists |
+| Performance profile | `asusd` | External service policy | Yes, `asusd` | No | No | Medium | Keep asusd authoritative |
+| Persistent configuration | per-user XDG file | No | No | Yes | No | Low | Atomic user-session write only |
+| Login/autostart integration | per-user desktop/XDG integration | No | No | Yes | No | Low | Never route through the root helper |
+
 ## Sysfs Write Limitations
 
-The repository ships a typed PolicyKit CPU fallback. Existing direct provider behavior remains the
-first choice; the helper is called only after a supported operation fails for write permission.
+The repository ships typed PolicyKit fallbacks for narrowly approved CPU, fan, keyboard LED, and
+battery-threshold writes. Existing direct provider behavior remains the first choice; the helper is
+called only after a supported operation fails for write permission.
 
 That means:
 
-- keyboard brightness may be readable but not writable
+- keyboard brightness and a standard battery threshold may be readable but not directly writable
 - CPU controls may require administrator authorization when direct writes are blocked
 - behavior depends on the current distro, kernel, udev rules, and file ownership
 - the app does not change ownership, modes, udev rules, or sysfs permissions
@@ -212,7 +263,8 @@ The current code handles absence by degrading capabilities rather than treating 
 However:
 
 - the daemon will still be less useful without them
-- profile, GPU, and battery-limit control all depend on backend availability
+- profile and GPU control depend on their dedicated external services
+- battery-limit control prefers asusd and can use the documented standard kernel fallback when safe
 
 ## Read-Only Degradation Behavior
 

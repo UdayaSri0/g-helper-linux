@@ -641,14 +641,84 @@ fn hwmon_device_identity(hwpath: &Path) -> Option<PathBuf> {
 
 fn verified_asus_curve_layout(path: &Path, channel: u32) -> bool {
     let enable = path.join(format!("pwm{channel}_enable"));
-    if !matches!(read_u32(&enable), Some(1 | 2)) {
+    if validate_asus_curve_endpoint(&enable).is_err() || !matches!(read_u32(&enable), Some(1 | 2)) {
         return false;
     }
     (1..=ASUS_WMI_CURVE_POINTS).all(|point| {
         let temp = path.join(format!("pwm{channel}_auto_point{point}_temp"));
         let pwm = path.join(format!("pwm{channel}_auto_point{point}_pwm"));
-        matches!(read_u32(&temp), Some(0..=100)) && matches!(read_u32(&pwm), Some(0..=255))
+        validate_asus_curve_endpoint(&temp).is_ok()
+            && validate_asus_curve_endpoint(&pwm).is_ok()
+            && matches!(read_u32(&temp), Some(0..=100))
+            && matches!(read_u32(&pwm), Some(0..=255))
     })
+}
+
+fn validate_asus_curve_endpoint(path: &Path) -> RogResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        RogError::InvalidInput("fan endpoint is outside a verified hwmon device".to_string())
+    })?;
+    if fs::read_to_string(parent.join("name"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .as_deref()
+        != Some("asus_custom_fan_curve")
+        || hwmon_device_identity(parent)
+            .as_ref()
+            .and_then(|identity| identity.file_name())
+            .and_then(|name| name.to_str())
+            != Some("asus-nb-wmi")
+    {
+        return Err(RogError::NotSupported(
+            "fan endpoint is not owned by the verified ASUS WMI curve device".to_string(),
+        ));
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(RogError::InvalidInput(
+            "fan endpoint name is invalid".to_string(),
+        ));
+    };
+    let valid_name = name
+        .strip_prefix("pwm")
+        .and_then(|rest| {
+            let channel_end = rest.find('_')?;
+            let channel = rest[..channel_end].parse::<u32>().ok()?;
+            let suffix = &rest[channel_end..];
+            let valid_channel = (1..=3).contains(&channel);
+            let valid_suffix = suffix == "_enable"
+                || parse_auto_point_name(name).is_some_and(|(parsed_channel, point, _)| {
+                    parsed_channel == channel && (1..=ASUS_WMI_CURVE_POINTS as u32).contains(&point)
+                });
+            Some(valid_channel && valid_suffix)
+        })
+        .unwrap_or(false);
+    if !valid_name {
+        return Err(RogError::InvalidInput(
+            "fan endpoint is outside the approved ASUS WMI curve ABI".to_string(),
+        ));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        RogError::TemporarilyUnavailable("verified fan endpoint disappeared".to_string())
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(RogError::InvalidInput(
+            "fan endpoint has an unexpected file type".to_string(),
+        ));
+    }
+    let canonical_parent = parent.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable("verified fan device disappeared".to_string())
+    })?;
+    let canonical_endpoint = path.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable("verified fan endpoint disappeared".to_string())
+    })?;
+    if canonical_endpoint.parent() != Some(canonical_parent.as_path())
+        || canonical_endpoint.file_name() != path.file_name()
+    {
+        return Err(RogError::InvalidInput(
+            "fan endpoint escaped the verified ASUS WMI curve device".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn asus_channel_paths(path: &Path, channel: u32) -> Vec<PathBuf> {
@@ -734,6 +804,7 @@ fn write_and_verify(path: &Path, value: u32) -> RogResult<()> {
 }
 
 fn write_value(path: &Path, value: u32) -> RogResult<()> {
+    validate_asus_curve_endpoint(path)?;
     let mut file = OpenOptions::new()
         .write(true)
         .open(path)
@@ -1270,6 +1341,28 @@ mod tests {
                 .trim(),
             "3"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_curve_rejects_a_symlinked_write_attribute() {
+        let (root, curve_path) = verified_asus_fixture("write-symlink");
+        let outside = root.join("outside-pwm");
+        fs::write(&outside, "128\n").unwrap();
+        let endpoint = curve_path.join("pwm1_auto_point1_pwm");
+        fs::remove_file(&endpoint).unwrap();
+        symlink(&outside, &endpoint).unwrap();
+
+        let provider = HwmonTelemetryProvider::new(root.clone());
+        assert!(matches!(
+            provider.verified_asus_curve_channels(),
+            Err(RogError::NotSupported(_))
+        ));
+        assert!(matches!(
+            write_value(&endpoint, 51),
+            Err(RogError::InvalidInput(_))
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

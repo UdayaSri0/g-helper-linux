@@ -124,12 +124,18 @@ Interpretation:
 - `helper reachable: no`: activation failed, policy blocked the call, or the service exited/faulted
 - `helper compatible: no`: the helper API version is not supported by this daemon
 - `authorization available: no`: PolicyKit is missing or unavailable
-- `authorization state: denied`: the non-interactive probe was denied or would require authentication
+- `authorization state: not_checked`: the non-interactive probe did not authorize silently; no prompt was requested
+- `authorization state: denied`: a preceding interactive write was denied
 - `privileged categories available: cpu`: the typed CPU fallback is installed and compatible
 
 Inspect service logs with `journalctl -u rog-helper-privileged.service`. The helper is activated on
 demand and exits after being idle; an inactive unit by itself is not a fault. Do not run the GTK UI
 or `rog-helperd` as root, and do not add local D-Bus rules granting generic root operations.
+
+For cancellation, denial, or a missing PolicyKit agent, retry one meaningful Apply action while an
+agent is running and inspect the journal. ROG Helper does not use retained authorization; repeated
+writes may prompt again. If a fan write was interrupted, restart the helper and verify the journal
+records Auto restoration before attempting another curve.
 
 ## Tray Not Visible
 
@@ -249,19 +255,22 @@ Expected behavior:
 
 - fan rows remain visible
 - the Fans page still shows animated RPM rotors and individual fan cards for telemetry
-- manual controls are disabled unless `rog-helperd` reports writable `pwmN` plus `pwmN_enable`
-- RPM target controls are disabled unless writable `fanN_target` exists
+- curve controls are enabled only for a fully verified ASUS WMI curve layout and hardware mapping
+- generic manual percentage and RPM-target controls remain disabled even if candidate files are writable
 - Diagnostics lists endpoint paths and permission warnings
 
 ## Fan RPM Appears, But Manual Control Is Unavailable
 
-`fan*_input` is normally read-only RPM telemetry. Manual percentage control needs a matching writable PWM endpoint.
+`fan*_input` is normally read-only RPM telemetry. ROG Helper does not treat a matching writable
+PWM file as sufficient proof that manual control is safe. The current writable fan contract is the
+exact, identity-checked ASUS WMI eight-point curve ABI with a verified Auto restore endpoint.
 
 Common reasons:
 
 - the kernel driver exposes telemetry only
-- `pwmN` or `pwmN_enable` does not exist
-- the files exist but are not writable by the daemon user
+- the exact ASUS WMI curve device or complete eight-point layout is absent
+- the curve files exist but neither the daemon nor the privileged helper can write them
+- the RPM device labels cannot safely map the curve channel to CPU, GPU, or mid fan
 - firmware/BIOS owns the fan policy and ignores software control
 
 The app should degrade to read-only telemetry instead of trying unsafe writes.
@@ -287,11 +296,16 @@ If `fan-caps` reports permission warnings, inspect ownership:
 ls -l /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null
 ```
 
-Do not grant broad sysfs write access. If you choose to change local policy, grant only the specific confirmed fan-control files and restart `rog-helperd`.
+Do not grant broad sysfs write access. Candidate generic PWM and RPM-target endpoints are not a
+supported control backend. For a verified ASUS WMI curve layout, use the packaged typed helper and
+its `io.github.roghelper.fans.control` PolicyKit action rather than changing sysfs permissions.
 
 ## asusd Present, But Fan Curves Unsupported
 
-Fan curves are hardware and asusd-interface dependent. If asusd does not expose a discoverable fan-curve API, `rog-helperd` reports curves unsupported rather than broken.
+Fan curves are hardware and kernel-driver dependent. The current backend requires paired `asus`
+RPM telemetry and `asus_custom_fan_curve` hwmon devices that resolve to the same `asus-nb-wmi`
+identity. If that exact mapping is absent, `rog-helperd` reports curves unsupported rather than
+attempting a generic write.
 
 Useful inspection:
 

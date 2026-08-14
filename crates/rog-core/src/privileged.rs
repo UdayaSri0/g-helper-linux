@@ -8,21 +8,22 @@ pub const PRIVILEGED_DBUS_INTERFACE: &str = "io.github.roghelper.Privileged1";
 pub const PRIVILEGED_API_VERSION: u32 = 1;
 
 pub const POLKIT_ACTION_CPU_CONTROL: &str = "io.github.roghelper.cpu.control";
+pub const POLKIT_ACTION_BATTERY_CONTROL: &str = "io.github.roghelper.battery.control";
 pub const POLKIT_ACTION_FANS_CONTROL: &str = "io.github.roghelper.fans.control";
 pub const POLKIT_ACTION_LIGHTING_CONTROL: &str = "io.github.roghelper.lighting.control";
-pub const POLKIT_ACTION_SYSTEM_CONFIGURE: &str = "io.github.roghelper.system.configure";
 
 pub const POLKIT_ACTIONS: [&str; 4] = [
     POLKIT_ACTION_CPU_CONTROL,
+    POLKIT_ACTION_BATTERY_CONTROL,
     POLKIT_ACTION_FANS_CONTROL,
     POLKIT_ACTION_LIGHTING_CONTROL,
-    POLKIT_ACTION_SYSTEM_CONFIGURE,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivilegedCategory {
     Cpu,
+    Battery,
     Fans,
     Lighting,
     System,
@@ -32,6 +33,7 @@ impl PrivilegedCategory {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cpu => "cpu",
+            Self::Battery => "battery",
             Self::Fans => "fans",
             Self::Lighting => "lighting",
             Self::System => "system",
@@ -41,6 +43,7 @@ impl PrivilegedCategory {
     pub fn parse(value: &str) -> Result<Self, PrivilegedError> {
         match value {
             "cpu" => Ok(Self::Cpu),
+            "battery" => Ok(Self::Battery),
             "fans" => Ok(Self::Fans),
             "lighting" => Ok(Self::Lighting),
             "system" => Ok(Self::System),
@@ -86,6 +89,7 @@ impl PrivilegedCapabilities {
             api_version: PRIVILEGED_API_VERSION,
             categories: vec![
                 PrivilegedCategory::Cpu,
+                PrivilegedCategory::Battery,
                 PrivilegedCategory::Fans,
                 PrivilegedCategory::Lighting,
             ],
@@ -208,7 +212,7 @@ pub fn require_authorized(authorized: bool) -> Result<(), PrivilegedError> {
     } else {
         Err(PrivilegedError::new(
             PrivilegedErrorCode::NotAuthorized,
-            "PolicyKit did not authorize this operation",
+            "Administrator authorization was denied",
         ))
     }
 }
@@ -231,10 +235,21 @@ impl AuthorizationState {
             Self::NotChecked => "not_checked",
         }
     }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "authorized" => Self::Authorized,
+            "denied" => Self::Denied,
+            "unavailable" => Self::Unavailable,
+            _ => Self::NotChecked,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivilegedStatus {
+    #[serde(default)]
+    pub system_bus_connected: bool,
     pub privileged_helper_installed: bool,
     pub privileged_helper_reachable: bool,
     pub privileged_helper_compatible: bool,
@@ -248,6 +263,7 @@ pub struct PrivilegedStatus {
 impl PrivilegedStatus {
     pub fn unavailable(installed: bool, polkit_available: bool) -> Self {
         Self {
+            system_bus_connected: false,
             privileged_helper_installed: installed,
             privileged_helper_reachable: false,
             privileged_helper_compatible: false,

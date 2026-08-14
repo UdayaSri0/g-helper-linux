@@ -24,7 +24,7 @@ use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
-use rog_providers::power_supply::PowerSupplySysfsProvider;
+use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
 use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::{SupergfxCaps, SupergfxProvider, SupergfxSwitchStatus};
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
@@ -86,9 +86,7 @@ where
 fn map_privileged_cpu_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
-        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
-            "administrator authorization was denied or cancelled".to_string(),
-        ),
+        Code::NotAuthorized => rog_core::RogError::PermissionDenied(error.message),
         Code::NotSupported => rog_core::RogError::NotSupported(error.message),
         Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
         Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
@@ -105,9 +103,9 @@ fn map_privileged_cpu_error(error: rog_core::PrivilegedError) -> rog_core::RogEr
 fn map_privileged_fan_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
-        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
-            "administrator authorization for fan control was denied or cancelled".to_string(),
-        ),
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("fan control: {}", error.message))
+        }
         Code::NotSupported => rog_core::RogError::NotSupported(error.message),
         Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
         Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
@@ -143,9 +141,9 @@ where
 fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
-        Code::NotAuthorized => rog_core::RogError::PermissionDenied(
-            "administrator authorization for keyboard lighting was denied or cancelled".to_string(),
-        ),
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("keyboard lighting: {}", error.message))
+        }
         Code::NotSupported => rog_core::RogError::NotSupported(error.message),
         Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
         Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
@@ -155,6 +153,25 @@ fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::
         ),
         Code::Unexpected => rog_core::RogError::Unexpected(
             "the privileged keyboard brightness write or readback failed".to_string(),
+        ),
+    }
+}
+
+fn map_privileged_battery_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("battery control: {}", error.message))
+        }
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged battery helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged battery write or readback failed".to_string(),
         ),
     }
 }
@@ -215,6 +232,7 @@ struct RogHelperDaemon {
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
     hwmon: HwmonTelemetryProvider,
+    battery_charge_limit: Option<BatteryChargeLimitControl>,
 }
 
 impl RogHelperDaemon {
@@ -230,6 +248,7 @@ impl RogHelperDaemon {
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
         hwmon: HwmonTelemetryProvider,
+        battery_charge_limit: Option<BatteryChargeLimitControl>,
     ) -> Self {
         Self {
             state,
@@ -242,6 +261,7 @@ impl RogHelperDaemon {
             supergfx,
             cpu,
             hwmon,
+            battery_charge_limit,
         }
     }
 
@@ -458,7 +478,7 @@ impl RogHelperDaemon {
     }
 
     fn get_caps(&self) -> HashMap<String, OwnedValue> {
-        caps_to_dbus(&self.read_state().caps)
+        caps_with_control_matrix_to_dbus(&self.read_state())
     }
 
     async fn get_state(&self) -> HashMap<String, OwnedValue> {
@@ -992,23 +1012,54 @@ impl RogHelperDaemon {
     }
 
     async fn set_battery_limit(&self, limit: u64) -> fdo::Result<()> {
-        let Some(asusd) = &self.asusd else {
-            return Err(fdo::Error::NotSupported(
-                "battery limit control requires asusd platform interface".to_string(),
-            ));
-        };
-
         let limit = u8::try_from(limit)
             .map_err(|_| fdo::Error::InvalidArgs("battery limit must fit into u8".to_string()))?;
-        asusd
-            .set_limit(BatteryLimitPercent(limit))
-            .await
+        let limit = BatteryLimitPercent(limit)
+            .validate_control()
             .map_err(map_rog_error_to_fdo)?;
-
-        let confirmed = asusd
-            .get_limit()
-            .await
-            .unwrap_or(BatteryLimitPercent(limit));
+        let backend = self.read_state().caps.battery_limit_backend;
+        let confirmed = if backend == "asusd" {
+            let asusd = self.asusd.as_ref().ok_or_else(|| {
+                fdo::Error::NotSupported("battery limit requires asusd".to_string())
+            })?;
+            asusd.set_limit(limit).await.map_err(map_rog_error_to_fdo)?;
+            asusd.get_limit().await.map_err(map_rog_error_to_fdo)?
+        } else if backend == "power_supply_sysfs" {
+            let control = self.battery_charge_limit.as_ref().ok_or_else(|| {
+                fdo::Error::NotSupported(
+                    "standard battery charge-limit endpoint is unavailable".to_string(),
+                )
+            })?;
+            match control.set_limit(limit) {
+                Ok(actual) => actual,
+                Err(rog_core::RogError::PermissionDenied(_)) => {
+                    match privileged_client::set_battery_charge_limit(limit.0).await {
+                        Ok(actual) => {
+                            let mut state = self.state.inner.write().expect("rwlock poisoned");
+                            state.caps.battery_limit_authorization = "authorized".to_string();
+                            BatteryLimitPercent(actual)
+                        }
+                        Err(error) => {
+                            let mapped = map_privileged_battery_error(error);
+                            let mut state = self.state.inner.write().expect("rwlock poisoned");
+                            state.caps.battery_limit_authorization = match &mapped {
+                                rog_core::RogError::PermissionDenied(_) => "denied",
+                                rog_core::RogError::TemporarilyUnavailable(_) => "unavailable",
+                                _ => "required",
+                            }
+                            .to_string();
+                            drop(state);
+                            return Err(map_rog_error_to_fdo(mapped));
+                        }
+                    }
+                }
+                Err(error) => return Err(map_rog_error_to_fdo(error)),
+            }
+        } else {
+            return Err(fdo::Error::NotSupported(
+                "battery charge-limit control is unsupported".to_string(),
+            ));
+        };
         let mut guard = self.state.control.write().expect("rwlock poisoned");
         guard.battery_limit = Some(confirmed);
         Ok(())
@@ -1110,6 +1161,11 @@ async fn main() -> anyhow::Result<()> {
     let nvidia = NvidiaSmiTelemetryProvider::default();
     let memory = MemoryTelemetryProvider::default();
     let power_supply = PowerSupplySysfsProvider::default();
+    let (battery_charge_limit, battery_charge_limit_probe_error) =
+        match power_supply.charge_limit_control() {
+            Ok(control) => (control, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
         Ok(v) => (v, None),
         Err(e) => {
@@ -1271,6 +1327,10 @@ async fn main() -> anyhow::Result<()> {
                 Ok(pcaps) => {
                     caps.has_profiles = pcaps.has_profiles;
                     caps.has_charge_limit = pcaps.has_charge_limit;
+                    if pcaps.has_charge_limit {
+                        caps.battery_limit_backend = "asusd".to_string();
+                        caps.battery_limit_authorization = "external_service".to_string();
+                    }
                     caps.profile_access = if pcaps.has_profiles {
                         FeatureAvailability::new(
                             FeatureAccessState::Available,
@@ -1361,6 +1421,39 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if caps.battery_limit_backend != "asusd" {
+        match &battery_charge_limit {
+            Some(control) => {
+                caps.has_charge_limit = true;
+                caps.battery_limit_backend = "power_supply_sysfs".to_string();
+                caps.battery_limit_direct_write = control.can_write_directly();
+                caps.charge_limit_access = if caps.battery_limit_direct_write {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "Battery charge-limit control is directly writable through the standard Linux power-supply interface.",
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::PermissionDenied,
+                        "Battery charge-limit control is supported, but the standard Linux endpoint requires administrator access.",
+                    )
+                };
+                match control.read_limit() {
+                    Ok(value) => control_state.battery_limit = Some(value),
+                    Err(error) => caps.notes.push(format!(
+                        "could not read standard battery charge limit: {error}"
+                    )),
+                }
+            }
+            None => {
+                if let Some(error) = &battery_charge_limit_probe_error {
+                    caps.notes
+                        .push(format!("battery charge-limit fallback rejected: {error}"));
+                }
+            }
+        }
+    }
+
     match &supergfx {
         Some(provider) => {
             caps.endpoints
@@ -1419,9 +1512,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let has_profiles = caps.has_profiles;
-    let has_charge_limit = caps.has_charge_limit;
+    let battery_backend = caps.battery_limit_backend.clone();
     let has_gpu_modes = caps.has_gpu_modes;
     let privileged_status = privileged_client::probe().await;
+    if caps.battery_limit_backend == "power_supply_sysfs" && !caps.battery_limit_direct_write {
+        let helper_ready = privileged_status.privileged_helper_reachable
+            && privileged_status.privileged_helper_compatible
+            && privileged_status.polkit_available
+            && privileged_status
+                .privileged_categories_available
+                .contains(&rog_core::PrivilegedCategory::Battery);
+        caps.battery_limit_privileged_write = helper_ready;
+        caps.battery_limit_authorization = if helper_ready {
+            "required".to_string()
+        } else {
+            "unavailable".to_string()
+        };
+        caps.charge_limit_access = if helper_ready {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Administrator access required to change the battery charge limit. Authentication starts only when Apply is used.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Battery charge-limit control is read-only because the privileged battery helper is unavailable.",
+            )
+        };
+    }
     let cpu_authorization = if privileged_status.privileged_helper_reachable
         && privileged_status.privileged_helper_compatible
         && privileged_status.polkit_available
@@ -1474,6 +1592,7 @@ async fn main() -> anyhow::Result<()> {
         supergfx.clone(),
         cpu.clone(),
         hwmon.clone(),
+        battery_charge_limit.clone(),
     );
     daemon.set_cpu_caps(cpu_caps.clone());
     let daemon_iface = daemon.clone();
@@ -1765,10 +1884,19 @@ async fn main() -> anyhow::Result<()> {
                             Err(e) => warnings.push(format!("profile read failed: {e}")),
                         }
                     }
-                    if has_charge_limit {
+                    if battery_backend == "asusd" {
                         match provider.get_limit().await {
                             Ok(v) => current_battery_limit = Some(v),
                             Err(e) => warnings.push(format!("charge limit read failed: {e}")),
+                        }
+                    }
+                }
+                if battery_backend == "power_supply_sysfs" {
+                    if let Some(control) = &battery_charge_limit {
+                        match control.read_limit() {
+                            Ok(value) => current_battery_limit = Some(value),
+                            Err(error) => warnings
+                                .push(format!("charge limit read failed: {error}")),
                         }
                     }
                 }
@@ -1929,7 +2057,7 @@ fn lighting_access_with_privilege(
     if authorization == "denied" {
         return FeatureAvailability::new(
             FeatureAccessState::PermissionDenied,
-            "Administrator authorization for keyboard lighting was denied or cancelled.",
+            "Administrator authorization for keyboard lighting was denied.",
         );
     }
     if authorization == "unavailable" {
@@ -1955,7 +2083,7 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert(
         dbus_keys::state::CAPS.to_string(),
-        ov(caps_to_dbus(&s.caps)),
+        ov(caps_with_control_matrix_to_dbus(s)),
     );
     m.insert(
         dbus_keys::state::TELEMETRY.to_string(),
@@ -1974,6 +2102,280 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
         ov(s.warnings.clone()),
     );
     m
+}
+
+#[derive(Debug)]
+struct ControlPrivilegeRow<'a> {
+    operation: &'a str,
+    supported: bool,
+    current_backend: &'a str,
+    access: &'a str,
+    requires_privilege: bool,
+    existing_system_daemon: &'a str,
+    direct_user_write: bool,
+    privileged_fallback_appropriate: bool,
+    security_risk: &'a str,
+    implementation_decision: &'a str,
+}
+
+fn control_privilege_row_to_dbus(row: ControlPrivilegeRow<'_>) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert("operation".to_string(), ov(row.operation.to_string()));
+    map.insert("supported".to_string(), OwnedValue::from(row.supported));
+    map.insert(
+        "current_backend".to_string(),
+        ov(row.current_backend.to_string()),
+    );
+    map.insert("access".to_string(), ov(row.access.to_string()));
+    map.insert(
+        "requires_privilege".to_string(),
+        OwnedValue::from(row.requires_privilege),
+    );
+    map.insert(
+        "existing_system_daemon".to_string(),
+        ov(row.existing_system_daemon.to_string()),
+    );
+    map.insert(
+        "direct_user_write".to_string(),
+        OwnedValue::from(row.direct_user_write),
+    );
+    map.insert(
+        "privileged_fallback_appropriate".to_string(),
+        OwnedValue::from(row.privileged_fallback_appropriate),
+    );
+    map.insert(
+        "security_risk".to_string(),
+        ov(row.security_risk.to_string()),
+    );
+    map.insert(
+        "implementation_decision".to_string(),
+        ov(row.implementation_decision.to_string()),
+    );
+    map
+}
+
+fn control_privilege_matrix(state: &AppState) -> Vec<HashMap<String, OwnedValue>> {
+    let caps = &state.caps;
+    let mut rows = Vec::new();
+    for control in &state.cpu_caps.control_access {
+        let supported = control.status != CpuAccessState::Unsupported;
+        let access = if !supported {
+            "unsupported"
+        } else if control.direct_write {
+            "direct"
+        } else if control.privileged_write {
+            "privileged"
+        } else {
+            "read-only"
+        };
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation: control.kind.as_str(),
+            supported,
+            current_backend: "cpu-sysfs",
+            access,
+            requires_privilege: supported && !control.direct_write,
+            existing_system_daemon: "none",
+            direct_user_write: control.direct_write,
+            privileged_fallback_appropriate: supported,
+            security_risk: if control.kind == rog_core::CpuControlKind::CoreOnline {
+                "high"
+            } else {
+                "medium"
+            },
+            implementation_decision: "Prefer direct validated sysfs; use typed helper fallback only for permission denial.",
+        }));
+    }
+
+    let battery_access = if !caps.has_charge_limit {
+        "unsupported"
+    } else if caps.battery_limit_backend == "asusd" {
+        "external-service"
+    } else if caps.battery_limit_direct_write {
+        "direct"
+    } else if caps.battery_limit_privileged_write {
+        "privileged"
+    } else {
+        "read-only"
+    };
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "battery_charge_limit",
+        supported: caps.has_charge_limit,
+        current_backend: &caps.battery_limit_backend,
+        access: battery_access,
+        requires_privilege: caps.has_charge_limit
+            && caps.battery_limit_backend == "power_supply_sysfs"
+            && !caps.battery_limit_direct_write,
+        existing_system_daemon: if caps.battery_limit_backend == "asusd" {
+            "asusd"
+        } else {
+            "none"
+        },
+        direct_user_write: caps.battery_limit_direct_write,
+        privileged_fallback_appropriate: caps.battery_limit_backend == "power_supply_sysfs",
+        security_risk: "medium",
+        implementation_decision: "Prefer asusd; otherwise use only the documented, detected power-supply threshold with validation and readback.",
+    }));
+
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "gpu_mode",
+        supported: caps.has_gpu_modes,
+        current_backend: &caps.gpu_backend,
+        access: if caps.has_gpu_modes {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_gpu_modes,
+        existing_system_daemon: "supergfxd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "high",
+        implementation_decision:
+            "Keep supergfxd authoritative; never add direct PCI, module, ACPI, or GPU-mode writes.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "performance_profile",
+        supported: caps.has_profiles,
+        current_backend: if caps.has_profiles { "asusd" } else { "none" },
+        access: if caps.has_profiles {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_profiles,
+        existing_system_daemon: "asusd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "medium",
+        implementation_decision: "Keep asusd authoritative; no root-helper fallback.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "keyboard_brightness",
+        supported: caps.has_kbd_backlight,
+        current_backend: "asusd-or-approved-led-sysfs",
+        access: if !caps.has_kbd_backlight {
+            "unsupported"
+        } else if caps.kbd_backlight_access.status == FeatureAccessState::Available {
+            "available"
+        } else {
+            "read-only"
+        },
+        requires_privilege: caps.has_kbd_backlight,
+        existing_system_daemon: "asusd-when-available",
+        direct_user_write: caps
+            .kbd_backlight_access
+            .reason
+            .contains("directly writable"),
+        privileged_fallback_appropriate: caps.has_kbd_backlight,
+        security_risk: "low",
+        implementation_decision: "Prefer verified asusd API, then user-writable LED sysfs, then approved ASUS LED helper fallback.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "aura_rgb_and_modes",
+        supported: caps.has_aura,
+        current_backend: if caps.has_aura { "asusd" } else { "none" },
+        access: if caps.has_aura {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_aura,
+        existing_system_daemon: "asusd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "high",
+        implementation_decision:
+            "Use only verified asusd contracts; no generic root USB/HID or raw hardware API.",
+    }));
+
+    let fan_direct = state.fan_state.fans.iter().any(|fan| fan.direct_write);
+    let fan_privileged = state.fan_state.fans.iter().any(|fan| fan.privileged_write);
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "fan_rpm_telemetry",
+        supported: caps.has_fan_reading,
+        current_backend: &caps.fan_backend,
+        access: if caps.has_fan_reading {
+            "read-only"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: false,
+        existing_system_daemon: "none",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "low",
+        implementation_decision: "Telemetry remains unprivileged.",
+    }));
+    let fan_verified = state
+        .fan_state
+        .fans
+        .iter()
+        .any(|fan| fan.pwm_endpoint_verified);
+    for (operation, supported) in [
+        (
+            "fan_auto",
+            state.fan_state.fans.iter().any(|fan| fan.supports_auto),
+        ),
+        ("fan_curve", caps.has_fan_curves),
+        ("fan_manual_percent", caps.has_fan_manual_percent),
+        ("fan_rpm_target", caps.has_fan_manual_rpm_target),
+        ("fan_sync", caps.has_fan_sync_control),
+        ("fan_boost", caps.has_fan_boost),
+    ] {
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation,
+            supported,
+            current_backend: &caps.fan_backend,
+            access: if !supported {
+                "unsupported"
+            } else if fan_direct {
+                "direct"
+            } else if fan_privileged {
+                "privileged"
+            } else {
+                "read-only"
+            },
+            requires_privilege: supported && !fan_direct && fan_privileged,
+            existing_system_daemon: "none",
+            direct_user_write: supported && fan_direct,
+            privileged_fallback_appropriate: supported && fan_verified,
+            security_risk: "high",
+            implementation_decision: "Allow only verified ASUS WMI fan interfaces; reject generic PWM guesses and retain firmware Auto restoration.",
+        }));
+    }
+    for (operation, decision) in [
+        (
+            "user_configuration",
+            "Write only the per-user configuration with atomic replacement; no helper.",
+        ),
+        (
+            "user_autostart_integration",
+            "Write only user-session integration files; no helper.",
+        ),
+    ] {
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation,
+            supported: true,
+            current_backend: "user-session-filesystem",
+            access: "direct",
+            requires_privilege: false,
+            existing_system_daemon: "none",
+            direct_user_write: true,
+            privileged_fallback_appropriate: false,
+            security_risk: "low",
+            implementation_decision: decision,
+        }));
+    }
+    rows
+}
+
+fn caps_with_control_matrix_to_dbus(state: &AppState) -> HashMap<String, OwnedValue> {
+    let mut map = caps_to_dbus(&state.caps);
+    map.insert(
+        dbus_keys::caps::CONTROL_PRIVILEGE_MATRIX.to_string(),
+        ov(control_privilege_matrix(state)),
+    );
+    map
 }
 
 fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
@@ -2037,6 +2439,22 @@ fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     m.insert(
         dbus_keys::caps::GPU_BACKEND.to_string(),
         ov(c.gpu_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_BACKEND.to_string(),
+        ov(c.battery_limit_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_DIRECT_WRITE.to_string(),
+        OwnedValue::from(c.battery_limit_direct_write),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_PRIVILEGED_WRITE.to_string(),
+        OwnedValue::from(c.battery_limit_privileged_write),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_AUTHORIZATION.to_string(),
+        ov(c.battery_limit_authorization.clone()),
     );
     m.insert(
         dbus_keys::caps::GPU_SUPPORTED_MODES.to_string(),
@@ -3117,7 +3535,7 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
         .any(|control| control.status == CpuAccessState::AuthorizationDenied)
     {
         return Some(
-            "Administrator authorization was denied or cancelled for a CPU control. Apply again to retry."
+            "Administrator authorization was denied for a CPU control. Apply again to retry."
                 .to_string(),
         );
     }
@@ -3192,7 +3610,7 @@ fn apply_cpu_privilege_to_caps(caps: &mut CpuCaps, privilege: &CpuPrivilegeState
                 CpuAccessState::AuthorizationRequired
             };
             control.reason = if privilege.authorization == CpuAuthorization::Denied {
-                "Administrator authorization was denied or cancelled. Apply to retry.".to_string()
+                "Administrator authorization was denied. Apply to retry.".to_string()
             } else {
                 "Administrator access is required. Apply to authenticate.".to_string()
             };
@@ -3460,6 +3878,10 @@ fn privileged_status_to_dbus(status: &rog_core::PrivilegedStatus) -> HashMap<Str
     use dbus_keys::privileged_status as keys;
 
     let mut map = HashMap::new();
+    map.insert(
+        keys::SYSTEM_BUS_CONNECTED.to_string(),
+        OwnedValue::from(status.system_bus_connected),
+    );
     map.insert(
         keys::HELPER_INSTALLED.to_string(),
         OwnedValue::from(status.privileged_helper_installed),
@@ -3929,6 +4351,7 @@ mod tests {
         use dbus_keys::privileged_status as keys;
 
         let status = rog_core::PrivilegedStatus {
+            system_bus_connected: true,
             privileged_helper_installed: true,
             privileged_helper_reachable: true,
             privileged_helper_compatible: true,
@@ -4032,6 +4455,77 @@ mod tests {
                 .and_then(|value| bool::try_from(value).ok()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn consolidated_matrix_preserves_external_daemons_and_battery_fallback_boundary() {
+        let mut caps = DeviceCaps::unknown();
+        caps.has_charge_limit = true;
+        caps.battery_limit_backend = "power_supply_sysfs".to_string();
+        caps.battery_limit_privileged_write = true;
+        caps.battery_limit_authorization = "required".to_string();
+        caps.has_gpu_modes = true;
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.has_profiles = true;
+        let mut state = AppState::new(caps, TelemetrySnapshot::empty_now(0));
+        state.cpu_caps.control_access = vec![CpuControlAccess {
+            kind: rog_core::CpuControlKind::Governor,
+            status: CpuAccessState::Available,
+            reason: "administrator authorization required".to_string(),
+            direct_write: false,
+            privileged_write: true,
+            authorization: CpuAuthorization::Required,
+            paths: Vec::new(),
+        }];
+
+        let map = caps_with_control_matrix_to_dbus(&state);
+        let rows = rows_from_value(
+            map.get(dbus_keys::caps::CONTROL_PRIVILEGE_MATRIX)
+                .expect("matrix"),
+        );
+        let row = |operation: &str| {
+            rows.iter()
+                .find(|row| value_as_str(row, "operation") == operation)
+                .expect("operation row")
+        };
+
+        assert_eq!(value_as_str(row("governor"), "access"), "privileged");
+        assert_eq!(
+            value_as_str(row("battery_charge_limit"), "access"),
+            "privileged"
+        );
+        assert_eq!(
+            value_as_str(row("gpu_mode"), "existing_system_daemon"),
+            "supergfxd"
+        );
+        assert_eq!(
+            row("gpu_mode")
+                .get("privileged_fallback_appropriate")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            value_as_str(row("performance_profile"), "existing_system_daemon"),
+            "asusd"
+        );
+    }
+
+    #[test]
+    fn battery_helper_denial_and_unavailability_remain_distinct() {
+        let denied = map_privileged_battery_error(rog_core::PrivilegedError::new(
+            rog_core::PrivilegedErrorCode::NotAuthorized,
+            "denied",
+        ));
+        assert!(matches!(denied, rog_core::RogError::PermissionDenied(_)));
+
+        let unavailable = map_privileged_battery_error(rog_core::PrivilegedError::new(
+            rog_core::PrivilegedErrorCode::BackendFailure,
+            "missing",
+        ));
+        assert!(matches!(
+            unavailable,
+            rog_core::RogError::TemporarilyUnavailable(_)
+        ));
     }
 
     #[test]
@@ -4516,7 +5010,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
-        assert!(error.to_string().contains("denied or cancelled"));
+        assert!(error.to_string().contains("denied"));
     }
 
     #[tokio::test]
@@ -4642,7 +5136,10 @@ mod tests {
 
     #[tokio::test]
     async fn lighting_authorization_denial_and_cancellation_are_readable_permission_errors() {
-        for message in ["denied", "cancelled"] {
+        for message in [
+            "Administrator authorization was denied",
+            "Authentication was cancelled",
+        ] {
             let error = with_lighting_privileged_fallback(
                 || {
                     Err(rog_core::RogError::PermissionDenied(
@@ -4659,7 +5156,7 @@ mod tests {
             .await
             .unwrap_err();
             assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
-            assert!(error.to_string().contains("denied or cancelled"));
+            assert!(error.to_string().contains(message));
         }
     }
 

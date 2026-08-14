@@ -121,6 +121,11 @@ pub mod caps {
     pub const FAN_COUNT: &str = "fan_count";
     pub const FAN_BACKEND: &str = "fan_backend";
     pub const GPU_BACKEND: &str = "gpu_backend";
+    pub const BATTERY_LIMIT_BACKEND: &str = "battery_limit_backend";
+    pub const BATTERY_LIMIT_DIRECT_WRITE: &str = "battery_limit_direct_write";
+    pub const BATTERY_LIMIT_PRIVILEGED_WRITE: &str = "battery_limit_privileged_write";
+    pub const BATTERY_LIMIT_AUTHORIZATION: &str = "battery_limit_authorization";
+    pub const CONTROL_PRIVILEGE_MATRIX: &str = "control_privilege_matrix";
     pub const GPU_SUPPORTED_MODES: &str = "gpu_supported_modes";
     pub const GPU_EXTERNAL_AUTHORIZATION: &str = "gpu_external_authorization";
     pub const GPU_SWITCH_STATE: &str = "gpu_switch_state";
@@ -286,6 +291,7 @@ pub mod setup {
 }
 
 pub mod privileged_status {
+    pub const SYSTEM_BUS_CONNECTED: &str = "system_bus_connected";
     pub const HELPER_INSTALLED: &str = "privileged_helper_installed";
     pub const HELPER_REACHABLE: &str = "privileged_helper_reachable";
     pub const HELPER_COMPATIBLE: &str = "privileged_helper_compatible";

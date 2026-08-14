@@ -174,6 +174,39 @@ impl KbdBacklightSysfs {
                 .and_then(Path::file_name)
                 .and_then(|name| name.to_str())
                 == Some("asus-nb-wmi")
+            && self.approved_attribute("brightness")
+            && self.approved_attribute("max_brightness")
+            && read_u32(&self.led_path.join("max_brightness")).ok() == Some(ASUS_KBD_MAX_BRIGHTNESS)
+    }
+
+    fn approved_attribute(&self, name: &str) -> bool {
+        let path = self.led_path.join(name);
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            return false;
+        };
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return false;
+        }
+        let Ok(canonical_led) = self.led_path.canonicalize() else {
+            return false;
+        };
+        let Ok(canonical_attribute) = path.canonicalize() else {
+            return false;
+        };
+        canonical_attribute.parent() == Some(canonical_led.as_path())
+            && canonical_attribute
+                .file_name()
+                .and_then(|value| value.to_str())
+                == Some(name)
+    }
+
+    pub fn set_approved_brightness(&self, brightness: u32) -> RogResult<()> {
+        if !self.privileged_write_approved() {
+            return Err(RogError::NotSupported(
+                "keyboard backlight identity changed before the privileged write".to_string(),
+            ));
+        }
+        self.set_brightness(brightness)
     }
 
     pub fn set_brightness(&self, brightness: u32) -> RogResult<()> {
@@ -280,11 +313,41 @@ mod tests {
             .unwrap()
             .expect("canonical ASUS WMI LED should be accepted");
         assert_eq!(provider.max_brightness(), 3);
+        assert!(provider.privileged_write_approved());
 
         fs::write(device.join("max_brightness"), "255\n").unwrap();
         assert!(KbdBacklightSysfs::probe_approved_asus_at(&leds)
             .unwrap()
             .is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn privileged_write_revalidates_attribute_identity() {
+        let root = temp_root("attribute-race");
+        let device = root
+            .join("devices/platform/asus-nb-wmi/leds")
+            .join(ASUS_KBD_LED_NAME);
+        let leds = root.join("leds");
+        fs::create_dir_all(&device).unwrap();
+        fs::create_dir_all(&leds).unwrap();
+        fs::write(device.join("brightness"), "1\n").unwrap();
+        fs::write(device.join("max_brightness"), "3\n").unwrap();
+        symlink(&device, leds.join(ASUS_KBD_LED_NAME)).unwrap();
+        let provider = KbdBacklightSysfs::probe_approved_asus_at(&leds)
+            .unwrap()
+            .expect("approved device");
+
+        let outside = root.join("outside-brightness");
+        fs::write(&outside, "1\n").unwrap();
+        fs::remove_file(device.join("brightness")).unwrap();
+        symlink(&outside, device.join("brightness")).unwrap();
+        assert!(!provider.privileged_write_approved());
+        assert!(matches!(
+            provider.set_approved_brightness(2),
+            Err(RogError::NotSupported(_))
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

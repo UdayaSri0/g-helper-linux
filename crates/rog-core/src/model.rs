@@ -104,6 +104,10 @@ impl GpuSwitchState {
 
 pub const DEFAULT_BATTERY_LIMIT_MIN_PERCENT: u8 = 40;
 pub const DEFAULT_BATTERY_LIMIT_MAX_PERCENT: u8 = 100;
+/// Lowest charge limit accepted by the existing asusd contract and the
+/// documented power-supply sysfs fallback.
+pub const BATTERY_CHARGE_LIMIT_MIN_PERCENT: u8 = 20;
+pub const BATTERY_CHARGE_LIMIT_MAX_PERCENT: u8 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatteryLimitPercent(pub u8);
@@ -120,6 +124,17 @@ impl BatteryLimitPercent {
             DEFAULT_BATTERY_LIMIT_MIN_PERCENT,
             DEFAULT_BATTERY_LIMIT_MAX_PERCENT,
         )
+    }
+
+    pub fn validate_control(self) -> RogResult<Self> {
+        if (BATTERY_CHARGE_LIMIT_MIN_PERCENT..=BATTERY_CHARGE_LIMIT_MAX_PERCENT).contains(&self.0) {
+            Ok(self)
+        } else {
+            Err(RogError::InvalidInput(format!(
+                "battery limit {} is outside supported range {}..={}",
+                self.0, BATTERY_CHARGE_LIMIT_MIN_PERCENT, BATTERY_CHARGE_LIMIT_MAX_PERCENT
+            )))
+        }
     }
 }
 
@@ -1332,6 +1347,14 @@ pub struct DeviceCaps {
     #[serde(default)]
     pub gpu_backend: String,
     #[serde(default)]
+    pub battery_limit_backend: String,
+    #[serde(default)]
+    pub battery_limit_direct_write: bool,
+    #[serde(default)]
+    pub battery_limit_privileged_write: bool,
+    #[serde(default)]
+    pub battery_limit_authorization: String,
+    #[serde(default)]
     pub gpu_supported_modes: Vec<String>,
     #[serde(default)]
     pub gpu_external_authorization: String,
@@ -1370,6 +1393,10 @@ impl DeviceCaps {
             fan_count: 0,
             fan_backend: "unknown".to_string(),
             gpu_backend: "none".to_string(),
+            battery_limit_backend: "none".to_string(),
+            battery_limit_direct_write: false,
+            battery_limit_privileged_write: false,
+            battery_limit_authorization: "not_required".to_string(),
             gpu_supported_modes: Vec::new(),
             gpu_external_authorization: "unavailable".to_string(),
             gpu_switch_state: GpuSwitchState::Unavailable,
@@ -2547,6 +2574,20 @@ mod tests {
         assert_eq!(BatteryLimitPercent::clamp_default(10).0, 40);
         assert_eq!(BatteryLimitPercent::clamp_default(80).0, 80);
         assert_eq!(BatteryLimitPercent::clamp_default(150).0, 100);
+    }
+
+    #[test]
+    fn battery_control_range_rejects_values_outside_shared_contract() {
+        assert!(BatteryLimitPercent(20).validate_control().is_ok());
+        assert!(BatteryLimitPercent(100).validate_control().is_ok());
+        assert!(matches!(
+            BatteryLimitPercent(19).validate_control(),
+            Err(RogError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            BatteryLimitPercent(101).validate_control(),
+            Err(RogError::InvalidInput(_))
+        ));
     }
 
     #[test]

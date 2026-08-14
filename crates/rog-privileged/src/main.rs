@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -8,15 +9,16 @@ use anyhow::Context;
 use rog_core::{
     require_authorized, validate_polkit_action, CpuControlRequest, CpuPowerMode, FanCurve,
     FanCurvePolicy, FanDomain, FanPoint, PrivilegedCapabilities, PrivilegedError,
-    PrivilegedErrorCode, RogError, POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_FANS_CONTROL,
-    POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME,
-    PRIVILEGED_DBUS_PATH,
+    PrivilegedErrorCode, RogError, POLKIT_ACTION_BATTERY_CONTROL, POLKIT_ACTION_CPU_CONTROL,
+    POLKIT_ACTION_FANS_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE,
+    PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::{HwmonTelemetryProvider, ASUS_WMI_CURVE_POINTS};
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
+use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
 use tokio::time::interval;
-use tracing::info;
+use tracing::{info, warn};
 use zbus::message::Header;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{connection, fdo, interface, Connection, Proxy};
@@ -33,6 +35,7 @@ struct PrivilegedService {
     cpu: CpuTelemetryProvider,
     fans: HwmonTelemetryProvider,
     keyboard_backlight: Option<KbdBacklightSysfs>,
+    battery_charge_limit: Option<BatteryChargeLimitControl>,
     fan_safety_marker: PathBuf,
 }
 
@@ -43,6 +46,10 @@ impl PrivilegedService {
             cpu: CpuTelemetryProvider::default(),
             fans: HwmonTelemetryProvider::default(),
             keyboard_backlight: KbdBacklightSysfs::probe_approved_asus().ok().flatten(),
+            battery_charge_limit: PowerSupplySysfsProvider::default()
+                .charge_limit_control()
+                .ok()
+                .flatten(),
             fan_safety_marker: PathBuf::from(FAN_SAFETY_MARKER),
         }
     }
@@ -181,11 +188,33 @@ impl PrivilegedService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        let target = (!fan_id.trim().is_empty()).then_some(fan_id);
+        if let Some(fan_id) = target {
+            fan_domain(fan_id)?;
+        }
+        let safe_fans = self
+            .fans
+            .list_fans()
+            .map_err(map_fan_error)?
+            .into_iter()
+            .filter(|fan| fan.supports_auto && fan.pwm_endpoint_verified)
+            .collect::<Vec<_>>();
+        if safe_fans.is_empty()
+            || target.is_some_and(|fan_id| !safe_fans.iter().any(|fan| fan.id == fan_id))
+        {
+            return Err(map_fan_error(RogError::NotSupported(
+                "fan mapping is not safe for Auto control".to_string(),
+            )));
+        }
         self.authorize_fans(connection, &header).await?;
-        self.fans
-            .set_fan_auto((!fan_id.trim().is_empty()).then_some(fan_id))
-            .map_err(map_fan_error)?;
-        self.clear_fan_safety_marker().map_err(map_fan_error)
+        self.fans.set_fan_auto(target).map_err(map_fan_error)?;
+        // The marker covers all fan channels. A targeted reset cannot prove
+        // that another channel is no longer using a custom curve, so only an
+        // all-channel reset may disarm crash recovery.
+        if target.is_none() {
+            self.clear_fan_safety_marker().map_err(map_fan_error)?;
+        }
+        Ok(())
     }
 
     async fn set_fan_curve(
@@ -195,7 +224,6 @@ impl PrivilegedService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
-        self.authorize_fans(connection, &header).await?;
         let curve = FanCurve {
             domain: fan_domain(fan_id)?,
             points: points
@@ -223,6 +251,7 @@ impl PrivilegedService {
                 "fan mapping is not safe for curve control".to_string(),
             )));
         }
+        self.authorize_fans(connection, &header).await?;
         self.mark_fan_control_active().map_err(map_fan_error)?;
         if let Err(error) = self.fans.set_fan_curve(fan_id, curve) {
             if self.fans.set_fan_auto(None).is_ok() {
@@ -238,6 +267,17 @@ impl PrivilegedService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        if !self
+            .fans
+            .list_fans()
+            .map_err(map_fan_error)?
+            .iter()
+            .any(|fan| fan.supports_auto && fan.pwm_endpoint_verified)
+        {
+            return Err(map_fan_error(RogError::NotSupported(
+                "no verified fan Auto interface is available".to_string(),
+            )));
+        }
         self.authorize_fans(connection, &header).await?;
         self.fans.set_fan_auto(None).map_err(map_fan_error)?;
         self.clear_fan_safety_marker().map_err(map_fan_error)
@@ -264,11 +304,63 @@ impl PrivilegedService {
             .validate_brightness(level)
             .map_err(map_lighting_error)?;
         self.authorize_lighting(connection, &header).await?;
-        keyboard.set_brightness(level).map_err(map_lighting_error)
+        keyboard
+            .set_approved_brightness(level)
+            .map_err(map_lighting_error)
+    }
+
+    async fn set_battery_charge_limit(
+        &self,
+        limit: u64,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<u64> {
+        let limit = u8::try_from(limit).map_err(|_| {
+            map_privileged_error(PrivilegedError::new(
+                PrivilegedErrorCode::InvalidInput,
+                "battery charge limit does not fit into u8",
+            ))
+        })?;
+        let limit = rog_core::BatteryLimitPercent(limit)
+            .validate_control()
+            .map_err(map_battery_error)?;
+        let control = self.battery_charge_limit.as_ref().ok_or_else(|| {
+            map_battery_error(RogError::NotSupported(
+                "standard battery charge-limit endpoint was not found".to_string(),
+            ))
+        })?;
+        control.read_limit().map_err(map_battery_error)?;
+        self.authorize_battery(connection, &header).await?;
+        control
+            .set_limit(limit)
+            .map(|actual| u64::from(actual.0))
+            .map_err(map_battery_error)
     }
 }
 
 impl PrivilegedService {
+    async fn authorize_battery(
+        &self,
+        connection: &Connection,
+        header: &Header<'_>,
+    ) -> fdo::Result<()> {
+        self.touch();
+        let sender = header.sender().ok_or_else(|| {
+            map_privileged_error(PrivilegedError::new(
+                PrivilegedErrorCode::Unexpected,
+                "D-Bus caller identity is unavailable",
+            ))
+        })?;
+        let authorized = check_polkit_authorization(
+            connection,
+            sender.as_str(),
+            POLKIT_ACTION_BATTERY_CONTROL,
+            true,
+        )
+        .await?;
+        require_authorized(authorized).map_err(map_privileged_error)
+    }
+
     async fn authorize_lighting(
         &self,
         connection: &Connection,
@@ -314,8 +406,7 @@ impl PrivilegedService {
     }
 
     fn mark_fan_control_active(&self) -> rog_core::RogResult<()> {
-        fs::write(&self.fan_safety_marker, b"asus-wmi-curve\n")
-            .map_err(|_| RogError::Unexpected("could not arm the fan fail-safe marker".to_string()))
+        write_fan_safety_marker(&self.fan_safety_marker)
     }
 
     fn clear_fan_safety_marker(&self) -> rog_core::RogResult<()> {
@@ -329,8 +420,19 @@ impl PrivilegedService {
     }
 
     fn restore_fans_if_armed(&self) -> rog_core::RogResult<()> {
-        if !self.fan_safety_marker.exists() {
-            return Ok(());
+        match fs::symlink_metadata(&self.fan_safety_marker) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(RogError::Unexpected(
+                    "fan fail-safe marker has an unexpected file type".to_string(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => {
+                return Err(RogError::Unexpected(
+                    "fan fail-safe marker metadata is unavailable".to_string(),
+                ));
+            }
         }
         self.fans.set_fan_auto(None)?;
         self.clear_fan_safety_marker()
@@ -343,6 +445,7 @@ impl PrivilegedService {
         request: CpuControlRequest,
     ) -> fdo::Result<()> {
         self.touch();
+        self.cpu.validate_control(&request).map_err(map_cpu_error)?;
         let sender = header.sender().ok_or_else(|| {
             map_privileged_error(PrivilegedError::new(
                 PrivilegedErrorCode::Unexpected,
@@ -359,6 +462,45 @@ impl PrivilegedService {
         require_authorized(authorized).map_err(map_privileged_error)?;
         self.cpu.apply_control(&request).map_err(map_cpu_error)
     }
+}
+
+fn write_fan_safety_marker(path: &std::path::Path) -> rog_core::RogResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        RogError::Unexpected("fan fail-safe marker has no parent directory".to_string())
+    })?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| {
+        RogError::Unexpected("fan fail-safe runtime directory is unavailable".to_string())
+    })?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        return Err(RogError::Unexpected(
+            "fan fail-safe runtime directory has an unexpected file type".to_string(),
+        ));
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).truncate(true);
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(RogError::Unexpected(
+                "fan fail-safe marker has an unexpected file type".to_string(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            options.create_new(true);
+        }
+        Err(_) => {
+            return Err(RogError::Unexpected(
+                "fan fail-safe marker metadata is unavailable".to_string(),
+            ));
+        }
+    }
+    let mut marker = options
+        .open(path)
+        .map_err(|_| RogError::Unexpected("could not arm the fan fail-safe marker".to_string()))?;
+    marker
+        .write_all(b"asus-wmi-curve\n")
+        .map_err(|_| RogError::Unexpected("could not arm the fan fail-safe marker".to_string()))
 }
 
 fn fan_domain(fan_id: &str) -> fdo::Result<FanDomain> {
@@ -475,6 +617,35 @@ fn map_lighting_error(error: RogError) -> fdo::Error {
     map_privileged_error(privileged)
 }
 
+fn map_battery_error(error: RogError) -> fdo::Error {
+    let privileged = match error {
+        RogError::NotSupported(_) => PrivilegedError::new(
+            PrivilegedErrorCode::NotSupported,
+            "no unambiguous standard battery charge-limit endpoint is available",
+        ),
+        RogError::InvalidInput(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::InvalidInput, message)
+        }
+        RogError::PermissionDenied(_) => PrivilegedError::new(
+            PrivilegedErrorCode::PermissionDenied,
+            "the validated battery charge-limit endpoint could not be written",
+        ),
+        RogError::TemporarilyUnavailable(_) => PrivilegedError::new(
+            PrivilegedErrorCode::HardwareUnavailable,
+            "the battery charge-limit endpoint is temporarily unavailable",
+        ),
+        RogError::DependencyMissing(_) | RogError::TransientFailure(_) => PrivilegedError::new(
+            PrivilegedErrorCode::BackendFailure,
+            "the privileged battery charge-limit backend failed",
+        ),
+        RogError::Unexpected(_) => PrivilegedError::new(
+            PrivilegedErrorCode::Unexpected,
+            "the battery charge-limit write or readback failed",
+        ),
+    };
+    map_privileged_error(privileged)
+}
+
 fn map_privileged_error(error: PrivilegedError) -> fdo::Error {
     let message = format!("{}: {}", error.code.as_str(), error.message);
     match error.code {
@@ -510,9 +681,11 @@ async fn check_polkit_authorization(
         .await
         .map_err(|error| {
             let message = error.to_string().to_ascii_lowercase();
-            if message.contains("cancel") || message.contains("notauthorized") {
+            if message.contains("cancel") {
+                fdo::Error::AccessDenied("not_authorized: Authentication was cancelled".to_string())
+            } else if message.contains("notauthorized") || message.contains("not authorized") {
                 fdo::Error::AccessDenied(
-                    "not_authorized: PolicyKit authorization was denied or cancelled".to_string(),
+                    "not_authorized: Administrator authorization was denied".to_string(),
                 )
             } else {
                 fdo::Error::Failed(
@@ -533,17 +706,18 @@ where
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,rog_helper=debug".into()),
-        )
+        // The root service intentionally ignores process-environment logging
+        // overrides. Its packaged execution policy is fixed by systemd.
+        .with_env_filter("info,rog_helper=debug")
         .with_target(false)
         .init();
 
     let service = PrivilegedService::new();
-    service
-        .restore_fans_if_armed()
-        .context("restore fan Auto state left by an interrupted helper")?;
+    if let Err(error) = service.restore_fans_if_armed() {
+        // Keep the marker and bring the service online so recovery can be
+        // retried if the hwmon backend was only temporarily absent.
+        warn!("could not restore fan Auto state left by an interrupted helper: {error}");
+    }
     let idle_service = service.clone();
     let connection = connection::Builder::system()
         .context("connect to the system D-Bus")?
@@ -567,18 +741,20 @@ async fn main() -> anyhow::Result<()> {
             }
             _ = idle_check.tick() => {
                 if idle_service.idle_for() >= IDLE_TIMEOUT {
-                    idle_service
-                        .restore_fans_if_armed()
-                        .context("restore fans before privileged helper idle exit")?;
+                    if let Err(error) = idle_service.restore_fans_if_armed() {
+                        warn!("could not restore fans before idle exit; keeping helper online to retry: {error}");
+                        idle_service.touch();
+                        continue;
+                    }
                     info!("privileged helper idle timeout reached; exiting");
                     break;
                 }
             }
         }
     }
-    idle_service
-        .restore_fans_if_armed()
-        .context("restore fans before privileged helper shutdown")?;
+    if let Err(error) = idle_service.restore_fans_if_armed() {
+        warn!("could not restore fans before privileged helper shutdown; recovery marker retained: {error}");
+    }
     drop(connection);
     Ok(())
 }
@@ -587,14 +763,14 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use rog_core::{
-        require_authorized, PrivilegedErrorCode, POLKIT_ACTION_CPU_CONTROL,
-        POLKIT_ACTION_LIGHTING_CONTROL, POLKIT_ACTION_SYSTEM_CONFIGURE,
+        require_authorized, PrivilegedErrorCode, POLKIT_ACTION_BATTERY_CONTROL,
+        POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL,
     };
 
     #[test]
     fn helper_advertises_only_implemented_write_categories() {
         let (_, categories) = PrivilegedCapabilities::implemented_controls().encode();
-        assert_eq!(categories, vec!["cpu", "fans", "lighting"]);
+        assert_eq!(categories, vec!["cpu", "battery", "fans", "lighting"]);
     }
 
     #[test]
@@ -608,8 +784,37 @@ mod tests {
     #[test]
     fn intended_probe_actions_are_allow_listed() {
         assert!(validate_polkit_action(POLKIT_ACTION_CPU_CONTROL).is_ok());
+        assert!(validate_polkit_action(POLKIT_ACTION_BATTERY_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_FANS_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_LIGHTING_CONTROL).is_ok());
-        assert!(validate_polkit_action(POLKIT_ACTION_SYSTEM_CONFIGURE).is_ok());
+        assert!(validate_polkit_action("io.github.roghelper.system.configure").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fan_safety_marker_rejects_a_symlink() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "rog-helper-marker-test-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        let outside = root.join("outside");
+        fs::write(&outside, "unchanged\n").expect("outside file");
+        let marker = root.join("fan-control-active");
+        symlink(&outside, &marker).expect("marker symlink");
+
+        assert!(write_fan_safety_marker(&marker).is_err());
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside read"),
+            "unchanged\n"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

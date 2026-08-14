@@ -173,6 +173,10 @@ root. Unit tests do not require root, PolicyKit, or a live system bus.
 When adding a privileged operation, add a domain-specific method and input type, an exact
 internal endpoint mapping, an application-specific PolicyKit action, sanitized error mapping, and
 mocked authorization/backend tests. Do not add path-, command-, program-, or shell-shaped APIs.
+Validate parameters and endpoint identity before interactive PolicyKit where possible, then repeat
+identity/range validation immediately before the root write. Any PolicyKit action must use
+`auth_admin`, not retained authorization, unless a separate security review justifies otherwise.
+Run `python3 packaging/scripts/check-release-metadata.py` after changing helper integration.
 
 ## Debugging Tips
 
