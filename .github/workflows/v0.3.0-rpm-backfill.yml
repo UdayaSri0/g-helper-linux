@@ -1,0 +1,56 @@
+name: Backfill v0.3.0 Fedora RPM
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/v0.3.0-rpm-backfill.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fedora-rpm-backfill:
+    runs-on: ubuntu-latest
+    container: fedora:42
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.3.0
+
+      - name: Install Fedora Build Dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            cargo rust gcc \
+            pkgconf-pkg-config gtk4-devel libadwaita-devel \
+            appstream desktop-file-utils python3-pillow \
+            rpm-build systemd-rpm-macros
+
+      - name: Verify v0.3.0 Source
+        run: |
+          VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          test "$VERSION" = "0.3.0"
+          test "$(git describe --tags --exact-match)" = "v0.3.0"
+
+      - name: Build Fedora RPM
+        run: packaging/scripts/build-rpm.sh dist
+
+      - name: Upload Fedora RPM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-rpm-v0.3.0-backfill
+          path: |
+            dist/*.rpm
+            dist/*RPM-SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Add Fedora RPM To Existing Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.0
+          files: |
+            dist/*.rpm
+            dist/*RPM-SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          overwrite_files: false
