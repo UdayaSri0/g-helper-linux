@@ -15,17 +15,18 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:42
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v0.3.0
-
       - name: Install Fedora Build Dependencies
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            cargo rust gcc \
+            git cargo rust gcc \
             pkgconf-pkg-config gtk4-devel libadwaita-devel \
             appstream desktop-file-utils python3-pillow \
             rpm-build systemd-rpm-macros
+
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.3.0
+          fetch-depth: 0
 
       - name: Verify v0.3.0 Source
         run: |
