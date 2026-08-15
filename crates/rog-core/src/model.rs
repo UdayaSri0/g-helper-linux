@@ -57,8 +57,57 @@ pub enum GpuMode {
     Other(String),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpuSwitchState {
+    #[default]
+    Unknown,
+    Ready,
+    Pending,
+    LogoutRequired,
+    RebootRequired,
+    Unsafe,
+    Unavailable,
+}
+
+impl GpuSwitchState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Ready => "ready",
+            Self::Pending => "pending",
+            Self::LogoutRequired => "logout_required",
+            Self::RebootRequired => "reboot_required",
+            Self::Unsafe => "unsafe",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ready" => Self::Ready,
+            "pending" => Self::Pending,
+            "logout_required" => Self::LogoutRequired,
+            "reboot_required" => Self::RebootRequired,
+            "unsafe" => Self::Unsafe,
+            "unavailable" => Self::Unavailable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn blocks_new_switch(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::LogoutRequired | Self::RebootRequired | Self::Unsafe
+        )
+    }
+}
+
 pub const DEFAULT_BATTERY_LIMIT_MIN_PERCENT: u8 = 40;
 pub const DEFAULT_BATTERY_LIMIT_MAX_PERCENT: u8 = 100;
+/// Lowest charge limit accepted by the existing asusd contract and the
+/// documented power-supply sysfs fallback.
+pub const BATTERY_CHARGE_LIMIT_MIN_PERCENT: u8 = 20;
+pub const BATTERY_CHARGE_LIMIT_MAX_PERCENT: u8 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatteryLimitPercent(pub u8);
@@ -76,6 +125,17 @@ impl BatteryLimitPercent {
             DEFAULT_BATTERY_LIMIT_MAX_PERCENT,
         )
     }
+
+    pub fn validate_control(self) -> RogResult<Self> {
+        if (BATTERY_CHARGE_LIMIT_MIN_PERCENT..=BATTERY_CHARGE_LIMIT_MAX_PERCENT).contains(&self.0) {
+            Ok(self)
+        } else {
+            Err(RogError::InvalidInput(format!(
+                "battery limit {} is outside supported range {}..={}",
+                self.0, BATTERY_CHARGE_LIMIT_MIN_PERCENT, BATTERY_CHARGE_LIMIT_MAX_PERCENT
+            )))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +144,32 @@ pub enum FanDomain {
     Gpu,
     Mid,
     Other(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FanMappingConfidence {
+    #[default]
+    Unknown,
+    Heuristic,
+    HardwareLabel,
+}
+
+impl FanMappingConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Heuristic => "heuristic",
+            Self::HardwareLabel => "hardware_label",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hardware_label" | "hardware-label" | "labelled" | "labeled" => Self::HardwareLabel,
+            "heuristic" | "inferred" => Self::Heuristic,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,10 +189,24 @@ pub struct FanInfo {
     pub id: String,
     pub index: u32,
     pub label: String,
+    #[serde(default)]
+    pub mapping_confidence: FanMappingConfidence,
     pub current_rpm: Option<u32>,
     pub min_rpm: Option<u32>,
     pub max_rpm: Option<u32>,
     pub current_percent: Option<u8>,
+    #[serde(default)]
+    pub rpm_readable: bool,
+    #[serde(default)]
+    pub pwm_endpoint_verified: bool,
+    #[serde(default)]
+    pub direct_write: bool,
+    #[serde(default)]
+    pub privileged_write: bool,
+    #[serde(default)]
+    pub authorization: String,
+    #[serde(default)]
+    pub access_state: String,
     pub controllable: bool,
     pub supports_manual_percent: bool,
     pub supports_manual_rpm_target: bool,
@@ -124,10 +224,21 @@ impl FanInfo {
             id: format!("hwmon-fan-{index}"),
             index,
             label: telemetry.display_label.clone(),
+            mapping_confidence: if telemetry.raw_label.is_some() {
+                FanMappingConfidence::HardwareLabel
+            } else {
+                FanMappingConfidence::Unknown
+            },
             current_rpm: telemetry.rpm,
             min_rpm: None,
             max_rpm: None,
             current_percent: None,
+            rpm_readable: telemetry.rpm.is_some(),
+            pwm_endpoint_verified: false,
+            direct_write: false,
+            privileged_write: false,
+            authorization: "not_required".to_string(),
+            access_state: "telemetry_only".to_string(),
             controllable: false,
             supports_manual_percent: false,
             supports_manual_rpm_target: false,
@@ -185,12 +296,18 @@ impl FanControlMode {
 pub struct FanCaps {
     pub has_fan_reading: bool,
     pub has_fan_curves: bool,
+    #[serde(default)]
+    pub fan_curve_readable: bool,
+    #[serde(default)]
+    pub fan_curve_writable: bool,
     pub has_fan_manual_percent: bool,
     pub has_fan_manual_rpm_target: bool,
     pub has_individual_fan_control: bool,
     pub has_fan_sync_control: bool,
     pub has_fan_boost: bool,
     pub fan_count: u32,
+    #[serde(default)]
+    pub fan_mapping_confidence: FanMappingConfidence,
     pub fan_backend: String,
     pub endpoints: Vec<String>,
     pub notes: Vec<String>,
@@ -204,6 +321,20 @@ impl FanCaps {
         let has_fan_manual_rpm_target = fans.iter().any(|fan| fan.supports_manual_rpm_target);
         let has_fan_curves = fans.iter().any(|fan| fan.supports_curve);
         let has_fan_reading = fans.iter().any(|fan| fan.current_rpm.is_some());
+        let fan_mapping_confidence = if fans.is_empty()
+            || fans
+                .iter()
+                .any(|fan| fan.mapping_confidence == FanMappingConfidence::Unknown)
+        {
+            FanMappingConfidence::Unknown
+        } else if fans
+            .iter()
+            .all(|fan| fan.mapping_confidence == FanMappingConfidence::HardwareLabel)
+        {
+            FanMappingConfidence::HardwareLabel
+        } else {
+            FanMappingConfidence::Heuristic
+        };
         let fan_backend = if fans.is_empty() {
             "unsupported".to_string()
         } else if has_fan_curves && fans.iter().any(|fan| fan.backend.contains("asusd")) {
@@ -231,12 +362,17 @@ impl FanCaps {
         Self {
             has_fan_reading,
             has_fan_curves,
+            fan_curve_readable: has_fan_curves,
+            fan_curve_writable: fans
+                .iter()
+                .any(|fan| fan.supports_curve && fan.controllable),
             has_fan_manual_percent,
             has_fan_manual_rpm_target,
             has_individual_fan_control: controllable_count > 0,
             has_fan_sync_control: controllable_count > 1,
             has_fan_boost: has_fan_manual_percent,
             fan_count: fans.len() as u32,
+            fan_mapping_confidence,
             fan_backend,
             endpoints,
             notes,
@@ -306,6 +442,8 @@ pub struct FanCurvePolicy {
     pub duty_max_percent: u8,
     pub enforce_monotonic: bool,
     pub safe_floor: Option<SafeFloor>,
+    /// Exact number of points required by a verified backend ABI, when known.
+    pub exact_point_count: Option<usize>,
 }
 
 impl Default for FanCurvePolicy {
@@ -321,6 +459,7 @@ impl Default for FanCurvePolicy {
                 temp_c: 85,
                 min_duty_percent: 70,
             }),
+            exact_point_count: None,
         }
     }
 }
@@ -456,6 +595,13 @@ pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) ->
         return Err(RogError::InvalidInput(
             "fan curve must not be empty".to_string(),
         ));
+    }
+    if let Some(expected) = policy.exact_point_count {
+        if points.len() != expected {
+            return Err(RogError::InvalidInput(format!(
+                "fan curve requires exactly {expected} points for this backend"
+            )));
+        }
     }
 
     let mut last_temp = None;
@@ -671,10 +817,30 @@ pub struct LightingState {
     pub brightness: Option<u32>,
     pub max_brightness: Option<u32>,
     pub mode: Option<LightingMode>,
+    #[serde(default)]
+    pub supports_brightness: bool,
+    #[serde(default)]
+    pub supports_modes: bool,
     pub supported_modes: Vec<LightingMode>,
     pub supports_rgb: bool,
     pub rgb: Option<RgbColor>,
+    #[serde(default)]
+    pub supports_speed: bool,
+    #[serde(default)]
+    pub supported_speeds: Vec<String>,
+    #[serde(default)]
+    pub supported_zones: Vec<String>,
     pub writable: bool,
+    #[serde(default)]
+    pub direct_writable: bool,
+    #[serde(default)]
+    pub privileged_writable: bool,
+    #[serde(default)]
+    pub authorization_required: bool,
+    #[serde(default)]
+    pub authorization: String,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
     pub status: String,
     pub last_error: Option<String>,
 }
@@ -703,11 +869,18 @@ pub struct LightingDiagnostics {
     pub keyboard_backlight_max_brightness: Option<u32>,
     pub keyboard_backlight_readable: bool,
     pub keyboard_backlight_writable: bool,
+    pub keyboard_backlight_direct_writable: bool,
+    pub keyboard_backlight_privileged_writable: bool,
+    pub keyboard_backlight_authorization_required: bool,
+    pub keyboard_backlight_authorization: String,
 
     pub supports_brightness: bool,
     pub supports_modes: bool,
     pub supported_modes: Vec<String>,
     pub active_mode: Option<String>,
+    pub supports_speed: bool,
+    pub supported_speeds: Vec<String>,
+    pub supported_zones: Vec<String>,
 
     pub supports_rgb: bool,
     pub rgb_backend_detected: bool,
@@ -724,6 +897,15 @@ pub struct LightingDiagnostics {
     pub asusd_potential_aura_interfaces: Vec<String>,
     pub asusd_rgb_methods_detected: Vec<String>,
     pub asusd_rgb_properties_detected: Vec<String>,
+    pub asusd_brightness_methods_detected: Vec<String>,
+    pub asusd_brightness_properties_detected: Vec<String>,
+    pub asusd_mode_methods_detected: Vec<String>,
+    pub asusd_mode_properties_detected: Vec<String>,
+    pub asusd_speed_methods_detected: Vec<String>,
+    pub asusd_speed_properties_detected: Vec<String>,
+    pub asusd_zone_methods_detected: Vec<String>,
+    pub asusd_zone_properties_detected: Vec<String>,
+    pub asusd_verified_aura_interface: bool,
 
     pub active_backend: String,
     pub fallback_reason: Option<String>,
@@ -746,10 +928,17 @@ impl LightingDiagnostics {
             keyboard_backlight_max_brightness: None,
             keyboard_backlight_readable: false,
             keyboard_backlight_writable: false,
+            keyboard_backlight_direct_writable: false,
+            keyboard_backlight_privileged_writable: false,
+            keyboard_backlight_authorization_required: false,
+            keyboard_backlight_authorization: "not_applicable".to_string(),
             supports_brightness: false,
             supports_modes: false,
             supported_modes: Vec::new(),
             active_mode: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
             supports_rgb: false,
             rgb_backend_detected: false,
             rgb_backend_name: None,
@@ -764,6 +953,15 @@ impl LightingDiagnostics {
             asusd_potential_aura_interfaces: Vec::new(),
             asusd_rgb_methods_detected: Vec::new(),
             asusd_rgb_properties_detected: Vec::new(),
+            asusd_brightness_methods_detected: Vec::new(),
+            asusd_brightness_properties_detected: Vec::new(),
+            asusd_mode_methods_detected: Vec::new(),
+            asusd_mode_properties_detected: Vec::new(),
+            asusd_speed_methods_detected: Vec::new(),
+            asusd_speed_properties_detected: Vec::new(),
+            asusd_zone_methods_detected: Vec::new(),
+            asusd_zone_properties_detected: Vec::new(),
+            asusd_verified_aura_interface: false,
             active_backend: "none".to_string(),
             fallback_reason: None,
             unavailable_reason: None,
@@ -820,6 +1018,19 @@ impl LightingDiagnostics {
                 "not available"
             }
         ));
+        lines.push(format!(
+            "- Effect speed: {}",
+            if self.supports_speed {
+                "available"
+            } else {
+                "not available"
+            }
+        ));
+        lines.push(format!(
+            "- Supported speeds: {}",
+            list_text(&self.supported_speeds)
+        ));
+        lines.push(format!("- Zones: {}", list_text(&self.supported_zones)));
         lines.push(format!("- Reason: {}", self.summary_line()));
         lines.push(format!(
             "- Aura support: {}",
@@ -883,6 +1094,22 @@ impl LightingDiagnostics {
             yes_no(self.keyboard_backlight_writable)
         ));
         lines.push(format!(
+            "- Direct writable: {}",
+            yes_no(self.keyboard_backlight_direct_writable)
+        ));
+        lines.push(format!(
+            "- Privileged writable: {}",
+            yes_no(self.keyboard_backlight_privileged_writable)
+        ));
+        lines.push(format!(
+            "- Authorization required: {}",
+            yes_no(self.keyboard_backlight_authorization_required)
+        ));
+        lines.push(format!(
+            "- Authorization: {}",
+            self.keyboard_backlight_authorization
+        ));
+        lines.push(format!(
             "- Supported modes: {}",
             list_text(&self.supported_modes)
         ));
@@ -933,6 +1160,42 @@ impl LightingDiagnostics {
             "- RGB properties found: {}",
             list_text(&self.asusd_rgb_properties_detected)
         ));
+        lines.push(format!(
+            "- Brightness methods found: {}",
+            list_text(&self.asusd_brightness_methods_detected)
+        ));
+        lines.push(format!(
+            "- Brightness properties found: {}",
+            list_text(&self.asusd_brightness_properties_detected)
+        ));
+        lines.push(format!(
+            "- Mode methods found: {}",
+            list_text(&self.asusd_mode_methods_detected)
+        ));
+        lines.push(format!(
+            "- Mode properties found: {}",
+            list_text(&self.asusd_mode_properties_detected)
+        ));
+        lines.push(format!(
+            "- Speed methods found: {}",
+            list_text(&self.asusd_speed_methods_detected)
+        ));
+        lines.push(format!(
+            "- Speed properties found: {}",
+            list_text(&self.asusd_speed_properties_detected)
+        ));
+        lines.push(format!(
+            "- Zone methods found: {}",
+            list_text(&self.asusd_zone_methods_detected)
+        ));
+        lines.push(format!(
+            "- Zone properties found: {}",
+            list_text(&self.asusd_zone_properties_detected)
+        ));
+        lines.push(format!(
+            "- Verified Aura contract: {}",
+            yes_no(self.asusd_verified_aura_interface)
+        ));
         lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
 
         lines.push(String::new());
@@ -943,6 +1206,11 @@ impl LightingDiagnostics {
         ));
         lines.push(format!("- has_aura: {}", yes_no(self.rgb_backend_detected)));
         lines.push(format!("- supports_rgb: {}", yes_no(self.supports_rgb)));
+        lines.push(format!("- supports_speed: {}", yes_no(self.supports_speed)));
+        lines.push(format!(
+            "- supported_zones: {}",
+            list_text(&self.supported_zones)
+        ));
         lines.push(format!(
             "- selected backend: {}",
             display_backend_name(&self.active_backend)
@@ -1076,6 +1344,26 @@ pub struct DeviceCaps {
     pub has_fan_boost: bool,
     pub fan_count: u32,
     pub fan_backend: String,
+    #[serde(default)]
+    pub gpu_backend: String,
+    #[serde(default)]
+    pub battery_limit_backend: String,
+    #[serde(default)]
+    pub battery_limit_direct_write: bool,
+    #[serde(default)]
+    pub battery_limit_privileged_write: bool,
+    #[serde(default)]
+    pub battery_limit_authorization: String,
+    #[serde(default)]
+    pub gpu_supported_modes: Vec<String>,
+    #[serde(default)]
+    pub gpu_external_authorization: String,
+    #[serde(default)]
+    pub gpu_switch_state: GpuSwitchState,
+    #[serde(default)]
+    pub gpu_switch_hint: String,
+    #[serde(default)]
+    pub requires_logout_for_gpu_switch: bool,
     pub requires_reboot_for_gpu_switch: bool,
     pub profile_access: FeatureAvailability,
     pub charge_limit_access: FeatureAvailability,
@@ -1104,6 +1392,16 @@ impl DeviceCaps {
             has_fan_boost: false,
             fan_count: 0,
             fan_backend: "unknown".to_string(),
+            gpu_backend: "none".to_string(),
+            battery_limit_backend: "none".to_string(),
+            battery_limit_direct_write: false,
+            battery_limit_privileged_write: false,
+            battery_limit_authorization: "not_required".to_string(),
+            gpu_supported_modes: Vec::new(),
+            gpu_external_authorization: "unavailable".to_string(),
+            gpu_switch_state: GpuSwitchState::Unavailable,
+            gpu_switch_hint: "supergfxd availability has not been probed yet.".to_string(),
+            requires_logout_for_gpu_switch: false,
             requires_reboot_for_gpu_switch: false,
             profile_access: FeatureAvailability::unknown(),
             charge_limit_access: FeatureAvailability::unknown(),
@@ -1111,6 +1409,37 @@ impl DeviceCaps {
             kbd_backlight_access: FeatureAvailability::unknown(),
             endpoints: Vec::new(),
             notes: vec!["Capabilities not probed yet.".to_string()],
+        }
+    }
+}
+
+/// Canonical internal availability semantics shared across feature, setup,
+/// permission, and CPU-control status models. Existing DBus strings remain
+/// unchanged; this type prevents UI pages from interpreting each model
+/// differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContractStatus {
+    Unknown,
+    Available,
+    Unsupported,
+    ReadOnly,
+    MissingDependency,
+    PermissionDenied,
+    TransientFailure,
+    Unavailable,
+}
+
+impl ContractStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Available => "Available",
+            Self::Unsupported => "Unsupported",
+            Self::ReadOnly => "Read-only",
+            Self::MissingDependency => "Missing dependency",
+            Self::PermissionDenied => "Permission denied",
+            Self::TransientFailure => "Temporarily unavailable",
+            Self::Unavailable => "Unavailable",
         }
     }
 }
@@ -1147,6 +1476,17 @@ impl FeatureAccessState {
             _ => Self::Unknown,
         }
     }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Available => ContractStatus::Available,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::MissingBackend => ContractStatus::MissingDependency,
+            Self::PermissionDenied => ContractStatus::PermissionDenied,
+            Self::TemporarilyUnavailable => ContractStatus::TransientFailure,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1175,14 +1515,410 @@ impl FeatureAvailability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DependencyKind {
+    RogHelperd,
+    Asusd,
+    Supergfxd,
+    UPower,
+    NvidiaSmi,
+}
+
+impl DependencyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RogHelperd => "rog_helperd",
+            Self::Asusd => "asusd",
+            Self::Supergfxd => "supergfxd",
+            Self::UPower => "upower",
+            Self::NvidiaSmi => "nvidia_smi",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "rog_helperd" | "rog-helperd" => Some(Self::RogHelperd),
+            "asusd" => Some(Self::Asusd),
+            "supergfxd" => Some(Self::Supergfxd),
+            "upower" => Some(Self::UPower),
+            "nvidia_smi" | "nvidia-smi" => Some(Self::NvidiaSmi),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RogHelperd => "rog-helperd",
+            Self::Asusd => "asusd",
+            Self::Supergfxd => "supergfxd",
+            Self::UPower => "UPower",
+            Self::NvidiaSmi => "nvidia-smi",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DependencyState {
+    Unknown,
+    Connected,
+    Ready,
+    NotAvailable,
+    Inactive,
+    Unreachable,
+    NotRelevant,
+}
+
+impl DependencyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Connected => "connected",
+            Self::Ready => "ready",
+            Self::NotAvailable => "not_available",
+            Self::Inactive => "inactive",
+            Self::Unreachable => "unreachable",
+            Self::NotRelevant => "not_relevant",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "connected" => Self::Connected,
+            "ready" => Self::Ready,
+            "not_available" => Self::NotAvailable,
+            "inactive" => Self::Inactive,
+            "unreachable" => Self::Unreachable,
+            "not_relevant" => Self::NotRelevant,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Connected | Self::Ready | Self::NotRelevant)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Connected => "Connected",
+            Self::Ready => "Available",
+            Self::NotAvailable => "Not available",
+            Self::Inactive => "Inactive",
+            Self::Unreachable => "Unreachable",
+            Self::NotRelevant => "Not needed",
+        }
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown | Self::NotRelevant => ContractStatus::Unknown,
+            Self::Connected | Self::Ready => ContractStatus::Available,
+            Self::NotAvailable => ContractStatus::MissingDependency,
+            Self::Inactive => ContractStatus::Unavailable,
+            Self::Unreachable => ContractStatus::TransientFailure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyStatus {
+    pub kind: DependencyKind,
+    pub state: DependencyState,
+    pub summary: String,
+    pub required_for: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionKind {
+    CpuPolicyWrites,
+    KeyboardLightingWrites,
+    FanControls,
+}
+
+impl PermissionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuPolicyWrites => "cpu_policy_writes",
+            Self::KeyboardLightingWrites => "keyboard_lighting_writes",
+            Self::FanControls => "fan_controls",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cpu_policy_writes" => Some(Self::CpuPolicyWrites),
+            "keyboard_lighting_writes" => Some(Self::KeyboardLightingWrites),
+            "fan_controls" => Some(Self::FanControls),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CpuPolicyWrites => "CPU policy writes",
+            Self::KeyboardLightingWrites => "Keyboard lighting writes",
+            Self::FanControls => "Fan controls",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionState {
+    Unknown,
+    Writable,
+    ReadOnly,
+    Unsupported,
+    Unavailable,
+}
+
+impl PermissionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Writable => "writable",
+            Self::ReadOnly => "read_only",
+            Self::Unsupported => "unsupported",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "writable" => Self::Writable,
+            "read_only" => Self::ReadOnly,
+            "unsupported" => Self::Unsupported,
+            "unavailable" => Self::Unavailable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Checking",
+            Self::Writable => "Writable",
+            Self::ReadOnly => "Read-only",
+            Self::Unsupported => "Unsupported",
+            Self::Unavailable => "Unavailable",
+        }
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Writable => ContractStatus::Available,
+            Self::ReadOnly => ContractStatus::ReadOnly,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::Unavailable => ContractStatus::Unavailable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionStatus {
+    pub kind: PermissionKind,
+    pub state: PermissionState,
+    pub summary: String,
+    /// Technical paths are deliberately kept out of normal UI summaries.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetupSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl SetupSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "warning" => Self::Warning,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupIssue {
+    pub severity: SetupSeverity,
+    pub title: String,
+    pub summary: String,
+    pub guidance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupStatus {
+    pub checked_at_ms: u64,
+    pub dependencies: Vec<DependencyStatus>,
+    pub permissions: Vec<PermissionStatus>,
+    pub issues: Vec<SetupIssue>,
+}
+
+impl SetupStatus {
+    pub fn unknown() -> Self {
+        Self {
+            checked_at_ms: 0,
+            dependencies: Vec::new(),
+            permissions: Vec::new(),
+            issues: Vec::new(),
+        }
+    }
+
+    pub fn daemon_unavailable(summary: impl Into<String>) -> Self {
+        let summary = summary.into();
+        Self {
+            checked_at_ms: 0,
+            dependencies: vec![DependencyStatus {
+                kind: DependencyKind::RogHelperd,
+                state: DependencyState::NotAvailable,
+                summary: summary.clone(),
+                required_for: vec!["application communication".to_string()],
+                evidence: Vec::new(),
+            }],
+            permissions: Vec::new(),
+            issues: vec![SetupIssue {
+                severity: SetupSeverity::Error,
+                title: "rog-helperd is unavailable".to_string(),
+                summary,
+                guidance: "Start the rog-helper user-session daemon, then refresh these checks. See installation documentation if the service is not installed.".to_string(),
+            }],
+        }
+    }
+
+    pub fn issue_count(&self) -> usize {
+        self.issues.len()
+    }
+
+    pub fn control_issue_count(&self) -> usize {
+        let dependency_issues = self
+            .dependencies
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.kind,
+                    DependencyKind::RogHelperd | DependencyKind::Asusd | DependencyKind::Supergfxd
+                )
+            })
+            .filter(|entry| !entry.state.is_ready() && entry.state != DependencyState::Unknown)
+            .count();
+        let permission_issues = self
+            .permissions
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.state,
+                    PermissionState::ReadOnly | PermissionState::Unavailable
+                )
+            })
+            .count();
+        dependency_issues + permission_issues
+    }
+
+    pub fn dependency(&self, kind: DependencyKind) -> Option<&DependencyStatus> {
+        self.dependencies.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn permission(&self, kind: PermissionKind) -> Option<&PermissionStatus> {
+        self.permissions.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn to_report_text(&self, include_advanced: bool) -> String {
+        let mut lines = vec![
+            "rog-helper Setup & Access Diagnostics".to_string(),
+            "=====================================".to_string(),
+            format!("checked_at_ms: {}", self.checked_at_ms),
+            format!("setup_issues: {}", self.issue_count()),
+            String::new(),
+            "Control services".to_string(),
+            "----------------".to_string(),
+        ];
+
+        for dependency in &self.dependencies {
+            lines.push(format!(
+                "{}: {} — {}",
+                dependency.kind.label(),
+                dependency.state.label(),
+                dependency.summary
+            ));
+            if !dependency.required_for.is_empty() {
+                lines.push(format!(
+                    "  required for: {}",
+                    dependency.required_for.join(", ")
+                ));
+            }
+            if include_advanced {
+                for evidence in &dependency.evidence {
+                    lines.push(format!("  evidence: {evidence}"));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("Permissions".to_string());
+        lines.push("-----------".to_string());
+        for permission in &self.permissions {
+            lines.push(format!(
+                "{}: {} — {}",
+                permission.kind.label(),
+                permission.state.label(),
+                permission.summary
+            ));
+            if include_advanced {
+                for path in &permission.paths {
+                    lines.push(format!("  path: {path}"));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("Setup issues".to_string());
+        lines.push("------------".to_string());
+        if self.issues.is_empty() {
+            lines.push("None".to_string());
+        } else {
+            for issue in &self.issues {
+                lines.push(format!(
+                    "[{}] {}: {}",
+                    issue.severity.as_str(),
+                    issue.title,
+                    issue.summary
+                ));
+                lines.push(format!("  guidance: {}", issue.guidance));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySnapshot {
     pub timestamp_ms: u64,
 
     pub cpu_temp_c: Option<f32>,
     pub gpu_temp_c: Option<f32>,
+    pub gpu_usage_percent: Option<f32>,
+    pub gpu_vram_used_bytes: Option<u64>,
+    pub gpu_vram_total_bytes: Option<u64>,
     pub gpu_core_clock_mhz: Option<u32>,
     pub gpu_memory_clock_mhz: Option<u32>,
+    pub gpu_power_w: Option<f32>,
+    pub gpu_name: Option<String>,
+    pub gpu_uuid: Option<String>,
+    pub gpu_pci_bus_id: Option<String>,
+    pub gpu_index: Option<u32>,
+    pub gpu_telemetry_provider: Option<String>,
+    pub gpu_telemetry_status: Option<String>,
     pub temps_c: BTreeMap<String, f32>,
 
     pub fans_rpm: BTreeMap<String, u32>,
@@ -1249,8 +1985,18 @@ impl TelemetrySnapshot {
             timestamp_ms,
             cpu_temp_c: None,
             gpu_temp_c: None,
+            gpu_usage_percent: None,
+            gpu_vram_used_bytes: None,
+            gpu_vram_total_bytes: None,
             gpu_core_clock_mhz: None,
             gpu_memory_clock_mhz: None,
+            gpu_power_w: None,
+            gpu_name: None,
+            gpu_uuid: None,
+            gpu_pci_bus_id: None,
+            gpu_index: None,
+            gpu_telemetry_provider: None,
+            gpu_telemetry_status: None,
             temps_c: BTreeMap::new(),
             fans_rpm: BTreeMap::new(),
             fan_rows: Vec::new(),
@@ -1361,6 +2107,10 @@ impl CpuTelemetry {
 pub enum CpuAccessState {
     Unknown,
     Available,
+    AuthorizationRequired,
+    AuthorizationDenied,
+    HelperMissing,
+    ReadOnly,
     Unsupported,
     MissingBackend,
     PermissionDenied,
@@ -1372,6 +2122,10 @@ impl CpuAccessState {
         match self {
             Self::Unknown => "unknown",
             Self::Available => "available",
+            Self::AuthorizationRequired => "authorization_required",
+            Self::AuthorizationDenied => "authorization_denied",
+            Self::HelperMissing => "helper_missing",
+            Self::ReadOnly => "read_only",
             Self::Unsupported => "unsupported",
             Self::MissingBackend => "missing_backend",
             Self::PermissionDenied => "permission_denied",
@@ -1382,6 +2136,10 @@ impl CpuAccessState {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "available" => Self::Available,
+            "authorization_required" => Self::AuthorizationRequired,
+            "authorization_denied" => Self::AuthorizationDenied,
+            "helper_missing" => Self::HelperMissing,
+            "read_only" => Self::ReadOnly,
             "unsupported" => Self::Unsupported,
             "missing_backend" => Self::MissingBackend,
             "permission_denied" => Self::PermissionDenied,
@@ -1392,6 +2150,64 @@ impl CpuAccessState {
 
     pub fn is_writable(self) -> bool {
         matches!(self, Self::Available)
+    }
+
+    pub fn is_actionable(self) -> bool {
+        matches!(
+            self,
+            Self::Available | Self::AuthorizationRequired | Self::AuthorizationDenied
+        )
+    }
+
+    pub fn contract_status(self) -> ContractStatus {
+        match self {
+            Self::Unknown => ContractStatus::Unknown,
+            Self::Available => ContractStatus::Available,
+            Self::AuthorizationRequired | Self::AuthorizationDenied => {
+                ContractStatus::PermissionDenied
+            }
+            Self::HelperMissing => ContractStatus::MissingDependency,
+            Self::ReadOnly => ContractStatus::PermissionDenied,
+            Self::Unsupported => ContractStatus::Unsupported,
+            Self::MissingBackend => ContractStatus::MissingDependency,
+            Self::PermissionDenied => ContractStatus::PermissionDenied,
+            Self::TemporarilyUnavailable => ContractStatus::TransientFailure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CpuAuthorization {
+    #[default]
+    NotApplicable,
+    NotRequired,
+    Required,
+    Authorized,
+    Denied,
+    Unavailable,
+}
+
+impl CpuAuthorization {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::NotRequired => "not_required",
+            Self::Required => "required",
+            Self::Authorized => "authorized",
+            Self::Denied => "denied",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "not_required" => Self::NotRequired,
+            "required" => Self::Required,
+            "authorized" => Self::Authorized,
+            "denied" => Self::Denied,
+            "unavailable" => Self::Unavailable,
+            _ => Self::NotApplicable,
+        }
     }
 }
 
@@ -1453,6 +2269,12 @@ pub struct CpuControlAccess {
     pub kind: CpuControlKind,
     pub status: CpuAccessState,
     pub reason: String,
+    #[serde(default)]
+    pub direct_write: bool,
+    #[serde(default)]
+    pub privileged_write: bool,
+    #[serde(default)]
+    pub authorization: CpuAuthorization,
     pub paths: Vec<CpuPathAccess>,
 }
 
@@ -1510,6 +2332,10 @@ impl CpuCaps {
 
     pub fn control_writable(&self, kind: CpuControlKind) -> bool {
         self.control_state(kind).is_writable()
+    }
+
+    pub fn control_actionable(&self, kind: CpuControlKind) -> bool {
+        self.control_state(kind).is_actionable()
     }
 }
 
@@ -1720,10 +2546,17 @@ mod tests {
             id: "fan1".to_string(),
             index: 1,
             label: "Fan 1".to_string(),
+            mapping_confidence: FanMappingConfidence::Unknown,
             current_rpm: Some(1000),
             min_rpm: None,
             max_rpm: None,
             current_percent: None,
+            rpm_readable: true,
+            pwm_endpoint_verified: true,
+            direct_write: true,
+            privileged_write: false,
+            authorization: "not_required".to_string(),
+            access_state: "direct".to_string(),
             controllable: true,
             supports_manual_percent: true,
             supports_manual_rpm_target: false,
@@ -1741,6 +2574,20 @@ mod tests {
         assert_eq!(BatteryLimitPercent::clamp_default(10).0, 40);
         assert_eq!(BatteryLimitPercent::clamp_default(80).0, 80);
         assert_eq!(BatteryLimitPercent::clamp_default(150).0, 100);
+    }
+
+    #[test]
+    fn battery_control_range_rejects_values_outside_shared_contract() {
+        assert!(BatteryLimitPercent(20).validate_control().is_ok());
+        assert!(BatteryLimitPercent(100).validate_control().is_ok());
+        assert!(matches!(
+            BatteryLimitPercent(19).validate_control(),
+            Err(RogError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            BatteryLimitPercent(101).validate_control(),
+            Err(RogError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1868,5 +2715,25 @@ mod tests {
         let report = diagnostics.to_report_text();
         assert!(report.contains("Potential Aura interfaces"));
         assert!(report.contains("does not yet implement this interface"));
+    }
+
+    #[test]
+    fn feature_access_maps_to_canonical_contract_status() {
+        assert_eq!(
+            FeatureAccessState::Available.contract_status(),
+            ContractStatus::Available
+        );
+        assert_eq!(
+            FeatureAccessState::MissingBackend.contract_status(),
+            ContractStatus::MissingDependency
+        );
+        assert_eq!(
+            FeatureAccessState::PermissionDenied.contract_status(),
+            ContractStatus::PermissionDenied
+        );
+        assert_eq!(
+            FeatureAccessState::TemporarilyUnavailable.contract_status(),
+            ContractStatus::TransientFailure
+        );
     }
 }

@@ -12,6 +12,7 @@ RPM_RELEASE="${ROG_HELPER_RPM_RELEASE:-1}"
 require_rpm_tools() {
   local missing=()
   local cmd
+  local unitdir
 
   for cmd in rpmbuild rpm; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -21,7 +22,17 @@ require_rpm_tools() {
 
   if ((${#missing[@]} != 0)); then
     printf 'missing RPM build dependencies: %s\n' "${missing[*]}" >&2
-    echo "Fedora hint: dnf install cargo rust gcc pkgconf-pkg-config gtk4-devel libadwaita-devel appstream desktop-file-utils python3-pillow rpm-build" >&2
+    echo "Fedora hint: dnf install cargo rust gcc pkgconf-pkg-config gtk4-devel libadwaita-devel appstream desktop-file-utils python3-pillow rpm-build systemd-rpm-macros" >&2
+    exit 1
+  fi
+
+  unitdir="$(rpm --eval '%{_unitdir}')"
+  if [[ "$unitdir" == *'%{'* ]]; then
+    echo "required RPM macro _unitdir is unresolved; install systemd-rpm-macros" >&2
+    exit 1
+  fi
+  if [[ "$unitdir" != /* ]]; then
+    printf 'required RPM macro _unitdir did not resolve to an absolute path: %s\n' "$unitdir" >&2
     exit 1
   fi
 }
@@ -43,12 +54,14 @@ mkdir -p "$RPMBUILD_ROOT"/BUILD "$RPMBUILD_ROOT"/BUILDROOT "$RPMBUILD_ROOT"/RPMS
 install_release_binary rog-helper-ui "$PAYLOAD_ROOT/usr/bin/rog-helper-ui"
 install_release_binary rog-helperd "$PAYLOAD_ROOT/usr/bin/rog-helperd"
 install_release_binary rog-helper "$PAYLOAD_ROOT/usr/bin/rog-helper"
+install_release_binary rog-helper-privileged "$PAYLOAD_ROOT/usr/libexec/rog-helper-privileged"
 install_desktop_entry "$PAYLOAD_ROOT/usr"
 install_icon_theme_assets "$PAYLOAD_ROOT/usr"
 install_app_symbolic_icons "$PAYLOAD_ROOT/usr"
 install_metainfo "$PAYLOAD_ROOT/usr"
 install_dbus_activation "$PAYLOAD_ROOT/usr" "/usr/bin/rog-helperd"
 install_user_service "$PAYLOAD_ROOT/usr" "/usr/bin/rog-helperd"
+install_privileged_integration "$PAYLOAD_ROOT/usr" "/usr/libexec/rog-helper-privileged"
 install_license_docs "$PAYLOAD_ROOT/usr"
 
 normalize_tree_timestamps "$PAYLOAD_ROOT"

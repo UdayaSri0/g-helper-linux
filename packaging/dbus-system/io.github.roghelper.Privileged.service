@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=io.github.roghelper.Privileged
+Exec=@PRIVILEGED_EXEC@
+User=root
+SystemdService=rog-helper-privileged.service

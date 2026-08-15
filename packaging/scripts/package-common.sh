@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Payload permissions must not depend on a developer's process umask. This is
+# especially important for root-consumed systemd and system-D-Bus metadata.
+umask 0022
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
@@ -12,6 +16,10 @@ DESKTOP_FILE="$REPO_ROOT/packaging/desktop/rog-helper.desktop"
 APPSTREAM_FILE="$REPO_ROOT/packaging/metainfo/io.github.roghelper.UI.metainfo.xml"
 DBUS_SESSION_SERVICE="$REPO_ROOT/packaging/dbus-session/io.github.roghelper.Daemon.service"
 SYSTEMD_USER_SERVICE="$REPO_ROOT/packaging/systemd-user/rog-helperd.service"
+DBUS_SYSTEM_SERVICE="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privileged.service"
+DBUS_SYSTEM_POLICY="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privileged.conf"
+SYSTEMD_SYSTEM_SERVICE="$REPO_ROOT/packaging/systemd-system/rog-helper-privileged.service"
+POLKIT_POLICY="$REPO_ROOT/packaging/polkit/io.github.roghelper.policy"
 LICENSE_FILES=("$REPO_ROOT/LICENSE-APACHE" "$REPO_ROOT/LICENSE-MIT")
 ICON_SIZES=(16 24 32 48 64 128 256 512)
 
@@ -118,6 +126,7 @@ for pair in sys.argv[3:]:
 
 dest_path.parent.mkdir(parents=True, exist_ok=True)
 dest_path.write_text(text)
+dest_path.chmod(0o644)
 PY
 }
 
@@ -132,8 +141,10 @@ import sys
 src, dest, exec_path = sys.argv[1:4]
 text = Path(src).read_text()
 text = text.replace("rog-helperd", exec_path)
-Path(dest).parent.mkdir(parents=True, exist_ok=True)
-Path(dest).write_text(text)
+target = Path(dest)
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(text)
+target.chmod(0o644)
 PY
 }
 
@@ -166,6 +177,7 @@ build_release_workspace() {
 prepare_release_assets() {
   export_source_date_epoch
   generate_icon_assets
+  python3 "$REPO_ROOT/packaging/scripts/check-release-metadata.py"
   validate_desktop_entry
   validate_metainfo
   build_release_workspace
@@ -234,6 +246,25 @@ install_user_service() {
     "$SYSTEMD_USER_SERVICE" \
     "$prefix_root/lib/systemd/user/rog-helperd.service" \
     "$exec_path"
+}
+
+install_privileged_integration() {
+  local prefix_root="$1"
+  local exec_path="$2"
+  render_template_file \
+    "$DBUS_SYSTEM_SERVICE" \
+    "$prefix_root/share/dbus-1/system-services/io.github.roghelper.Privileged.service" \
+    "PRIVILEGED_EXEC=$exec_path"
+  install -Dm0644 \
+    "$DBUS_SYSTEM_POLICY" \
+    "$prefix_root/share/dbus-1/system.d/io.github.roghelper.Privileged.conf"
+  render_template_file \
+    "$SYSTEMD_SYSTEM_SERVICE" \
+    "$prefix_root/lib/systemd/system/rog-helper-privileged.service" \
+    "PRIVILEGED_EXEC=$exec_path"
+  install -Dm0644 \
+    "$POLKIT_POLICY" \
+    "$prefix_root/share/polkit-1/actions/io.github.roghelper.policy"
 }
 
 install_license_docs() {
@@ -321,7 +352,8 @@ EOF
     dpkg-shlibdeps -O \
       "$stage_root/usr/bin/rog-helper-ui" \
       "$stage_root/usr/bin/rog-helperd" \
-      "$stage_root/usr/bin/rog-helper" |
+      "$stage_root/usr/bin/rog-helper" \
+      "$stage_root/usr/libexec/rog-helper-privileged" |
       sed -n 's/^shlibs:Depends=//p'
   )"
   rm -rf "$workdir"
@@ -344,7 +376,8 @@ write_sha256sums() {
       for asset in \
         "$PACKAGE_NAME" \
         "${PACKAGE_NAME}d" \
-        "${PACKAGE_NAME}-ui"; do
+        "${PACKAGE_NAME}-ui" \
+        "${PACKAGE_NAME}-privileged"; do
         [[ -f "$asset" ]] && printf '%s\0' "$asset"
       done
       find . -maxdepth 1 -type f \

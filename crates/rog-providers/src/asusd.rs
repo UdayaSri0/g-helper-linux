@@ -219,12 +219,7 @@ impl BatteryProvider for AsusdPlatformProvider {
     }
 
     async fn set_limit(&self, limit: BatteryLimitPercent) -> RogResult<()> {
-        if !(20..=100).contains(&limit.0) {
-            return Err(RogError::InvalidInput(format!(
-                "battery limit {} is outside supported range 20..=100 for asusd",
-                limit.0
-            )));
-        }
+        limit.validate_control()?;
 
         let proxy = self.proxy().await?;
         proxy

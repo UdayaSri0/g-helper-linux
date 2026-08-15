@@ -56,6 +56,15 @@ pub struct AuraProbeDiagnostics {
     pub potential_aura_interfaces: Vec<String>,
     pub rgb_methods_detected: Vec<String>,
     pub rgb_properties_detected: Vec<String>,
+    pub brightness_methods_detected: Vec<String>,
+    pub brightness_properties_detected: Vec<String>,
+    pub mode_methods_detected: Vec<String>,
+    pub mode_properties_detected: Vec<String>,
+    pub speed_methods_detected: Vec<String>,
+    pub speed_properties_detected: Vec<String>,
+    pub zone_methods_detected: Vec<String>,
+    pub zone_properties_detected: Vec<String>,
+    pub verified_interface_detected: bool,
     pub selected_endpoint: Option<String>,
     pub probe_errors: Vec<String>,
 }
@@ -73,35 +82,38 @@ impl AuraProvider {
             .await
             .map_err(|e| RogError::DependencyMissing(format!("system dbus unavailable: {e}")))?;
 
-        let names = match DBusProxy::new(&conn).await {
-            Ok(p) => p
-                .list_names()
-                .await
-                .map(|ns| ns.into_iter().map(|n| n.to_string()).collect::<Vec<_>>())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
+        let names = DBusProxy::new(&conn)
+            .await
+            .map_err(|e| RogError::Unexpected(format!("build system DBus proxy: {e}")))?
+            .list_names()
+            .await
+            .map_err(|e| map_fdo_error("list system DBus names", e))?
+            .into_iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
 
         let mut notes = Vec::new();
-        let mut diagnostics = AuraProbeDiagnostics::default();
+        let mut diagnostics = AuraProbeDiagnostics {
+            services_checked: SERVICE_CANDIDATES
+                .iter()
+                .map(|service| (*service).to_string())
+                .collect(),
+            ..AuraProbeDiagnostics::default()
+        };
         let services = service_candidates_from_names(&names);
-        diagnostics.services_checked = services.clone();
+        for service in &services {
+            push_unique(&mut diagnostics.services_checked, service.clone());
+        }
 
         for service in &services {
-            if !names.is_empty() && !names.iter().any(|n| n == service) {
-                notes.push(format!(
-                    "asusd Aura probe: service {service} is not present."
-                ));
-                continue;
-            }
-
             diagnostics.service_detected = true;
             if diagnostics.service_name.is_none() {
                 diagnostics.service_name = Some(service.clone());
             }
 
-            let roots = service_roots(service);
-            for root in roots {
+            // The root is standardized by DBus. All descendant object paths
+            // are learned from introspection rather than guessed.
+            for root in ["/"] {
                 let walk = walk_introspection(&conn, service, root).await;
                 for path in walk.paths_checked {
                     push_unique(&mut diagnostics.object_paths_checked, path);
@@ -115,7 +127,13 @@ impl AuraProvider {
                     for iface in parse_interfaces(&node.xml) {
                         record_interface_diagnostics(&mut diagnostics, service, &node.path, &iface);
 
-                        let Some(controls) = AuraControls::from_interface(&node.path, &iface)
+                        let Some(candidate) =
+                            AuraControls::candidate_from_interface(&node.path, &iface)
+                        else {
+                            continue;
+                        };
+                        let Some(controls) =
+                            verified_controls_for_interface(service, &node.path, &iface, candidate)
                         else {
                             continue;
                         };
@@ -132,6 +150,7 @@ impl AuraProvider {
                         };
 
                         diagnostics.selected_endpoint = Some(provider.endpoint.endpoint_tag());
+                        diagnostics.verified_interface_detected = true;
                         notes.push(format!(
                             "ASUS Aura/RGB lighting exposed by {}.",
                             provider.endpoint.endpoint_tag()
@@ -147,13 +166,18 @@ impl AuraProvider {
             }
         }
 
-        if notes.is_empty() {
-            notes.push("asusd Aura probe: no supported service names were detected.".to_string());
-        } else {
+        if !diagnostics.potential_aura_interfaces.is_empty() {
             notes.push(
-                "asusd Aura probe: no Aura/keyboard RGB interface was exposed by introspection."
+                "Aura-like DBus interfaces were detected, but no verified service/path/interface/signature contract matched; they remain diagnostic-only."
                     .to_string(),
             );
+        } else if diagnostics.service_detected {
+            notes.push(
+                "An ASUS-related DBus service was detected, but it exposed no verified Aura/keyboard RGB interface."
+                    .to_string(),
+            );
+        } else {
+            notes.push("asusd Aura probe: no supported service names were detected.".to_string());
         }
 
         Ok(AuraProbeResult {
@@ -181,6 +205,14 @@ impl AuraProvider {
 
     pub fn can_set_brightness(&self) -> bool {
         self.controls.can_set_brightness()
+    }
+
+    pub fn supports_speed(&self) -> bool {
+        false
+    }
+
+    pub fn supported_zones(&self) -> Vec<String> {
+        Vec::new()
     }
 
     pub fn supported_modes_hint(&self) -> Vec<LightingMode> {
@@ -267,16 +299,22 @@ impl AuraProvider {
             backend: "asusd-aura".to_string(),
             device: self.endpoint.endpoint_tag(),
             brightness,
-            max_brightness: if self.controls.supports_brightness() {
-                Some(3)
-            } else {
-                None
-            },
+            max_brightness: None,
             mode,
+            supports_brightness: self.controls.supports_brightness(),
+            supports_modes: self.controls.supports_modes(),
             supported_modes,
             supports_rgb: self.supports_rgb(),
             rgb,
+            supports_speed: self.supports_speed(),
+            supported_speeds: Vec::new(),
+            supported_zones: self.supported_zones(),
             writable: self.controls.can_set_any(),
+            direct_writable: self.controls.can_set_any(),
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "not_required".to_string(),
+            fallback_reason: None,
             status: status.to_string(),
             last_error,
         })
@@ -284,8 +322,14 @@ impl AuraProvider {
 
     pub async fn set_mode(&self, mode: LightingMode) -> RogResult<()> {
         let proxy = self.proxy().await?;
-        let supported = self.read_supported_modes(&proxy).await.unwrap_or_default();
-        if !supported.is_empty() && !supported.iter().any(|m| m.same_user_mode(&mode)) {
+        let supported = self.read_supported_modes(&proxy).await?;
+        if supported.is_empty() {
+            return Err(RogError::NotSupported(
+                "Aura backend did not report supported lighting modes; refusing an unverified mode write."
+                    .to_string(),
+            ));
+        }
+        if !supported.iter().any(|m| m.same_user_mode(&mode)) {
             let supported = supported
                 .iter()
                 .map(LightingMode::label)
@@ -415,7 +459,7 @@ struct AuraControls {
 }
 
 impl AuraControls {
-    fn from_interface(path: &str, iface: &InterfaceInfo) -> Option<Self> {
+    fn candidate_from_interface(path: &str, iface: &InterfaceInfo) -> Option<Self> {
         let mut controls = Self::default();
 
         for prop in &iface.properties {
@@ -505,6 +549,20 @@ impl AuraControls {
     }
 }
 
+fn verified_controls_for_interface(
+    service: &str,
+    path: &str,
+    iface: &InterfaceInfo,
+    candidate: AuraControls,
+) -> Option<AuraControls> {
+    // No installed Aura service exists on the validated target, so there is no
+    // captured interface contract that can safely authorize calls. Add an exact
+    // service/path/interface/signature match here only alongside real
+    // introspection output and contract-specific fixture tests.
+    let _ = (service, path, iface, candidate);
+    None
+}
+
 #[derive(Debug, Clone)]
 struct DbusNode {
     path: String,
@@ -539,23 +597,11 @@ struct DbusProperty {
     writable: bool,
 }
 
-fn service_roots(service: &str) -> Vec<&'static str> {
-    match service {
-        "xyz.ljones.Asusd" => vec!["/xyz/ljones", "/"],
-        "org.asuslinux.Daemon" => vec!["/org/asuslinux", "/"],
-        _ => vec!["/"],
-    }
-}
-
 fn service_candidates_from_names(names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
-    for service in SERVICE_CANDIDATES {
-        push_unique(&mut out, (*service).to_string());
-    }
-
     let re = Regex::new("(?i)asus|rog|aura|keyboard|kbd|led|rgb").unwrap();
     for name in names {
-        if re.is_match(name) {
+        if !name.starts_with(':') && re.is_match(name) {
             push_unique(&mut out, name.clone());
         }
     }
@@ -628,27 +674,57 @@ fn record_interface_diagnostics(
         diagnostics.keyboard_interface_detected = true;
     }
 
-    if aura_score(path, iface) >= 8 {
+    let aura_like = aura_score(path, iface) >= 8;
+    if aura_like {
         push_unique(&mut diagnostics.potential_aura_interfaces, tag.clone());
     }
 
     for method in &iface.methods {
         let key = normalize_name(&method.name);
-        if is_rgb_name(&key) || (is_lighting_keyword_name(&key) && key.starts_with("set")) {
-            push_unique(
-                &mut diagnostics.rgb_methods_detected,
-                format!("{tag}.{}", method.name),
-            );
+        let method = format!("{tag}.{}({})", method.name, method.input_types.join(","));
+        if is_rgb_name(&key) {
+            push_unique(&mut diagnostics.rgb_methods_detected, method.clone());
+        }
+        if aura_like && is_brightness_name(&key) {
+            push_unique(&mut diagnostics.brightness_methods_detected, method.clone());
+        }
+        if aura_like && is_mode_name(&key) {
+            push_unique(&mut diagnostics.mode_methods_detected, method.clone());
+        }
+        if aura_like && is_speed_name(&key) {
+            push_unique(&mut diagnostics.speed_methods_detected, method.clone());
+        }
+        if aura_like && is_zone_name(&key) {
+            push_unique(&mut diagnostics.zone_methods_detected, method);
         }
     }
 
     for prop in &iface.properties {
         let key = normalize_name(&prop.name);
-        if is_rgb_name(&key) || is_lighting_keyword_name(&key) {
+        let access = match (prop.readable, prop.writable) {
+            (true, true) => "readwrite",
+            (true, false) => "read",
+            (false, true) => "write",
+            (false, false) => "none",
+        };
+        let property = format!("{tag}.{}:{}:{access}", prop.name, prop.signature);
+        if is_rgb_name(&key) {
+            push_unique(&mut diagnostics.rgb_properties_detected, property.clone());
+        }
+        if aura_like && is_brightness_name(&key) {
             push_unique(
-                &mut diagnostics.rgb_properties_detected,
-                format!("{tag}.{}", prop.name),
+                &mut diagnostics.brightness_properties_detected,
+                property.clone(),
             );
+        }
+        if aura_like && (is_mode_name(&key) || is_supported_modes_name(&key)) {
+            push_unique(&mut diagnostics.mode_properties_detected, property.clone());
+        }
+        if aura_like && is_speed_name(&key) {
+            push_unique(&mut diagnostics.speed_properties_detected, property.clone());
+        }
+        if aura_like && is_zone_name(&key) {
+            push_unique(&mut diagnostics.zone_properties_detected, property);
         }
     }
 }
@@ -809,17 +885,16 @@ fn is_rgb_name(key: &str) -> bool {
         || key.contains("staticcolor")
 }
 
-fn is_lighting_keyword_name(key: &str) -> bool {
-    key.contains("aura")
-        || key.contains("led")
-        || key.contains("keyboard")
-        || key.contains("kbd")
-        || key.contains("backlight")
-        || is_rgb_name(key)
-}
-
 fn is_brightness_name(key: &str) -> bool {
     key.contains("brightness") && !key.contains("screen")
+}
+
+fn is_speed_name(key: &str) -> bool {
+    key.contains("speed") && !key.contains("fan")
+}
+
+fn is_zone_name(key: &str) -> bool {
+    key.contains("zone")
 }
 
 fn is_mode_setter_name(key: &str) -> bool {
@@ -865,7 +940,7 @@ fn parse_mode_value(value: &OwnedValue) -> Option<LightingMode> {
     if let Ok(text) = <&str>::try_from(value) {
         return Some(LightingMode::from_backend_label(text));
     }
-    value_to_u32(value).and_then(mode_from_wire)
+    None
 }
 
 fn parse_mode_list_value(value: &OwnedValue) -> Vec<LightingMode> {
@@ -874,18 +949,6 @@ fn parse_mode_list_value(value: &OwnedValue) -> Vec<LightingMode> {
     if let Ok(values) = Vec::<String>::try_from(value.clone()) {
         for value in values {
             push_mode(&mut out, LightingMode::from_backend_label(&value));
-        }
-    } else if let Ok(values) = Vec::<u8>::try_from(value.clone()) {
-        for value in values {
-            if let Some(mode) = mode_from_wire(value as u32) {
-                push_mode(&mut out, mode);
-            }
-        }
-    } else if let Ok(values) = Vec::<u32>::try_from(value.clone()) {
-        for value in values {
-            if let Some(mode) = mode_from_wire(value) {
-                push_mode(&mut out, mode);
-            }
         }
     } else if let Ok(values) = Vec::<OwnedValue>::try_from(value.clone()) {
         for value in values {
@@ -901,34 +964,6 @@ fn parse_mode_list_value(value: &OwnedValue) -> Vec<LightingMode> {
 fn push_mode(out: &mut Vec<LightingMode>, mode: LightingMode) {
     if !out.iter().any(|existing| existing.same_user_mode(&mode)) {
         out.push(mode);
-    }
-}
-
-fn mode_from_wire(value: u32) -> Option<LightingMode> {
-    match value {
-        0 => Some(LightingMode::Static),
-        1 => Some(LightingMode::Breathe),
-        2 => Some(LightingMode::Strobe),
-        3 => Some(LightingMode::Rainbow),
-        4 => Some(LightingMode::Pulse),
-        5 => Some(LightingMode::Wave),
-        255 => Some(LightingMode::Off),
-        _ => None,
-    }
-}
-
-fn mode_to_wire_u8(mode: &LightingMode) -> RogResult<u8> {
-    match mode {
-        LightingMode::Static => Ok(0),
-        LightingMode::Breathe => Ok(1),
-        LightingMode::Strobe => Ok(2),
-        LightingMode::Rainbow => Ok(3),
-        LightingMode::Pulse => Ok(4),
-        LightingMode::Wave => Ok(5),
-        LightingMode::Off => Ok(255),
-        LightingMode::Other(value) => Err(RogError::NotSupported(format!(
-            "Aura backend requires a numeric mode, and '{value}' has no known mapping."
-        ))),
     }
 }
 
@@ -982,18 +1017,6 @@ async fn set_mode_property(
             .set_property(&prop.name, mode.label())
             .await
             .map_err(|e| map_fdo_error("set Aura lighting mode", e)),
-        "y" => proxy
-            .set_property(&prop.name, mode_to_wire_u8(mode)?)
-            .await
-            .map_err(|e| map_fdo_error("set Aura lighting mode", e)),
-        "u" => proxy
-            .set_property(&prop.name, mode_to_wire_u8(mode)? as u32)
-            .await
-            .map_err(|e| map_fdo_error("set Aura lighting mode", e)),
-        "i" => proxy
-            .set_property(&prop.name, mode_to_wire_u8(mode)? as i32)
-            .await
-            .map_err(|e| map_fdo_error("set Aura lighting mode", e)),
         sig => Err(RogError::NotSupported(format!(
             "Aura lighting mode property '{}' has unsupported DBus signature '{sig}'.",
             prop.name
@@ -1009,18 +1032,6 @@ async fn call_set_mode_method(
     match method.input_types.as_slice() {
         [sig] if sig == "s" => proxy
             .call::<_, _, ()>(method.name.as_str(), &(mode.label()))
-            .await
-            .map_err(|e| map_dbus_error("call Aura mode setter", e)),
-        [sig] if sig == "y" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(mode_to_wire_u8(mode)?))
-            .await
-            .map_err(|e| map_dbus_error("call Aura mode setter", e)),
-        [sig] if sig == "u" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(mode_to_wire_u8(mode)? as u32))
-            .await
-            .map_err(|e| map_dbus_error("call Aura mode setter", e)),
-        [sig] if sig == "i" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(mode_to_wire_u8(mode)? as i32))
             .await
             .map_err(|e| map_dbus_error("call Aura mode setter", e)),
         _ => Err(RogError::NotSupported(format!(
@@ -1170,7 +1181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn introspection_parser_finds_aura_controls() {
+    fn introspection_parser_reports_candidate_without_authorizing_controls() {
         let xml = r#"
             <node>
               <interface name="xyz.ljones.Aura">
@@ -1182,20 +1193,54 @@ mod tests {
                   <arg name="g" type="y" direction="in"/>
                   <arg name="b" type="y" direction="in"/>
                 </method>
-                <property name="LedMode" type="y" access="readwrite"/>
+                <method name="SetEffectSpeed">
+                  <arg name="speed" type="s" direction="in"/>
+                </method>
+                <method name="SetBrightness">
+                  <arg name="brightness" type="u" direction="in"/>
+                </method>
+                <property name="LedMode" type="s" access="readwrite"/>
                 <property name="LedColour" type="(yyy)" access="readwrite"/>
-                <property name="SupportedLedModes" type="ay" access="read"/>
+                <property name="SupportedLedModes" type="as" access="read"/>
+                <property name="SupportedZones" type="as" access="read"/>
               </interface>
             </node>
         "#;
 
         let iface = parse_interfaces(xml).remove(0);
-        let controls = AuraControls::from_interface("/xyz/ljones", &iface).unwrap();
+        let controls = AuraControls::candidate_from_interface("/xyz/ljones", &iface).unwrap();
 
         assert!(controls.can_set_rgb());
         assert!(controls.supports_modes());
         assert!(controls.mode_set_method.is_some());
         assert!(controls.supported_modes_property.is_some());
+        assert!(verified_controls_for_interface(
+            "xyz.ljones.Asusd",
+            "/xyz/ljones",
+            &iface,
+            controls
+        )
+        .is_none());
+
+        let mut diagnostics = AuraProbeDiagnostics::default();
+        record_interface_diagnostics(&mut diagnostics, "xyz.ljones.Asusd", "/xyz/ljones", &iface);
+        assert!(diagnostics
+            .speed_methods_detected
+            .iter()
+            .any(|method| method.contains("SetEffectSpeed(s)")));
+        assert!(diagnostics
+            .zone_properties_detected
+            .iter()
+            .any(|property| property.contains("SupportedZones:as:read")));
+        assert!(diagnostics
+            .brightness_methods_detected
+            .iter()
+            .any(|method| method.contains("SetBrightness(u)")));
+        assert!(diagnostics
+            .mode_properties_detected
+            .iter()
+            .any(|property| property.contains("SupportedLedModes:as:read")));
+        assert!(!diagnostics.verified_interface_detected);
     }
 
     #[test]
@@ -1210,6 +1255,11 @@ mod tests {
         "#;
 
         let iface = parse_interfaces(xml).remove(0);
-        assert!(AuraControls::from_interface("/xyz/ljones", &iface).is_none());
+        assert!(AuraControls::candidate_from_interface("/xyz/ljones", &iface).is_none());
+    }
+
+    #[test]
+    fn numeric_mode_ids_are_not_invented_without_a_verified_contract() {
+        assert_eq!(parse_mode_value(&OwnedValue::from(1_u32)), None);
     }
 }

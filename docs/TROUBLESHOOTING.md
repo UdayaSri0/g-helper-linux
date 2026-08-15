@@ -2,6 +2,15 @@
 
 This document covers common issues based on the current implementation.
 
+For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:
+
+```bash
+cargo run -p rog-cli -- setup-check
+```
+
+The report verifies live APIs where possible and lists binary, systemd, DBus, and sysfs evidence.
+It does not elevate privileges or apply any repair automatically.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:
@@ -45,6 +54,34 @@ busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.git
 
 If these commands fail, start the daemon manually and retry.
 
+## Settings Do Not Persist or `config.toml` Is Invalid
+
+The canonical configuration is:
+
+```text
+$XDG_CONFIG_HOME/rog-helper/config.toml
+```
+
+When `XDG_CONFIG_HOME` is unset, it is `$HOME/.config/rog-helper/config.toml`. The file is owned by
+the current user; do not create it as root. `rog-helperd` is the authoritative writer, so confirm the
+session daemon is reachable before changing Settings.
+
+Useful checks:
+
+```bash
+systemctl --user status rog-helperd --no-pager
+busctl --user call io.github.roghelper.Daemon /io/github/roghelper/Daemon io.github.roghelper.Daemon1 GetConfiguration
+```
+
+If TOML is malformed, the application continues with safe defaults and logs a warning; it does not
+overwrite the broken file automatically. Correct the syntax or use the confirmed Reset to Defaults
+action. A reset replaces only rog-helper's canonical configuration and updates the app-managed
+autostart entry to match the default lifecycle state.
+
+An older `$XDG_CONFIG_HOME/rog-helper/ui.toml` is imported only when `config.toml` does not yet
+exist. The old file is deliberately retained for recovery. Saved charge-limit, profile, and fan-sync
+values are not applied automatically at daemon startup or login.
+
 ## Daemon Not Running
 
 Start the daemon first:
@@ -71,6 +108,35 @@ Important note:
 - `.deb` installs render an absolute `ExecStart=/usr/bin/rog-helperd`
 - packaged desktop installs also ship session DBus activation metadata, so launching the UI can start the daemon even before the user service is enabled
 
+## Privileged Helper or PolicyKit Unavailable
+
+Run the read-only status path through the session daemon:
+
+```bash
+cargo run -p rog-cli -- privileged-status
+systemctl status rog-helper-privileged.service --no-pager
+busctl --system list | rg -n "io\.github\.roghelper\.Privileged|PolicyKit1"
+```
+
+Interpretation:
+
+- `helper installed: no`: the system D-Bus activation file is not installed
+- `helper reachable: no`: activation failed, policy blocked the call, or the service exited/faulted
+- `helper compatible: no`: the helper API version is not supported by this daemon
+- `authorization available: no`: PolicyKit is missing or unavailable
+- `authorization state: not_checked`: the non-interactive probe did not authorize silently; no prompt was requested
+- `authorization state: denied`: a preceding interactive write was denied
+- `privileged categories available: cpu`: the typed CPU fallback is installed and compatible
+
+Inspect service logs with `journalctl -u rog-helper-privileged.service`. The helper is activated on
+demand and exits after being idle; an inactive unit by itself is not a fault. Do not run the GTK UI
+or `rog-helperd` as root, and do not add local D-Bus rules granting generic root operations.
+
+For cancellation, denial, or a missing PolicyKit agent, retry one meaningful Apply action while an
+agent is running and inspect the journal. ROG Helper does not use retained authorization; repeated
+writes may prompt again. If a fan write was interrupted, restart the helper and verify the journal
+records Auto restoration before attempting another curve.
+
 ## Tray Not Visible
 
 The tray uses StatusNotifierItem through `ksni`.
@@ -93,6 +159,7 @@ Check:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "asus|rog"
 cargo run -p rog-cli -- caps
 ```
@@ -122,6 +189,7 @@ Check:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "supergfx"
 cargo run -p rog-cli -- caps
 ```
@@ -167,7 +235,9 @@ Then compare the `*_access_status` and `*_access_reason` fields with what the Da
 
 ## CPU Telemetry Works, But CPU Controls Are Read-Only
 
-This is expected behavior when the daemon can read CPU sysfs but cannot write the relevant control files.
+CPU telemetry remains available when the daemon cannot write a control. With a compatible helper,
+the UI reports `authorization_required` and Apply opens the normal PolicyKit flow. Without it, the
+same supported control reports `helper_missing` or `read_only`, not unsupported hardware.
 
 ## Fans Visible, But Controls Disabled
 
@@ -185,26 +255,29 @@ Expected behavior:
 
 - fan rows remain visible
 - the Fans page still shows animated RPM rotors and individual fan cards for telemetry
-- manual controls are disabled unless `rog-helperd` reports writable `pwmN` plus `pwmN_enable`
-- RPM target controls are disabled unless writable `fanN_target` exists
+- curve controls are enabled only for a fully verified ASUS WMI curve layout and hardware mapping
+- generic manual percentage and RPM-target controls remain disabled even if candidate files are writable
 - Diagnostics lists endpoint paths and permission warnings
 
 ## Fan RPM Appears, But Manual Control Is Unavailable
 
-`fan*_input` is normally read-only RPM telemetry. Manual percentage control needs a matching writable PWM endpoint.
+`fan*_input` is normally read-only RPM telemetry. ROG Helper does not treat a matching writable
+PWM file as sufficient proof that manual control is safe. The current writable fan contract is the
+exact, identity-checked ASUS WMI eight-point curve ABI with a verified Auto restore endpoint.
 
 Common reasons:
 
 - the kernel driver exposes telemetry only
-- `pwmN` or `pwmN_enable` does not exist
-- the files exist but are not writable by the daemon user
+- the exact ASUS WMI curve device or complete eight-point layout is absent
+- the curve files exist but neither the daemon nor the privileged helper can write them
+- the RPM device labels cannot safely map the curve channel to CPU, GPU, or mid fan
 - firmware/BIOS owns the fan policy and ignores software control
 
 The app should degrade to read-only telemetry instead of trying unsafe writes.
 
 ## GPU Clock Shows `-- MHz`
 
-The Fans page shows GPU core and memory clocks only when the daemon can read them safely. On NVIDIA systems this is best-effort `nvidia-smi` telemetry.
+The GPU and Cooling pages show NVIDIA utilisation, VRAM, power, and clock values only when the daemon can read them safely. This is best-effort, read-only `nvidia-smi` telemetry refreshed every three seconds.
 
 Common reasons clocks are unavailable:
 
@@ -223,11 +296,16 @@ If `fan-caps` reports permission warnings, inspect ownership:
 ls -l /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null
 ```
 
-Do not grant broad sysfs write access. If you choose to change local policy, grant only the specific confirmed fan-control files and restart `rog-helperd`.
+Do not grant broad sysfs write access. Candidate generic PWM and RPM-target endpoints are not a
+supported control backend. For a verified ASUS WMI curve layout, use the packaged typed helper and
+its `io.github.roghelper.fans.control` PolicyKit action rather than changing sysfs permissions.
 
 ## asusd Present, But Fan Curves Unsupported
 
-Fan curves are hardware and asusd-interface dependent. If asusd does not expose a discoverable fan-curve API, `rog-helperd` reports curves unsupported rather than broken.
+Fan curves are hardware and kernel-driver dependent. The current backend requires paired `asus`
+RPM telemetry and `asus_custom_fan_curve` hwmon devices that resolve to the same `asus-nb-wmi`
+identity. If that exact mapping is absent, `rog-helperd` reports curves unsupported rather than
+attempting a generic write.
 
 Useful inspection:
 
@@ -252,9 +330,9 @@ Typical signs:
 
 - CPU telemetry is visible
 - the CPU page keeps the control rows visible
-- affected controls are disabled
-- the CPU banner says writes are blocked or backend support is missing
-- Diagnostics reports `permission_denied` for one or more CPU control groups
+- permission-blocked supported controls remain actionable when the helper is ready
+- the CPU banner distinguishes authorization required/denied, helper missing, read-only, and unsupported
+- Diagnostics reports `direct_write`, `privileged_write`, and `authorization` per control
 
 Check:
 
@@ -271,23 +349,19 @@ ls -l /sys/devices/system/cpu/cpu*/online
 Expected current behavior:
 
 - telemetry remains visible
-- only the affected controls are disabled
-- Diagnostics lists the real sysfs paths and whether each one is readable or writable
+- Apply uses direct access when available and otherwise requests `io.github.roghelper.cpu.control`
+- denial or cancellation shows an error and refreshes the actual value
+- Diagnostics lists the real sysfs paths and per-control access source
 - there is no fake `Fix permissions` action
 
 What to do:
 
-- inspect the exact blocked paths in Diagnostics
-- grant `rog-helperd` write access only to the specific files you actually want writable
-- restart the user daemon after changing local policy:
+- inspect helper and PolicyKit status:
 
 ```bash
-systemctl --user restart rog-helperd
+cargo run -p rog-cli -- privileged-status
+systemctl status rog-helper-privileged.service --no-pager
 ```
-
-Important note:
-
-- the repository does not ship an automatic privilege escalation or permission-repair path for CPU sysfs writes
 
 ## CPU Counts Look Wrong On A Hybrid CPU
 
@@ -350,16 +424,20 @@ What to do:
 - if you want sysfs writes, create a local admin-managed permission change for the relevant LED `brightness` file
 - restart `rog-helperd` after changing local policy
 
-The repository does not currently ship a bundled udev rule or privileged helper for this path.
+The repository does not ship a bundled udev rule or a privileged lighting-write method for this path.
 
 ## Keyboard RGB / Aura Diagnostics
 
-RGB colour requires an asusd Aura/keyboard lighting interface on system DBus.
+RGB colour requires a verified Aura/keyboard lighting control contract on system DBus. An
+Aura-looking interface is reported for diagnostics but is not enough to enable writes.
 
 Check:
 
 ```bash
-gdbus introspect --system --dest xyz.ljones.Asusd --object-path /xyz/ljones --recurse
+busctl --system --no-pager list
+# If an ASUS lighting service name is actually present:
+busctl --system tree SERVICE
+busctl --system introspect SERVICE OBJECT_PATH
 cargo run -p rog-cli -- lighting-diagnostics
 cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb"
@@ -370,15 +448,17 @@ cat /sys/class/leds/asus::kbd_backlight/max_brightness
 
 Expected behavior:
 
-- `has_aura: true` only when an Aura/RGB provider was actually detected
+- `has_aura: true` only when an exact verified Aura/RGB provider contract is active
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
-- if asusd is present but does not expose Aura/RGB, Diagnostics should say that RGB is not exposed by asusd
+- if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only
 - if only sysfs is available, Diagnostics should explain that the active backend only supports brightness through `/sys/class/leds/...`
 - if write access is blocked, Diagnostics should name the brightness file permission issue
-- if a potential Aura-like interface is found but unsupported, include the introspection output in a GitHub issue
+- if a potential Aura-like interface is found but unsupported, include its exact service version, tree, and introspection output in a GitHub issue
 
 If RGB is unavailable, the app should keep brightness controls available when sysfs backlight support exists.
+Do not substitute a guessed object path for `OBJECT_PATH`; select it from `busctl tree SERVICE`.
+The current target findings are recorded in `AURA_BACKEND_DISCOVERY.md`.
 
 ## Missing Telemetry or Limited `hwmon` Coverage
 
@@ -399,7 +479,7 @@ cargo run -p rog-cli -- sensors
 The current telemetry implementation is best-effort:
 
 - `hwmon` is the primary source for temperatures and fans
-- `nvidia-smi` is used as a fallback for GPU temperature
+- `nvidia-smi` optionally supplies NVIDIA utilisation, VRAM, clocks, power, identity, and fallback temperature telemetry
 - battery and power state are supplemented by `UPower` and power-supply sysfs
 
 If a metric is not exposed by your system, the UI will show it as unavailable rather than inventing a value.

@@ -1,15 +1,20 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use regex::Regex;
 use rog_core::{
-    dbus_keys, AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuCaps,
-    CpuControlAccess, CpuPathAccess, CpuTelemetry, DeviceCaps, FanCaps, FanControlMode, FanCurve,
-    FanDomain, FanInfo, FanPoint, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    GpuMode, LightingDiagnostics, LightingMode, LightingState, PerformanceProfile, PowerSource,
-    RgbColor, TelemetrySnapshot,
+    config_path, config_to_toml, cpu_request_readback_matches, dbus_keys, legacy_ui_config_path,
+    load_or_migrate, save_config_atomic, validate_config, AppConfig, AppState, BatteryLimitPercent,
+    BatteryState, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest,
+    CpuPathAccess, CpuPowerMode, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
+    FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState, LightingDiagnostics,
+    LightingMode, LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor,
+    SetupIssue, SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -19,8 +24,9 @@ use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::memory::MemoryTelemetryProvider;
 use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
-use rog_providers::power_supply::PowerSupplySysfsProvider;
-use rog_providers::supergfx::SupergfxProvider;
+use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
+use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
+use rog_providers::supergfx::{SupergfxCaps, SupergfxProvider, SupergfxSwitchStatus};
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use rog_providers::upower::UPowerProvider;
 use tokio::time::{interval, Duration};
@@ -28,6 +34,8 @@ use tracing::{info, warn};
 use zbus::fdo;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{connection, interface};
+
+mod privileged_client;
 
 const DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DBUS_PATH: &str = "/io/github/roghelper/Daemon";
@@ -37,6 +45,154 @@ const DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
 struct SharedState {
     inner: RwLock<AppState>,
     control: RwLock<ControlState>,
+    config: RwLock<AppConfig>,
+    config_path: Option<PathBuf>,
+    cpu_privilege: RwLock<CpuPrivilegeState>,
+    fan_authorization: RwLock<String>,
+    lighting_authorization: RwLock<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CpuPrivilegeState {
+    status: rog_core::PrivilegedStatus,
+    authorization: CpuAuthorization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuWriteSource {
+    Direct,
+    Privileged,
+}
+
+async fn with_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_cpu_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn map_privileged_cpu_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => rog_core::RogError::PermissionDenied(error.message),
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged CPU helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged CPU helper failed unexpectedly".to_string(),
+        ),
+    }
+}
+
+fn map_privileged_fan_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("fan control: {}", error.message))
+        }
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged fan helper is unavailable; fan telemetry remains available".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged fan helper failed; Auto restore was attempted".to_string(),
+        ),
+    }
+}
+
+async fn with_fan_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_fan_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("keyboard lighting: {}", error.message))
+        }
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged lighting helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged keyboard brightness write or readback failed".to_string(),
+        ),
+    }
+}
+
+fn map_privileged_battery_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
+    use rog_core::PrivilegedErrorCode as Code;
+    match error.code {
+        Code::NotAuthorized => {
+            rog_core::RogError::PermissionDenied(format!("battery control: {}", error.message))
+        }
+        Code::NotSupported => rog_core::RogError::NotSupported(error.message),
+        Code::InvalidInput => rog_core::RogError::InvalidInput(error.message),
+        Code::HardwareUnavailable => rog_core::RogError::TemporarilyUnavailable(error.message),
+        Code::PermissionDenied => rog_core::RogError::PermissionDenied(error.message),
+        Code::BackendFailure => rog_core::RogError::TemporarilyUnavailable(
+            "the privileged battery helper is unavailable".to_string(),
+        ),
+        Code::Unexpected => rog_core::RogError::Unexpected(
+            "the privileged battery write or readback failed".to_string(),
+        ),
+    }
+}
+
+async fn with_lighting_privileged_fallback<D, P, F>(
+    direct: D,
+    privileged: P,
+) -> rog_core::RogResult<CpuWriteSource>
+where
+    D: FnOnce() -> rog_core::RogResult<()>,
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    match direct() {
+        Ok(()) => Ok(CpuWriteSource::Direct),
+        Err(rog_core::RogError::PermissionDenied(_)) => {
+            privileged().await.map_err(map_privileged_lighting_error)?;
+            Ok(CpuWriteSource::Privileged)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +232,7 @@ struct RogHelperDaemon {
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
     hwmon: HwmonTelemetryProvider,
+    battery_charge_limit: Option<BatteryChargeLimitControl>,
 }
 
 impl RogHelperDaemon {
@@ -91,6 +248,7 @@ impl RogHelperDaemon {
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
         hwmon: HwmonTelemetryProvider,
+        battery_charge_limit: Option<BatteryChargeLimitControl>,
     ) -> Self {
         Self {
             state,
@@ -103,6 +261,7 @@ impl RogHelperDaemon {
             supergfx,
             cpu,
             hwmon,
+            battery_charge_limit,
         }
     }
 
@@ -121,12 +280,33 @@ impl RogHelperDaemon {
         guard.cpu = cpu;
     }
 
-    fn set_cpu_caps(&self, caps: CpuCaps) {
+    fn set_cpu_caps(&self, mut caps: CpuCaps) {
+        let privilege = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        apply_cpu_privilege_to_caps(&mut caps, &privilege);
         let mut guard = self.state.inner.write().expect("rwlock poisoned");
         guard.cpu_caps = caps;
     }
 
     fn set_fan_state(&self, mut fan_state: FanState) {
+        let privilege = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .fan_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        apply_fan_privilege_to_state(&mut fan_state, &privilege, &authorization);
         let control = self.read_control_state();
         fan_state.sync_enabled = control.fan_sync_enabled;
         fan_state.mode = control.fan_mode;
@@ -149,6 +329,22 @@ impl RogHelperDaemon {
         self.state.control.read().expect("rwlock poisoned").clone()
     }
 
+    fn read_config(&self) -> AppConfig {
+        self.state.config.read().expect("rwlock poisoned").clone()
+    }
+
+    fn persist_config(&self, mut config: AppConfig) -> Result<AppConfig, String> {
+        config.version = rog_core::CONFIG_VERSION;
+        validate_config(&config)?;
+        let path = self.state.config_path.as_ref().ok_or_else(|| {
+            "Configuration path is unavailable because HOME and XDG_CONFIG_HOME are not set."
+                .to_string()
+        })?;
+        save_config_atomic(path, &config)?;
+        *self.state.config.write().expect("rwlock poisoned") = config.clone();
+        Ok(config)
+    }
+
     fn set_control_state(
         &self,
         profile: Option<PerformanceProfile>,
@@ -159,6 +355,37 @@ impl RogHelperDaemon {
         guard.profile = profile;
         guard.gpu_mode = gpu_mode;
         guard.battery_limit = battery_limit;
+    }
+
+    fn update_gpu_switch_status(&self, status: &SupergfxSwitchStatus) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        apply_gpu_switch_status_to_caps(&mut guard.caps, status);
+    }
+
+    fn update_gpu_backend_error(&self, error: &rog_core::RogError) {
+        let mut guard = self.state.inner.write().expect("rwlock poisoned");
+        match error {
+            rog_core::RogError::PermissionDenied(_) => {
+                guard.caps.gpu_external_authorization = "denied_by_supergfxd".to_string();
+                guard.caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::PermissionDenied,
+                    "supergfxd or its system policy denied this mode switch. Authorization belongs to the external service; running ROG Helper as root is not a fallback.",
+                );
+            }
+            rog_core::RogError::DependencyMissing(_)
+            | rog_core::RogError::TransientFailure(_)
+            | rog_core::RogError::TemporarilyUnavailable(_)
+            | rog_core::RogError::Unexpected(_) => {
+                guard.caps.gpu_switch_state = GpuSwitchState::Unavailable;
+                guard.caps.gpu_switch_hint =
+                    "supergfxd could not complete the requested mode switch right now.".to_string();
+                guard.caps.gpu_mode_access = FeatureAvailability::new(
+                    FeatureAccessState::TemporarilyUnavailable,
+                    "supergfxd is present, but the requested GPU mode switch is currently unavailable.",
+                );
+            }
+            rog_core::RogError::NotSupported(_) | rog_core::RogError::InvalidInput(_) => {}
+        }
     }
 
     fn update_fan_control_state(
@@ -182,22 +409,89 @@ impl RogHelperDaemon {
         self.set_cpu_telemetry(cpu);
         Ok(())
     }
+
+    async fn apply_cpu_control(&self, request: CpuControlRequest) -> rog_core::RogResult<()> {
+        let result = with_privileged_fallback(
+            || self.cpu.apply_control(&request),
+            || privileged_client::apply_cpu(&request),
+        )
+        .await;
+
+        {
+            let mut privilege = self.state.cpu_privilege.write().expect("rwlock poisoned");
+            match &result {
+                Ok(CpuWriteSource::Privileged) => {
+                    privilege.authorization = CpuAuthorization::Authorized;
+                }
+                Err(rog_core::RogError::PermissionDenied(message))
+                    if message.contains("authorization") =>
+                {
+                    privilege.authorization = CpuAuthorization::Denied;
+                }
+                Err(rog_core::RogError::TemporarilyUnavailable(message))
+                    if message.contains("helper") =>
+                {
+                    privilege.status.privileged_helper_reachable = false;
+                    privilege.authorization = CpuAuthorization::Unavailable;
+                }
+                _ => {}
+            }
+        }
+
+        let refresh = self.refresh_cpu_state();
+        self.set_cpu_caps(self.cpu.probe_caps());
+        result?;
+        refresh?;
+        let state = self.read_state();
+        if cpu_request_readback_matches(&request, &state.cpu) == Some(false) {
+            return Err(rog_core::RogError::TransientFailure(
+                "CPU control readback did not confirm the requested value".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[interface(name = "io.github.roghelper.Daemon1")]
 impl RogHelperDaemon {
+    fn get_configuration(&self) -> String {
+        config_to_toml(&self.read_config()).unwrap_or_else(|error| {
+            warn!("failed to serialize in-memory configuration: {error}");
+            config_to_toml(&AppConfig::default()).expect("default configuration serializes")
+        })
+    }
+
+    fn set_configuration(&self, contents: &str) -> fdo::Result<()> {
+        let config = toml::from_str::<AppConfig>(contents).map_err(|error| {
+            fdo::Error::InvalidArgs(format!("configuration is invalid: {error}"))
+        })?;
+        self.persist_config(config)
+            .map(|_| ())
+            .map_err(fdo::Error::Failed)
+    }
+
+    fn reset_configuration(&self) -> fdo::Result<String> {
+        let config = self
+            .persist_config(AppConfig::default())
+            .map_err(fdo::Error::Failed)?;
+        config_to_toml(&config).map_err(fdo::Error::Failed)
+    }
+
     fn get_caps(&self) -> HashMap<String, OwnedValue> {
-        caps_to_dbus(&self.read_state().caps)
+        caps_with_control_matrix_to_dbus(&self.read_state())
     }
 
     async fn get_state(&self) -> HashMap<String, OwnedValue> {
         let state = self.read_state();
         let mut m = state_to_dbus(&state);
         m.insert(
-            "cpu_caps".to_string(),
+            dbus_keys::state::CPU_CAPS.to_string(),
             ov(cpu_caps_to_dbus(&state.cpu_caps)),
         );
-        m.insert("cpu".to_string(), ov(cpu_to_dbus(&state.cpu)));
+        m.insert(
+            dbus_keys::state::CPU.to_string(),
+            ov(cpu_to_dbus(&state.cpu)),
+        );
         m.insert(
             dbus_keys::FAN_STATE_KEY.to_string(),
             ov(fan_state_to_dbus(&state.fan_state)),
@@ -207,26 +501,32 @@ impl RogHelperDaemon {
             ov(fan_caps_to_dbus(&state.fan_state.caps)),
         );
         if let Some(l) = self.lighting_to_dbus().await {
-            m.insert("lighting".to_string(), ov(l));
+            m.insert(dbus_keys::state::LIGHTING.to_string(), ov(l));
         }
         let lighting_diagnostics = self.lighting_diagnostics(None, None);
         m.insert(
-            "lighting_diagnostics_summary".to_string(),
+            dbus_keys::state::LIGHTING_DIAGNOSTICS_SUMMARY.to_string(),
             ov(lighting_diagnostics.summary_line()),
         );
         m.insert(
-            "lighting_diagnostics_details".to_string(),
+            dbus_keys::state::LIGHTING_DIAGNOSTICS_DETAILS.to_string(),
             ov(lighting_diagnostics.to_report_text()),
         );
         let control = self.read_control_state();
         if let Some(p) = control.profile {
-            m.insert("profile".to_string(), ov(profile_to_str(p)));
+            m.insert(dbus_keys::state::PROFILE.to_string(), ov(profile_to_str(p)));
         }
         if let Some(g) = control.gpu_mode {
-            m.insert("gpu_mode".to_string(), ov(gpu_mode_to_str(g)));
+            m.insert(
+                dbus_keys::state::GPU_MODE.to_string(),
+                ov(gpu_mode_to_str(g)),
+            );
         }
         if let Some(lim) = control.battery_limit {
-            m.insert("battery_limit".to_string(), OwnedValue::from(lim.0 as u64));
+            m.insert(
+                dbus_keys::state::BATTERY_LIMIT.to_string(),
+                OwnedValue::from(lim.0 as u64),
+            );
         }
         m
     }
@@ -248,6 +548,28 @@ impl RogHelperDaemon {
         cpu_diagnostics_text(&state.cpu_caps, &state.cpu)
     }
 
+    async fn get_setup_status(&self) -> HashMap<String, OwnedValue> {
+        let state = self.read_state();
+        let keyboard_paths = self
+            .kbd_backlight
+            .as_ref()
+            .map(|kbd| vec![kbd.brightness_path().display().to_string()])
+            .unwrap_or_default();
+        let setup = probe_setup_status(
+            RogHelperdProbe::AssumeConnected,
+            &state.caps,
+            &state.cpu_caps,
+            &state.fan_state.caps,
+            keyboard_paths,
+        )
+        .await;
+        setup_status_to_dbus(&setup)
+    }
+
+    async fn get_privileged_status(&self) -> HashMap<String, OwnedValue> {
+        privileged_status_to_dbus(&privileged_client::probe().await)
+    }
+
     fn get_fan_caps(&self) -> HashMap<String, OwnedValue> {
         fan_caps_to_dbus(&self.read_state().fan_state.caps)
     }
@@ -259,11 +581,11 @@ impl RogHelperDaemon {
     fn get_fan_curves(&self) -> HashMap<String, OwnedValue> {
         let mut m = HashMap::new();
         m.insert(
-            "supported".to_string(),
+            dbus_keys::fan_curves::SUPPORTED.to_string(),
             OwnedValue::from(self.read_state().fan_state.caps.has_fan_curves),
         );
         m.insert(
-            "reason".to_string(),
+            dbus_keys::fan_curves::REASON.to_string(),
             ov(
                 "Fan curve reading is backend-dependent and not exposed by the active backend yet."
                     .to_string(),
@@ -273,19 +595,38 @@ impl RogHelperDaemon {
     }
 
     async fn set_fan_auto(&self, fan_id: &str) -> fdo::Result<()> {
-        self.hwmon
-            .set_fan_auto(if fan_id.trim().is_empty() {
-                None
-            } else {
-                Some(fan_id)
-            })
-            .map_err(map_rog_error_to_fdo)?;
+        let target = (!fan_id.trim().is_empty()).then_some(fan_id);
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_auto(target),
+            || privileged_client::set_fan_auto(fan_id),
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Returned fan control to Auto/BIOS mode.",
             None,
         );
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
@@ -330,11 +671,33 @@ impl RogHelperDaemon {
         curve: HashMap<String, OwnedValue>,
     ) -> fdo::Result<()> {
         let curve = fan_curve_from_dbus(fan_id, &curve).map_err(map_rog_error_to_fdo)?;
-        self.hwmon
-            .set_fan_curve(fan_id, curve)
-            .map_err(map_rog_error_to_fdo)?;
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_curve(fan_id, curve.clone()),
+            || privileged_client::set_fan_curve(fan_id, &curve),
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(FanControlMode::Curve, "Applied fan curve.", None);
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
@@ -401,82 +764,179 @@ impl RogHelperDaemon {
     }
 
     async fn reset_fans_to_auto(&self) -> fdo::Result<()> {
-        self.hwmon
-            .set_fan_auto(None)
-            .map_err(map_rog_error_to_fdo)?;
+        let result = with_fan_privileged_fallback(
+            || self.hwmon.set_fan_auto(None),
+            privileged_client::reset_fans_to_auto,
+        )
+        .await;
+        match &result {
+            Ok(CpuWriteSource::Privileged) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+            }
+            Err(rog_core::RogError::PermissionDenied(_)) => {
+                *self
+                    .state
+                    .fan_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "denied".to_string();
+            }
+            _ => {}
+        }
+        if let Ok(state) = self.hwmon.fan_state() {
+            self.set_fan_state(state);
+        }
+        result.map_err(map_rog_error_to_fdo)?;
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Reset all controllable fans to Auto/BIOS mode.",
             None,
         );
-        self.set_fan_state(self.hwmon.fan_state().map_err(map_rog_error_to_fdo)?);
         Ok(())
     }
 
     async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
+        const ACCEPTED_KEYS: &[&str] = &["brightness", "mode", "rgb_hex", "speed", "zone"];
+        if let Some(key) = state
+            .keys()
+            .find(|key| !ACCEPTED_KEYS.contains(&key.as_str()))
+        {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "unknown lighting key '{key}'"
+            )));
+        }
+
+        if state.contains_key("speed") {
+            return Err(fdo::Error::NotSupported(
+                "Lighting speed is unavailable because no verified backend speed contract is active."
+                    .to_string(),
+            ));
+        }
+        if state.contains_key("zone") {
+            return Err(fdo::Error::NotSupported(
+                "Lighting zones are unavailable because no verified backend zone contract is active."
+                    .to_string(),
+            ));
+        }
+
         let mode = state
             .get("mode")
-            .and_then(|v| <&str>::try_from(v).ok())
-            .map(|v| v.to_string());
-        let rgb_hex = state.get("rgb_hex").and_then(|v| <&str>::try_from(v).ok());
+            .map(|v| {
+                <&str>::try_from(v)
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .map_err(|_| {
+                        fdo::Error::InvalidArgs("lighting mode must be a string".to_string())
+                    })
+            })
+            .transpose()?;
+        if mode.as_deref() == Some("") {
+            return Err(fdo::Error::InvalidArgs(
+                "lighting mode cannot be empty".to_string(),
+            ));
+        }
+        let rgb_hex = state
+            .get("rgb_hex")
+            .map(|v| {
+                <&str>::try_from(v)
+                    .map_err(|_| fdo::Error::InvalidArgs("rgb_hex must be a string".to_string()))
+            })
+            .transpose()?;
+        let rgb = rgb_hex
+            .map(RgbColor::parse_hex)
+            .transpose()
+            .map_err(map_rog_error_to_fdo)?;
         let brightness = u64_from_map(&state, "brightness");
+        if state.contains_key("brightness") && brightness.is_none() {
+            return Err(fdo::Error::InvalidArgs(
+                "brightness must be a non-negative integer".to_string(),
+            ));
+        }
+        let brightness = brightness
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    fdo::Error::InvalidArgs(format!(
+                        "lighting brightness {value} exceeds the supported integer range"
+                    ))
+                })
+            })
+            .transpose()?;
+
+        if mode.is_none() && rgb.is_none() && brightness.is_none() {
+            return Err(fdo::Error::InvalidArgs(
+                "lighting request contains no control value".to_string(),
+            ));
+        }
 
         if let Some(aura) = &self.aura {
             if let Some(mode) = mode.as_deref() {
-                let parsed_mode = LightingMode::parse_label(mode)
-                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
-                if aura.can_set_mode() {
-                    aura.set_mode(parsed_mode)
-                        .await
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if !matches!(parsed_mode, LightingMode::Off | LightingMode::Static) {
+                if !aura.can_set_mode() {
                     return Err(fdo::Error::NotSupported(format!(
                         "Aura backend does not expose writable lighting modes for '{mode}'."
                     )));
                 }
             }
-
-            if let Some(rgb_hex) = rgb_hex {
-                if !aura.supports_rgb() {
-                    return Err(fdo::Error::NotSupported(
-                        "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
-                    ));
-                }
-                let rgb = RgbColor::parse_hex(rgb_hex).map_err(map_rog_error_to_fdo)?;
-                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
+            if rgb.is_some() && !aura.supports_rgb() {
+                return Err(fdo::Error::NotSupported(
+                    "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
+                ));
             }
-
-            if let Some(brightness) = brightness {
-                if aura.can_set_brightness() {
-                    aura.set_brightness(brightness.min(u32::MAX as u64) as u32)
-                        .await
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if let Some(kbd) = &self.kbd_backlight {
-                    kbd.set_brightness(brightness as u32)
-                        .map_err(map_rog_error_to_fdo)?;
-                } else if brightness != 0 {
+            if !aura.can_set_brightness() {
+                if let (Some(brightness), Some(kbd)) = (brightness, self.kbd_backlight.as_ref()) {
+                    if brightness > kbd.max_brightness() {
+                        return Err(fdo::Error::InvalidArgs(format!(
+                            "keyboard brightness {brightness} exceeds backend maximum {}",
+                            kbd.max_brightness()
+                        )));
+                    }
+                } else if brightness.is_some() {
                     return Err(fdo::Error::NotSupported(
                         "Aura backend does not expose brightness and no sysfs keyboard backlight fallback is available."
                             .to_string(),
                     ));
                 }
             }
+            if let Some(mode) = mode.as_deref() {
+                let parsed_mode = LightingMode::parse_label(mode)
+                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
+                aura.set_mode(parsed_mode)
+                    .await
+                    .map_err(map_rog_error_to_fdo)?;
+            }
+
+            if let Some(rgb) = rgb {
+                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
+            }
+
+            if let Some(brightness) = brightness {
+                if aura.can_set_brightness() {
+                    aura.set_brightness(brightness)
+                        .await
+                        .map_err(map_rog_error_to_fdo)?;
+                } else if let Some(kbd) = &self.kbd_backlight {
+                    self.set_sysfs_keyboard_brightness(kbd, brightness)
+                        .await
+                        .map_err(map_rog_error_to_fdo)?;
+                }
+            }
 
             return Ok(());
         }
 
-        if rgb_hex.is_some() {
+        if rgb.is_some() {
             return Err(fdo::Error::NotSupported(
                 "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
                     .to_string(),
             ));
         }
         let mode = mode.unwrap_or_else(|| "Static".to_string());
-        let mut brightness = brightness.unwrap_or(0);
         if mode.eq_ignore_ascii_case("off") {
-            brightness = 0;
-        }
-        if !mode.eq_ignore_ascii_case("off") && !mode.eq_ignore_ascii_case("static") {
+            // Off is the only synthetic mode supported by the brightness-only
+            // sysfs backend, and maps exactly to brightness zero.
+        } else if !mode.eq_ignore_ascii_case("static") {
             return Err(fdo::Error::NotSupported(format!(
                 "Lighting mode '{mode}' is not supported by the sysfs LED backend."
             )));
@@ -488,7 +948,16 @@ impl RogHelperDaemon {
             ));
         };
 
-        kbd.set_brightness(brightness as u32)
+        let brightness = if mode.eq_ignore_ascii_case("off") {
+            0
+        } else {
+            match brightness {
+                Some(brightness) => brightness,
+                None => kbd.read_brightness().map_err(map_rog_error_to_fdo)?,
+            }
+        };
+        self.set_sysfs_keyboard_brightness(kbd, brightness)
+            .await
             .map_err(map_rog_error_to_fdo)?;
         Ok(())
     }
@@ -519,67 +988,106 @@ impl RogHelperDaemon {
             ));
         };
 
-        let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
-        supergfx
-            .set_mode(mode.clone())
-            .await
-            .map_err(map_rog_error_to_fdo)?;
+        if let Ok(status) = supergfx.switch_status().await {
+            self.update_gpu_switch_status(&status);
+            if status.state.blocks_new_switch() {
+                return Err(fdo::Error::Failed(status.hint));
+            }
+        }
 
-        let confirmed = supergfx.get_mode().await.unwrap_or(mode);
-        let mut guard = self.state.control.write().expect("rwlock poisoned");
-        guard.gpu_mode = Some(confirmed);
+        let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
+        if let Err(error) = supergfx.set_mode(mode).await {
+            self.update_gpu_backend_error(&error);
+            return Err(map_rog_error_to_fdo(error));
+        }
+
+        if let Ok(confirmed) = supergfx.get_mode().await {
+            let mut guard = self.state.control.write().expect("rwlock poisoned");
+            guard.gpu_mode = Some(confirmed);
+        }
+        if let Ok(status) = supergfx.switch_status().await {
+            self.update_gpu_switch_status(&status);
+        }
         Ok(())
     }
 
     async fn set_battery_limit(&self, limit: u64) -> fdo::Result<()> {
-        let Some(asusd) = &self.asusd else {
-            return Err(fdo::Error::NotSupported(
-                "battery limit control requires asusd platform interface".to_string(),
-            ));
-        };
-
         let limit = u8::try_from(limit)
             .map_err(|_| fdo::Error::InvalidArgs("battery limit must fit into u8".to_string()))?;
-        asusd
-            .set_limit(BatteryLimitPercent(limit))
-            .await
+        let limit = BatteryLimitPercent(limit)
+            .validate_control()
             .map_err(map_rog_error_to_fdo)?;
-
-        let confirmed = asusd
-            .get_limit()
-            .await
-            .unwrap_or(BatteryLimitPercent(limit));
+        let backend = self.read_state().caps.battery_limit_backend;
+        let confirmed = if backend == "asusd" {
+            let asusd = self.asusd.as_ref().ok_or_else(|| {
+                fdo::Error::NotSupported("battery limit requires asusd".to_string())
+            })?;
+            asusd.set_limit(limit).await.map_err(map_rog_error_to_fdo)?;
+            asusd.get_limit().await.map_err(map_rog_error_to_fdo)?
+        } else if backend == "power_supply_sysfs" {
+            let control = self.battery_charge_limit.as_ref().ok_or_else(|| {
+                fdo::Error::NotSupported(
+                    "standard battery charge-limit endpoint is unavailable".to_string(),
+                )
+            })?;
+            match control.set_limit(limit) {
+                Ok(actual) => actual,
+                Err(rog_core::RogError::PermissionDenied(_)) => {
+                    match privileged_client::set_battery_charge_limit(limit.0).await {
+                        Ok(actual) => {
+                            let mut state = self.state.inner.write().expect("rwlock poisoned");
+                            state.caps.battery_limit_authorization = "authorized".to_string();
+                            BatteryLimitPercent(actual)
+                        }
+                        Err(error) => {
+                            let mapped = map_privileged_battery_error(error);
+                            let mut state = self.state.inner.write().expect("rwlock poisoned");
+                            state.caps.battery_limit_authorization = match &mapped {
+                                rog_core::RogError::PermissionDenied(_) => "denied",
+                                rog_core::RogError::TemporarilyUnavailable(_) => "unavailable",
+                                _ => "required",
+                            }
+                            .to_string();
+                            drop(state);
+                            return Err(map_rog_error_to_fdo(mapped));
+                        }
+                    }
+                }
+                Err(error) => return Err(map_rog_error_to_fdo(error)),
+            }
+        } else {
+            return Err(fdo::Error::NotSupported(
+                "battery charge-limit control is unsupported".to_string(),
+            ));
+        };
         let mut guard = self.state.control.write().expect("rwlock poisoned");
         guard.battery_limit = Some(confirmed);
         Ok(())
     }
 
     async fn set_cpu_turbo(&self, enabled: bool) -> fdo::Result<()> {
-        self.cpu.set_boost(enabled).map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Turbo(enabled))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_power_mode(&self, mode: &str) -> fdo::Result<()> {
-        self.cpu
-            .set_power_mode(mode)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        let mode = CpuPowerMode::parse(mode).map_err(map_rog_error_to_fdo)?;
+        self.apply_cpu_control(CpuControlRequest::PowerMode(mode))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_governor(&self, governor: &str) -> fdo::Result<()> {
-        self.cpu
-            .set_governor(governor)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Governor(governor.to_string()))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_epp(&self, epp: &str) -> fdo::Result<()> {
-        self.cpu.set_epp(epp).map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::Epp(epp.to_string()))
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_freq_limits(&self, min_mhz: u64, max_mhz: u64) -> fdo::Result<()> {
@@ -598,22 +1106,21 @@ impl RogHelperDaemon {
             })?)
         };
 
-        self.cpu
-            .set_freq_limits(min, max)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::FrequencyLimits {
+            min_mhz: min,
+            max_mhz: max,
+        })
+        .await
+        .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
         let core_id = u32::try_from(core_id).map_err(|_| {
             fdo::Error::InvalidArgs("logical CPU id does not fit into u32".to_string())
         })?;
-        self.cpu
-            .set_core_online(core_id, online)
-            .map_err(map_rog_error_to_fdo)?;
-        self.refresh_cpu_state().map_err(map_rog_error_to_fdo)?;
-        Ok(())
+        self.apply_cpu_control(CpuControlRequest::CoreOnline { core_id, online })
+            .await
+            .map_err(map_rog_error_to_fdo)
     }
 }
 
@@ -629,6 +1136,23 @@ async fn main() -> anyhow::Result<()> {
 
     info!("starting rog-helperd");
 
+    let resolved_config_path = config_path();
+    let (app_config, app_config_path) = match resolved_config_path {
+        Ok(path) => {
+            let legacy = legacy_ui_config_path().unwrap_or_else(|_| path.with_file_name("ui.toml"));
+            let loaded = load_or_migrate(&path, &legacy);
+            for warning in &loaded.warnings {
+                warn!("{warning}");
+            }
+            info!("configuration path: {}", path.display());
+            (loaded.config, Some(path))
+        }
+        Err(error) => {
+            warn!("{error}; using in-memory defaults");
+            (AppConfig::default(), None)
+        }
+    };
+
     let upower = UPowerProvider::connect_system()
         .await
         .context("connect to UPower")?;
@@ -637,6 +1161,11 @@ async fn main() -> anyhow::Result<()> {
     let nvidia = NvidiaSmiTelemetryProvider::default();
     let memory = MemoryTelemetryProvider::default();
     let power_supply = PowerSupplySysfsProvider::default();
+    let (battery_charge_limit, battery_charge_limit_probe_error) =
+        match power_supply.charge_limit_control() {
+            Ok(control) => (control, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let (kbd_backlight, kbd_backlight_probe_error) = match KbdBacklightSysfs::probe() {
         Ok(v) => (v, None),
         Err(e) => {
@@ -728,7 +1257,7 @@ async fn main() -> anyhow::Result<()> {
         .map(KbdBacklightSysfs::can_set_brightness)
         .unwrap_or(false);
     caps.kbd_backlight_access = lighting_access_from_backend_flags(
-        caps.has_aura,
+        aura.as_ref().is_some_and(AuraProvider::can_set_brightness),
         kbd_backlight.is_some(),
         sysfs_writable,
         kbd_backlight_detected,
@@ -798,6 +1327,10 @@ async fn main() -> anyhow::Result<()> {
                 Ok(pcaps) => {
                     caps.has_profiles = pcaps.has_profiles;
                     caps.has_charge_limit = pcaps.has_charge_limit;
+                    if pcaps.has_charge_limit {
+                        caps.battery_limit_backend = "asusd".to_string();
+                        caps.battery_limit_authorization = "external_service".to_string();
+                    }
                     caps.profile_access = if pcaps.has_profiles {
                         FeatureAvailability::new(
                             FeatureAccessState::Available,
@@ -888,25 +1421,46 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if caps.battery_limit_backend != "asusd" {
+        match &battery_charge_limit {
+            Some(control) => {
+                caps.has_charge_limit = true;
+                caps.battery_limit_backend = "power_supply_sysfs".to_string();
+                caps.battery_limit_direct_write = control.can_write_directly();
+                caps.charge_limit_access = if caps.battery_limit_direct_write {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "Battery charge-limit control is directly writable through the standard Linux power-supply interface.",
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::PermissionDenied,
+                        "Battery charge-limit control is supported, but the standard Linux endpoint requires administrator access.",
+                    )
+                };
+                match control.read_limit() {
+                    Ok(value) => control_state.battery_limit = Some(value),
+                    Err(error) => caps.notes.push(format!(
+                        "could not read standard battery charge limit: {error}"
+                    )),
+                }
+            }
+            None => {
+                if let Some(error) = &battery_charge_limit_probe_error {
+                    caps.notes
+                        .push(format!("battery charge-limit fallback rejected: {error}"));
+                }
+            }
+        }
+    }
+
     match &supergfx {
         Some(provider) => {
             caps.endpoints
                 .push(format!("supergfxd:{}", provider.endpoint_tag()));
             match provider.probe_caps().await {
                 Ok(gcaps) => {
-                    caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
-                    caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
-                    caps.gpu_mode_access = if caps.has_gpu_modes {
-                        FeatureAvailability::new(
-                            FeatureAccessState::Available,
-                            "GPU mode switching is available through supergfxd.",
-                        )
-                    } else {
-                        FeatureAvailability::new(
-                            FeatureAccessState::Unsupported,
-                            "supergfxd is available, but this machine does not expose switchable GPU modes.",
-                        )
-                    };
+                    apply_supergfx_probe_to_caps(&mut caps, &gcaps);
                     if !gcaps.raw_supported_modes.is_empty() {
                         caps.notes.push(format!(
                             "supergfxd supported modes: {}",
@@ -915,6 +1469,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Err(e) => {
+                    caps.gpu_backend = "supergfxd".to_string();
+                    caps.gpu_external_authorization = "external_service".to_string();
+                    caps.gpu_switch_state = GpuSwitchState::Unavailable;
+                    caps.gpu_switch_hint =
+                        "supergfxd GPU capabilities could not be read right now.".to_string();
                     caps.gpu_mode_access = FeatureAvailability::new(
                         FeatureAccessState::TemporarilyUnavailable,
                         "supergfxd is present, but GPU mode support could not be confirmed right now.",
@@ -933,17 +1492,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         None => {
+            apply_supergfx_unavailable_to_caps(&mut caps, supergfx_connect_error.is_some());
             if let Some(err) = &supergfx_connect_error {
-                caps.gpu_mode_access = FeatureAvailability::new(
-                    FeatureAccessState::TemporarilyUnavailable,
-                    "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
-                );
                 caps.notes.push(format!("supergfxd connect failed: {err}"));
             } else {
-                caps.gpu_mode_access = FeatureAvailability::new(
-                    FeatureAccessState::MissingBackend,
-                    "Install and start supergfxd to enable GPU mode switching.",
-                );
                 caps.notes
                     .push("supergfxd not detected; GPU mode controls disabled.".to_string());
             }
@@ -960,8 +1512,57 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let has_profiles = caps.has_profiles;
-    let has_charge_limit = caps.has_charge_limit;
+    let battery_backend = caps.battery_limit_backend.clone();
     let has_gpu_modes = caps.has_gpu_modes;
+    let privileged_status = privileged_client::probe().await;
+    if caps.battery_limit_backend == "power_supply_sysfs" && !caps.battery_limit_direct_write {
+        let helper_ready = privileged_status.privileged_helper_reachable
+            && privileged_status.privileged_helper_compatible
+            && privileged_status.polkit_available
+            && privileged_status
+                .privileged_categories_available
+                .contains(&rog_core::PrivilegedCategory::Battery);
+        caps.battery_limit_privileged_write = helper_ready;
+        caps.battery_limit_authorization = if helper_ready {
+            "required".to_string()
+        } else {
+            "unavailable".to_string()
+        };
+        caps.charge_limit_access = if helper_ready {
+            FeatureAvailability::new(
+                FeatureAccessState::Available,
+                "Administrator access required to change the battery charge limit. Authentication starts only when Apply is used.",
+            )
+        } else {
+            FeatureAvailability::new(
+                FeatureAccessState::PermissionDenied,
+                "Battery charge-limit control is read-only because the privileged battery helper is unavailable.",
+            )
+        };
+    }
+    let cpu_authorization = if privileged_status.privileged_helper_reachable
+        && privileged_status.privileged_helper_compatible
+        && privileged_status.polkit_available
+        && privileged_status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Cpu)
+    {
+        if privileged_status.authorization_state == rog_core::AuthorizationState::Authorized {
+            CpuAuthorization::Authorized
+        } else {
+            CpuAuthorization::Required
+        }
+    } else {
+        CpuAuthorization::Unavailable
+    };
+    caps.kbd_backlight_access = lighting_access_with_privilege(
+        aura.as_ref().is_some_and(AuraProvider::can_set_brightness),
+        kbd_backlight.as_ref(),
+        &privileged_status,
+        "not_checked",
+    );
+    let mut initial_fan_state = initial_fan_state;
+    apply_fan_privilege_to_state(&mut initial_fan_state, &privileged_status, "not_checked");
     let mut init_state = AppState::new(caps, hw_snapshot);
     init_state.fan_state = initial_fan_state;
     init_state.cpu_caps = cpu_caps.clone();
@@ -969,6 +1570,14 @@ async fn main() -> anyhow::Result<()> {
     let shared = Arc::new(SharedState {
         inner: RwLock::new(init_state),
         control: RwLock::new(control_state),
+        config: RwLock::new(app_config),
+        config_path: app_config_path,
+        cpu_privilege: RwLock::new(CpuPrivilegeState {
+            status: privileged_status,
+            authorization: cpu_authorization,
+        }),
+        fan_authorization: RwLock::new("not_checked".to_string()),
+        lighting_authorization: RwLock::new("not_checked".to_string()),
     });
 
     // Export DBus service on the session bus.
@@ -983,6 +1592,7 @@ async fn main() -> anyhow::Result<()> {
         supergfx.clone(),
         cpu.clone(),
         hwmon.clone(),
+        battery_charge_limit.clone(),
     );
     daemon.set_cpu_caps(cpu_caps.clone());
     let daemon_iface = daemon.clone();
@@ -1000,6 +1610,10 @@ async fn main() -> anyhow::Result<()> {
     let mut next_top_update_ms: u64 = 0;
     let mut cached_top_rows: Option<Vec<rog_core::TopProcessMem>> = None;
     let mut cached_top_text: Option<String> = None;
+    let mut next_nvidia_update_ms: u64 = 0;
+    let mut cached_nvidia = None;
+    let mut nvidia_status = "nvidia-smi not checked yet".to_string();
+    let mut nvidia_warning: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -1109,26 +1723,65 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => warnings.push(format!("power_supply sysfs unavailable: {e}")),
                 }
 
-                // Best-effort NVIDIA telemetry (read-only).
-                if telemetry.gpu_temp_c.is_none() {
-                    match nvidia.read_gpu_temp_c().await {
-                        Ok(Some(temp)) => {
-                            telemetry.gpu_temp_c = Some(temp);
-                            telemetry
-                                .temps_c
-                                .insert("nvidia-smi:gpu_temp".to_string(), temp);
+                // Best-effort NVIDIA telemetry (read-only). One multi-field query runs at most
+                // every three seconds; its cached sample remains visible between daemon ticks.
+                let poll_now_ms = now_ms();
+                if poll_now_ms >= next_nvidia_update_ms {
+                    next_nvidia_update_ms = poll_now_ms.saturating_add(3_000);
+                    match nvidia.read_telemetry().await {
+                        Ok(Some(sample)) => {
+                            let missing = sample.unavailable_field_count();
+                            nvidia_status = if missing == 0 {
+                                format!(
+                                    "nvidia-smi available · GPU {} detected ({})",
+                                    sample.index, sample.name
+                                )
+                            } else {
+                                format!(
+                                    "nvidia-smi available · GPU {} detected ({}) · {missing} optional field(s) unavailable",
+                                    sample.index, sample.name
+                                )
+                            };
+                            cached_nvidia = Some(sample);
+                            nvidia_warning = None;
                         }
-                        Ok(None) => {}
-                        Err(e) => warnings.push(format!("nvidia-smi telemetry unavailable: {e}")),
+                        Ok(None) => {
+                            cached_nvidia = None;
+                            nvidia_status =
+                                "nvidia-smi unavailable or no NVIDIA GPU is currently queryable"
+                                    .to_string();
+                            nvidia_warning = None;
+                        }
+                        Err(error) => {
+                            cached_nvidia = None;
+                            nvidia_status = format!("nvidia-smi telemetry unavailable: {error}");
+                            nvidia_warning = Some(nvidia_status.clone());
+                        }
                     }
                 }
-                match nvidia.read_gpu_clocks_mhz().await {
-                    Ok(Some(clocks)) => {
-                        telemetry.gpu_core_clock_mhz = clocks.core_clock_mhz;
-                        telemetry.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+                telemetry.gpu_telemetry_status = Some(nvidia_status.clone());
+                if let Some(warning) = nvidia_warning.clone() {
+                    warnings.push(warning);
+                }
+                if let Some(sample) = cached_nvidia.as_ref() {
+                    telemetry.gpu_telemetry_provider = Some("nvidia-smi".to_string());
+                    telemetry.gpu_name = Some(sample.name.clone());
+                    telemetry.gpu_uuid = Some(sample.uuid.clone());
+                    telemetry.gpu_pci_bus_id = Some(sample.pci_bus_id.clone());
+                    telemetry.gpu_index = Some(sample.index);
+                    telemetry.gpu_usage_percent = sample.usage_percent;
+                    telemetry.gpu_vram_used_bytes = sample.vram_used_bytes;
+                    telemetry.gpu_vram_total_bytes = sample.vram_total_bytes;
+                    telemetry.gpu_core_clock_mhz = sample.core_clock_mhz;
+                    telemetry.gpu_memory_clock_mhz = sample.memory_clock_mhz;
+                    telemetry.gpu_power_w = sample.power_w;
+                    if let Some(temp) = sample.temperature_c {
+                        telemetry
+                            .temps_c
+                            .insert("nvidia-smi:gpu_temp".to_string(), temp);
+                        // hwmon remains the primary source when it already reported a GPU temp.
+                        telemetry.gpu_temp_c.get_or_insert(temp);
                     }
-                    Ok(None) => {}
-                    Err(_) => {}
                 }
 
                 match upower.read_status().await {
@@ -1231,10 +1884,19 @@ async fn main() -> anyhow::Result<()> {
                             Err(e) => warnings.push(format!("profile read failed: {e}")),
                         }
                     }
-                    if has_charge_limit {
+                    if battery_backend == "asusd" {
                         match provider.get_limit().await {
                             Ok(v) => current_battery_limit = Some(v),
                             Err(e) => warnings.push(format!("charge limit read failed: {e}")),
+                        }
+                    }
+                }
+                if battery_backend == "power_supply_sysfs" {
+                    if let Some(control) = &battery_charge_limit {
+                        match control.read_limit() {
+                            Ok(value) => current_battery_limit = Some(value),
+                            Err(error) => warnings
+                                .push(format!("charge limit read failed: {error}")),
                         }
                     }
                 }
@@ -1245,8 +1907,16 @@ async fn main() -> anyhow::Result<()> {
                             Ok(v) => current_gpu_mode = Some(v),
                             Err(e) => warnings.push(format!("GPU mode read failed: {e}")),
                         }
-                        if let Ok(Some(hint)) = provider.can_switch_now().await {
-                            warnings.push(format!("GPU switch hint: {hint}"));
+                        match provider.switch_status().await {
+                            Ok(status) => {
+                                daemon.update_gpu_switch_status(&status);
+                                if status.state.blocks_new_switch() {
+                                    warnings.push(format!("GPU switch hint: {}", status.hint));
+                                }
+                            }
+                            Err(error) => warnings.push(format!(
+                                "GPU switch readiness unavailable from supergfxd: {error}"
+                            )),
                         }
                     }
                 }
@@ -1345,10 +2015,80 @@ fn lighting_access_from_backend_flags(
     }
 }
 
+fn lighting_helper_ready(status: &rog_core::PrivilegedStatus) -> bool {
+    status.privileged_helper_reachable
+        && status.privileged_helper_compatible
+        && status.polkit_available
+        && status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Lighting)
+}
+
+fn lighting_access_with_privilege(
+    aura_brightness_writable: bool,
+    keyboard: Option<&KbdBacklightSysfs>,
+    status: &rog_core::PrivilegedStatus,
+    authorization: &str,
+) -> FeatureAvailability {
+    if aura_brightness_writable {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard lighting is writable through the verified asusd Aura API.",
+        );
+    }
+    let Some(keyboard) = keyboard else {
+        return FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "No keyboard brightness backend was detected on this machine.",
+        );
+    };
+    if keyboard.can_set_brightness() {
+        return FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Keyboard backlight is directly writable through the sysfs LED backend.",
+        );
+    }
+    if !keyboard.privileged_write_approved() {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is readable, but this device is not approved for privileged writes.",
+        );
+    }
+    if authorization == "denied" {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Administrator authorization for keyboard lighting was denied.",
+        );
+    }
+    if authorization == "unavailable" {
+        return FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is read-only because the privileged lighting helper is unavailable.",
+        );
+    }
+    if lighting_helper_ready(status) {
+        FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "Administrator access required to change keyboard lighting. Authentication starts only when Apply is used.",
+        )
+    } else {
+        FeatureAvailability::new(
+            FeatureAccessState::PermissionDenied,
+            "Keyboard brightness is read-only because the privileged lighting helper is unavailable.",
+        )
+    }
+}
+
 fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("caps".to_string(), ov(caps_to_dbus(&s.caps)));
-    m.insert("telemetry".to_string(), ov(telemetry_to_dbus(&s.telemetry)));
+    m.insert(
+        dbus_keys::state::CAPS.to_string(),
+        ov(caps_with_control_matrix_to_dbus(s)),
+    );
+    m.insert(
+        dbus_keys::state::TELEMETRY.to_string(),
+        ov(telemetry_to_dbus(&s.telemetry)),
+    );
     m.insert(
         dbus_keys::FAN_STATE_KEY.to_string(),
         ov(fan_state_to_dbus(&s.fan_state)),
@@ -1357,65 +2097,394 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_CAPS_KEY.to_string(),
         ov(fan_caps_to_dbus(&s.fan_state.caps)),
     );
-    m.insert("warnings".to_string(), ov(s.warnings.clone()));
+    m.insert(
+        dbus_keys::state::WARNINGS.to_string(),
+        ov(s.warnings.clone()),
+    );
     m
+}
+
+#[derive(Debug)]
+struct ControlPrivilegeRow<'a> {
+    operation: &'a str,
+    supported: bool,
+    current_backend: &'a str,
+    access: &'a str,
+    requires_privilege: bool,
+    existing_system_daemon: &'a str,
+    direct_user_write: bool,
+    privileged_fallback_appropriate: bool,
+    security_risk: &'a str,
+    implementation_decision: &'a str,
+}
+
+fn control_privilege_row_to_dbus(row: ControlPrivilegeRow<'_>) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert("operation".to_string(), ov(row.operation.to_string()));
+    map.insert("supported".to_string(), OwnedValue::from(row.supported));
+    map.insert(
+        "current_backend".to_string(),
+        ov(row.current_backend.to_string()),
+    );
+    map.insert("access".to_string(), ov(row.access.to_string()));
+    map.insert(
+        "requires_privilege".to_string(),
+        OwnedValue::from(row.requires_privilege),
+    );
+    map.insert(
+        "existing_system_daemon".to_string(),
+        ov(row.existing_system_daemon.to_string()),
+    );
+    map.insert(
+        "direct_user_write".to_string(),
+        OwnedValue::from(row.direct_user_write),
+    );
+    map.insert(
+        "privileged_fallback_appropriate".to_string(),
+        OwnedValue::from(row.privileged_fallback_appropriate),
+    );
+    map.insert(
+        "security_risk".to_string(),
+        ov(row.security_risk.to_string()),
+    );
+    map.insert(
+        "implementation_decision".to_string(),
+        ov(row.implementation_decision.to_string()),
+    );
+    map
+}
+
+fn control_privilege_matrix(state: &AppState) -> Vec<HashMap<String, OwnedValue>> {
+    let caps = &state.caps;
+    let mut rows = Vec::new();
+    for control in &state.cpu_caps.control_access {
+        let supported = control.status != CpuAccessState::Unsupported;
+        let access = if !supported {
+            "unsupported"
+        } else if control.direct_write {
+            "direct"
+        } else if control.privileged_write {
+            "privileged"
+        } else {
+            "read-only"
+        };
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation: control.kind.as_str(),
+            supported,
+            current_backend: "cpu-sysfs",
+            access,
+            requires_privilege: supported && !control.direct_write,
+            existing_system_daemon: "none",
+            direct_user_write: control.direct_write,
+            privileged_fallback_appropriate: supported,
+            security_risk: if control.kind == rog_core::CpuControlKind::CoreOnline {
+                "high"
+            } else {
+                "medium"
+            },
+            implementation_decision: "Prefer direct validated sysfs; use typed helper fallback only for permission denial.",
+        }));
+    }
+
+    let battery_access = if !caps.has_charge_limit {
+        "unsupported"
+    } else if caps.battery_limit_backend == "asusd" {
+        "external-service"
+    } else if caps.battery_limit_direct_write {
+        "direct"
+    } else if caps.battery_limit_privileged_write {
+        "privileged"
+    } else {
+        "read-only"
+    };
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "battery_charge_limit",
+        supported: caps.has_charge_limit,
+        current_backend: &caps.battery_limit_backend,
+        access: battery_access,
+        requires_privilege: caps.has_charge_limit
+            && caps.battery_limit_backend == "power_supply_sysfs"
+            && !caps.battery_limit_direct_write,
+        existing_system_daemon: if caps.battery_limit_backend == "asusd" {
+            "asusd"
+        } else {
+            "none"
+        },
+        direct_user_write: caps.battery_limit_direct_write,
+        privileged_fallback_appropriate: caps.battery_limit_backend == "power_supply_sysfs",
+        security_risk: "medium",
+        implementation_decision: "Prefer asusd; otherwise use only the documented, detected power-supply threshold with validation and readback.",
+    }));
+
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "gpu_mode",
+        supported: caps.has_gpu_modes,
+        current_backend: &caps.gpu_backend,
+        access: if caps.has_gpu_modes {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_gpu_modes,
+        existing_system_daemon: "supergfxd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "high",
+        implementation_decision:
+            "Keep supergfxd authoritative; never add direct PCI, module, ACPI, or GPU-mode writes.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "performance_profile",
+        supported: caps.has_profiles,
+        current_backend: if caps.has_profiles { "asusd" } else { "none" },
+        access: if caps.has_profiles {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_profiles,
+        existing_system_daemon: "asusd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "medium",
+        implementation_decision: "Keep asusd authoritative; no root-helper fallback.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "keyboard_brightness",
+        supported: caps.has_kbd_backlight,
+        current_backend: "asusd-or-approved-led-sysfs",
+        access: if !caps.has_kbd_backlight {
+            "unsupported"
+        } else if caps.kbd_backlight_access.status == FeatureAccessState::Available {
+            "available"
+        } else {
+            "read-only"
+        },
+        requires_privilege: caps.has_kbd_backlight,
+        existing_system_daemon: "asusd-when-available",
+        direct_user_write: caps
+            .kbd_backlight_access
+            .reason
+            .contains("directly writable"),
+        privileged_fallback_appropriate: caps.has_kbd_backlight,
+        security_risk: "low",
+        implementation_decision: "Prefer verified asusd API, then user-writable LED sysfs, then approved ASUS LED helper fallback.",
+    }));
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "aura_rgb_and_modes",
+        supported: caps.has_aura,
+        current_backend: if caps.has_aura { "asusd" } else { "none" },
+        access: if caps.has_aura {
+            "external-service"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: caps.has_aura,
+        existing_system_daemon: "asusd",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "high",
+        implementation_decision:
+            "Use only verified asusd contracts; no generic root USB/HID or raw hardware API.",
+    }));
+
+    let fan_direct = state.fan_state.fans.iter().any(|fan| fan.direct_write);
+    let fan_privileged = state.fan_state.fans.iter().any(|fan| fan.privileged_write);
+    rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+        operation: "fan_rpm_telemetry",
+        supported: caps.has_fan_reading,
+        current_backend: &caps.fan_backend,
+        access: if caps.has_fan_reading {
+            "read-only"
+        } else {
+            "unsupported"
+        },
+        requires_privilege: false,
+        existing_system_daemon: "none",
+        direct_user_write: false,
+        privileged_fallback_appropriate: false,
+        security_risk: "low",
+        implementation_decision: "Telemetry remains unprivileged.",
+    }));
+    let fan_verified = state
+        .fan_state
+        .fans
+        .iter()
+        .any(|fan| fan.pwm_endpoint_verified);
+    for (operation, supported) in [
+        (
+            "fan_auto",
+            state.fan_state.fans.iter().any(|fan| fan.supports_auto),
+        ),
+        ("fan_curve", caps.has_fan_curves),
+        ("fan_manual_percent", caps.has_fan_manual_percent),
+        ("fan_rpm_target", caps.has_fan_manual_rpm_target),
+        ("fan_sync", caps.has_fan_sync_control),
+        ("fan_boost", caps.has_fan_boost),
+    ] {
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation,
+            supported,
+            current_backend: &caps.fan_backend,
+            access: if !supported {
+                "unsupported"
+            } else if fan_direct {
+                "direct"
+            } else if fan_privileged {
+                "privileged"
+            } else {
+                "read-only"
+            },
+            requires_privilege: supported && !fan_direct && fan_privileged,
+            existing_system_daemon: "none",
+            direct_user_write: supported && fan_direct,
+            privileged_fallback_appropriate: supported && fan_verified,
+            security_risk: "high",
+            implementation_decision: "Allow only verified ASUS WMI fan interfaces; reject generic PWM guesses and retain firmware Auto restoration.",
+        }));
+    }
+    for (operation, decision) in [
+        (
+            "user_configuration",
+            "Write only the per-user configuration with atomic replacement; no helper.",
+        ),
+        (
+            "user_autostart_integration",
+            "Write only user-session integration files; no helper.",
+        ),
+    ] {
+        rows.push(control_privilege_row_to_dbus(ControlPrivilegeRow {
+            operation,
+            supported: true,
+            current_backend: "user-session-filesystem",
+            access: "direct",
+            requires_privilege: false,
+            existing_system_daemon: "none",
+            direct_user_write: true,
+            privileged_fallback_appropriate: false,
+            security_risk: "low",
+            implementation_decision: decision,
+        }));
+    }
+    rows
+}
+
+fn caps_with_control_matrix_to_dbus(state: &AppState) -> HashMap<String, OwnedValue> {
+    let mut map = caps_to_dbus(&state.caps);
+    map.insert(
+        dbus_keys::caps::CONTROL_PRIVILEGE_MATRIX.to_string(),
+        ov(control_privilege_matrix(state)),
+    );
+    map
 }
 
 fn caps_to_dbus(c: &DeviceCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("has_profiles".to_string(), OwnedValue::from(c.has_profiles));
     m.insert(
-        "has_fan_curves".to_string(),
+        dbus_keys::caps::HAS_PROFILES.to_string(),
+        OwnedValue::from(c.has_profiles),
+    );
+    m.insert(
+        dbus_keys::caps::HAS_FAN_CURVES.to_string(),
         OwnedValue::from(c.has_fan_curves),
     );
     m.insert(
-        "has_fan_reading".to_string(),
+        dbus_keys::caps::HAS_FAN_READING.to_string(),
         OwnedValue::from(c.has_fan_reading),
     );
     m.insert(
-        "has_charge_limit".to_string(),
+        dbus_keys::caps::HAS_CHARGE_LIMIT.to_string(),
         OwnedValue::from(c.has_charge_limit),
     );
     m.insert(
-        "has_gpu_modes".to_string(),
+        dbus_keys::caps::HAS_GPU_MODES.to_string(),
         OwnedValue::from(c.has_gpu_modes),
     );
-    m.insert("has_aura".to_string(), OwnedValue::from(c.has_aura));
     m.insert(
-        "has_kbd_backlight".to_string(),
+        dbus_keys::caps::HAS_AURA.to_string(),
+        OwnedValue::from(c.has_aura),
+    );
+    m.insert(
+        dbus_keys::caps::HAS_KBD_BACKLIGHT.to_string(),
         OwnedValue::from(c.has_kbd_backlight),
     );
     m.insert(
-        "has_fan_manual_percent".to_string(),
+        dbus_keys::caps::HAS_FAN_MANUAL_PERCENT.to_string(),
         OwnedValue::from(c.has_fan_manual_percent),
     );
     m.insert(
-        "has_fan_manual_rpm_target".to_string(),
+        dbus_keys::caps::HAS_FAN_MANUAL_RPM_TARGET.to_string(),
         OwnedValue::from(c.has_fan_manual_rpm_target),
     );
     m.insert(
-        "has_individual_fan_control".to_string(),
+        dbus_keys::caps::HAS_INDIVIDUAL_FAN_CONTROL.to_string(),
         OwnedValue::from(c.has_individual_fan_control),
     );
     m.insert(
-        "has_fan_sync_control".to_string(),
+        dbus_keys::caps::HAS_FAN_SYNC_CONTROL.to_string(),
         OwnedValue::from(c.has_fan_sync_control),
     );
     m.insert(
-        "has_fan_boost".to_string(),
+        dbus_keys::caps::HAS_FAN_BOOST.to_string(),
         OwnedValue::from(c.has_fan_boost),
     );
     m.insert(
-        "fan_count".to_string(),
+        dbus_keys::caps::FAN_COUNT.to_string(),
         OwnedValue::from(c.fan_count as u64),
     );
-    m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
     m.insert(
-        "requires_reboot_for_gpu_switch".to_string(),
+        dbus_keys::caps::FAN_BACKEND.to_string(),
+        ov(c.fan_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_BACKEND.to_string(),
+        ov(c.gpu_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_BACKEND.to_string(),
+        ov(c.battery_limit_backend.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_DIRECT_WRITE.to_string(),
+        OwnedValue::from(c.battery_limit_direct_write),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_PRIVILEGED_WRITE.to_string(),
+        OwnedValue::from(c.battery_limit_privileged_write),
+    );
+    m.insert(
+        dbus_keys::caps::BATTERY_LIMIT_AUTHORIZATION.to_string(),
+        ov(c.battery_limit_authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SUPPORTED_MODES.to_string(),
+        ov(c.gpu_supported_modes.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_EXTERNAL_AUTHORIZATION.to_string(),
+        ov(c.gpu_external_authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SWITCH_STATE.to_string(),
+        ov(c.gpu_switch_state.as_str().to_string()),
+    );
+    m.insert(
+        dbus_keys::caps::GPU_SWITCH_HINT.to_string(),
+        ov(c.gpu_switch_hint.clone()),
+    );
+    m.insert(
+        dbus_keys::caps::REQUIRES_LOGOUT_FOR_GPU_SWITCH.to_string(),
+        OwnedValue::from(c.requires_logout_for_gpu_switch),
+    );
+    m.insert(
+        dbus_keys::caps::REQUIRES_REBOOT_FOR_GPU_SWITCH.to_string(),
         OwnedValue::from(c.requires_reboot_for_gpu_switch),
     );
-    m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
-    m.insert("notes".to_string(), ov(c.notes.clone()));
+    m.insert(
+        dbus_keys::caps::ENDPOINTS.to_string(),
+        ov(c.endpoints.clone()),
+    );
+    m.insert(dbus_keys::caps::NOTES.to_string(), ov(c.notes.clone()));
     insert_feature_access_to_dbus(&mut m, dbus_keys::PROFILE_ACCESS_PREFIX, &c.profile_access);
     insert_feature_access_to_dbus(
         &mut m,
@@ -1447,6 +2516,52 @@ fn apply_fan_caps_to_device_caps(caps: &mut DeviceCaps, fan_caps: &FanCaps) {
     caps.fan_backend = fan_caps.fan_backend.clone();
 }
 
+fn apply_fan_privilege_to_state(
+    state: &mut FanState,
+    status: &rog_core::PrivilegedStatus,
+    authorization: &str,
+) {
+    let helper_ready = status.privileged_helper_reachable
+        && status.privileged_helper_compatible
+        && status.polkit_available
+        && status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Fans);
+    for fan in &mut state.fans {
+        if !fan.pwm_endpoint_verified || (!fan.supports_curve && !fan.supports_auto) {
+            continue;
+        }
+        if fan.direct_write {
+            fan.controllable = true;
+            fan.privileged_write = false;
+            fan.authorization = "not_required".to_string();
+            fan.access_state = "direct".to_string();
+        } else if helper_ready {
+            fan.controllable = true;
+            fan.privileged_write = true;
+            fan.authorization = authorization.to_string();
+            fan.access_state = match authorization {
+                "denied" => "authorization_denied",
+                "authorized" => "curve_control_available",
+                _ => "authorization_required",
+            }
+            .to_string();
+        } else {
+            fan.controllable = false;
+            fan.privileged_write = false;
+            fan.authorization = "unavailable".to_string();
+            fan.access_state =
+                if !status.privileged_helper_installed || !status.privileged_helper_reachable {
+                    "helper_missing"
+                } else {
+                    "unsafe_read_only"
+                }
+                .to_string();
+        }
+    }
+    state.caps = FanCaps::from_fans(&state.fans);
+}
+
 fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert(
@@ -1456,6 +2571,14 @@ fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
     m.insert(
         "has_fan_curves".to_string(),
         OwnedValue::from(c.has_fan_curves),
+    );
+    m.insert(
+        "fan_curve_readable".to_string(),
+        OwnedValue::from(c.fan_curve_readable),
+    );
+    m.insert(
+        "fan_curve_writable".to_string(),
+        OwnedValue::from(c.fan_curve_writable),
     );
     m.insert(
         "has_fan_manual_percent".to_string(),
@@ -1482,6 +2605,10 @@ fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
         OwnedValue::from(c.fan_count as u64),
     );
     m.insert("fan_backend".to_string(), ov(c.fan_backend.clone()));
+    m.insert(
+        "fan_mapping_confidence".to_string(),
+        ov(c.fan_mapping_confidence.as_str().to_string()),
+    );
     m.insert("endpoints".to_string(), ov(c.endpoints.clone()));
     m.insert("notes".to_string(), ov(c.notes.clone()));
     m.insert("warnings".to_string(), ov(c.warnings.clone()));
@@ -1527,6 +2654,10 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_INFO_LABEL_KEY.to_string(),
         ov(fan.label.clone()),
     );
+    m.insert(
+        dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY.to_string(),
+        ov(fan.mapping_confidence.as_str().to_string()),
+    );
     if let Some(v) = fan.current_rpm {
         m.insert(
             dbus_keys::FAN_INFO_CURRENT_RPM_KEY.to_string(),
@@ -1551,6 +2682,30 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
             OwnedValue::from(v as u64),
         );
     }
+    m.insert(
+        dbus_keys::FAN_INFO_RPM_READABLE_KEY.to_string(),
+        OwnedValue::from(fan.rpm_readable),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_PWM_ENDPOINT_VERIFIED_KEY.to_string(),
+        OwnedValue::from(fan.pwm_endpoint_verified),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_DIRECT_WRITE_KEY.to_string(),
+        OwnedValue::from(fan.direct_write),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_PRIVILEGED_WRITE_KEY.to_string(),
+        OwnedValue::from(fan.privileged_write),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_AUTHORIZATION_KEY.to_string(),
+        ov(fan.authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::FAN_INFO_ACCESS_STATE_KEY.to_string(),
+        ov(fan.access_state.clone()),
+    );
     m.insert(
         dbus_keys::FAN_INFO_CONTROLLABLE_KEY.to_string(),
         OwnedValue::from(fan.controllable),
@@ -1607,50 +2762,68 @@ fn insert_feature_access_to_dbus(
 
 fn cpu_caps_to_dbus(c: &CpuCaps) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("has_cpufreq".to_string(), OwnedValue::from(c.has_cpufreq));
-    m.insert("has_epp".to_string(), OwnedValue::from(c.has_epp));
     m.insert(
-        "has_boost_toggle".to_string(),
+        dbus_keys::cpu_caps::HAS_CPUFREQ.to_string(),
+        OwnedValue::from(c.has_cpufreq),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_EPP.to_string(),
+        OwnedValue::from(c.has_epp),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_BOOST_TOGGLE.to_string(),
         OwnedValue::from(c.has_boost_toggle),
     );
     m.insert(
-        "has_package_power".to_string(),
+        dbus_keys::cpu_caps::HAS_PACKAGE_POWER.to_string(),
         OwnedValue::from(c.has_package_power),
     );
     m.insert(
-        "policy_writable".to_string(),
+        dbus_keys::cpu_caps::POLICY_WRITABLE.to_string(),
         OwnedValue::from(c.policy_writable),
     );
     m.insert(
-        "has_min_freq_limit".to_string(),
+        dbus_keys::cpu_caps::HAS_MIN_FREQ_LIMIT.to_string(),
         OwnedValue::from(c.has_min_freq_limit),
     );
     m.insert(
-        "has_max_freq_limit".to_string(),
+        dbus_keys::cpu_caps::HAS_MAX_FREQ_LIMIT.to_string(),
         OwnedValue::from(c.has_max_freq_limit),
     );
-    m.insert("has_governor".to_string(), OwnedValue::from(c.has_governor));
     m.insert(
-        "has_core_online".to_string(),
+        dbus_keys::cpu_caps::HAS_GOVERNOR.to_string(),
+        OwnedValue::from(c.has_governor),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::HAS_CORE_ONLINE.to_string(),
         OwnedValue::from(c.has_core_online),
     );
     if let Some(v) = &c.scaling_driver {
-        m.insert("scaling_driver".to_string(), ov(v.clone()));
+        m.insert(
+            dbus_keys::cpu_caps::SCALING_DRIVER.to_string(),
+            ov(v.clone()),
+        );
     }
     m.insert(
-        "cpu_count".to_string(),
+        dbus_keys::cpu_caps::CPU_COUNT.to_string(),
         OwnedValue::from(c.cpu_count as u64),
     );
     m.insert(
-        "thread_count".to_string(),
+        dbus_keys::cpu_caps::THREAD_COUNT.to_string(),
         OwnedValue::from(c.thread_count as u64),
     );
     m.insert(
-        "governor_choices".to_string(),
+        dbus_keys::cpu_caps::GOVERNOR_CHOICES.to_string(),
         ov(c.governor_choices.clone()),
     );
-    m.insert("epp_choices".to_string(), ov(c.epp_choices.clone()));
-    m.insert("sysfs_paths".to_string(), ov(c.sysfs_paths.clone()));
+    m.insert(
+        dbus_keys::cpu_caps::EPP_CHOICES.to_string(),
+        ov(c.epp_choices.clone()),
+    );
+    m.insert(
+        dbus_keys::cpu_caps::SYSFS_PATHS.to_string(),
+        ov(c.sysfs_paths.clone()),
+    );
     m.insert(
         dbus_keys::CPU_CONTROL_ACCESS_KEY.to_string(),
         ov(c.control_access
@@ -1676,6 +2849,18 @@ fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, Own
         ov(control.reason.clone()),
     );
     m.insert(
+        dbus_keys::CPU_CONTROL_DIRECT_WRITE_KEY.to_string(),
+        OwnedValue::from(control.direct_write),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_PRIVILEGED_WRITE_KEY.to_string(),
+        OwnedValue::from(control.privileged_write),
+    );
+    m.insert(
+        dbus_keys::CPU_CONTROL_AUTHORIZATION_KEY.to_string(),
+        ov(control.authorization.as_str().to_string()),
+    );
+    m.insert(
         dbus_keys::CPU_CONTROL_PATHS_KEY.to_string(),
         ov(control
             .paths
@@ -1684,6 +2869,106 @@ fn cpu_control_access_to_dbus(control: &CpuControlAccess) -> HashMap<String, Own
             .collect::<Vec<_>>()),
     );
     m
+}
+
+fn setup_status_to_dbus(status: &SetupStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        "checked_at_ms".to_string(),
+        OwnedValue::from(status.checked_at_ms),
+    );
+    map.insert(
+        dbus_keys::SETUP_DEPENDENCIES_KEY.to_string(),
+        ov(status
+            .dependencies
+            .iter()
+            .map(setup_dependency_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map.insert(
+        dbus_keys::SETUP_PERMISSIONS_KEY.to_string(),
+        ov(status
+            .permissions
+            .iter()
+            .map(setup_permission_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map.insert(
+        dbus_keys::SETUP_ISSUES_KEY.to_string(),
+        ov(status
+            .issues
+            .iter()
+            .map(setup_issue_to_dbus)
+            .collect::<Vec<_>>()),
+    );
+    map
+}
+
+fn setup_dependency_to_dbus(status: &DependencyStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_KIND_KEY.to_string(),
+        ov(status.kind.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_STATE_KEY.to_string(),
+        ov(status.state.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(status.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_REQUIRED_FOR_KEY.to_string(),
+        ov(status.required_for.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_EVIDENCE_KEY.to_string(),
+        ov(status.evidence.clone()),
+    );
+    map
+}
+
+fn setup_permission_to_dbus(status: &PermissionStatus) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_KIND_KEY.to_string(),
+        ov(status.kind.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_STATE_KEY.to_string(),
+        ov(status.state.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(status.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_PATHS_KEY.to_string(),
+        ov(status.paths.clone()),
+    );
+    map
+}
+
+fn setup_issue_to_dbus(issue: &SetupIssue) -> HashMap<String, OwnedValue> {
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::SETUP_SEVERITY_KEY.to_string(),
+        ov(issue.severity.as_str().to_string()),
+    );
+    map.insert(
+        dbus_keys::SETUP_TITLE_KEY.to_string(),
+        ov(issue.title.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_SUMMARY_KEY.to_string(),
+        ov(issue.summary.clone()),
+    );
+    map.insert(
+        dbus_keys::SETUP_GUIDANCE_KEY.to_string(),
+        ov(issue.guidance.clone()),
+    );
+    map
 }
 
 fn cpu_path_access_to_dbus(path: &CpuPathAccess) -> HashMap<String, OwnedValue> {
@@ -1803,6 +3088,15 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
     if let Some(v) = t.gpu_temp_c {
         m.insert("gpu_temp_c".to_string(), OwnedValue::from(v as f64));
     }
+    if let Some(v) = t.gpu_usage_percent {
+        m.insert("gpu_usage_percent".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.gpu_vram_used_bytes {
+        m.insert("gpu_vram_used_bytes".to_string(), OwnedValue::from(v));
+    }
+    if let Some(v) = t.gpu_vram_total_bytes {
+        m.insert("gpu_vram_total_bytes".to_string(), OwnedValue::from(v));
+    }
     if let Some(v) = t.gpu_core_clock_mhz {
         m.insert("gpu_core_clock_mhz".to_string(), OwnedValue::from(v as u64));
     }
@@ -1811,6 +3105,23 @@ fn telemetry_to_dbus(t: &TelemetrySnapshot) -> HashMap<String, OwnedValue> {
             "gpu_memory_clock_mhz".to_string(),
             OwnedValue::from(v as u64),
         );
+    }
+    if let Some(v) = t.gpu_power_w {
+        m.insert("gpu_power_w".to_string(), OwnedValue::from(v as f64));
+    }
+    if let Some(v) = t.gpu_index {
+        m.insert("gpu_index".to_string(), OwnedValue::from(v));
+    }
+    for (key, value) in [
+        ("gpu_name", t.gpu_name.as_ref()),
+        ("gpu_uuid", t.gpu_uuid.as_ref()),
+        ("gpu_pci_bus_id", t.gpu_pci_bus_id.as_ref()),
+        ("gpu_telemetry_provider", t.gpu_telemetry_provider.as_ref()),
+        ("gpu_telemetry_status", t.gpu_telemetry_status.as_ref()),
+    ] {
+        if let Some(value) = value {
+            m.insert(key.to_string(), ov(value.clone()));
+        }
     }
     if !t.temps_c.is_empty() {
         let temps: HashMap<String, f64> = t
@@ -2067,12 +3378,81 @@ fn profile_to_str(profile: PerformanceProfile) -> &'static str {
     }
 }
 
-fn gpu_mode_to_str(mode: GpuMode) -> &'static str {
+fn apply_supergfx_probe_to_caps(caps: &mut DeviceCaps, probe: &SupergfxCaps) {
+    caps.gpu_backend = "supergfxd".to_string();
+    caps.gpu_supported_modes = probe.raw_supported_modes.clone();
+    caps.has_gpu_modes = !caps.gpu_supported_modes.is_empty();
+    caps.gpu_external_authorization = "external_service".to_string();
+    caps.requires_reboot_for_gpu_switch = probe.requires_reboot_hint;
+    apply_gpu_switch_status_to_caps(
+        caps,
+        &SupergfxSwitchStatus {
+            state: probe.switch_state,
+            hint: probe.switch_hint.clone(),
+        },
+    );
+}
+
+fn apply_supergfx_unavailable_to_caps(caps: &mut DeviceCaps, connect_failed: bool) {
+    caps.gpu_backend = "none".to_string();
+    caps.gpu_external_authorization = "unavailable".to_string();
+    caps.gpu_switch_state = GpuSwitchState::Unavailable;
+    if connect_failed {
+        caps.gpu_switch_hint =
+            "supergfxd was detected indirectly but its system API was unreachable.".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "GPU mode switching needs supergfxd, but the system backend could not be reached right now.",
+        );
+    } else {
+        caps.gpu_switch_hint =
+            "supergfxd is not available; root access is not a substitute.".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::MissingBackend,
+            "Install and start supergfxd to enable GPU mode switching; running ROG Helper as root would not provide this backend.",
+        );
+    }
+}
+
+fn apply_gpu_switch_status_to_caps(caps: &mut DeviceCaps, status: &SupergfxSwitchStatus) {
+    caps.gpu_switch_state = status.state;
+    caps.gpu_switch_hint = status.hint.clone();
+    caps.requires_logout_for_gpu_switch = status.state == GpuSwitchState::LogoutRequired;
+    caps.requires_reboot_for_gpu_switch |= status.state == GpuSwitchState::RebootRequired;
+
+    if !caps.has_gpu_modes {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::Unsupported,
+            "supergfxd is available, but this machine does not expose switchable GPU modes.",
+        );
+    } else if status.state.blocks_new_switch() {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            format!(
+                "supergfxd is waiting for a GPU transition to complete: {}",
+                status.hint
+            ),
+        );
+    } else if status.state == GpuSwitchState::Unavailable {
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::TemporarilyUnavailable,
+            "supergfxd is present, but GPU switching is currently unavailable.",
+        );
+    } else {
+        caps.gpu_external_authorization = "external_service".to_string();
+        caps.gpu_mode_access = FeatureAvailability::new(
+            FeatureAccessState::Available,
+            "GPU mode switching is available through supergfxd; any authorization is owned by that external service.",
+        );
+    }
+}
+
+fn gpu_mode_to_str(mode: GpuMode) -> String {
     match mode {
-        GpuMode::Integrated => "Integrated",
-        GpuMode::Hybrid => "Hybrid",
-        GpuMode::Dedicated => "Dedicated",
-        GpuMode::Other(_) => "Other",
+        GpuMode::Integrated => "Integrated".to_string(),
+        GpuMode::Hybrid => "Hybrid".to_string(),
+        GpuMode::Dedicated => "Dedicated".to_string(),
+        GpuMode::Other(name) => name,
     }
 }
 
@@ -2106,10 +3486,14 @@ fn parse_gpu_mode_request(v: &str) -> Result<GpuMode, String> {
     match key.as_str() {
         "integrated" => Ok(GpuMode::Integrated),
         "hybrid" | "dynamic" | "optimus" => Ok(GpuMode::Hybrid),
-        "dedicated" | "discrete" | "asusmuxdgpu" | "asusegpu" | "vfio" => Ok(GpuMode::Dedicated),
-        "other" => Ok(GpuMode::Other("Other".to_string())),
+        "dedicated" | "discrete" => Ok(GpuMode::Dedicated),
+        "asusmuxdgpu" => Ok(GpuMode::Other("AsusMuxDgpu".to_string())),
+        "nvidianomodeset" => Ok(GpuMode::Other("NvidiaNoModeset".to_string())),
+        "asusegpu" => Ok(GpuMode::Other("AsusEgpu".to_string())),
+        "vfio" => Ok(GpuMode::Other("Vfio".to_string())),
+        "none" => Ok(GpuMode::Other("None".to_string())),
         _ => Err(format!(
-            "unknown GPU mode '{v}', expected Integrated|Hybrid|Dedicated"
+            "unknown GPU mode '{v}'; choose one of the modes reported by supergfxd"
         )),
     }
 }
@@ -2122,6 +3506,10 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
             matches!(
                 control.status,
                 CpuAccessState::PermissionDenied
+                    | CpuAccessState::AuthorizationRequired
+                    | CpuAccessState::AuthorizationDenied
+                    | CpuAccessState::HelperMissing
+                    | CpuAccessState::ReadOnly
                     | CpuAccessState::MissingBackend
                     | CpuAccessState::TemporarilyUnavailable
             )
@@ -2130,6 +3518,36 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
 
     if blocked.is_empty() {
         return None;
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationRequired)
+    {
+        return Some(
+            "Administrator access is required for some supported CPU controls; authorization occurs only when Apply is used."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::AuthorizationDenied)
+    {
+        return Some(
+            "Administrator authorization was denied for a CPU control. Apply again to retry."
+                .to_string(),
+        );
+    }
+
+    if blocked
+        .iter()
+        .any(|control| control.status == CpuAccessState::HelperMissing)
+    {
+        return Some(
+            "Some supported CPU controls need rog-helper-privileged, but the helper is unavailable."
+                .to_string(),
+        );
     }
 
     if blocked
@@ -2165,6 +3583,57 @@ fn cpu_access_warning(caps: &CpuCaps) -> Option<String> {
     None
 }
 
+fn apply_cpu_privilege_to_caps(caps: &mut CpuCaps, privilege: &CpuPrivilegeState) {
+    let helper_ready = privilege.status.privileged_helper_reachable
+        && privilege.status.privileged_helper_compatible
+        && privilege.status.polkit_available
+        && privilege
+            .status
+            .privileged_categories_available
+            .contains(&rog_core::PrivilegedCategory::Cpu);
+    for control in &mut caps.control_access {
+        control.direct_write = control.status == CpuAccessState::Available;
+        if control.direct_write {
+            control.privileged_write = false;
+            control.authorization = CpuAuthorization::NotRequired;
+            continue;
+        }
+        if control.status != CpuAccessState::PermissionDenied {
+            continue;
+        }
+        if helper_ready {
+            control.privileged_write = true;
+            control.authorization = privilege.authorization;
+            control.status = if privilege.authorization == CpuAuthorization::Denied {
+                CpuAccessState::AuthorizationDenied
+            } else {
+                CpuAccessState::AuthorizationRequired
+            };
+            control.reason = if privilege.authorization == CpuAuthorization::Denied {
+                "Administrator authorization was denied. Apply to retry.".to_string()
+            } else {
+                "Administrator access is required. Apply to authenticate.".to_string()
+            };
+        } else if !privilege.status.privileged_helper_installed
+            || !privilege.status.privileged_helper_reachable
+        {
+            control.status = CpuAccessState::HelperMissing;
+            control.authorization = CpuAuthorization::Unavailable;
+            control.reason =
+                "The privileged CPU helper is not installed or cannot be reached.".to_string();
+        } else {
+            control.status = CpuAccessState::ReadOnly;
+            control.authorization = CpuAuthorization::Unavailable;
+            control.reason = "The CPU control is supported, but no compatible authorized write route is available."
+                .to_string();
+        }
+    }
+    caps.policy_writable = caps
+        .control_access
+        .iter()
+        .any(|control| control.status.is_actionable());
+}
+
 fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
     let mut out = String::new();
     out.push_str("CPU Diagnostics\n");
@@ -2196,11 +3665,24 @@ fn cpu_diagnostics_text(caps: &CpuCaps, cpu: &CpuTelemetry) -> String {
         out.push_str("\nWrite Access\n");
         out.push_str("------------\n");
         for control in &caps.control_access {
+            let supported = !matches!(
+                control.status,
+                CpuAccessState::Unknown
+                    | CpuAccessState::Unsupported
+                    | CpuAccessState::MissingBackend
+            );
+            out.push_str(&format!("{}:\n", control.kind.as_str()));
+            out.push_str(&format!("  supported: {supported}\n"));
+            out.push_str(&format!("  direct_write: {}\n", control.direct_write));
             out.push_str(&format!(
-                "{}: {}",
-                control.kind.label(),
-                control.status.as_str()
+                "  privileged_write: {}\n",
+                control.privileged_write
             ));
+            out.push_str(&format!(
+                "  authorization: {}\n",
+                control.authorization.as_str()
+            ));
+            out.push_str(&format!("  status: {}", control.status.as_str()));
             if !control.reason.is_empty() {
                 out.push_str(&format!(" ({})", control.reason));
             }
@@ -2346,7 +3828,7 @@ fn fan_curve_from_dbus(
     map: &HashMap<String, OwnedValue>,
 ) -> rog_core::RogResult<FanCurve> {
     let rows = map
-        .get("points")
+        .get(dbus_keys::fan_curves::POINTS)
         .cloned()
         .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
         .ok_or_else(|| {
@@ -2354,13 +3836,13 @@ fn fan_curve_from_dbus(
         })?;
     let mut points = Vec::with_capacity(rows.len());
     for row in rows {
-        let temp_c = u64_from_map(&row, "temp_c")
+        let temp_c = u64_from_map(&row, dbus_keys::fan_curves::TEMP_C)
             .and_then(|value| u8::try_from(value).ok())
             .ok_or_else(|| {
                 rog_core::RogError::InvalidInput("fan curve point missing temp_c".to_string())
             })?;
-        let duty_percent = u64_from_map(&row, "speed_percent")
-            .or_else(|| u64_from_map(&row, "duty_percent"))
+        let duty_percent = u64_from_map(&row, dbus_keys::fan_curves::SPEED_PERCENT)
+            .or_else(|| u64_from_map(&row, dbus_keys::fan_curves::DUTY_PERCENT_COMPAT))
             .and_then(|value| u8::try_from(value).ok())
             .ok_or_else(|| {
                 rog_core::RogError::InvalidInput(
@@ -2392,12 +3874,166 @@ fn map_rog_error_to_fdo(e: rog_core::RogError) -> fdo::Error {
     }
 }
 
+fn privileged_status_to_dbus(status: &rog_core::PrivilegedStatus) -> HashMap<String, OwnedValue> {
+    use dbus_keys::privileged_status as keys;
+
+    let mut map = HashMap::new();
+    map.insert(
+        keys::SYSTEM_BUS_CONNECTED.to_string(),
+        OwnedValue::from(status.system_bus_connected),
+    );
+    map.insert(
+        keys::HELPER_INSTALLED.to_string(),
+        OwnedValue::from(status.privileged_helper_installed),
+    );
+    map.insert(
+        keys::HELPER_REACHABLE.to_string(),
+        OwnedValue::from(status.privileged_helper_reachable),
+    );
+    map.insert(
+        keys::HELPER_COMPATIBLE.to_string(),
+        OwnedValue::from(status.privileged_helper_compatible),
+    );
+    map.insert(
+        keys::HELPER_VERSION.to_string(),
+        ov(status.privileged_helper_version.clone().unwrap_or_default()),
+    );
+    map.insert(
+        keys::POLKIT_AVAILABLE.to_string(),
+        OwnedValue::from(status.polkit_available),
+    );
+    map.insert(
+        keys::AUTHORIZATION_BACKEND.to_string(),
+        ov(status.authorization_backend.clone()),
+    );
+    map.insert(
+        keys::AUTHORIZATION_STATE.to_string(),
+        ov(status.authorization_state.as_str().to_string()),
+    );
+    map.insert(
+        keys::CATEGORIES_AVAILABLE.to_string(),
+        ov(status
+            .privileged_categories_available
+            .iter()
+            .map(|category| category.as_str().to_string())
+            .collect::<Vec<_>>()),
+    );
+    map
+}
+
 impl RogHelperDaemon {
+    async fn set_sysfs_keyboard_brightness(
+        &self,
+        keyboard: &KbdBacklightSysfs,
+        brightness: u32,
+    ) -> rog_core::RogResult<()> {
+        let result = with_lighting_privileged_fallback(
+            || keyboard.set_brightness(brightness),
+            || privileged_client::set_keyboard_backlight_brightness(brightness),
+        )
+        .await;
+        let authorization = match &result {
+            Ok(CpuWriteSource::Direct) => "not_required",
+            Ok(CpuWriteSource::Privileged) => "authorized",
+            Err(rog_core::RogError::PermissionDenied(_)) => "denied",
+            Err(rog_core::RogError::TemporarilyUnavailable(_)) => "unavailable",
+            _ => "not_checked",
+        };
+        *self
+            .state
+            .lighting_authorization
+            .write()
+            .expect("rwlock poisoned") = authorization.to_string();
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        self.state
+            .inner
+            .write()
+            .expect("rwlock poisoned")
+            .caps
+            .kbd_backlight_access = lighting_access_with_privilege(
+            self.aura
+                .as_ref()
+                .is_some_and(AuraProvider::can_set_brightness),
+            self.kbd_backlight.as_ref(),
+            &status,
+            authorization,
+        );
+        result.map(|_| ())
+    }
+
+    fn apply_lighting_privilege_to_state(&self, state: &mut LightingState) {
+        let Some(keyboard) = self.kbd_backlight.as_ref() else {
+            return;
+        };
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .lighting_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        let aura_brightness_writable = self
+            .aura
+            .as_ref()
+            .is_some_and(AuraProvider::can_set_brightness);
+        let direct = aura_brightness_writable || keyboard.can_set_brightness();
+        let privileged = !direct
+            && authorization != "unavailable"
+            && keyboard.privileged_write_approved()
+            && lighting_helper_ready(&status);
+        state.direct_writable |= direct;
+        state.privileged_writable = privileged;
+        state.authorization_required = privileged && authorization != "authorized";
+        state.authorization = if direct {
+            "not_required".to_string()
+        } else if privileged {
+            authorization
+        } else {
+            "unavailable".to_string()
+        };
+        state.writable |= privileged;
+        if direct && state.backend == "sysfs-led" {
+            state.status = "sysfs_direct_writable".to_string();
+        } else if privileged {
+            state.fallback_reason = Some(
+                "The verified asusd API does not provide this brightness write, so Apply may use the approved privileged ASUS keyboard LED fallback."
+                    .to_string(),
+            );
+            if state.authorization == "denied" {
+                state.status = "authorization_denied".to_string();
+            } else if state.authorization_required {
+                state.status = "authorization_required".to_string();
+            } else {
+                state.status = "sysfs_privileged_writable".to_string();
+            }
+        } else if !direct {
+            state.status = if keyboard.privileged_write_approved() {
+                "read_only_helper_missing"
+            } else {
+                "read_only"
+            }
+            .to_string();
+        }
+    }
+
     async fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
         if let Some(aura) = &self.aura {
             match aura.read_state().await {
                 Ok(mut state) => {
                     self.merge_sysfs_brightness(&mut state);
+                    self.apply_lighting_privilege_to_state(&mut state);
                     let diagnostics = self.lighting_diagnostics(Some(&state), None);
                     return Some(lighting_state_to_dbus(&state, &diagnostics));
                 }
@@ -2405,6 +4041,7 @@ impl RogHelperDaemon {
                     let error = e.to_string();
                     let diagnostics = self.lighting_diagnostics(None, Some(error.as_str()));
                     if let Some(mut state) = self.sysfs_lighting_state() {
+                        self.apply_lighting_privilege_to_state(&mut state);
                         state.status = "aura_backend_error".to_string();
                         state.last_error = Some(format!("Aura backend read failed: {error}"));
                         return Some(lighting_state_to_dbus(&state, &diagnostics));
@@ -2416,11 +4053,24 @@ impl RogHelperDaemon {
                             brightness: None,
                             max_brightness: None,
                             mode: None,
+                            supports_brightness: aura.supports_brightness(),
+                            supports_modes: aura.can_set_mode()
+                                || !aura.supported_modes_hint().is_empty(),
                             supported_modes: aura.supported_modes_hint(),
                             supports_rgb: aura.supports_rgb(),
+                            supports_speed: aura.supports_speed(),
+                            supported_speeds: Vec::new(),
+                            supported_zones: aura.supported_zones(),
                             writable: aura.supports_rgb()
                                 || aura.can_set_mode()
                                 || aura.can_set_brightness(),
+                            direct_writable: aura.supports_rgb()
+                                || aura.can_set_mode()
+                                || aura.can_set_brightness(),
+                            privileged_writable: false,
+                            authorization_required: false,
+                            authorization: "not_required".to_string(),
+                            fallback_reason: None,
                             rgb: None,
                             status: "backend_error".to_string(),
                             last_error: Some(format!("Aura backend read failed: {error}")),
@@ -2431,7 +4081,8 @@ impl RogHelperDaemon {
             }
         }
 
-        self.sysfs_lighting_state().map(|state| {
+        self.sysfs_lighting_state().map(|mut state| {
+            self.apply_lighting_privilege_to_state(&mut state);
             let diagnostics = self.lighting_diagnostics(Some(&state), None);
             lighting_state_to_dbus(&state, &diagnostics)
         })
@@ -2442,7 +4093,7 @@ impl RogHelperDaemon {
         state: Option<&LightingState>,
         aura_state_error: Option<&str>,
     ) -> LightingDiagnostics {
-        build_lighting_diagnostics(
+        let mut diagnostics = build_lighting_diagnostics(
             self.kbd_backlight.as_ref(),
             self.kbd_backlight_detected,
             self.kbd_backlight_probe_error.as_deref(),
@@ -2450,7 +4101,53 @@ impl RogHelperDaemon {
             &self.aura_probe_diagnostics,
             state,
             aura_state_error,
-        )
+        );
+        let status = self
+            .state
+            .cpu_privilege
+            .read()
+            .expect("rwlock poisoned")
+            .status
+            .clone();
+        let authorization = self
+            .state
+            .lighting_authorization
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        if let Some(keyboard) = self.kbd_backlight.as_ref() {
+            let direct = self
+                .aura
+                .as_ref()
+                .is_some_and(AuraProvider::can_set_brightness)
+                || keyboard.can_set_brightness();
+            let privileged = !direct
+                && authorization != "unavailable"
+                && keyboard.privileged_write_approved()
+                && lighting_helper_ready(&status);
+            diagnostics.keyboard_backlight_direct_writable = direct;
+            diagnostics.keyboard_backlight_privileged_writable = privileged;
+            diagnostics.keyboard_backlight_writable = direct || privileged;
+            diagnostics.keyboard_backlight_authorization_required =
+                privileged && authorization != "authorized";
+            diagnostics.keyboard_backlight_authorization = if direct {
+                "not_required".to_string()
+            } else if privileged {
+                authorization
+            } else {
+                "unavailable".to_string()
+            };
+            if privileged {
+                diagnostics.permission_warning = Some(
+                    "Administrator access required to change keyboard lighting; Apply starts the normal PolicyKit flow."
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(reason) = state.and_then(|state| state.fallback_reason.clone()) {
+            diagnostics.fallback_reason = Some(reason);
+        }
+        diagnostics
     }
 
     fn merge_sysfs_brightness(&self, state: &mut LightingState) {
@@ -2466,6 +4163,7 @@ impl RogHelperDaemon {
         if state.max_brightness.is_none() {
             state.max_brightness = Some(kbd.max_brightness());
         }
+        state.supports_brightness = true;
         state.writable |= kbd.can_set_brightness();
     }
 
@@ -2484,10 +4182,27 @@ impl RogHelperDaemon {
             brightness: Some(brightness),
             max_brightness: Some(kbd.max_brightness()),
             mode: Some(mode),
+            supports_brightness: true,
+            supports_modes: true,
             supported_modes: vec![LightingMode::Off, LightingMode::Static],
             supports_rgb: false,
             rgb: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
             writable: kbd.can_set_brightness(),
+            direct_writable: kbd.can_set_brightness(),
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: if kbd.can_set_brightness() {
+                "not_required".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+            fallback_reason: Some(
+                "The verified asusd Aura API is unavailable; keyboard brightness uses sysfs."
+                    .to_string(),
+            ),
             status: "rgb_unsupported".to_string(),
             last_error: None,
         })
@@ -2499,52 +4214,119 @@ fn lighting_state_to_dbus(
     diagnostics: &LightingDiagnostics,
 ) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
-    m.insert("backend".to_string(), ov(state.backend.clone()));
-    m.insert("device".to_string(), ov(state.device.clone()));
     m.insert(
-        "brightness".to_string(),
+        dbus_keys::lighting::BACKEND.to_string(),
+        ov(state.backend.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::DEVICE.to_string(),
+        ov(state.device.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::BRIGHTNESS.to_string(),
         OwnedValue::from(state.brightness.unwrap_or(0) as u64),
     );
     m.insert(
-        "max_brightness".to_string(),
+        dbus_keys::lighting::MAX_BRIGHTNESS.to_string(),
         OwnedValue::from(state.max_brightness.unwrap_or(0) as u64),
     );
-    m.insert("can_set".to_string(), OwnedValue::from(state.writable));
-    m.insert("writable".to_string(), OwnedValue::from(state.writable));
+    m.insert(
+        dbus_keys::lighting::CAN_SET.to_string(),
+        OwnedValue::from(state.writable),
+    );
+    m.insert(
+        dbus_keys::lighting::WRITABLE.to_string(),
+        OwnedValue::from(state.writable),
+    );
+    m.insert(
+        dbus_keys::lighting::DIRECT_WRITABLE.to_string(),
+        OwnedValue::from(state.direct_writable),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_WRITABLE.to_string(),
+        OwnedValue::from(state.privileged_writable),
+    );
+    m.insert(
+        dbus_keys::lighting::AUTHORIZATION_REQUIRED.to_string(),
+        OwnedValue::from(state.authorization_required),
+    );
+    m.insert(
+        dbus_keys::lighting::AUTHORIZATION.to_string(),
+        ov(state.authorization.clone()),
+    );
     if let Some(mode) = state.mode_label() {
-        m.insert("mode".to_string(), ov(mode));
+        m.insert(dbus_keys::lighting::MODE.to_string(), ov(mode));
     }
     m.insert(
-        "supported_modes".to_string(),
+        dbus_keys::lighting::SUPPORTED_MODES.to_string(),
         ov(state.supported_mode_labels()),
     );
     m.insert(
-        "supports_rgb".to_string(),
+        dbus_keys::lighting::SUPPORTS_BRIGHTNESS.to_string(),
+        OwnedValue::from(state.supports_brightness),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTS_MODES.to_string(),
+        OwnedValue::from(state.supports_modes),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTS_RGB.to_string(),
         OwnedValue::from(state.supports_rgb),
     );
     if let Some(rgb) = state.rgb {
-        m.insert("rgb_hex".to_string(), ov(rgb.to_hex()));
-    }
-    m.insert("status".to_string(), ov(state.status.clone()));
-    if let Some(error) = &state.last_error {
-        m.insert("last_error".to_string(), ov(error.clone()));
+        m.insert(dbus_keys::lighting::RGB_HEX.to_string(), ov(rgb.to_hex()));
     }
     m.insert(
-        "diagnostics_summary".to_string(),
+        dbus_keys::lighting::SUPPORTS_SPEED.to_string(),
+        OwnedValue::from(state.supports_speed),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTED_SPEEDS.to_string(),
+        ov(state.supported_speeds.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTED_ZONES.to_string(),
+        ov(state.supported_zones.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::STATUS.to_string(),
+        ov(state.status.clone()),
+    );
+    if let Some(error) = &state.last_error {
+        m.insert(
+            dbus_keys::lighting::LAST_ERROR.to_string(),
+            ov(error.clone()),
+        );
+    }
+    m.insert(
+        dbus_keys::lighting::DIAGNOSTICS_SUMMARY.to_string(),
         ov(diagnostics.summary_line()),
     );
     m.insert(
-        "diagnostics_details".to_string(),
+        dbus_keys::lighting::DIAGNOSTICS_DETAILS.to_string(),
         ov(diagnostics.to_report_text()),
     );
     if let Some(reason) = &diagnostics.fallback_reason {
-        m.insert("fallback_reason".to_string(), ov(reason.clone()));
+        m.insert(
+            dbus_keys::lighting::FALLBACK_REASON.to_string(),
+            ov(reason.clone()),
+        );
+    }
+    if let Some(reason) = &state.fallback_reason {
+        m.entry(dbus_keys::lighting::FALLBACK_REASON.to_string())
+            .or_insert_with(|| ov(reason.clone()));
     }
     if let Some(reason) = &diagnostics.unavailable_reason {
-        m.insert("unavailable_reason".to_string(), ov(reason.clone()));
+        m.insert(
+            dbus_keys::lighting::UNAVAILABLE_REASON.to_string(),
+            ov(reason.clone()),
+        );
     }
     if let Some(warning) = &diagnostics.permission_warning {
-        m.insert("permission_warning".to_string(), ov(warning.clone()));
+        m.insert(
+            dbus_keys::lighting::PERMISSION_WARNING.to_string(),
+            ov(warning.clone()),
+        );
     }
     m
 }
@@ -2565,6 +4347,37 @@ mod tests {
     }
 
     #[test]
+    fn privileged_status_map_exposes_required_diagnostics() {
+        use dbus_keys::privileged_status as keys;
+
+        let status = rog_core::PrivilegedStatus {
+            system_bus_connected: true,
+            privileged_helper_installed: true,
+            privileged_helper_reachable: true,
+            privileged_helper_compatible: true,
+            privileged_helper_version: Some("0.2.2".to_string()),
+            polkit_available: true,
+            authorization_backend: "polkit".to_string(),
+            authorization_state: rog_core::AuthorizationState::Denied,
+            privileged_categories_available: vec![rog_core::PrivilegedCategory::Cpu],
+        };
+        let map = privileged_status_to_dbus(&status);
+
+        assert_eq!(
+            map.get(keys::HELPER_INSTALLED)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(value_as_str(&map, keys::AUTHORIZATION_STATE), "denied");
+        assert_eq!(
+            map.get(keys::CATEGORIES_AVAILABLE)
+                .cloned()
+                .and_then(|value| Vec::<String>::try_from(value).ok()),
+            Some(vec!["cpu".to_string()])
+        );
+    }
+
+    #[test]
     fn caps_to_dbus_emits_feature_access_status_and_reason_keys() {
         let mut caps = DeviceCaps::unknown();
         caps.profile_access = FeatureAvailability::new(
@@ -2579,6 +4392,12 @@ mod tests {
             FeatureAccessState::Unsupported,
             "supergfxd is available, but this machine does not expose switchable GPU modes.",
         );
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.gpu_supported_modes = vec!["Hybrid".to_string(), "Integrated".to_string()];
+        caps.gpu_external_authorization = "external_service".to_string();
+        caps.gpu_switch_state = GpuSwitchState::LogoutRequired;
+        caps.gpu_switch_hint = "Logout required to complete the pending GPU switch.".to_string();
+        caps.requires_logout_for_gpu_switch = true;
         caps.kbd_backlight_access = FeatureAvailability::new(
             FeatureAccessState::PermissionDenied,
             "Keyboard backlight is detected, but writes are blocked for the current user.",
@@ -2617,13 +4436,273 @@ mod tests {
                 reason
             );
         }
+        assert_eq!(
+            value_as_str(&map, dbus_keys::caps::GPU_BACKEND),
+            "supergfxd"
+        );
+        assert_eq!(
+            value_as_str(&map, dbus_keys::caps::GPU_SWITCH_STATE),
+            "logout_required"
+        );
+        assert_eq!(
+            map.get(dbus_keys::caps::GPU_SUPPORTED_MODES)
+                .cloned()
+                .and_then(|value| Vec::<String>::try_from(value).ok()),
+            Some(vec!["Hybrid".to_string(), "Integrated".to_string()])
+        );
+        assert_eq!(
+            map.get(dbus_keys::caps::REQUIRES_LOGOUT_FOR_GPU_SWITCH)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn consolidated_matrix_preserves_external_daemons_and_battery_fallback_boundary() {
+        let mut caps = DeviceCaps::unknown();
+        caps.has_charge_limit = true;
+        caps.battery_limit_backend = "power_supply_sysfs".to_string();
+        caps.battery_limit_privileged_write = true;
+        caps.battery_limit_authorization = "required".to_string();
+        caps.has_gpu_modes = true;
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.has_profiles = true;
+        let mut state = AppState::new(caps, TelemetrySnapshot::empty_now(0));
+        state.cpu_caps.control_access = vec![CpuControlAccess {
+            kind: rog_core::CpuControlKind::Governor,
+            status: CpuAccessState::Available,
+            reason: "administrator authorization required".to_string(),
+            direct_write: false,
+            privileged_write: true,
+            authorization: CpuAuthorization::Required,
+            paths: Vec::new(),
+        }];
+
+        let map = caps_with_control_matrix_to_dbus(&state);
+        let rows = rows_from_value(
+            map.get(dbus_keys::caps::CONTROL_PRIVILEGE_MATRIX)
+                .expect("matrix"),
+        );
+        let row = |operation: &str| {
+            rows.iter()
+                .find(|row| value_as_str(row, "operation") == operation)
+                .expect("operation row")
+        };
+
+        assert_eq!(value_as_str(row("governor"), "access"), "privileged");
+        assert_eq!(
+            value_as_str(row("battery_charge_limit"), "access"),
+            "privileged"
+        );
+        assert_eq!(
+            value_as_str(row("gpu_mode"), "existing_system_daemon"),
+            "supergfxd"
+        );
+        assert_eq!(
+            row("gpu_mode")
+                .get("privileged_fallback_appropriate")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            value_as_str(row("performance_profile"), "existing_system_daemon"),
+            "asusd"
+        );
+    }
+
+    #[test]
+    fn battery_helper_denial_and_unavailability_remain_distinct() {
+        let denied = map_privileged_battery_error(rog_core::PrivilegedError::new(
+            rog_core::PrivilegedErrorCode::NotAuthorized,
+            "denied",
+        ));
+        assert!(matches!(denied, rog_core::RogError::PermissionDenied(_)));
+
+        let unavailable = map_privileged_battery_error(rog_core::PrivilegedError::new(
+            rog_core::PrivilegedErrorCode::BackendFailure,
+            "missing",
+        ));
+        assert!(matches!(
+            unavailable,
+            rog_core::RogError::TemporarilyUnavailable(_)
+        ));
+    }
+
+    #[test]
+    fn supergfx_available_probe_uses_reported_modes_and_transition_state() {
+        let probe = SupergfxCaps {
+            raw_supported_modes: vec!["Hybrid".to_string(), "Integrated".to_string()],
+            requires_reboot_hint: false,
+            switch_state: GpuSwitchState::Ready,
+            switch_hint: "supergfxd reports that no GPU transition action is pending.".to_string(),
+        };
+        let mut caps = DeviceCaps::unknown();
+
+        apply_supergfx_probe_to_caps(&mut caps, &probe);
+
+        assert_eq!(caps.gpu_backend, "supergfxd");
+        assert_eq!(caps.gpu_supported_modes, probe.raw_supported_modes);
+        assert_eq!(caps.gpu_switch_state, GpuSwitchState::Ready);
+        assert!(caps.has_gpu_modes);
+        assert!(caps.gpu_mode_access.is_available());
+        assert_eq!(caps.gpu_external_authorization, "external_service");
+    }
+
+    #[test]
+    fn missing_supergfx_is_a_missing_backend_not_a_root_requirement() {
+        let mut caps = DeviceCaps::unknown();
+        apply_supergfx_unavailable_to_caps(&mut caps, false);
+
+        assert_eq!(caps.gpu_backend, "none");
+        assert_eq!(caps.gpu_switch_state, GpuSwitchState::Unavailable);
+        assert_eq!(
+            caps.gpu_mode_access.status,
+            FeatureAccessState::MissingBackend
+        );
+        assert!(caps
+            .gpu_mode_access
+            .reason
+            .contains("running ROG Helper as root would not"));
+    }
+
+    #[test]
+    fn pending_gpu_transition_is_unavailable_until_logout_or_reboot() {
+        let mut caps = DeviceCaps::unknown();
+        caps.gpu_backend = "supergfxd".to_string();
+        caps.has_gpu_modes = true;
+        caps.gpu_supported_modes = vec!["Hybrid".to_string()];
+        apply_gpu_switch_status_to_caps(
+            &mut caps,
+            &SupergfxSwitchStatus {
+                state: GpuSwitchState::RebootRequired,
+                hint: "Reboot required to complete the pending GPU switch.".to_string(),
+            },
+        );
+
+        assert_eq!(
+            caps.gpu_mode_access.status,
+            FeatureAccessState::TemporarilyUnavailable
+        );
+        assert!(caps.requires_reboot_for_gpu_switch);
+        assert!(caps.gpu_switch_state.blocks_new_switch());
+    }
+
+    #[test]
+    fn fresh_daemon_probe_reconstructs_gpu_state_without_persisted_assumptions() {
+        let probe = SupergfxCaps {
+            raw_supported_modes: vec!["Vfio".to_string()],
+            requires_reboot_hint: true,
+            switch_state: GpuSwitchState::LogoutRequired,
+            switch_hint: "Logout required to complete the pending GPU switch.".to_string(),
+        };
+        let mut before_restart = DeviceCaps::unknown();
+        let mut after_restart = DeviceCaps::unknown();
+        apply_supergfx_probe_to_caps(&mut before_restart, &probe);
+        apply_supergfx_probe_to_caps(&mut after_restart, &probe);
+
+        assert_eq!(before_restart.gpu_backend, after_restart.gpu_backend);
+        assert_eq!(
+            before_restart.gpu_supported_modes,
+            after_restart.gpu_supported_modes
+        );
+        assert_eq!(
+            before_restart.gpu_switch_state,
+            after_restart.gpu_switch_state
+        );
+        assert_eq!(
+            before_restart.gpu_mode_access.status,
+            after_restart.gpu_mode_access.status
+        );
+    }
+
+    #[test]
+    fn gpu_requests_preserve_exact_supergfx_modes() {
+        assert_eq!(
+            parse_gpu_mode_request("Vfio").unwrap(),
+            GpuMode::Other("Vfio".to_string())
+        );
+        assert!(parse_gpu_mode_request("model-guessed-mode").is_err());
+    }
+
+    #[test]
+    fn fan_caps_to_dbus_keeps_read_and_write_capabilities_separate() {
+        let mut caps = FanCaps::from_fans(&[]);
+        caps.fan_curve_readable = true;
+        caps.fan_curve_writable = false;
+        caps.fan_mapping_confidence = rog_core::FanMappingConfidence::HardwareLabel;
+
+        let map = fan_caps_to_dbus(&caps);
+
+        assert_eq!(
+            map.get("fan_curve_readable")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("fan_curve_writable")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            value_as_str(&map, "fan_mapping_confidence"),
+            "hardware_label"
+        );
+    }
+
+    #[test]
+    fn setup_status_to_dbus_emits_structured_rows() {
+        let status = SetupStatus {
+            checked_at_ms: 42,
+            dependencies: vec![rog_core::DependencyStatus {
+                kind: rog_core::DependencyKind::Asusd,
+                state: rog_core::DependencyState::NotAvailable,
+                summary: "No compatible API found.".to_string(),
+                required_for: vec!["performance profiles".to_string()],
+                evidence: vec!["systemd unit not found".to_string()],
+            }],
+            permissions: vec![rog_core::PermissionStatus {
+                kind: rog_core::PermissionKind::CpuPolicyWrites,
+                state: rog_core::PermissionState::ReadOnly,
+                summary: "Writes blocked.".to_string(),
+                paths: vec!["/sys/example".to_string()],
+            }],
+            issues: vec![rog_core::SetupIssue {
+                severity: rog_core::SetupSeverity::Warning,
+                title: "asusd needs attention".to_string(),
+                summary: "Missing service.".to_string(),
+                guidance: "See installation documentation.".to_string(),
+            }],
+        };
+
+        let map = setup_status_to_dbus(&status);
+        assert_eq!(
+            map.get("checked_at_ms")
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(42)
+        );
+        assert_eq!(
+            rows_from_value(&map[dbus_keys::SETUP_DEPENDENCIES_KEY]).len(),
+            1
+        );
+        assert_eq!(
+            rows_from_value(&map[dbus_keys::SETUP_PERMISSIONS_KEY]).len(),
+            1
+        );
+        assert_eq!(rows_from_value(&map[dbus_keys::SETUP_ISSUES_KEY]).len(), 1);
     }
 
     #[test]
     fn telemetry_to_dbus_emits_structured_fan_rows() {
         let mut telemetry = TelemetrySnapshot::empty_now(42);
+        telemetry.gpu_usage_percent = Some(32.0);
+        telemetry.gpu_vram_used_bytes = Some(2_147_483_648);
+        telemetry.gpu_vram_total_bytes = Some(8_589_934_592);
         telemetry.gpu_core_clock_mhz = Some(2100);
         telemetry.gpu_memory_clock_mhz = Some(7000);
+        telemetry.gpu_power_w = Some(42.5);
+        telemetry.gpu_name = Some("NVIDIA Test GPU".to_string());
+        telemetry.gpu_uuid = Some("GPU-test".to_string());
+        telemetry.gpu_index = Some(0);
         telemetry.fan_rows.push(FanTelemetry {
             hwmon_device: "hwmon3".to_string(),
             hwmon_path: "/sys/class/hwmon/hwmon3".to_string(),
@@ -2634,6 +4713,12 @@ mod tests {
         });
 
         let map = telemetry_to_dbus(&telemetry);
+        assert_eq!(
+            map.get("gpu_vram_total_bytes")
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(8_589_934_592)
+        );
+        assert_eq!(value_as_str(&map, "gpu_name"), "NVIDIA Test GPU");
         let rows = rows_from_value(
             map.get(dbus_keys::TELEMETRY_FAN_ROWS_KEY)
                 .expect("fan_rows key should exist"),
@@ -2663,12 +4748,36 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_to_dbus_omits_unavailable_optional_fields() {
+        let telemetry = TelemetrySnapshot::empty_now(42);
+        let map = telemetry_to_dbus(&telemetry);
+
+        assert!(map.contains_key(dbus_keys::telemetry::TIMESTAMP_MS));
+        for key in [
+            dbus_keys::telemetry::GPU_TEMP_C,
+            dbus_keys::telemetry::GPU_USAGE_PERCENT,
+            dbus_keys::telemetry::GPU_VRAM_USED_BYTES,
+            dbus_keys::telemetry::GPU_VRAM_TOTAL_BYTES,
+            dbus_keys::telemetry::GPU_POWER_W,
+            dbus_keys::telemetry::POWER_SOURCE,
+        ] {
+            assert!(
+                !map.contains_key(key),
+                "optional key {key} must stay absent"
+            );
+        }
+    }
+
+    #[test]
     fn cpu_caps_to_dbus_emits_structured_control_access_rows() {
         let mut caps = CpuCaps::unknown();
         caps.control_access.push(CpuControlAccess {
             kind: rog_core::CpuControlKind::Governor,
             status: CpuAccessState::PermissionDenied,
             reason: "Governor paths are readable but not writable by the current user.".to_string(),
+            direct_write: false,
+            privileged_write: false,
+            authorization: CpuAuthorization::NotApplicable,
             paths: vec![CpuPathAccess {
                 path: "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor".to_string(),
                 readable: true,
@@ -2763,11 +4872,75 @@ mod tests {
     }
 
     #[test]
-    fn lighting_access_prefers_aura_when_available() {
+    fn lighting_access_prefers_verified_aura_when_available() {
         let access = lighting_access_from_backend_flags(true, false, false, false, None);
 
         assert_eq!(access.status, FeatureAccessState::Available);
         assert!(access.reason.contains("ASUS Aura"));
+    }
+
+    #[test]
+    fn lighting_dbus_map_exposes_explicit_optional_capabilities() {
+        let state = LightingState {
+            backend: "test-verified-aura".to_string(),
+            device: "test-endpoint".to_string(),
+            brightness: None,
+            max_brightness: None,
+            mode: Some(LightingMode::Static),
+            supports_brightness: false,
+            supports_modes: true,
+            supported_modes: vec![LightingMode::Static],
+            supports_rgb: true,
+            rgb: Some(RgbColor::new(1, 2, 3)),
+            supports_speed: true,
+            supported_speeds: vec!["Medium".to_string()],
+            supported_zones: vec!["Keyboard".to_string()],
+            writable: true,
+            direct_writable: true,
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "not_required".to_string(),
+            fallback_reason: None,
+            status: "available".to_string(),
+            last_error: None,
+        };
+
+        let map = lighting_state_to_dbus(&state, &LightingDiagnostics::unknown());
+        assert_eq!(
+            map.get("supports_brightness")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            map.get("supports_modes")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("supports_rgb")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("supports_speed")
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get("rgb_hex")
+                .and_then(|value| <&str>::try_from(value).ok()),
+            Some("#010203")
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::DIRECT_WRITABLE)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::PRIVILEGED_WRITABLE)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
     }
 
     #[test]
@@ -2784,5 +4957,237 @@ mod tests {
 
         assert_eq!(access.status, FeatureAccessState::Unsupported);
         assert!(access.reason.contains("No keyboard lighting control"));
+    }
+
+    #[tokio::test]
+    async fn direct_cpu_write_is_preferred() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let source = with_privileged_fallback(
+            || Ok(()),
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn permission_failure_uses_successful_privileged_write() {
+        let source = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+    }
+
+    #[tokio::test]
+    async fn authorization_denial_is_preserved_as_permission_error() {
+        let error = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async {
+                Err(rog_core::PrivilegedError::new(
+                    rog_core::PrivilegedErrorCode::NotAuthorized,
+                    "denied",
+                ))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
+        assert!(error.to_string().contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn helper_unavailable_is_a_transient_failure() {
+        let error = with_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async {
+                Err(rog_core::PrivilegedError::new(
+                    rog_core::PrivilegedErrorCode::BackendFailure,
+                    "unavailable",
+                ))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            rog_core::RogError::TemporarilyUnavailable(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsupported_cpu_control_never_uses_privileged_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let error = with_privileged_fallback(
+            || Err(rog_core::RogError::NotSupported("hardware".to_string())),
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::NotSupported(_)));
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fan_fallback_prefers_direct_and_preserves_helper_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let source = with_fan_privileged_fallback(
+            || Ok(()),
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let source = with_fan_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+
+        for (code, permission_denied) in [
+            (rog_core::PrivilegedErrorCode::NotAuthorized, true),
+            (rog_core::PrivilegedErrorCode::BackendFailure, false),
+        ] {
+            let error = with_fan_privileged_fallback(
+                || {
+                    Err(rog_core::RogError::PermissionDenied(
+                        "read-only".to_string(),
+                    ))
+                },
+                || async { Err(rog_core::PrivilegedError::new(code, "failure")) },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                matches!(error, rog_core::RogError::PermissionDenied(_)),
+                permission_denied
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lighting_fallback_prefers_direct_then_uses_privileged_permission_route() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let source = with_lighting_privileged_fallback(
+            || Ok(()),
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Direct);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let source = with_lighting_privileged_fallback(
+            || {
+                Err(rog_core::RogError::PermissionDenied(
+                    "read-only".to_string(),
+                ))
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, CpuWriteSource::Privileged);
+    }
+
+    #[tokio::test]
+    async fn lighting_authorization_denial_and_cancellation_are_readable_permission_errors() {
+        for message in [
+            "Administrator authorization was denied",
+            "Authentication was cancelled",
+        ] {
+            let error = with_lighting_privileged_fallback(
+                || {
+                    Err(rog_core::RogError::PermissionDenied(
+                        "read-only".to_string(),
+                    ))
+                },
+                || async {
+                    Err(rog_core::PrivilegedError::new(
+                        rog_core::PrivilegedErrorCode::NotAuthorized,
+                        message,
+                    ))
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, rog_core::RogError::PermissionDenied(_)));
+            assert!(error.to_string().contains(message));
+        }
+    }
+
+    #[test]
+    fn missing_lighting_helper_does_not_turn_rgb_into_a_privileged_capability() {
+        let status = rog_core::PrivilegedStatus::unavailable(false, true);
+        assert!(!lighting_helper_ready(&status));
+        let state = LightingState {
+            backend: "sysfs-led".to_string(),
+            device: "asus::kbd_backlight".to_string(),
+            brightness: Some(1),
+            max_brightness: Some(3),
+            mode: Some(LightingMode::Static),
+            supports_brightness: true,
+            supports_modes: true,
+            supported_modes: vec![LightingMode::Off, LightingMode::Static],
+            supports_rgb: false,
+            rgb: None,
+            supports_speed: false,
+            supported_speeds: Vec::new(),
+            supported_zones: Vec::new(),
+            writable: false,
+            direct_writable: false,
+            privileged_writable: false,
+            authorization_required: false,
+            authorization: "unavailable".to_string(),
+            fallback_reason: None,
+            status: "rgb_unsupported".to_string(),
+            last_error: None,
+        };
+        assert!(!state.supports_rgb);
+        assert!(!state.privileged_writable);
     }
 }

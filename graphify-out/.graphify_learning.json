@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-08-12T21:05:40.126365+00:00",
+  "nodes": {
+    "crates_rog_core_src_config_appconfig": {
+      "code_fingerprint": "d423ef7416a9b1260fae1b10902f7272301c63e264548e9c43dc1ba5693f4412",
+      "label": "AppConfig",
+      "last": "2026-08-12T20:02:06.538533+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T20:02:06.538533+00:00",
+          "outcome": "useful",
+          "q": "Implement robust persistent configuration and a dedicated Settings page"
+        }
+      ],
+      "score": 0.998980698,
+      "source_file": "crates/rog-core/src/config.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "crates_rog_core_src_model_telemetrysnapshot": {
+      "code_fingerprint": "5b39ea568cb63e51ce73afcc76b255ef3cedf8854401296026f60d80c0efc105",
+      "label": "TelemetrySnapshot",
+      "last": "2026-08-12T20:22:33.860283+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T20:22:33.860283+00:00",
+          "outcome": "useful",
+          "q": "How does NVIDIA GPU telemetry flow through provider, daemon, DBus, dashboard, GPU page, and diagnostics?"
+        }
+      ],
+      "score": 0.999308625,
+      "source_file": "crates/rog-core/src/model.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "crates_rog_daemon_src_main_roghelperdaemon": {
+      "code_fingerprint": "e62ac94ecdf00468b0dde7bbeabb37de63d73975e712cf3aa1680d105f5039c0",
+      "label": "RogHelperDaemon",
+      "last": "2026-08-12T20:22:33.860283+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T20:22:33.860283+00:00",
+          "outcome": "useful",
+          "q": "How does NVIDIA GPU telemetry flow through provider, daemon, DBus, dashboard, GPU page, and diagnostics?"
+        },
+        {
+          "date": "2026-08-12T20:02:06.538533+00:00",
+          "outcome": "useful",
+          "q": "Implement robust persistent configuration and a dedicated Settings page"
+        }
+      ],
+      "score": 1.998289323,
+      "source_file": "crates/rog-daemon/src/main.rs",
+      "status": "preferred",
+      "uses": 2
+    },
+    "crates_rog_providers_src_nvidia_smi_nvidiagputelemetry": {
+      "code_fingerprint": "977a237b0b94f2c9004a58d214a236b8761b535119400a79bcd94bb41c39513d",
+      "label": "NvidiaGpuTelemetry",
+      "last": "2026-08-12T20:22:33.860283+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T20:22:33.860283+00:00",
+          "outcome": "useful",
+          "q": "How does NVIDIA GPU telemetry flow through provider, daemon, DBus, dashboard, GPU page, and diagnostics?"
+        }
+      ],
+      "score": 0.999308625,
+      "source_file": "crates/rog-providers/src/nvidia_smi.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "crates_rog_providers_src_nvidia_smi_nvidiasmitelemetryprovider": {
+      "code_fingerprint": "977a237b0b94f2c9004a58d214a236b8761b535119400a79bcd94bb41c39513d",
+      "label": "NvidiaSmiTelemetryProvider",
+      "last": "2026-08-12T20:22:33.860283+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T20:22:33.860283+00:00",
+          "outcome": "useful",
+          "q": "How does NVIDIA GPU telemetry flow through provider, daemon, DBus, dashboard, GPU page, and diagnostics?"
+        }
+      ],
+      "score": 0.999308625,
+      "source_file": "crates/rog-providers/src/nvidia_smi.rs",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
+  "version": 1
+}

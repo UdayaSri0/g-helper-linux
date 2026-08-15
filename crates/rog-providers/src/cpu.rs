@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rog_core::{
-    CpuAccessState, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
-    CpuTelemetry, RogError, RogResult,
+    validate_cpu_choice, validate_cpu_core_request, validate_cpu_frequency_limits, CpuAccessState,
+    CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind, CpuControlRequest,
+    CpuCoreTelemetry, CpuFrequencyBounds, CpuPathAccess, CpuPowerMode, CpuTelemetry, RogError,
+    RogResult,
 };
 
 const CPU_SYSFS_ROOT: &str = "/sys/devices/system/cpu";
@@ -91,6 +93,83 @@ impl Default for CpuTelemetryProvider {
 }
 
 impl CpuTelemetryProvider {
+    pub fn apply_control(&self, request: &CpuControlRequest) -> RogResult<()> {
+        match request {
+            CpuControlRequest::Turbo(enabled) => self.set_boost(*enabled),
+            CpuControlRequest::PowerMode(mode) => self.set_power_mode_value(*mode),
+            CpuControlRequest::Governor(governor) => self.set_governor(governor),
+            CpuControlRequest::Epp(epp) => self.set_epp(epp),
+            CpuControlRequest::FrequencyLimits { min_mhz, max_mhz } => {
+                self.set_freq_limits(*min_mhz, *max_mhz)
+            }
+            CpuControlRequest::CoreOnline { core_id, online } => {
+                self.set_core_online(*core_id, *online)
+            }
+        }
+    }
+
+    /// Re-discovers and validates every endpoint and parameter without opening a
+    /// write handle. The privileged service uses this before starting PolicyKit
+    /// interaction, then `apply_control` repeats validation at write time.
+    pub fn validate_control(&self, request: &CpuControlRequest) -> RogResult<()> {
+        match request {
+            CpuControlRequest::Turbo(_) => {
+                let boost = detect_boost_path().ok_or_else(|| {
+                    RogError::NotSupported("turbo boost control is not supported".to_string())
+                })?;
+                validate_cpu_endpoint(&boost.path)
+            }
+            CpuControlRequest::PowerMode(mode) => {
+                let policies = read_policies();
+                if policies.is_empty() {
+                    return Err(RogError::NotSupported(
+                        "cpufreq policies were not detected".to_string(),
+                    ));
+                }
+                let governor =
+                    choose_best_token(mode.governor_preferences(), &collect_governors(&policies));
+                let epp = choose_best_token(mode.epp_preferences(), &collect_epp_values(&policies));
+                if governor.is_none() && epp.is_none() {
+                    return Err(RogError::NotSupported(
+                        "CPU power mode requires governor and/or EPP support".to_string(),
+                    ));
+                }
+                for policy in &policies {
+                    if let Some(governor) = governor.as_deref() {
+                        if policy.path.join("scaling_governor").exists() {
+                            validate_cpu_choice(governor, &policy.governors_available, "governor")?;
+                            validate_cpu_endpoint(&policy.path.join("scaling_governor"))?;
+                        }
+                    }
+                    if let Some(epp) = epp.as_deref() {
+                        if policy.path.join("energy_performance_preference").exists() {
+                            validate_cpu_choice(epp, &policy.epp_available, "EPP")?;
+                            validate_cpu_endpoint(
+                                &policy.path.join("energy_performance_preference"),
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            CpuControlRequest::Governor(governor) => {
+                validate_policy_choice(governor, CpuControlKind::Governor)
+            }
+            CpuControlRequest::Epp(epp) => validate_policy_choice(epp, CpuControlKind::Epp),
+            CpuControlRequest::FrequencyLimits { min_mhz, max_mhz } => {
+                validate_frequency_request(*min_mhz, *max_mhz).map(|_| ())
+            }
+            CpuControlRequest::CoreOnline { core_id, online } => {
+                validate_cpu_core_request(*core_id, *online, &read_core_ids())?;
+                let path = PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{core_id}/online"));
+                if !path.exists() && *core_id == 0 && *online {
+                    return Ok(());
+                }
+                validate_cpu_endpoint(&path)
+            }
+        }
+    }
+
     pub fn probe_caps(&self) -> CpuCaps {
         let policies = read_policies();
         let boost = detect_boost_path();
@@ -447,7 +526,10 @@ impl CpuTelemetryProvider {
     }
 
     pub fn set_power_mode(&self, mode: &str) -> RogResult<()> {
-        let key = normalize_token(mode);
+        self.set_power_mode_value(CpuPowerMode::parse(mode)?)
+    }
+
+    fn set_power_mode_value(&self, mode: CpuPowerMode) -> RogResult<()> {
         let policies = read_policies();
         if policies.is_empty() {
             return Err(RogError::NotSupported(
@@ -458,115 +540,90 @@ impl CpuTelemetryProvider {
         let all_governors = collect_governors(&policies);
         let all_epp = collect_epp_values(&policies);
 
-        let (governor_pref, epp_pref): (&[&str], &[&str]) = match key.as_str() {
-            "quiet" | "silent" => (
-                &["powersave", "schedutil", "ondemand"],
-                &["power", "balance_power", "balanced"],
-            ),
-            "balanced" => (
-                &["schedutil", "ondemand", "powersave"],
-                &["balanced", "balance_performance", "balance_power"],
-            ),
-            "performance" | "turbo" => (
-                &["performance", "schedutil"],
-                &["performance", "balance_performance"],
-            ),
-            _ => {
-                return Err(RogError::InvalidInput(format!(
-                    "unknown CPU power mode '{mode}'"
-                )))
-            }
-        };
-
-        let mut attempted = 0usize;
-        let mut succeeded = 0usize;
-        let mut errors = Vec::new();
-
-        if let Some(gov) = choose_best_token(governor_pref, &all_governors) {
-            attempted += 1;
-            match self.set_governor(&gov) {
-                Ok(()) => succeeded += 1,
-                Err(err) => errors.push(err),
-            }
-        }
-        if let Some(epp) = choose_best_token(epp_pref, &all_epp) {
-            attempted += 1;
-            match self.set_epp(&epp) {
-                Ok(()) => succeeded += 1,
-                Err(err) => errors.push(err),
-            }
-        }
-
-        if succeeded > 0 {
-            return Ok(());
-        }
-        if attempted == 0 {
+        let governor = choose_best_token(mode.governor_preferences(), &all_governors);
+        let epp = choose_best_token(mode.epp_preferences(), &all_epp);
+        if governor.is_none() && epp.is_none() {
             return Err(RogError::NotSupported(
                 "CPU power mode requires governor and/or EPP support".to_string(),
             ));
         }
-
-        if errors
+        let governor_endpoints = policies
             .iter()
-            .all(|err| matches!(err, RogError::PermissionDenied(_)))
-        {
-            let details = errors
-                .into_iter()
-                .map(|err| err.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(RogError::PermissionDenied(format!(
-                "CPU power mode could not be applied: {details}"
-            )));
+            .filter(|p| p.path.join("scaling_governor").exists())
+            .collect::<Vec<_>>();
+        let epp_endpoints = policies
+            .iter()
+            .filter(|p| p.path.join("energy_performance_preference").exists())
+            .collect::<Vec<_>>();
+        if let Some(governor) = governor.as_deref() {
+            for policy in &governor_endpoints {
+                validate_cpu_choice(governor, &policy.governors_available, "governor")?;
+            }
         }
-
-        if let Some(err) = errors.into_iter().next() {
-            return Err(err);
+        if let Some(epp) = epp.as_deref() {
+            for policy in &epp_endpoints {
+                validate_cpu_choice(epp, &policy.epp_available, "EPP")?;
+            }
         }
-
-        Err(RogError::Unexpected(
-            "CPU power mode could not be applied".to_string(),
-        ))
+        let selected_paths = governor_endpoints
+            .iter()
+            .filter(|_| governor.is_some())
+            .map(|p| p.path.join("scaling_governor"))
+            .chain(
+                epp_endpoints
+                    .iter()
+                    .filter(|_| epp.is_some())
+                    .map(|p| p.path.join("energy_performance_preference")),
+            );
+        preflight_writable(
+            selected_paths,
+            "CPU power mode requires administrator authorization",
+        )?;
+        if let Some(governor) = governor.as_deref() {
+            for policy in governor_endpoints {
+                write_sysfs(&policy.path.join("scaling_governor"), governor)?;
+            }
+        }
+        if let Some(epp) = epp.as_deref() {
+            for policy in epp_endpoints {
+                write_sysfs(&policy.path.join("energy_performance_preference"), epp)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_governor(&self, governor: &str) -> RogResult<()> {
-        let governor = governor.trim();
-        if governor.is_empty() {
-            return Err(RogError::InvalidInput(
-                "governor cannot be empty".to_string(),
-            ));
-        }
         let policies = read_policies();
         if policies.is_empty() {
             return Err(RogError::NotSupported(
                 "cpufreq policies were not detected".to_string(),
             ));
         }
-        let mut wrote_any = false;
-        for p in policies {
-            let path = p.path.join("scaling_governor");
-            if !path.exists() {
-                continue;
-            }
-            if !is_writable(&path) {
-                continue;
-            }
-            write_sysfs(&path, governor)?;
-            wrote_any = true;
-        }
-        if !wrote_any {
-            return Err(RogError::PermissionDenied(
-                "scaling_governor is read-only for this user".to_string(),
+        let endpoints = policies
+            .iter()
+            .filter(|p| p.path.join("scaling_governor").exists())
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            return Err(RogError::NotSupported(
+                "scaling governor controls were not detected".to_string(),
             ));
+        }
+        for policy in &endpoints {
+            validate_cpu_choice(governor, &policy.governors_available, "governor")?;
+        }
+        let governor = governor.trim();
+        preflight_writable(
+            endpoints.iter().map(|p| p.path.join("scaling_governor")),
+            "scaling governor controls require administrator authorization",
+        )?;
+        for p in endpoints {
+            let path = p.path.join("scaling_governor");
+            write_sysfs(&path, governor)?;
         }
         Ok(())
     }
 
     pub fn set_epp(&self, epp: &str) -> RogResult<()> {
-        let epp = epp.trim();
-        if epp.is_empty() {
-            return Err(RogError::InvalidInput("EPP cannot be empty".to_string()));
-        }
         let policies = read_policies();
         if policies.is_empty() {
             return Err(RogError::NotSupported(
@@ -574,33 +631,33 @@ impl CpuTelemetryProvider {
             ));
         }
 
-        let mut wrote_any = false;
-        for p in policies {
-            let path = p.path.join("energy_performance_preference");
-            if !path.exists() {
-                continue;
-            }
-            if !is_writable(&path) {
-                continue;
-            }
-            write_sysfs(&path, epp)?;
-            wrote_any = true;
-        }
-        if !wrote_any {
-            return Err(RogError::PermissionDenied(
-                "energy_performance_preference is read-only for this user".to_string(),
+        let endpoints = policies
+            .iter()
+            .filter(|p| p.path.join("energy_performance_preference").exists())
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            return Err(RogError::NotSupported(
+                "EPP controls were not detected".to_string(),
             ));
+        }
+        for policy in &endpoints {
+            validate_cpu_choice(epp, &policy.epp_available, "EPP")?;
+        }
+        let epp = epp.trim();
+        preflight_writable(
+            endpoints
+                .iter()
+                .map(|p| p.path.join("energy_performance_preference")),
+            "EPP controls require administrator authorization",
+        )?;
+        for p in endpoints {
+            let path = p.path.join("energy_performance_preference");
+            write_sysfs(&path, epp)?;
         }
         Ok(())
     }
 
     pub fn set_freq_limits(&self, min_mhz: Option<u32>, max_mhz: Option<u32>) -> RogResult<()> {
-        if min_mhz.is_none() && max_mhz.is_none() {
-            return Err(RogError::InvalidInput(
-                "at least one of min/max frequency must be provided".to_string(),
-            ));
-        }
-
         let policies = read_policies();
         if policies.is_empty() {
             return Err(RogError::NotSupported(
@@ -608,30 +665,57 @@ impl CpuTelemetryProvider {
             ));
         }
 
-        let mut wrote_any = false;
-        for p in policies {
+        let endpoints = policies
+            .iter()
+            .filter(|p| {
+                p.path.join("scaling_min_freq").exists() && p.path.join("scaling_max_freq").exists()
+            })
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            return Err(RogError::NotSupported(
+                "CPU frequency limit controls were not detected".to_string(),
+            ));
+        }
+        let hardware_min = endpoints
+            .iter()
+            .filter_map(|p| p.info_min_freq_khz.and_then(khz_to_mhz_u32))
+            .max()
+            .ok_or_else(|| {
+                RogError::TemporarilyUnavailable(
+                    "CPU minimum hardware frequency is unavailable".to_string(),
+                )
+            })?;
+        let hardware_max = endpoints
+            .iter()
+            .filter_map(|p| p.info_max_freq_khz.and_then(khz_to_mhz_u32))
+            .min()
+            .ok_or_else(|| {
+                RogError::TemporarilyUnavailable(
+                    "CPU maximum hardware frequency is unavailable".to_string(),
+                )
+            })?;
+        let bounds = CpuFrequencyBounds::new(hardware_min, hardware_max)?;
+        let (min_mhz, max_mhz) = validate_cpu_frequency_limits(min_mhz, max_mhz, bounds)?;
+        preflight_writable(
+            endpoints.iter().flat_map(|p| {
+                [
+                    p.path.join("scaling_min_freq"),
+                    p.path.join("scaling_max_freq"),
+                ]
+            }),
+            "CPU frequency limits require administrator authorization",
+        )?;
+        for p in endpoints {
             let min_path = p.path.join("scaling_min_freq");
             let max_path = p.path.join("scaling_max_freq");
-            if !min_path.exists() || !max_path.exists() {
-                continue;
-            }
-            if !is_writable(&min_path) || !is_writable(&max_path) {
-                continue;
-            }
-
-            let info_min = p.info_min_freq_khz.or(p.min_freq_khz).unwrap_or(0);
-            let info_max = p.info_max_freq_khz.or(p.max_freq_khz).unwrap_or(u64::MAX);
-            let current_min = p.min_freq_khz.unwrap_or(info_min);
-            let current_max = p.max_freq_khz.unwrap_or(info_max);
-
-            let mut target_min = min_mhz.map(|v| (v as u64) * 1000).unwrap_or(current_min);
-            let mut target_max = max_mhz.map(|v| (v as u64) * 1000).unwrap_or(current_max);
-
-            target_min = target_min.clamp(info_min, info_max);
-            target_max = target_max.clamp(info_min, info_max);
-            if target_min > target_max {
-                target_min = target_max;
-            }
+            let current_min = p.min_freq_khz.ok_or_else(|| {
+                RogError::TemporarilyUnavailable("current CPU minimum is unavailable".to_string())
+            })?;
+            let current_max = p.max_freq_khz.ok_or_else(|| {
+                RogError::TemporarilyUnavailable("current CPU maximum is unavailable".to_string())
+            })?;
+            let (target_min, target_max) =
+                effective_frequency_range(min_mhz, max_mhz, current_min, current_max)?;
 
             if target_max < current_min {
                 write_sysfs(&min_path, &target_min.to_string())?;
@@ -647,21 +731,17 @@ impl CpuTelemetryProvider {
                     write_sysfs(&min_path, &target_min.to_string())?;
                 }
             }
-
-            wrote_any = true;
-        }
-
-        if !wrote_any {
-            return Err(RogError::PermissionDenied(
-                "frequency limit controls are read-only for this user".to_string(),
-            ));
         }
         Ok(())
     }
 
     pub fn set_core_online(&self, core_id: u32, online: bool) -> RogResult<()> {
+        validate_cpu_core_request(core_id, online, &read_core_ids())?;
         let path = PathBuf::from(format!("{CPU_SYSFS_ROOT}/cpu{core_id}/online"));
         if !path.exists() {
+            if core_id == 0 && online {
+                return Ok(());
+            }
             return Err(RogError::NotSupported(format!(
                 "logical CPU {core_id} online/offline control is not supported"
             )));
@@ -689,10 +769,9 @@ impl CpuTelemetryProvider {
 
         let delta_energy_uj = if energy_uj >= prev.energy_uj {
             energy_uj - prev.energy_uj
-        } else if let Some(max) = prev.max_energy_range_uj {
-            (max.saturating_sub(prev.energy_uj)).saturating_add(energy_uj)
         } else {
-            return None;
+            let max = prev.max_energy_range_uj?;
+            (max.saturating_sub(prev.energy_uj)).saturating_add(energy_uj)
         };
 
         let watts = (delta_energy_uj as f64 / 1_000_000.0) / dt_s;
@@ -702,6 +781,116 @@ impl CpuTelemetryProvider {
             None
         }
     }
+}
+
+fn validate_policy_choice(value: &str, kind: CpuControlKind) -> RogResult<()> {
+    let policies = read_policies();
+    if policies.is_empty() {
+        return Err(RogError::NotSupported(
+            "cpufreq policies were not detected".to_string(),
+        ));
+    }
+    let (leaf, label) = match kind {
+        CpuControlKind::Governor => ("scaling_governor", "governor"),
+        CpuControlKind::Epp => ("energy_performance_preference", "EPP"),
+        _ => {
+            return Err(RogError::InvalidInput(
+                "invalid CPU policy choice category".to_string(),
+            ));
+        }
+    };
+    let endpoints = policies
+        .iter()
+        .filter(|policy| policy.path.join(leaf).exists())
+        .collect::<Vec<_>>();
+    if endpoints.is_empty() {
+        return Err(RogError::NotSupported(format!(
+            "{label} controls were not detected"
+        )));
+    }
+    for policy in endpoints {
+        let allowed = match kind {
+            CpuControlKind::Governor => &policy.governors_available,
+            CpuControlKind::Epp => &policy.epp_available,
+            _ => unreachable!(),
+        };
+        validate_cpu_choice(value, allowed, label)?;
+        validate_cpu_endpoint(&policy.path.join(leaf))?;
+    }
+    Ok(())
+}
+
+fn validate_frequency_request(min_mhz: Option<u32>, max_mhz: Option<u32>) -> RogResult<()> {
+    let policies = read_policies();
+    let endpoints = policies
+        .iter()
+        .filter(|policy| {
+            policy.path.join("scaling_min_freq").exists()
+                && policy.path.join("scaling_max_freq").exists()
+        })
+        .collect::<Vec<_>>();
+    if endpoints.is_empty() {
+        return Err(RogError::NotSupported(
+            "CPU frequency limit controls were not detected".to_string(),
+        ));
+    }
+    let hardware_min = endpoints
+        .iter()
+        .filter_map(|policy| policy.info_min_freq_khz.and_then(khz_to_mhz_u32))
+        .max()
+        .ok_or_else(|| {
+            RogError::TemporarilyUnavailable(
+                "CPU minimum hardware frequency is unavailable".to_string(),
+            )
+        })?;
+    let hardware_max = endpoints
+        .iter()
+        .filter_map(|policy| policy.info_max_freq_khz.and_then(khz_to_mhz_u32))
+        .min()
+        .ok_or_else(|| {
+            RogError::TemporarilyUnavailable(
+                "CPU maximum hardware frequency is unavailable".to_string(),
+            )
+        })?;
+    validate_cpu_frequency_limits(
+        min_mhz,
+        max_mhz,
+        CpuFrequencyBounds::new(hardware_min, hardware_max)?,
+    )?;
+    for policy in endpoints {
+        let min_path = policy.path.join("scaling_min_freq");
+        let max_path = policy.path.join("scaling_max_freq");
+        validate_cpu_endpoint(&min_path)?;
+        validate_cpu_endpoint(&max_path)?;
+        let current_min = policy.min_freq_khz.ok_or_else(|| {
+            RogError::TemporarilyUnavailable("current CPU minimum is unavailable".to_string())
+        })?;
+        let current_max = policy.max_freq_khz.ok_or_else(|| {
+            RogError::TemporarilyUnavailable("current CPU maximum is unavailable".to_string())
+        })?;
+        effective_frequency_range(min_mhz, max_mhz, current_min, current_max)?;
+    }
+    Ok(())
+}
+
+fn effective_frequency_range(
+    min_mhz: Option<u32>,
+    max_mhz: Option<u32>,
+    current_min_khz: u64,
+    current_max_khz: u64,
+) -> RogResult<(u64, u64)> {
+    let target_min = min_mhz
+        .map(|value| u64::from(value) * 1000)
+        .unwrap_or(current_min_khz);
+    let target_max = max_mhz
+        .map(|value| u64::from(value) * 1000)
+        .unwrap_or(current_max_khz);
+    if target_min > target_max {
+        return Err(RogError::InvalidInput(
+            "requested CPU frequency limit would invert the active policy range".to_string(),
+        ));
+    }
+    Ok((target_min, target_max))
 }
 
 fn cpu_status(temp_c: Option<f32>, package_power_w: Option<f32>) -> Option<String> {
@@ -1027,29 +1216,34 @@ fn read_space_split(path: &Path) -> RogResult<Vec<String>> {
 }
 
 fn collect_governors(policies: &[PolicyData]) -> Vec<String> {
-    let mut out = BTreeSet::new();
-    for p in policies {
-        for g in &p.governors_available {
-            out.insert(g.clone());
-        }
-        if let Some(g) = &p.governor {
-            out.insert(g.clone());
-        }
-    }
-    out.into_iter().collect()
+    common_choices(
+        policies
+            .iter()
+            .filter(|p| p.path.join("scaling_governor").exists())
+            .map(|p| p.governors_available.as_slice()),
+    )
 }
 
 fn collect_epp_values(policies: &[PolicyData]) -> Vec<String> {
-    let mut out = BTreeSet::new();
-    for p in policies {
-        for e in &p.epp_available {
-            out.insert(e.clone());
-        }
-        if let Some(e) = &p.epp {
-            out.insert(e.clone());
-        }
+    common_choices(
+        policies
+            .iter()
+            .filter(|p| p.path.join("energy_performance_preference").exists())
+            .map(|p| p.epp_available.as_slice()),
+    )
+}
+
+fn common_choices<'a>(choices: impl Iterator<Item = &'a [String]>) -> Vec<String> {
+    let mut choices = choices;
+    let Some(first) = choices.next() else {
+        return Vec::new();
+    };
+    let mut common = first.iter().cloned().collect::<BTreeSet<_>>();
+    for values in choices {
+        let values = values.iter().collect::<BTreeSet<_>>();
+        common.retain(|value| values.contains(value));
     }
-    out.into_iter().collect()
+    common.into_iter().collect()
 }
 
 fn choose_best_token(preferred: &[&str], candidates: &[String]) -> Option<String> {
@@ -1106,7 +1300,11 @@ fn power_mode_access(
         }
     }
 
-    let status = if governor.status.is_writable() || epp.status.is_writable() {
+    let governor_exposed = !governor.paths.is_empty();
+    let epp_exposed = !epp.paths.is_empty();
+    let all_exposed_paths_writable = (governor.status.is_writable() || !governor_exposed)
+        && (epp.status.is_writable() || !epp_exposed);
+    let status = if (governor_exposed || epp_exposed) && all_exposed_paths_writable {
         CpuAccessState::Available
     } else if missing_backend {
         CpuAccessState::MissingBackend
@@ -1143,7 +1341,12 @@ fn power_mode_access(
             "Power mode paths were detected, but they could not be opened reliably right now."
                 .to_string()
         }
-        CpuAccessState::Unsupported | CpuAccessState::Unknown => {
+        CpuAccessState::Unsupported
+        | CpuAccessState::Unknown
+        | CpuAccessState::AuthorizationRequired
+        | CpuAccessState::AuthorizationDenied
+        | CpuAccessState::HelperMissing
+        | CpuAccessState::ReadOnly => {
             "Power mode requires governor and/or EPP support, but this system does not expose those CPU policy controls."
                 .to_string()
         }
@@ -1153,6 +1356,13 @@ fn power_mode_access(
         kind: CpuControlKind::PowerMode,
         status,
         reason,
+        direct_write: status == CpuAccessState::Available,
+        privileged_write: false,
+        authorization: if status == CpuAccessState::Available {
+            CpuAuthorization::NotRequired
+        } else {
+            CpuAuthorization::NotApplicable
+        },
         paths,
     }
 }
@@ -1166,7 +1376,7 @@ fn control_access_from_paths(
     let paths = probe_path_accesses(paths);
     let (status, reason) = if paths.is_empty() {
         (missing_status, missing_reason)
-    } else if paths.iter().any(|path| path.writable) {
+    } else if paths.iter().all(|path| path.writable) {
         (
             CpuAccessState::Available,
             format!(
@@ -1196,8 +1406,117 @@ fn control_access_from_paths(
         kind,
         status,
         reason,
+        direct_write: status == CpuAccessState::Available,
+        privileged_write: false,
+        authorization: if status == CpuAccessState::Available {
+            CpuAuthorization::NotRequired
+        } else {
+            CpuAuthorization::NotApplicable
+        },
         paths,
     }
+}
+
+fn preflight_writable(
+    paths: impl IntoIterator<Item = PathBuf>,
+    permission_message: &str,
+) -> RogResult<()> {
+    for path in paths {
+        validate_cpu_endpoint(&path)?;
+        if !path.exists() {
+            return Err(RogError::TemporarilyUnavailable(
+                "a detected CPU control endpoint disappeared".to_string(),
+            ));
+        }
+        if !is_writable(&path) {
+            return Err(RogError::PermissionDenied(permission_message.to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_cpu_endpoint(path: &Path) -> RogResult<()> {
+    validate_cpu_endpoint_under(path, Path::new(CPU_SYSFS_ROOT))
+}
+
+fn validate_cpu_endpoint_under(path: &Path, cpu_root: &Path) -> RogResult<()> {
+    let allowed_leaf = matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(
+            "no_turbo"
+                | "boost"
+                | "scaling_governor"
+                | "energy_performance_preference"
+                | "scaling_min_freq"
+                | "scaling_max_freq"
+                | "online"
+        )
+    );
+    let parent = path.parent().ok_or_else(|| {
+        RogError::InvalidInput(
+            "CPU control endpoint is outside the approved sysfs hierarchy".to_string(),
+        )
+    })?;
+    let parent_name = parent.file_name().and_then(|name| name.to_str());
+    let leaf = path.file_name().and_then(|name| name.to_str());
+    let valid_shape = match leaf {
+        Some("no_turbo") => parent == cpu_root.join("intel_pstate"),
+        Some("boost") => parent == cpu_root.join("cpufreq"),
+        Some(
+            "scaling_governor"
+            | "energy_performance_preference"
+            | "scaling_min_freq"
+            | "scaling_max_freq",
+        ) => {
+            parent.parent() == Some(cpu_root.join("cpufreq").as_path())
+                && parent_name.is_some_and(|name| {
+                    name.strip_prefix("policy")
+                        .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+                })
+        }
+        Some("online") => {
+            parent.parent() == Some(cpu_root)
+                && parent_name.is_some_and(|name| {
+                    name.strip_prefix("cpu")
+                        .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+                })
+        }
+        _ => false,
+    };
+    if !path.starts_with(cpu_root) || !allowed_leaf || !valid_shape {
+        return Err(RogError::InvalidInput(
+            "CPU control endpoint is outside the approved sysfs hierarchy".to_string(),
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            RogError::TemporarilyUnavailable(
+                "a detected CPU control endpoint disappeared".to_string(),
+            )
+        } else {
+            RogError::Unexpected("CPU control endpoint metadata could not be read".to_string())
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(RogError::InvalidInput(
+            "CPU control endpoint has an unexpected file type".to_string(),
+        ));
+    }
+    let canonical_root = cpu_root.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable("CPU sysfs hierarchy is unavailable".to_string())
+    })?;
+    let canonical_path = path.canonicalize().map_err(|_| {
+        RogError::TemporarilyUnavailable(
+            "a detected CPU control endpoint could not be resolved".to_string(),
+        )
+    })?;
+    if !canonical_path.starts_with(canonical_root) || canonical_path.file_name() != path.file_name()
+    {
+        return Err(RogError::InvalidInput(
+            "CPU control endpoint escaped the approved sysfs hierarchy".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn probe_path_accesses(paths: Vec<PathBuf>) -> Vec<CpuPathAccess> {
@@ -1226,13 +1545,109 @@ fn is_writable(path: &Path) -> bool {
 }
 
 fn write_sysfs(path: &Path, value: &str) -> RogResult<()> {
-    let mut file = OpenOptions::new().write(true).open(path).map_err(|e| {
+    validate_cpu_endpoint(path)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied => {
+                RogError::PermissionDenied(format!("{} not writable: {e}", path.display()))
+            }
+            std::io::ErrorKind::NotFound => RogError::TemporarilyUnavailable(
+                "a detected CPU control endpoint disappeared".to_string(),
+            ),
+            _ => RogError::Unexpected(format!("failed to open {} for write: {e}", path.display())),
+        })?;
+    writeln!(file, "{value}").map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             RogError::PermissionDenied(format!("{} not writable: {e}", path.display()))
         } else {
-            RogError::Unexpected(format!("failed to open {} for write: {e}", path.display()))
+            RogError::Unexpected(format!("failed to write {}: {e}", path.display()))
         }
     })?;
-    writeln!(file, "{value}")
-        .map_err(|e| RogError::Unexpected(format!("failed to write {}: {e}", path.display())))
+    drop(file);
+    let actual = read_to_string(path).map_err(|_| {
+        RogError::TemporarilyUnavailable(
+            "CPU control endpoint disappeared before readback".to_string(),
+        )
+    })?;
+    if actual.trim() != value {
+        return Err(RogError::Unexpected(
+            "CPU control write did not match readback".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn partial_frequency_request_cannot_invert_active_limits() {
+        assert!(effective_frequency_range(Some(3000), None, 800_000, 2_500_000).is_err());
+        assert!(effective_frequency_range(None, Some(600), 800_000, 2_500_000).is_err());
+        assert_eq!(
+            effective_frequency_range(Some(1200), None, 800_000, 2_500_000).unwrap(),
+            (1_200_000, 2_500_000)
+        );
+    }
+
+    #[test]
+    fn cpu_write_endpoint_requires_exact_shape_and_regular_file() {
+        let root = temp_cpu_root("endpoint");
+        let policy = root.join("cpufreq/policy0");
+        std::fs::create_dir_all(&policy).unwrap();
+        let governor = policy.join("scaling_governor");
+        std::fs::write(&governor, "powersave\n").unwrap();
+
+        assert!(validate_cpu_endpoint_under(&governor, &root).is_ok());
+        let unexpected = policy.join("arbitrary_control");
+        std::fs::write(&unexpected, "1\n").unwrap();
+        assert!(matches!(
+            validate_cpu_endpoint_under(&unexpected, &root),
+            Err(RogError::InvalidInput(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cpu_write_endpoint_rejects_final_symlink_escape() {
+        let root = temp_cpu_root("symlink");
+        let policy = root.join("cpufreq/policy0");
+        std::fs::create_dir_all(&policy).unwrap();
+        let outside = root.parent().unwrap().join(format!(
+            "rog-helper-cpu-outside-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&outside, "powersave\n").unwrap();
+        let governor = policy.join("scaling_governor");
+        symlink(&outside, &governor).unwrap();
+
+        assert!(matches!(
+            validate_cpu_endpoint_under(&governor, &root),
+            Err(RogError::InvalidInput(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
+    }
+
+    fn temp_cpu_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rog-helper-cpu-test-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
 }

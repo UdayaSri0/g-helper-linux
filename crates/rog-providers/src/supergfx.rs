@@ -1,4 +1,4 @@
-use rog_core::{GpuMode, RogError, RogResult};
+use rog_core::{GpuMode, GpuSwitchState, RogError, RogResult};
 use tracing::debug;
 use zbus::fdo::DBusProxy;
 use zbus::zvariant::{OwnedValue, Value};
@@ -23,6 +23,14 @@ const SUPERGFX_ENDPOINTS: &[SupergfxEndpoint] = &[SupergfxEndpoint {
 pub struct SupergfxCaps {
     pub raw_supported_modes: Vec<String>,
     pub requires_reboot_hint: bool,
+    pub switch_state: GpuSwitchState,
+    pub switch_hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupergfxSwitchStatus {
+    pub state: GpuSwitchState,
+    pub hint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -90,11 +98,23 @@ impl SupergfxProvider {
             .read_config_always_reboot()
             .await
             .unwrap_or_else(|_| modes.iter().any(|m| m.eq_ignore_ascii_case("AsusMuxDgpu")));
+        let switch_status = self.switch_status().await.unwrap_or(SupergfxSwitchStatus {
+            state: GpuSwitchState::Unknown,
+            hint: "supergfxd did not report transition readiness; it remains authoritative for switch safety."
+                .to_string(),
+        });
 
         Ok(SupergfxCaps {
             raw_supported_modes: modes,
             requires_reboot_hint,
+            switch_state: switch_status.state,
+            switch_hint: switch_status.hint,
         })
+    }
+
+    pub async fn switch_status(&self) -> RogResult<SupergfxSwitchStatus> {
+        let action = self.read_pending_action().await?;
+        Ok(switch_status_from_action(&action))
     }
 
     async fn proxy(&self) -> RogResult<Proxy<'_>> {
@@ -168,18 +188,23 @@ impl SupergfxProvider {
         Ok(out)
     }
 
-    async fn read_pending_action_hint(&self) -> RogResult<Option<String>> {
+    async fn read_pending_action(&self) -> RogResult<String> {
         let proxy = self.proxy().await?;
 
         let action = if let Ok(v) = proxy.call::<_, _, u32>("PendingUserAction", &()).await {
-            action_name_from_u32(v).map(str::to_string)
+            Some(action_name_from_u32(v).unwrap_or("Unknown").to_string())
         } else if let Ok(v) = proxy.call::<_, _, u8>("PendingUserAction", &()).await {
-            action_name_from_u32(v as u32).map(str::to_string)
+            Some(
+                action_name_from_u32(v as u32)
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            )
         } else if let Ok(v) = proxy.call::<_, _, i32>("PendingUserAction", &()).await {
             u32::try_from(v)
                 .ok()
                 .and_then(action_name_from_u32)
                 .map(str::to_string)
+                .or_else(|| Some("Unknown".to_string()))
         } else if let Ok(v) = proxy.call::<_, _, String>("PendingUserAction", &()).await {
             Some(v)
         } else {
@@ -189,7 +214,7 @@ impl SupergfxProvider {
                 .map_err(|e| map_dbus_error("read PendingUserAction", e))?;
 
             if let Some(v) = value_to_u32(&raw) {
-                action_name_from_u32(v).map(str::to_string)
+                Some(action_name_from_u32(v).unwrap_or("Unknown").to_string())
             } else if let Ok(v) = <&str>::try_from(&raw) {
                 Some(v.to_string())
             } else {
@@ -197,25 +222,7 @@ impl SupergfxProvider {
             }
         };
 
-        let Some(action) = action else {
-            return Ok(None);
-        };
-
-        let key = normalize_word(&action);
-        let hint = match key.as_str() {
-            "nothing" => None,
-            "logout" => Some("Logout required to complete pending GPU switch.".to_string()),
-            "reboot" => Some("Reboot required to complete pending GPU switch.".to_string()),
-            "switchtointegrated" => {
-                Some("Switch to Integrated mode before this GPU change.".to_string())
-            }
-            "asusegpudisable" => Some(
-                "Disable ASUS eGPU mode (or return to Integrated/Hybrid) before switching."
-                    .to_string(),
-            ),
-            _ => Some(format!("GPU mode switch pending action: {action}")),
-        };
-        Ok(hint)
+        Ok(action.unwrap_or_else(|| "Unknown".to_string()))
     }
 
     async fn read_config_always_reboot(&self) -> RogResult<bool> {
@@ -255,12 +262,12 @@ impl GpuProvider for SupergfxProvider {
         let target_id = pick_target_mode(mode, &supported_ids, &supported_names)?;
         let proxy = self.proxy().await?;
 
-        if proxy
-            .call::<_, _, OwnedValue>("SetMode", &target_id)
-            .await
-            .is_ok()
-        {
-            return Ok(());
+        match proxy.call::<_, _, OwnedValue>("SetMode", &target_id).await {
+            Ok(_) => return Ok(()),
+            Err(error) if !allows_text_mode_fallback(&error.to_string()) => {
+                return Err(map_dbus_error("set supergfx mode", error));
+            }
+            Err(_) => {}
         }
 
         // Fallback for implementations that expose mode as a text enum.
@@ -277,7 +284,42 @@ impl GpuProvider for SupergfxProvider {
     }
 
     async fn can_switch_now(&self) -> RogResult<Option<String>> {
-        self.read_pending_action_hint().await
+        let status = self.switch_status().await?;
+        if status.state == GpuSwitchState::Ready {
+            Ok(None)
+        } else {
+            Ok(Some(status.hint))
+        }
+    }
+}
+
+fn switch_status_from_action(action: &str) -> SupergfxSwitchStatus {
+    match normalize_word(action).as_str() {
+        "nothing" => SupergfxSwitchStatus {
+            state: GpuSwitchState::Ready,
+            hint: "supergfxd reports that no GPU transition action is pending.".to_string(),
+        },
+        "logout" => SupergfxSwitchStatus {
+            state: GpuSwitchState::LogoutRequired,
+            hint: "Logout required to complete the pending GPU switch.".to_string(),
+        },
+        "reboot" => SupergfxSwitchStatus {
+            state: GpuSwitchState::RebootRequired,
+            hint: "Reboot required to complete the pending GPU switch.".to_string(),
+        },
+        "switchtointegrated" => SupergfxSwitchStatus {
+            state: GpuSwitchState::Unsafe,
+            hint: "Switch to Integrated mode before requesting this GPU change.".to_string(),
+        },
+        "asusegpudisable" => SupergfxSwitchStatus {
+            state: GpuSwitchState::Unsafe,
+            hint: "Disable ASUS eGPU mode, or return to Integrated/Hybrid, before switching again."
+                .to_string(),
+        },
+        _ => SupergfxSwitchStatus {
+            state: GpuSwitchState::Pending,
+            hint: format!("supergfxd reports a pending GPU action: {action}"),
+        },
     }
 }
 
@@ -312,7 +354,8 @@ fn pick_target_mode(mode: GpuMode, ids: &[u32], names: &[String]) -> RogResult<u
                 None
             }
         }
-        GpuMode::Other(name) => mode_id_from_text(&name),
+        GpuMode::Other(name) => mode_id_from_text(&name)
+            .filter(|id| mode_name_from_u32(*id).is_some_and(|canonical| contains(*id, canonical))),
     };
 
     target.ok_or_else(|| {
@@ -332,7 +375,7 @@ fn value_to_gpu_mode(v: &OwnedValue) -> Option<GpuMode> {
             2 => Some(GpuMode::Other("NvidiaNoModeset".to_string())),
             3 => Some(GpuMode::Other("Vfio".to_string())),
             4 => Some(GpuMode::Other("AsusEgpu".to_string())),
-            6 => Some(GpuMode::Other("Unknown".to_string())),
+            6 => Some(GpuMode::Other("None".to_string())),
             _ => None,
         };
     }
@@ -398,6 +441,7 @@ fn mode_id_from_text(v: &str) -> Option<u32> {
         "vfio" => Some(3),
         "asusegpu" => Some(4),
         "asusmuxdgpu" | "dedicated" | "discrete" => Some(5),
+        "none" => Some(6),
         _ => None,
     }
 }
@@ -445,7 +489,13 @@ fn classify_dbus_error(ctx: &str, msg: &str) -> RogError {
     if lower.contains("notsupported") || lower.contains("not supported") {
         return RogError::NotSupported(format!("{ctx}: {msg}"));
     }
-    if lower.contains("access denied") || lower.contains("permission denied") {
+    if lower.contains("access denied")
+        || lower.contains("accessdenied")
+        || lower.contains("permission denied")
+        || lower.contains("not authorized")
+        || lower.contains("notauthorized")
+        || lower.contains("authentication is required")
+    {
         return RogError::PermissionDenied(format!("{ctx}: {msg}"));
     }
     if lower.contains("serviceunknown")
@@ -454,5 +504,101 @@ fn classify_dbus_error(ctx: &str, msg: &str) -> RogError {
     {
         return RogError::DependencyMissing(format!("{ctx}: {msg}"));
     }
+    if lower.contains("busy")
+        || lower.contains("in use")
+        || lower.contains("unsafe")
+        || lower.contains("pending")
+    {
+        return RogError::TemporarilyUnavailable(format!("{ctx}: {msg}"));
+    }
     RogError::Unexpected(format!("{ctx}: {msg}"))
+}
+
+fn allows_text_mode_fallback(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalidargs")
+        || lower.contains("invalid args")
+        || lower.contains("signature")
+        || lower.contains("type mismatch")
+        || lower.contains("incorrect type")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_reported_modes_are_the_only_valid_targets() {
+        assert_eq!(
+            pick_target_mode(
+                GpuMode::Other("Vfio".to_string()),
+                &[3],
+                &["Vfio".to_string()]
+            )
+            .unwrap(),
+            3
+        );
+        assert!(matches!(
+            pick_target_mode(
+                GpuMode::Other("AsusEgpu".to_string()),
+                &[0, 1],
+                &["Hybrid".to_string(), "Integrated".to_string()]
+            ),
+            Err(RogError::NotSupported(_))
+        ));
+    }
+
+    #[test]
+    fn valid_and_unsupported_friendly_modes_use_backend_allow_list() {
+        assert_eq!(
+            pick_target_mode(GpuMode::Hybrid, &[0, 1], &["Hybrid".to_string()]).unwrap(),
+            0
+        );
+        assert!(matches!(
+            pick_target_mode(GpuMode::Dedicated, &[0, 1], &["Hybrid".to_string()]),
+            Err(RogError::NotSupported(_))
+        ));
+    }
+
+    #[test]
+    fn pending_actions_preserve_logout_reboot_and_unsafe_states() {
+        assert_eq!(
+            switch_status_from_action("Nothing").state,
+            GpuSwitchState::Ready
+        );
+        assert_eq!(
+            switch_status_from_action("Logout").state,
+            GpuSwitchState::LogoutRequired
+        );
+        assert_eq!(
+            switch_status_from_action("Reboot").state,
+            GpuSwitchState::RebootRequired
+        );
+        assert_eq!(
+            switch_status_from_action("SwitchToIntegrated").state,
+            GpuSwitchState::Unsafe
+        );
+        assert_eq!(
+            switch_status_from_action("FutureAction").state,
+            GpuSwitchState::Pending
+        );
+    }
+
+    #[test]
+    fn backend_errors_keep_external_authorization_and_busy_failures_distinct() {
+        assert!(matches!(
+            classify_dbus_error("set supergfx mode", "NotAuthorized by service policy"),
+            RogError::PermissionDenied(_)
+        ));
+        assert!(matches!(
+            classify_dbus_error("set supergfx mode", "GPU is busy in use"),
+            RogError::TemporarilyUnavailable(_)
+        ));
+        assert!(!allows_text_mode_fallback(
+            "org.freedesktop.DBus.Error.AccessDenied"
+        ));
+        assert!(allows_text_mode_fallback(
+            "org.freedesktop.DBus.Error.InvalidArgs: signature mismatch"
+        ));
+    }
 }

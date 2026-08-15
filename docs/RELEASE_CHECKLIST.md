@@ -2,6 +2,11 @@
 
 Use this checklist before calling the repository release-ready.
 
+Latest evidence-based walkthrough: [RELEASE_READINESS_AUDIT.md](RELEASE_READINESS_AUDIT.md).
+Unchecked items remain unverified even when the audit records partial automated coverage.
+
+Stable release decision: the release owner approved `v0.3.0` on 2026-08-15. Unchecked installed-runtime, cross-distro, and real-hardware items remain explicit known limitations and must not be presented as validated support.
+
 ## Documentation
 
 - [ ] `README.md` reflects the current implementation and does not overstate hardware support
@@ -44,6 +49,9 @@ Current repository note:
 ## Service and Packaging Files
 
 - [ ] `packaging/systemd-user/rog-helperd.service` reviewed
+- [ ] `packaging/systemd-system/rog-helper-privileged.service` reviewed against `PRIVILEGED_SECURITY_REVIEW.md`
+- [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
+- [ ] privileged binary is root-owned, executable, and not group/world-writable in each native package
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
 - [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
@@ -74,6 +82,8 @@ Current repository note:
 - [ ] `cargo build --workspace`
 - [ ] `cargo test --workspace`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `python3 packaging/scripts/check-release-metadata.py`
+- [ ] Debian package builds and `dpkg-deb --contents` confirms privileged integration ownership/modes
 
 Important note:
 
@@ -141,6 +151,11 @@ Every row below should be marked either:
 - [ ] About page metadata verified
 - [ ] packaged window / tray icon naming verified
 - [ ] About page support links verified
+- [ ] helper killed during fan operation restores Auto after systemd restart
+- [ ] helper missing/unavailable does not break telemetry or UI startup
+- [ ] PolicyKit success, denial, cancellation, and missing-agent flows verified
+- [ ] malformed and out-of-range system-D-Bus requests are rejected without writes
+- [ ] disappearing CPU/fan/lighting/battery endpoint returns failure and refreshes actual state
 - [ ] manual update check verified
 - [ ] safe update fallback verified for unsupported install methods
 
@@ -154,7 +169,10 @@ Review and explicitly record:
 
 Current repository note:
 
-- fan curves, auto mode / policy integration, persistent hardware/control configuration, and broader hardware support validation are not implemented end-to-end yet; Aura/RGB depends on asusd backend exposure and still needs wider model validation
+- the exact ASUS WMI eight-point fan-curve backend is implemented, but generic manual fan duty,
+  RPM-target, and boost writes remain unsupported; Aura/RGB writes require an exact verified asusd
+  contract; auto-policy integration, persistent hardware/control configuration, and broader
+  hardware support validation are not implemented end-to-end
 
 ## Final Sign-Off
 

@@ -16,6 +16,8 @@ Top-level structure:
   - integration layer for DBus, sysfs, procfs, and command fallback
 - `crates/rog-daemon`
   - session daemon and DBus service
+- `crates/rog-privileged`
+  - optional root system-DBus service and PolicyKit authorization boundary
 - `crates/rog-ui`
   - GTK/libadwaita desktop UI and tray
 - `crates/rog-cli`
@@ -23,7 +25,7 @@ Top-level structure:
 - `docs/`
   - project documentation
 - `packaging/`
-  - desktop entry, session DBus activation, AppStream metadata, and release scripts
+  - desktop entry, session/system DBus activation, systemd units, PolicyKit policy, AppStream metadata, and release scripts
 
 ## How the Current Crates Are Structured
 
@@ -89,13 +91,17 @@ Focus here when working on:
 - daemon payload decoding
 - action flows and UX
 
-Key file:
+Key files:
 
 - `crates/rog-ui/src/main.rs`
+- `crates/rog-ui/src/shell.rs`
+- `crates/rog-ui/src/theme.rs`
+- `crates/rog-ui/src/widgets/mod.rs`
+- `crates/rog-ui/src/fan_widgets.rs`
 
 Important current note:
 
-- most of the UI is also in a single source file
+- state decoding, background actions, refresh wiring, and most page construction remain in `main.rs`; the desktop shell, design system, reusable cards/headers/graphs, and fan drawing are separated
 
 ### `rog-cli`
 
@@ -118,6 +124,7 @@ Key file:
    - domain change -> `rog-core`
    - backend change -> `rog-providers`
    - API/state change -> `rog-daemon`
+   - root-only approved operation -> `rog-privileged`, with shared contract in `rog-core`
    - presentation / UX change -> `rog-ui`
    - troubleshooting / probing improvement -> `rog-cli`
 5. Update docs in the same change when the behavior or surface area changes.
@@ -156,7 +163,20 @@ cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
+cargo run -p rog-cli -- privileged-status
 ```
+
+The privileged helper normally runs only from packaged system D-Bus/systemd activation. For
+development, build it with `cargo build -p rog-privileged`; do not run the UI or `rog-helperd` as
+root. Unit tests do not require root, PolicyKit, or a live system bus.
+
+When adding a privileged operation, add a domain-specific method and input type, an exact
+internal endpoint mapping, an application-specific PolicyKit action, sanitized error mapping, and
+mocked authorization/backend tests. Do not add path-, command-, program-, or shell-shaped APIs.
+Validate parameters and endpoint identity before interactive PolicyKit where possible, then repeat
+identity/range validation immediately before the root write. Any PolicyKit action must use
+`auth_admin`, not retained authorization, unless a separate security review justifies otherwise.
+Run `python3 packaging/scripts/check-release-metadata.py` after changing helper integration.
 
 ## Debugging Tips
 

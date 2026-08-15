@@ -24,7 +24,7 @@ The following features are present in the current codebase.
 
 - `UPower` integration for power source and battery telemetry
 - `hwmon` integration for temperatures and fan RPMs
-- `nvidia-smi` fallback for GPU temperature
+- optional multi-metric `nvidia-smi` telemetry with deterministic GPU selection and a slower cached refresh cadence
 - `asusd` integration for:
   - ASUS platform profile read/write
   - battery charge-limit read/write
@@ -51,6 +51,9 @@ The daemon already exposes:
 - `GetCpuCaps`
 - `GetCpuTelemetry`
 - `GetCpuDiagnostics`
+- `GetConfiguration`
+- `SetConfiguration`
+- `ResetConfiguration`
 - `SetLighting`
 - `SetProfile`
 - `SetGpuMode`
@@ -67,8 +70,11 @@ The UI currently ships these pages:
 - CPU
 - GPU
 - Battery
-- RAM
+- Memory
 - Lighting
+- Cooling
+- Setup & Access
+- Settings
 - Diagnostics
 - About
 
@@ -104,12 +110,13 @@ Current status:
 
 - current mode read/write works
 - supported mode probing works
-- pending-action hinting exists
+- UI choices use the backend-reported supported modes
+- pending/logout/reboot/unsafe transition states are explicit
+- missing service and external authorization failures remain distinct from root-helper access
 
 Still evolving:
 
-- clearer UX around risky transitions
-- better busy or unsafe switching detection
+- richer backend-specific application-busy detail when future supergfxd APIs expose it
 
 ### CPU controls
 
@@ -121,7 +128,7 @@ Still evolving:
 
 - permissions model for write access
 - UX around partial or read-only control availability
-- cleanup and maintainability of current single-file UI and daemon handling
+- continued extraction of page constructors from the UI bootstrap; shell, theme, reusable widgets, and fan drawing are already separate modules
 
 ### Diagnostics
 
@@ -183,24 +190,33 @@ Note:
 
 ### Aura / RGB lighting
 
-Implemented when asusd exposes a compatible Aura/keyboard lighting DBus backend, with remaining work focused on:
+Discovery and capability reporting are implemented, but Aura writes are not. The validated target
+has no installed Aura service, so heuristic interface names cannot authorize a backend. Remaining
+work is gated on:
 
-- broader hardware validation
-- additional asusd interface shape coverage if real machines expose unsupported signatures
-- clearer reporting for backend-specific effects that do not map to the shared mode labels
+- captured introspection and service version from real Aura-capable hardware
+- an exact service/path/interface/signature adapter with readback tests
+- backend-reported effect, speed, zone, and range handling
+- unprivileged write/error validation on that hardware
+
+See `AURA_BACKEND_DISCOVERY.md` for the current evidence and acceptance gate.
 
 ### Persistent configuration
 
-Implemented in limited form:
+Implemented:
 
-- UI lifecycle settings for close behavior, launch-on-login, start-minimized-to-tray,
-  and the one-time close-to-tray hint
+- versioned XDG `config.toml` with daemon-authoritative writes
+- atomic replacement, safe defaults, field-level validation, future-field tolerance, and legacy
+  `ui.toml` migration
+- dedicated Settings page for lifecycle and dashboard preferences
+- inert preferred charge limit, last manual profile, and fan-sync preference
+- confirmed reset to defaults
 
-Planned but missing:
+Still missing:
 
-- persistent hardware/control preferences
-- saved automation rules
-- durable control preferences
+- saved automation rules and daemon policy execution
+- persistent verified fan curves
+- automatic hardware application, intentionally deferred until an explicit safety model exists
 
 ### Typed daemon API payloads
 

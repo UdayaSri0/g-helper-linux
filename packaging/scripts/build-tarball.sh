@@ -22,12 +22,16 @@ BUNDLE_ROOT="$STAGE_ROOT/$BUNDLE_NAME"
 install_release_binary rog-helper-ui "$BUNDLE_ROOT/bin/rog-helper-ui"
 install_release_binary rog-helperd "$BUNDLE_ROOT/bin/rog-helperd"
 install_release_binary rog-helper "$BUNDLE_ROOT/bin/rog-helper"
+install_release_binary rog-helper-privileged "$BUNDLE_ROOT/libexec/rog-helper-privileged"
 install_desktop_entry "$BUNDLE_ROOT"
 install_icon_theme_assets "$BUNDLE_ROOT"
 install_app_symbolic_icons "$BUNDLE_ROOT"
 install_metainfo "$BUNDLE_ROOT"
 install_dbus_activation "$BUNDLE_ROOT" "rog-helperd"
 install_user_service "$BUNDLE_ROOT" "rog-helperd"
+# The documented portable install target is /usr/local. Root activation must
+# never rely on PATH lookup for the privileged executable.
+install_privileged_integration "$BUNDLE_ROOT" "/usr/local/libexec/rog-helper-privileged"
 install_license_docs "$BUNDLE_ROOT"
 
 normalize_tree_timestamps "$BUNDLE_ROOT"

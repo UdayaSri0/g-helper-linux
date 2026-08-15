@@ -4,6 +4,7 @@ members = [
   "crates/rog-core",
   "crates/rog-providers",
   "crates/rog-daemon",
+  "crates/rog-privileged",
   "crates/rog-ui",
   "crates/rog-cli",
 ]
@@ -16,7 +17,7 @@ default-members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["UdayaSri0", "rog-helper contributors"]
 homepage = "https://github.com/UdayaSri0/g-helper-linux"
 license = "MIT OR Apache-2.0"

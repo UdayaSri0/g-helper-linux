@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "rog-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1425,29 +1425,46 @@ dependencies = [
 
 [[package]]
 name = "rog-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
 name = "rog-daemon"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "regex",
  "rog-core",
  "rog-providers",
+ "serde",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",
 ]
 
 [[package]]
+name = "rog-privileged"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "rog-core",
+ "rog-providers",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+ "zvariant",
+]
+
+[[package]]
 name = "rog-providers"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "regex",
@@ -1462,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "rog-ui"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "glib-build-tools",
@@ -1474,7 +1491,6 @@ dependencies = [
  "semver",
  "serde",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "zbus",

@@ -72,6 +72,7 @@ Run the diagnostics CLI:
 
 ```bash
 cargo run -p rog-cli -- services
+cargo run -p rog-cli -- setup-check
 cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
 cargo run -p rog-cli -- caps
@@ -114,7 +115,8 @@ The current daemon DBus identity is:
 - object path: `/io/github/roghelper/Daemon`
 - interface: `io.github.roghelper.Daemon1`
 
-See [DBUS_API.md](DBUS_API.md) for the current API surface.
+See [DBUS_API.md](DBUS_API.md) for the current API surface and
+[DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md) for the release contract audit.
 
 ## Install Locally
 
@@ -162,11 +164,13 @@ systemctl --user enable --now rog-helperd
 
 Notes:
 
-- the tarball contains `bin/`, `share/`, and `lib/systemd/user/` content laid out for a prefix such as `/usr/local`
+- the tarball contains `bin/`, `libexec/`, `share/`, and systemd content laid out for the documented
+  `/usr/local` prefix; privileged activation uses the fixed absolute
+  `/usr/local/libexec/rog-helper-privileged` path and therefore must not be relocated casually
 - direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
 - verify release assets with the published SHA256 file before installing them
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
-- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.2.2`, the correct release tag is `v0.2.2`
+- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.3.0`, the correct release tag is `v0.3.0`
 
 ## Optional Desktop Launcher Install
 
@@ -238,6 +242,10 @@ packaging/scripts/build-deb.sh
 
 This builds release binaries, installs the desktop entry, AppStream metadata, session DBus activation, hicolor icons, all three binaries, license files, and the systemd user service into a Debian package under `dist/`.
 
+It also installs `/usr/libexec/rog-helper-privileged` as root-owned mode `0755` together with its
+system service, system-D-Bus activation/policy, and PolicyKit actions. Validate the generated file
+ownership and modes with `dpkg-deb --contents` before publishing.
+
 Requirements:
 
 - `dpkg-deb`
@@ -268,7 +276,7 @@ This installs from the current repository checkout through the bundled
 Notes:
 
 - the `PKGBUILD` auto-detects the repository root when run from `packaging/arch`
-- the committed `.SRCINFO` is generated against the future upstream `v0.2.2` tag
+- the committed `.SRCINFO` is generated against the future upstream `v0.3.0` tag
 - the same packaging defaults to the upstream tagged Git source when moved into
   an AUR repository
 - the Arch package does not auto-enable the user service; enable it manually
@@ -468,3 +476,8 @@ Common examples:
 - `asusd` or `supergfxd` controls are missing because the service is not installed or not reachable
 
 See [PERMISSIONS.md](PERMISSIONS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more detail.
+
+The privileged service's systemd hardening decisions and required sysfs exceptions are documented
+in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md). Run
+`python3 packaging/scripts/check-release-metadata.py` to enforce the expected PolicyKit action set
+and hardening baseline.

@@ -13,6 +13,7 @@ prepare_release_assets
 install_release_binary rog-helper-ui "$OUTPUT_DIR/rog-helper-ui"
 install_release_binary rog-helperd "$OUTPUT_DIR/rog-helperd"
 install_release_binary rog-helper "$OUTPUT_DIR/rog-helper"
+install_release_binary rog-helper-privileged "$OUTPUT_DIR/rog-helper-privileged"
 
 ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-deb.sh" "$OUTPUT_DIR"
 ROG_HELPER_SKIP_PREPARE=1 "$SCRIPT_DIR/build-tarball.sh" "$OUTPUT_DIR"

@@ -1,6 +1,6 @@
 # GUI Spec
 
-This document describes the current GUI as implemented in `crates/rog-ui/src/main.rs`. Planned features that are not yet in the UI are called out separately so this file can serve both as a current UI reference and as a guide for future work.
+This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope
 
@@ -15,8 +15,21 @@ The current top-level structure uses:
 
 - `adw::ToolbarView`
 - `adw::ViewStack`
-- `adw::ViewSwitcher`
 - `adw::ToastOverlay`
+- a compact 202 px left navigation sidebar with symbolic icons, hover/focus treatment, and a strong selected state
+- a compact header with an application mark, title/subtitle identity, and daemon connection status
+- vertically scrollable page containers clamped at 1260 px
+- long pages, including Settings, scroll vertically instead of contributing their full content height to the top-level minimum
+
+The default window is 1180 x 800. It does not impose a desktop-sized minimum: the visible page supplies its natural minimum, and flow-box groups reflow through wide, medium, and narrow layouts as space changes.
+
+Shared presentation rules:
+
+- hero cards are reserved for primary temperature, charge, and memory summaries
+- compact cards carry secondary telemetry without arbitrary fixed heights
+- semantic chips consistently distinguish available, informational, attention, and unavailable states
+- long capability, endpoint, and metadata values wrap instead of being silently truncated
+- page content uses restrained 20 px vertical rhythm and native GTK/Adwaita controls
 
 The implemented page set is:
 
@@ -24,10 +37,13 @@ The implemented page set is:
 2. CPU
 3. GPU
 4. Battery
-5. RAM
+5. Memory
 6. Lighting
-7. Diagnostics
-8. About
+7. Cooling
+8. Setup & Access
+9. Settings
+10. Diagnostics
+11. About
 
 The tray menu currently supports:
 
@@ -39,7 +55,7 @@ The tray menu currently supports:
 - Quit
 
 The window close button defaults to hiding the main window when tray support is
-available. The tray Quit action and the About-page lifecycle Quit action remain
+available. The tray Quit action and the Settings-page lifecycle Quit action remain
 the explicit full-exit paths.
 
 ## Current Update Model
@@ -48,6 +64,7 @@ The current UI behavior is polling-based:
 
 - a background Tokio runtime polls daemon state once per second
 - a GTK timeout refreshes widgets every 250 ms from cached state
+- one-shot tray/window actions and responsive breakpoint checks remain prompt, while bulk widget rendering runs only when the cached UI revision changes
 
 This matches the current daemon polling model and is the expected behavior unless the architecture changes.
 
@@ -63,23 +80,55 @@ Purpose:
 
 Current content:
 
-- metric cards for CPU temperature, GPU temperature, battery, power source, fans, and NVMe temperature when available
-- warning banner and warning summary area
-- quick actions for:
+- a responsive three-card hero row for CPU, GPU, and System State
+- CPU temperature, utilisation, average clock, semantic status, and a compact 60-second utilisation sparkline
+- GPU temperature, telemetry state, current mode when reported, and real core/memory clocks when available
+- a System State summary for power source, battery state, daemon connection, available control count, and missing-service setup count
+- a compact Current System Mode strip for known power, profile, GPU mode, cooling mode, and battery state values; unknown controls show an em dash rather than dependency errors
+- compact Battery, Cooling, Memory, Power, and conditional NVMe cards
+- a compact warning notification that reserves error emphasis for daemon/telemetry failure
+- a compact two-column Quick Performance tile grid for:
   - performance profile
   - GPU mode
   - battery charge limit
   - keyboard backlight brightness
-- expandable detail sections for temperatures, fans, and endpoint snippets
+- a single compact `N control areas need setup` notification whose Review action opens Setup & Access; Dashboard does not duplicate remediation prose
+- a content-driven Cooling Snapshot with CPU/GPU/NVMe thermal values and up to four detected fan RPM rows using static fan symbols; it ends after its last detected row
+- a Live Performance panel with compact CPU usage, CPU temperature, GPU temperature, and memory usage trends
+- a System Health panel summarizing `rog-helperd`, `asusd`, `supergfxd`, CPU writes, Lighting writes, fan-control state, and warning count with semantic indicators
+- raw temperatures, fan endpoints, and other technical names under a collapsed Advanced Sensor Details section
 
 Current behavior:
 
 - controls are enabled or disabled based on daemon-reported capabilities
-- warning area shows concise reason text for missing services, unsupported features, and permission-blocked controls
-- Dashboard quick-action rows stay visible when relevant support is missing and explain why the control is disabled
-- quick-action controls use aligned inline control clusters with compact apply buttons so disabled/read-only states still look intentional
+- optional capability gaps use a compact notification; daemon disconnection remains a prominent error
+- Dashboard quick-action rows stay visible when relevant support is missing and point to the single dependency hint
+- quick-action controls use compact dashboard tiles with aligned controls and apply buttons so disabled/read-only states still look intentional
 - fan telemetry presentation is dynamic: the fan card and detail rows adapt to the detected `fan_rows` set rather than assuming a fixed one-fan or two-fan layout
 - when a fan input is detected but has no current RPM value, the Dashboard keeps the row visible and shows it as unavailable instead of hiding it
+- CPU, GPU, Battery, Cooling, and Memory cards provide keyboard-accessible navigation with visible hover/focus feedback
+- System Overview uses five cards across at wide widths, three at medium widths, and one at narrow widths, preventing accidental 4+1 packing
+- the remaining major `GtkFlowBox` groups transition together through wide, medium, and narrow modes without horizontal scrolling; Current System Mode uses 5-wide, 3+2, or a single stacked column
+- GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
+- Settings can hide Advanced System Health, the conditional NVMe card, or Cooling Snapshot and can enable a compact vertical layout
+
+### Setup & Access
+
+Purpose:
+
+- explain why a control is unavailable without asking users to interpret raw diagnostics
+- separate missing services, permission limits, unsupported hardware, and transient API failures
+
+Current content and behavior:
+
+- grouped Session Daemon, Administrator Access, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
+- verified readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and relevant `nvidia-smi` support
+- live API checks are authoritative; executable and systemd-unit discovery is advanced evidence
+- explicit available, administrator-required, authorized, denied, read-only, missing-backend/helper, external-service, unsupported, and unavailable language
+- Refresh checks, Copy setup diagnostics, Copy privilege diagnostics, and Open full Diagnostics actions
+- sysfs paths and endpoint details remain collapsed under Advanced details
+- all checks are read-only; the UI does not invoke `sudo`, install packages, change permissions, or execute remediation commands
+- opening or refreshing this page never prompts; only a meaningful `Unlock & Apply` operation may invoke PolicyKit
 
 ### CPU
 
@@ -90,7 +139,8 @@ Purpose:
 Current content:
 
 - overview cards for temperature, usage, package power, and average clock
-- CPU access-status banner when writes are blocked or partially unavailable
+- native filled-area Cairo history graphs for CPU usage and temperature, fed from existing cached history buffers and labelled with current/minimum/maximum values over the last 60 seconds
+- compact CPU control-capability panel when writes are blocked or partially unavailable
 - quick controls for:
   - turbo boost
   - power mode
@@ -125,10 +175,13 @@ Purpose:
 
 Current content:
 
-- current state group showing:
-  - current ASUS performance profile
-  - current GPU mode
+- an overview for temperature plus optional NVIDIA utilisation, VRAM, power, and clock telemetry
+- compact temperature and utilisation history graphs shown after real samples arrive
+- one control-dependencies group for:
+  - `asusd` performance profiles
+  - `supergfxd` GPU modes
   - GPU switch hint
+  - NVIDIA telemetry provider status
 - controls group for:
   - profile apply
   - GPU mode apply
@@ -137,8 +190,10 @@ Current content:
 Current behavior:
 
 - controls are gated by daemon capabilities
+- NVIDIA data is read-only, daemon-polled every three seconds, and remains absent per field when unsupported
 - reboot or logout requirement is shown through a capability hint from the daemon
-- the current-state values and control subtitles distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- the dependency values distinguish missing `asusd`, missing `supergfxd`, unsupported hardware, and temporarily unavailable backend reads instead of falling back to vague `(n/a)` text
+- unavailable control rows refer back to the single dependency summary instead of repeating the service explanation
 - current-state value rows wrap long reason text instead of clipping, and apply rows use the same aligned control/button treatment as the Dashboard
 
 ### Battery
@@ -149,23 +204,13 @@ Purpose:
 
 Current content:
 
-- charge percentage
-- battery state
-- power source
-- AC online
-- charge power
-- discharge power
-- time to full
-- time to empty
-- battery health
-- cycle count
+- large charge card with state, source/AC context, time estimate, and progress bar
+- capability-gated battery charge-limit control
+- compact health, cycle, active power, time, and source cards
 
-Important note:
+The Dashboard retains a charge-limit quick control, while Battery is the full-control location. Both use the existing daemon action path.
 
-- the current Battery page is telemetry-focused
-- the current battery charge-limit control is on the Dashboard, not on this page
-
-### RAM
+### Memory
 
 Purpose:
 
@@ -173,12 +218,12 @@ Purpose:
 
 Current content:
 
-- total, used, available, free, cached, buffers, shared, and anonymous memory
-- swap totals and activity
+- prominent memory-used card and progress bar with used and total values
+- immediate cache, shared, buffers, and swap cards
+- total, used, available, free, anonymous memory, swap totals, and activity in a collapsed detail disclosure
 - zram and zswap state
-- PSI memory pressure metrics
-- advanced memory breakdown
-- top memory users with copy-to-clipboard support
+- PSI memory pressure metrics and the detailed kernel memory breakdown in a collapsed Advanced section
+- compact top-memory-users table with Process, PID, User, RAM, and Swap columns plus copy-to-clipboard support
 
 ### Lighting
 
@@ -188,25 +233,45 @@ Purpose:
 
 Current content:
 
-- backend and device name
-- current brightness
-- current mode
-- current RGB colour when reported
-- availability status
-- mode combo box
-- brightness slider
-- RGB colour control
+- controls first, followed by availability and recent-action status
+- one read-only/unavailable capability banner
+- mode combo box only when `supports_modes` and non-empty `supported_modes` are reported
+- brightness slider only when `supports_brightness` is reported
+- RGB colour control only when `supports_rgb` is reported
 - apply action
-- last-action status
+- collapsed backend details containing current backend, brightness, mode, and RGB values
 
 Current implementation note:
 
-- the daemon prefers an asusd Aura/RGB DBus backend when introspection confirms one exists
+- an Aura backend may be preferred only when introspection matches an exact, reviewed control contract; Aura-looking names remain diagnostic-only
 - the sysfs keyboard backlight backend remains the brightness-only fallback
 - sysfs daemon-reported supported modes are `Off` and `Static`
-- Aura mode choices and RGB enablement come from the daemon-reported backend capability data
+- speed and zone controls remain hidden because no verified backend currently reports them
+- future Aura mode choices, RGB, speed, and zones must come from daemon-reported backend capability data
 - Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
+
+### Settings
+
+Purpose:
+
+- keep application preferences separate from project metadata and hardware action pages
+- expose the durable configuration surface without implying startup automation
+
+Current content:
+
+- Startup & Tray: On Close, Launch on Login, Start Minimized to Tray, and Exit Completely
+- Dashboard: Advanced System Health, conditional NVMe card, Cooling Snapshot, and compact spacing
+- Control Preferences: preferred charge limit and last manual performance profile
+- Automation: an explicit notice that saved hardware preferences are not auto-applied
+- Reset: destructive-style button with confirmation that restores rog-helper defaults
+
+Current behavior:
+
+- changes are sent to the daemon and atomically saved in versioned XDG `config.toml`
+- a failed save leaves the previous good file in place and reports an error toast
+- Reset synchronizes rog-helper's managed autostart entry with the default lifecycle setting
+- remembered hardware values do not trigger writes on application or daemon startup
 
 ### Diagnostics
 
@@ -216,7 +281,8 @@ Purpose:
 
 Current content:
 
-- troubleshooting summary for the current machine state
+- overview cards for daemon state, available control groups, and warning count
+- structured Services, Permissions, Sensors, and Warnings groups before technical detail
 - session daemon endpoint summary
 - capability flags
 - structured feature-access status and reason fields from daemon capabilities
@@ -224,7 +290,7 @@ Current content:
 - notes
 - fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
 - warnings
-- copy diagnostics button
+- collapsed raw technical report with copy diagnostics button
 
 ### About
 
@@ -234,9 +300,8 @@ Purpose:
 
 Current content:
 
-- name
+- leading identity card with packaged icon, product title/subtitle, version badge, and concise description
 - binary
-- version
 - license
 - session DBus API endpoint
 - authors field
@@ -247,11 +312,6 @@ Current content:
 - last check timestamp
 - last check result
 - release-notes preview
-- lifecycle controls for:
-  - close behavior
-  - launch on login
-  - start minimized to tray
-  - explicit full exit
 - manual `Check for Updates` action
 - best-effort `Update Now` / `Download Latest` action
 - source, support, and issue-reporting buttons
@@ -263,7 +323,7 @@ Current implementation note:
 - maintainer GitHub metadata is derived from the repository URL when possible
 - release checks are manual, run in the UI process, and use the GitHub Releases API
 - automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
-- lifecycle preferences are limited UI settings persisted in the user's XDG config/autostart locations; they are not a general hardware-control settings system
+- lifecycle and durable preferences are intentionally located on Settings
 
 ## Current Capability Behavior
 
@@ -295,13 +355,13 @@ Current examples in the implementation include:
 - CPU write-access banner with diagnostics handoff
 - last-action status for lighting and GPU/profile actions
 
-## Fans Page
+## Cooling Page
 
-The Fans page is a current UI page.
+Cooling is the user-facing name of the existing internal `fans` page and backend API surface.
 
-- shows a styled header with backend, detected fan count, current mode, and mapping warnings
+- uses the standard page header followed by compact backend, detected fan count, current mode, and mapping warning pills
 - includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
-- includes animated fan rotors whose visual speed is scaled from live RPM and capped for readability
+- includes animated fan rotors whose visual speed is scaled from live RPM, capped for readability, refreshed at 20 FPS only while mapped, and reduced when GTK animations are disabled
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support
@@ -321,7 +381,6 @@ These are not current pages or complete current UI features.
 ### Planned or future pages
 
 - Profiles page
-- Settings page
 
 Related note:
 
@@ -336,4 +395,4 @@ Related note:
 
 ## Maintenance Note
 
-This file is intended to describe the real current UI. If the implementation in `crates/rog-ui/src/main.rs` changes, update this document at the same time rather than leaving planned and current behavior mixed together.
+This file is intended to describe the real current UI. If `crates/rog-ui/src/` changes, update this document at the same time rather than leaving planned and current behavior mixed together.

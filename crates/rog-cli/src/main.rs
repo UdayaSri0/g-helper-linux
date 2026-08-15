@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -5,15 +6,18 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
-    DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability, LightingDiagnostics,
+    dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
+    LightingDiagnostics,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
+use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::lighting::build_lighting_diagnostics;
-use rog_providers::nvidia_smi::NvidiaSmiTelemetryProvider;
+use rog_providers::nvidia_smi::{NvidiaSmiProbe, NvidiaSmiTelemetryProvider};
+use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use tracing::{info, warn};
@@ -31,6 +35,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Check service readiness, hardware access, and write permissions.
+    SetupCheck,
     /// Print presence of key services (DBus + systemd).
     Services,
     /// List and optionally introspect system DBus services.
@@ -73,6 +79,10 @@ enum Cmd {
     Lighting,
     /// Print keyboard lighting and RGB/Aura diagnostics only.
     LightingDiagnostics,
+    /// Print a read-only Markdown record for hardware validation.
+    HardwareReport,
+    /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
+    PrivilegedStatus,
 }
 
 #[tokio::main]
@@ -88,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
+        Cmd::SetupCheck => cmd_setup_check().await?,
         Cmd::Services => cmd_services().await?,
         Cmd::Dbus {
             filter,
@@ -112,8 +123,146 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Fans => cmd_fans().await?,
         Cmd::FanCaps => cmd_fan_caps().await?,
         Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
+        Cmd::HardwareReport => cmd_hardware_report().await?,
+        Cmd::PrivilegedStatus => cmd_privileged_status().await?,
     }
 
+    Ok(())
+}
+
+async fn cmd_privileged_status() -> anyhow::Result<()> {
+    use dbus_keys::privileged_status as keys;
+    use zbus::zvariant::OwnedValue;
+
+    let connection = match zbus::Connection::session().await {
+        Ok(connection) => connection,
+        Err(_) => {
+            println!("rog-helperd: unavailable (session D-Bus could not be reached)");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+    let proxy = match zbus::Proxy::new(
+        &connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            println!("rog-helperd: unavailable");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+    let status: HashMap<String, OwnedValue> = match proxy.call("GetPrivilegedStatus", &()).await {
+        Ok(status) => status,
+        Err(_) => {
+            println!("rog-helperd: unavailable or incompatible");
+            println!("privileged helper: status unavailable through the required daemon boundary");
+            return Ok(());
+        }
+    };
+
+    println!("Privileged control status:");
+    print_bool_status(&status, keys::HELPER_INSTALLED, "helper installed");
+    print_bool_status(&status, keys::HELPER_REACHABLE, "helper reachable");
+    print_bool_status(&status, keys::HELPER_COMPATIBLE, "helper compatible");
+    println!(
+        "  helper version: {}",
+        map_string(&status, keys::HELPER_VERSION)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    print_bool_status(&status, keys::POLKIT_AVAILABLE, "authorization available");
+    println!(
+        "  authorization backend: {}",
+        map_string(&status, keys::AUTHORIZATION_BACKEND)
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    println!(
+        "  authorization state: {}",
+        map_string(&status, keys::AUTHORIZATION_STATE).unwrap_or_else(|| "unavailable".to_string())
+    );
+    let categories = status
+        .get(keys::CATEGORIES_AVAILABLE)
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
+    println!(
+        "  privileged categories available: {}",
+        if categories.is_empty() {
+            "none".to_string()
+        } else {
+            categories.join(", ")
+        }
+    );
+    Ok(())
+}
+
+fn print_bool_status(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+    label: &str,
+) {
+    let value = map
+        .get(key)
+        .and_then(|value| bool::try_from(value).ok())
+        .map(|value| if value { "yes" } else { "no" })
+        .unwrap_or("unknown");
+    println!("  {label}: {value}");
+}
+
+fn map_string(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<String> {
+    map.get(key)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(str::to_string)
+}
+
+async fn cmd_setup_check() -> anyhow::Result<()> {
+    let hwmon = HwmonTelemetryProvider::default();
+    let fan_caps = hwmon.fan_caps().unwrap_or_else(|error| {
+        warn!("fan capability probe failed during setup check: {error}");
+        FanCaps::from_fans(&[])
+    });
+    let cpu_caps = CpuTelemetryProvider::default().probe_caps();
+    let lighting_probe = probe_lighting_diagnostics().await;
+
+    let mut caps = DeviceCaps::unknown();
+    caps.has_aura = lighting_probe.aura.is_some();
+    caps.has_kbd_backlight = lighting_probe.kbd_detected;
+    let sysfs_writable = lighting_probe
+        .kbd_backlight
+        .as_ref()
+        .map(KbdBacklightSysfs::can_set_brightness)
+        .unwrap_or(false);
+    caps.kbd_backlight_access = lighting_access_from_backend_flags(
+        caps.has_aura,
+        lighting_probe.kbd_backlight.is_some(),
+        sysfs_writable,
+        lighting_probe.kbd_detected,
+        lighting_probe.kbd_probe_error.as_deref(),
+    );
+    let keyboard_paths = lighting_probe
+        .kbd_backlight
+        .as_ref()
+        .map(|kbd| vec![kbd.brightness_path().display().to_string()])
+        .unwrap_or_default();
+
+    let status = probe_setup_status(
+        RogHelperdProbe::ProbeSession,
+        &caps,
+        &cpu_caps,
+        &fan_caps,
+        keyboard_paths,
+    )
+    .await;
+    println!("{}", status.to_report_text(true));
     Ok(())
 }
 
@@ -218,23 +367,35 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
     println!();
     println!("telemetry snapshot:");
     let mut snap = provider.read_snapshot().context("read hwmon snapshot")?;
-    if snap.gpu_temp_c.is_none() {
-        let nvidia = NvidiaSmiTelemetryProvider::default();
-        if let Ok(Some(temp)) = nvidia.read_gpu_temp_c().await {
-            snap.gpu_temp_c = Some(temp);
-            snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
-        }
-    }
     let nvidia = NvidiaSmiTelemetryProvider::default();
-    if let Ok(Some(clocks)) = nvidia.read_gpu_clocks_mhz().await {
-        snap.gpu_core_clock_mhz = clocks.core_clock_mhz;
-        snap.gpu_memory_clock_mhz = clocks.memory_clock_mhz;
+    if let Ok(Some(sample)) = nvidia.read_telemetry().await {
+        if let Some(temp) = sample.temperature_c {
+            snap.temps_c.insert("nvidia-smi:gpu_temp".to_string(), temp);
+            snap.gpu_temp_c.get_or_insert(temp);
+        }
+        snap.gpu_usage_percent = sample.usage_percent;
+        snap.gpu_vram_used_bytes = sample.vram_used_bytes;
+        snap.gpu_vram_total_bytes = sample.vram_total_bytes;
+        snap.gpu_core_clock_mhz = sample.core_clock_mhz;
+        snap.gpu_memory_clock_mhz = sample.memory_clock_mhz;
+        snap.gpu_power_w = sample.power_w;
+        snap.gpu_name = Some(sample.name);
+        snap.gpu_uuid = Some(sample.uuid);
+        snap.gpu_pci_bus_id = Some(sample.pci_bus_id);
+        snap.gpu_index = Some(sample.index);
+        snap.gpu_telemetry_provider = Some("nvidia-smi".to_string());
     }
     println!("  timestamp_ms: {}", snap.timestamp_ms);
     println!("  cpu_temp_c: {:?}", snap.cpu_temp_c);
     println!("  gpu_temp_c: {:?}", snap.gpu_temp_c);
+    println!("  gpu_usage_percent: {:?}", snap.gpu_usage_percent);
+    println!("  gpu_vram_used_bytes: {:?}", snap.gpu_vram_used_bytes);
+    println!("  gpu_vram_total_bytes: {:?}", snap.gpu_vram_total_bytes);
     println!("  gpu_core_clock_mhz: {:?}", snap.gpu_core_clock_mhz);
     println!("  gpu_memory_clock_mhz: {:?}", snap.gpu_memory_clock_mhz);
+    println!("  gpu_power_w: {:?}", snap.gpu_power_w);
+    println!("  gpu_name: {:?}", snap.gpu_name);
+    println!("  gpu_uuid: {:?}", snap.gpu_uuid);
     println!("  temps: {}", snap.temps_c.len());
     println!("  fans: {}", snap.fans_rpm.len());
     for fan in &snap.fan_rows {
@@ -254,7 +415,7 @@ async fn cmd_sensors(root: Option<&std::path::Path>) -> anyhow::Result<()> {
 async fn cmd_fans() -> anyhow::Result<()> {
     let provider = HwmonTelemetryProvider::default();
     let fans = provider.list_fans().context("list fans")?;
-    print_fan_caps(&FanCaps::from_fans(&fans));
+    print_fan_caps(&provider.fan_caps().context("probe fan caps")?);
     println!();
     println!("Detected fans:");
     if fans.is_empty() {
@@ -266,7 +427,7 @@ async fn cmd_fans() -> anyhow::Result<()> {
     }
     println!();
     println!("Notes:");
-    println!("  Diagnostics do not require root. If PWM files exist but are read-only, root or a focused udev/system policy may reveal writable control, but rog-ui still only writes through rog-helperd.");
+    println!("  Diagnostics are read-only and do not require root. Candidate PWM/curve files do not authorize fan writes; a backend-specific safety and restore contract must be verified first.");
     Ok(())
 }
 
@@ -278,6 +439,14 @@ async fn cmd_fan_caps() -> anyhow::Result<()> {
 }
 
 async fn cmd_caps() -> anyhow::Result<()> {
+    let (caps, lighting_diagnostics) = probe_device_caps().await?;
+    println!("{caps:#?}");
+    println!();
+    println!("{}", lighting_diagnostics.to_report_text());
+    Ok(())
+}
+
+async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)> {
     info!("probing DeviceCaps");
 
     let hwmon = HwmonTelemetryProvider::default();
@@ -458,17 +627,33 @@ async fn cmd_caps() -> anyhow::Result<()> {
             .push(format!("supergfxd:{}", supergfx.endpoint_tag()));
         match supergfx.probe_caps().await {
             Ok(gcaps) => {
+                caps.gpu_backend = "supergfxd".to_string();
                 caps.has_gpu_modes = !gcaps.raw_supported_modes.is_empty();
-                caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint;
-                caps.gpu_mode_access = if caps.has_gpu_modes {
-                    FeatureAvailability::new(
-                        FeatureAccessState::Available,
-                        "GPU mode switching is available through supergfxd.",
-                    )
-                } else {
+                caps.gpu_supported_modes = gcaps.raw_supported_modes.clone();
+                caps.gpu_external_authorization = "external_service".to_string();
+                caps.gpu_switch_state = gcaps.switch_state;
+                caps.gpu_switch_hint = gcaps.switch_hint.clone();
+                caps.requires_logout_for_gpu_switch =
+                    gcaps.switch_state == rog_core::GpuSwitchState::LogoutRequired;
+                caps.requires_reboot_for_gpu_switch = gcaps.requires_reboot_hint
+                    || gcaps.switch_state == rog_core::GpuSwitchState::RebootRequired;
+                caps.gpu_mode_access = if !caps.has_gpu_modes {
                     FeatureAvailability::new(
                         FeatureAccessState::Unsupported,
                         "supergfxd is available, but this machine does not expose switchable GPU modes.",
+                    )
+                } else if gcaps.switch_state.blocks_new_switch() {
+                    FeatureAvailability::new(
+                        FeatureAccessState::TemporarilyUnavailable,
+                        format!(
+                            "supergfxd is waiting for a GPU transition to complete: {}",
+                            gcaps.switch_hint
+                        ),
+                    )
+                } else {
+                    FeatureAvailability::new(
+                        FeatureAccessState::Available,
+                        "GPU mode switching is available through supergfxd; any authorization is owned by that external service.",
                     )
                 };
                 if !gcaps.raw_supported_modes.is_empty() {
@@ -479,6 +664,11 @@ async fn cmd_caps() -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
+                caps.gpu_backend = "supergfxd".to_string();
+                caps.gpu_external_authorization = "external_service".to_string();
+                caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+                caps.gpu_switch_hint =
+                    "supergfxd GPU capabilities could not be read right now.".to_string();
                 caps.gpu_mode_access = FeatureAvailability::new(
                     FeatureAccessState::TemporarilyUnavailable,
                     "supergfxd is present, but GPU mode support could not be confirmed right now.",
@@ -495,6 +685,11 @@ async fn cmd_caps() -> anyhow::Result<()> {
             }
         }
     } else if let Some(err) = &supergfx_connect_error {
+        caps.gpu_backend = "none".to_string();
+        caps.gpu_external_authorization = "unavailable".to_string();
+        caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+        caps.gpu_switch_hint =
+            "supergfxd was detected indirectly but its system API was unreachable.".to_string();
         caps.gpu_mode_access = backend_access_from_connect_error(
             Some(err.as_str()),
             "Install and start supergfxd to enable GPU mode switching.",
@@ -502,6 +697,11 @@ async fn cmd_caps() -> anyhow::Result<()> {
         );
         caps.notes.push(format!("supergfxd connect failed: {err}"));
     } else {
+        caps.gpu_backend = "none".to_string();
+        caps.gpu_external_authorization = "unavailable".to_string();
+        caps.gpu_switch_state = rog_core::GpuSwitchState::Unavailable;
+        caps.gpu_switch_hint =
+            "supergfxd is not available; root access is not a substitute.".to_string();
         caps.gpu_mode_access = backend_access_from_connect_error(
             None,
             "Install and start supergfxd to enable GPU mode switching.",
@@ -519,10 +719,264 @@ async fn cmd_caps() -> anyhow::Result<()> {
         }
     }
 
-    println!("{:#?}", caps);
+    Ok((caps, lighting_probe.diagnostics))
+}
+
+async fn cmd_hardware_report() -> anyhow::Result<()> {
+    let (caps, lighting) = probe_device_caps().await?;
+    let hwmon = HwmonTelemetryProvider::default();
+    let fan_caps = hwmon.fan_caps().unwrap_or_else(|_| FanCaps::from_fans(&[]));
+    let fans = hwmon.list_fans().unwrap_or_default();
+    let cpu_caps = CpuTelemetryProvider::default().probe_caps();
+    let keyboard_paths = lighting
+        .keyboard_backlight_brightness_path
+        .clone()
+        .into_iter()
+        .collect();
+    let setup = probe_setup_status(
+        RogHelperdProbe::ProbeSession,
+        &caps,
+        &cpu_caps,
+        &fan_caps,
+        keyboard_paths,
+    )
+    .await;
+    let nvidia = NvidiaSmiTelemetryProvider::default();
+    let nvidia_status = match nvidia.probe().await {
+        NvidiaSmiProbe::Available { gpu_names } => {
+            format!("available ({})", gpu_names.join(", "))
+        }
+        NvidiaSmiProbe::NotFound => "not installed".to_string(),
+        NvidiaSmiProbe::Unavailable(reason) => format!("unavailable ({reason})"),
+    };
+    let nvidia_sample = nvidia.read_telemetry().await.ok().flatten();
+
+    println!("# rog-helper Hardware Validation Report");
     println!();
-    println!("{}", lighting_probe.diagnostics.to_report_text());
+    println!("Generated by `rog-helper hardware-report` using read-only probes.");
+    println!();
+    println!("## Metadata");
+    println!();
+    println!(
+        "- Tested date: {}",
+        command_line("date", &["--iso-8601=seconds"])
+    );
+    println!("- rog-helper version: {}", env!("CARGO_PKG_VERSION"));
+    println!("- Tester: (fill in)");
+    println!();
+    println!("## Machine");
+    println!();
+    println!("- Model: {}", machine_model());
+    println!("- Distro: {}", distro_name());
+    println!("- Kernel: {}", command_line("uname", &["-srmo"]));
+    println!("- Desktop environment: {}", desktop_name());
+    println!("- CPU: {}", cpu_name());
+    println!("- GPU: {}", gpu_name(nvidia_sample.as_ref()));
+    println!(
+        "- BIOS / firmware: {}",
+        read_trimmed("/sys/class/dmi/id/bios_version")
+    );
+    println!(
+        "- `asusd` version: {}",
+        first_available_command(&[("asusctl", &["--version"]), ("asusd", &["--version"])])
+    );
+    println!(
+        "- `supergfxd` version: {}",
+        first_available_command(&[
+            ("supergfxctl", &["--version"]),
+            ("supergfxd", &["--version"])
+        ])
+    );
+    println!();
+    println!("## Service Status");
+    println!();
+    println!(
+        "- `rog-helperd`: {}",
+        systemctl_user_unit_status("rog-helperd")
+            .unwrap_or_else(|| "systemctl --user unavailable".to_string())
+    );
+    for service in ["asusd", "supergfxd", "upower"] {
+        println!(
+            "- `{service}`: {}",
+            systemctl_unit_status(service).unwrap_or_else(|| "systemctl unavailable".to_string())
+        );
+    }
+    println!("- `nvidia-smi`: {nvidia_status}");
+    println!();
+    println!("## Capability Summary");
+    println!();
+    println!("```text");
+    println!("{caps:#?}");
+    println!("```");
+    println!();
+    println!("## Sensors and Fan Mapping");
+    println!();
+    println!("- Fan backend: {}", fan_caps.fan_backend);
+    println!("- Fan count: {}", fan_caps.fan_count);
+    println!(
+        "- Fan mapping confidence: {}",
+        fan_caps.fan_mapping_confidence.as_str()
+    );
+    if fans.is_empty() {
+        println!("- Fan endpoints: none detected");
+    } else {
+        for fan in &fans {
+            println!(
+                "- {} (`{}`): RPM {}, mapping {}, controllable {}, endpoints {}",
+                fan.label,
+                fan.id,
+                fan.current_rpm
+                    .map(|rpm| rpm.to_string())
+                    .unwrap_or_else(|| "unavailable".to_string()),
+                fan.mapping_confidence.as_str(),
+                fan.controllable,
+                fan.endpoints.join(", ")
+            );
+        }
+    }
+    println!();
+    println!("## Permission and Dependency States");
+    println!();
+    println!("```text");
+    println!("{}", setup.to_report_text(true));
+    println!("```");
+    println!();
+    println!("## Lighting Backend");
+    println!();
+    println!("```text");
+    println!("{}", lighting.to_report_text());
+    println!("```");
+    println!();
+    println!("## Manual Results (fill in after testing)");
+    println!();
+    for field in [
+        "Session daemon startup",
+        "UI startup",
+        "Tray visibility",
+        "Session DBus introspection",
+        "Profile control",
+        "GPU mode control",
+        "Battery limit",
+        "Keyboard backlight",
+        "CPU telemetry",
+        "CPU write controls",
+        "Unsupported or unverified items",
+    ] {
+        println!("- {field}:");
+    }
+    println!();
+    println!("This report records observations only; it does not certify write support.");
     Ok(())
+}
+
+fn read_trimmed(path: &str) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn command_line(program: &str, args: &[&str]) -> String {
+    let Ok(output) = Command::new(program).args(args).output() else {
+        return "missing".to_string();
+    };
+    if !output.status.success() {
+        return "unavailable".to_string();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("unavailable")
+        .to_string()
+}
+
+fn first_available_command(commands: &[(&str, &[&str])]) -> String {
+    commands
+        .iter()
+        .map(|(program, args)| command_line(program, args))
+        .find(|value| value != "missing" && value != "unavailable")
+        .unwrap_or_else(|| "missing".to_string())
+}
+
+fn machine_model() -> String {
+    let parts = [
+        read_trimmed("/sys/class/dmi/id/sys_vendor"),
+        read_trimmed("/sys/class/dmi/id/product_name"),
+        read_trimmed("/sys/class/dmi/id/product_version"),
+    ];
+    let model = parts
+        .into_iter()
+        .filter(|value| value != "unavailable")
+        .collect::<Vec<_>>()
+        .join(" ");
+    if model.is_empty() {
+        "unavailable".to_string()
+    } else {
+        model
+    }
+}
+
+fn distro_name() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                line.strip_prefix("PRETTY_NAME=")
+                    .map(|value| value.trim_matches('"').to_string())
+            })
+        })
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn desktop_name() -> String {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_else(|_| "unavailable".to_string());
+    let session =
+        std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown session".to_string());
+    format!("{desktop} ({session})")
+}
+
+fn cpu_name() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                line.strip_prefix("model name")
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_string())
+            })
+        })
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn gpu_name(nvidia: Option<&rog_providers::nvidia_smi::NvidiaGpuTelemetry>) -> String {
+    if let Some(sample) = nvidia {
+        return format!("{} ({})", sample.name, sample.pci_bus_id);
+    }
+    let Ok(output) = Command::new("lspci").output() else {
+        return "unavailable".to_string();
+    };
+    if !output.status.success() {
+        return "unavailable".to_string();
+    }
+    let gpus = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("vga compatible controller")
+                || lower.contains("3d controller")
+                || lower.contains("display controller")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if gpus.is_empty() {
+        "unavailable".to_string()
+    } else {
+        gpus
+    }
 }
 
 fn print_fan_caps(caps: &FanCaps) {
@@ -536,6 +990,12 @@ fn print_fan_caps(caps: &FanCaps) {
         caps.has_fan_manual_rpm_target
     );
     println!("  has_fan_curves: {}", caps.has_fan_curves);
+    println!("  fan_curve_readable: {}", caps.fan_curve_readable);
+    println!("  fan_curve_writable: {}", caps.fan_curve_writable);
+    println!(
+        "  fan_mapping_confidence: {}",
+        caps.fan_mapping_confidence.as_str()
+    );
     println!(
         "  has_individual_fan_control: {}",
         caps.has_individual_fan_control
@@ -546,6 +1006,12 @@ fn print_fan_caps(caps: &FanCaps) {
         println!("  endpoints:");
         for endpoint in &caps.endpoints {
             println!("    {endpoint}");
+        }
+    }
+    if !caps.notes.is_empty() {
+        println!("  notes:");
+        for note in &caps.notes {
+            println!("    {note}");
         }
     }
     if !caps.warnings.is_empty() {
@@ -571,6 +1037,7 @@ fn print_fan_info(fan: &FanInfo) {
             .unwrap_or_else(|| "(not reported)".to_string())
     );
     println!("    backend: {}", fan.backend);
+    println!("    mapping: {}", fan.mapping_confidence.as_str());
     println!("    controllable: {}", fan.controllable);
     println!("    manual_percent: {}", fan.supports_manual_percent);
     println!("    rpm_target: {}", fan.supports_manual_rpm_target);
@@ -664,7 +1131,19 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
 }
 
 fn systemctl_unit_status(service: &str) -> Option<String> {
-    let output = Command::new("systemctl")
+    systemctl_unit_status_with_scope(service, false)
+}
+
+fn systemctl_user_unit_status(service: &str) -> Option<String> {
+    systemctl_unit_status_with_scope(service, true)
+}
+
+fn systemctl_unit_status_with_scope(service: &str, user: bool) -> Option<String> {
+    let mut command = Command::new("systemctl");
+    if user {
+        command.arg("--user");
+    }
+    let output = command
         .args([
             "show",
             service,
@@ -776,6 +1255,24 @@ fn lighting_access_from_backend_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_check_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["rog-helper", "setup-check"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::SetupCheck));
+    }
+
+    #[test]
+    fn hardware_report_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["rog-helper", "hardware-report"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::HardwareReport));
+    }
+
+    #[test]
+    fn privileged_status_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["rog-helper", "privileged-status"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::PrivilegedStatus));
+    }
 
     #[test]
     fn backend_connect_status_maps_missing_backend_without_error() {

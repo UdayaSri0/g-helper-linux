@@ -1,10 +1,10 @@
 # Architecture
 
-This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-ui`, and `crates/rog-cli`.
+This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 ## Layered Structure
 
-The project is split into three main runtime layers, plus a shared model layer and a diagnostics CLI:
+The project is split into four main runtime layers, plus a shared model layer and a diagnostics CLI:
 
 1. UI (`rog-helper-ui`)
    - Unprivileged GTK4/libadwaita desktop application
@@ -19,12 +19,20 @@ The project is split into three main runtime layers, plus a shared model layer a
 3. Providers (`rog-providers`)
    - System DBus clients
    - Sysfs/procfs readers and writers
-   - External command fallback for NVIDIA temperature
+   - Optional external-command NVIDIA telemetry
+4. Privileged helper (`rog-helper-privileged`)
+   - Minimal root system service, activated on demand
+   - Owns `io.github.roghelper.Privileged` on the system bus
+   - Uses PolicyKit actions tied to the calling system-bus peer
+   - Exposes typed, validated CPU, fan, canonical keyboard-brightness, and standard
+     battery-threshold writes plus probes
+   - Exposes no GPU operation: supergfxd remains the authoritative switching and safety service
 
 Shared model layer:
 
 - `rog-core`
   - Domain types
+  - Versioned configuration schema and atomic XDG persistence helpers
   - Validation helpers
   - Policy model
   - Error types
@@ -34,6 +42,7 @@ Diagnostics CLI:
 - `rog-helper`
   - Direct provider and environment inspection
   - Useful when the daemon or UI is unavailable
+  - `setup-check` reports the same service-readiness and permission concepts from a terminal
 
 ## Runtime Data Flow
 
@@ -43,9 +52,11 @@ The current runtime flow is:
 GTK UI / tray
   -> session DBus (`io.github.roghelper.Daemon`)
   -> rog-helperd
-  -> provider modules
-  -> system DBus (`asusd`, `supergfxd`, `UPower`)
-     and sysfs/procfs / `nvidia-smi`
+     -> provider modules
+        -> system DBus (`asusd`, `supergfxd`, `UPower`)
+           and sysfs/procfs / `nvidia-smi`
+     -> system DBus (`io.github.roghelper.Privileged`)
+        -> rog-helper-privileged (PolicyKit-gated, approved operations only)
 ```
 
 More concretely:
@@ -56,9 +67,14 @@ More concretely:
 - Providers talk to either:
   - system services over DBus
   - kernel/system interfaces in sysfs or procfs
-  - `nvidia-smi` as a read-only fallback
+  - `nvidia-smi` as an optional read-only NVIDIA telemetry source
 
 Hardware I/O is not implemented in the UI.
+
+Setup readiness follows the same boundary. Structured `SetupStatus`, `DependencyStatus`,
+`PermissionStatus`, and `SetupIssue` types live in `rog-core`; live discovery is implemented in
+`rog-providers`; `rog-helperd` exposes the result over session DBus; and the UI only presents it.
+API calls are the readiness authority, while binary and systemd discovery is retained as evidence.
 
 ## State Ownership
 
@@ -81,13 +97,49 @@ These are held in-memory behind `RwLock`s in `crates/rog-daemon/src/main.rs`.
 
 The UI keeps a cached mirror of daemon state in `SharedUiState` inside `crates/rog-ui/src/main.rs`. It is not authoritative and is refreshed continuously from the daemon.
 
-The UI has a small TOML-backed lifecycle settings file for window/tray behavior,
-launch-on-login, start-minimized-to-tray, and the one-time close-to-tray hint.
-It is stored below the user's XDG config directory as
-`rog-helper/ui.toml`.
+Persistent configuration is a versioned `AppConfig` model in `rog-core`. The canonical path is
+`$XDG_CONFIG_HOME/rog-helper/config.toml`, falling back to
+`$HOME/.config/rog-helper/config.toml`. The daemon loads it, owns the in-memory authoritative copy,
+and is the sole writer through `GetConfiguration`, `SetConfiguration`, and `ResetConfiguration`.
+The UI may read the same file at process startup so start-minimized behavior is available before
+DBus connects, but all subsequent persistence goes through the daemon.
 
-This is intentionally limited. The current runtime still does not persist
-hardware control preferences, fan curves, profiles, or automation rules.
+Configuration ownership is divided by section:
+
+- `ui`: UI/lifecycle behavior such as close, login startup, and tray hints
+- `dashboard`: optional panels and compact layout
+- `controls`: remembered charge-limit/profile/fan-sync preferences
+
+Version 1 serializes as:
+
+```toml
+version = 1
+
+[ui]
+close_behavior = "minimize_to_tray"
+launch_on_login = false
+start_minimized_to_tray = false
+close_to_tray_hint_shown = false
+fan_warning_acknowledged = false
+
+[dashboard]
+show_system_health = true
+show_nvme = true
+show_cooling_snapshot = true
+compact = false
+
+[controls]
+# preferred_charge_limit = 80   # optional, validated to 40..=100
+# last_manual_profile = "Turbo" # optional, remembered only
+fan_sync_enabled = false
+```
+
+Control preferences are inert metadata. Loading configuration never applies a hardware action.
+The previous `rog-helper/ui.toml` is migrated only when `config.toml` is absent; the legacy file is
+left untouched. Writes use a temporary file in the destination directory, `sync_all`, and atomic
+rename, so a failed replacement does not destroy the last good file. Malformed files fall back to
+defaults without blocking daemon or UI startup, while valid fields survive individual invalid
+values and unknown/future fields are tolerated during reads.
 
 ## Polling Model
 
@@ -102,7 +154,7 @@ The current architecture is polling-based.
 - updates vmstat-based swap rates
 - refreshes top memory users on a slower cadence
 - supplements battery details from power-supply sysfs
-- uses `nvidia-smi` as a fallback GPU temperature source
+- refreshes optional NVIDIA telemetry every three seconds with one multi-field `nvidia-smi` query, caching it between daemon ticks; hwmon remains the preferred GPU temperature source
 - reads `UPower` battery and power-source state
 - refreshes CPU telemetry
 - refreshes current profile, GPU mode, and battery limit when their backends are available
@@ -135,13 +187,16 @@ It also carries:
 
 - `endpoints`
 - `notes`
+- the authoritative `supergfxd` mode allow-list and GPU transition state
+- battery charge-limit backend, direct/privileged write state, and authorization source
+- a consolidated per-operation control/privilege matrix in the DBus capability payload
 
 These are used by the daemon and surfaced in the UI diagnostics view.
 
 Important implementation note:
 
 - `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are actively populated today.
-- `has_fan_curves` exists in the model, but the current daemon does not probe it to true.
+- `has_fan_curves` becomes true only for a verified backend; generic hwmon candidates do not count.
 
 That means the capability model is broader than the current provider coverage.
 
@@ -167,7 +222,7 @@ These modules cover:
 - system DBus integration
 - CPU sysfs reads and writes
 - keyboard backlight sysfs reads and writes
-- battery sysfs reads
+  - battery sysfs reads and a narrowly validated standard charge-threshold fallback
 - memory telemetry from procfs and sysfs
 - DBus diagnostics helpers
 
@@ -188,9 +243,33 @@ Current permission reality:
 - The daemon is also unprivileged.
 - Some system DBus services may reject writes.
 - Some sysfs files may be readable but not writable by the user.
-- CPU controls and keyboard backlight writes may therefore degrade to read-only behavior.
+- CPU controls, verified fan controls, canonical keyboard backlight writes, and a standard battery
+  threshold may require typed privileged fallbacks; telemetry remains unprivileged and
+  missing-helper systems degrade to read-only behavior.
 
-There is no privileged helper and no polkit workflow in the current repository.
+The privileged boundary handles supported CPU controls, verified ASUS fan controls, the canonical
+ASUS WMI keyboard brightness endpoint, and one unambiguous standard Linux battery charge threshold
+only after the preferred backend/direct route is unavailable or fails with write permission.
+Battery charge limits still prefer asusd; the kernel fallback is considered only when asusd is
+unavailable or lacks the feature. Telemetry and directly writable controls stay unprivileged. The
+helper discovers fixed sysfs endpoints itself and never accepts caller-provided paths. Aura/RGB
+continues to use verified asusd system APIs and has no privileged raw-device fallback.
+
+The control/privilege matrix makes this policy observable. GPU and profile rows report
+`external-service` access rather than implying that root access to ROG Helper would help. Battery,
+CPU, fan, and keyboard rows distinguish direct, privileged, read-only, and unsupported states.
+User configuration and login integration report direct user-session access and are never routed
+through the root helper.
+`rog-helperd` probes it only when diagnostics are requested and continues normally when it is
+missing, blocked, incompatible, or unavailable. The helper cannot receive filesystem paths,
+program names, shell text, or arbitrary values to write. Future control methods must map a
+validated domain operation to a fixed internal endpoint and authorize the original system-bus
+caller with the matching application-specific PolicyKit action.
+
+The helper runs in a hardened systemd sandbox and uses four non-retained PolicyKit actions. CPU,
+fan, keyboard LED, and battery endpoint identities are revalidated at write time. The rationale for
+UID 0, writable sysfs exceptions, enabled/rejected directives, and residual risks is maintained in
+[PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
 
 ## DBus Contract Shape
 
@@ -203,12 +282,14 @@ Benefits:
 
 Tradeoffs:
 
-- Tight string-key coupling between daemon and UI
+- External clients still depend on documented string keys
 - Manual serialization in `rog-daemon`
-- Manual decoding in `rog-ui`
-- More room for drift if fields are renamed without updating both sides
+- Manual domain decoding in `rog-ui`, using shared lossless map helpers
+- Leaf-row fields not yet moved into shared constants still require coordinated changes
 
-See [DBUS_API.md](DBUS_API.md) for the current wire-level API.
+The highest-risk keys and status semantics are shared through `rog-core`, without changing the
+wire format. See [DBUS_API.md](DBUS_API.md) for the public API and
+[DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md) for the encoder/decoder/default audit.
 
 ## Current Architectural Limitations
 
@@ -217,9 +298,10 @@ The current architecture has several known limitations:
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
 - Fan curve support is modeled but not implemented end-to-end
 - Aura/RGB lighting depends on asusd exposing a compatible introspectable backend and still needs broad hardware validation
-- The daemon and UI each live mostly in a single large source file
-- The UI and daemon duplicate some formatting and payload-shape logic
+- The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules
+- The UI and daemon still duplicate some presentation formatting and lower-risk leaf-row shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model
 - Typed shared DBus payloads are not yet in place
+- Saved control preferences are deliberately not an automation engine and are never auto-applied
 
 These limitations are important when reading older roadmap and GUI documents. Some design ideas are already present in the model layer, while the runtime still exposes only a subset of that design.
