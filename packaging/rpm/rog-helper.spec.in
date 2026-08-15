@@ -9,6 +9,7 @@ URL:            @HOMEPAGE@
 Source0:        %{name}-%{version}-rpm-root.tar.xz
 ExclusiveArch:  x86_64
 
+BuildRequires:  systemd-rpm-macros
 Requires:       hicolor-icon-theme
 
 %description

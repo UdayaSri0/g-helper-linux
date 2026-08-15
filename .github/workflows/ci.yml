@@ -42,7 +42,9 @@ jobs:
 
       - name: Package Foundations
         run: |
-          ROG_HELPER_BUILD_APPIMAGE=0 packaging/scripts/build-release-assets.sh dist/ci
+          ROG_HELPER_BUILD_APPIMAGE=0 \
+          ROG_HELPER_BUILD_RPM=0 \
+          packaging/scripts/build-release-assets.sh dist/ci
           packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
 
       - name: Validate Flatpak Manifest
@@ -92,7 +94,7 @@ jobs:
             cargo rust gcc \
             pkgconf-pkg-config gtk4-devel libadwaita-devel \
             appstream desktop-file-utils python3-pillow \
-            rpm-build
+            rpm-build systemd-rpm-macros
 
       - name: Build Fedora RPM
         run: packaging/scripts/build-rpm.sh dist/fedora-ci

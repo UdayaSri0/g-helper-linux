@@ -12,6 +12,7 @@ RPM_RELEASE="${ROG_HELPER_RPM_RELEASE:-1}"
 require_rpm_tools() {
   local missing=()
   local cmd
+  local unitdir
 
   for cmd in rpmbuild rpm; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -21,7 +22,17 @@ require_rpm_tools() {
 
   if ((${#missing[@]} != 0)); then
     printf 'missing RPM build dependencies: %s\n' "${missing[*]}" >&2
-    echo "Fedora hint: dnf install cargo rust gcc pkgconf-pkg-config gtk4-devel libadwaita-devel appstream desktop-file-utils python3-pillow rpm-build" >&2
+    echo "Fedora hint: dnf install cargo rust gcc pkgconf-pkg-config gtk4-devel libadwaita-devel appstream desktop-file-utils python3-pillow rpm-build systemd-rpm-macros" >&2
+    exit 1
+  fi
+
+  unitdir="$(rpm --eval '%{_unitdir}')"
+  if [[ "$unitdir" == *'%{'* ]]; then
+    echo "required RPM macro _unitdir is unresolved; install systemd-rpm-macros" >&2
+    exit 1
+  fi
+  if [[ "$unitdir" != /* ]]; then
+    printf 'required RPM macro _unitdir did not resolve to an absolute path: %s\n' "$unitdir" >&2
     exit 1
   fi
 }
