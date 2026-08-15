@@ -30,8 +30,10 @@ jobs:
 
       - name: Verify v0.3.0 Source
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
           test "$VERSION" = "0.3.0"
+          test "$(git rev-parse HEAD)" = "04803bcc18d698ec37439db9500e841d4698b59d"
           test "$(git describe --tags --exact-match)" = "v0.3.0"
 
       - name: Build Fedora RPM
