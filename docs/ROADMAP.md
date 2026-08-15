@@ -32,6 +32,8 @@ The following features are present in the current codebase.
   - GPU mode read/write
   - reboot/logout hints
 - keyboard backlight brightness via sysfs
+- ASUS Aura/RGB through the exact asusd 6.3.8-6.4.0 contract and the allow-listed G615JMR target's
+  single-target RGB protocol
 - fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - dynamic 0..N fan telemetry
   - writable hwmon manual percentage control when confirmed
@@ -101,7 +103,7 @@ Current status:
 Still evolving:
 
 - richer capability probing
-- Aura/RGB coverage
+- broader Aura/RGB device and asusd-version coverage
 - full alignment between daemon capability flags and underlying ASUS interfaces
 
 ### `supergfxd` coverage
@@ -190,16 +192,21 @@ Note:
 
 ### Aura / RGB lighting
 
-Discovery and capability reporting are implemented, but Aura writes are not. The validated target
-has no installed Aura service, so heuristic interface names cannot authorize a backend. Remaining
-work is gated on:
+Implemented narrowly:
 
-- captured introspection and service version from real Aura-capable hardware
-- an exact service/path/interface/signature adapter with readback tests
-- backend-reported effect, speed, zone, and range handling
-- unprivileged write/error validation on that hardware
+- exact `xyz.ljones.Asusd` 6.3.8-6.4.0 Aura ABI matching
+- exact G615JMR target `0b05:19b6` native HID effect encoding and privileged transport
+- backend priority/conflict suppression, duplicate/rate protection, root-only alias, capability
+  gating, and sysfs brightness fallback
 
-See `AURA_BACKEND_DISCOVERY.md` for the current evidence and acceptance gate.
+Still missing:
+
+- physical validation on the G615JMR target (native HID has no reliable state readback)
+- broader ASUS models, product IDs, descriptors, interfaces, and future asusd contracts
+- ARGB, independently addressable zones, per-key RGB, and power states unless a future backend
+  proves those capabilities
+
+See `AURA_BACKEND_DISCOVERY.md` for the exact evidence and safety boundary.
 
 ### Persistent configuration
 

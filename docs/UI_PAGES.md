@@ -226,9 +226,10 @@ Current behavior:
 ### What it shows
 
 - controls-first layout with one capability banner for read-only/unavailable states
+- local keyboard lighting preview, with an explicit Apply-only hardware-write boundary
 - availability status
 - last action status
-- collapsed backend details for the current backend, brightness, mode, and RGB colour
+- collapsed backend details for device, current backend, RGB/ARGB/per-key capability, brightness, mode, and colour
 
 ### What it supports
 
@@ -236,21 +237,25 @@ Current behavior:
 - brightness change only when `supports_brightness` is reported
 - apply action
 - RGB picker only when the daemon reports `supports_rgb`
+- secondary colour, speed, direction, and zones only when the active mode/backend reports them
 
 ### Capability dependencies
 
 - depends on the daemon exposing a lighting backend
 - write support depends on backend writability
 - RGB support depends on `supports_rgb`
-- effect speed and zone controls are not shown without their explicit capabilities
+- ARGB/multi-zone and per-key states use their own flags and are never inferred from RGB
+- secondary colour, speed, direction, and zone controls are not shown without explicit capability
 - unavailable states should explain whether the page is unsupported, read-only, or temporarily unavailable
 
 ### Backend behavior
 
-- Aura/RGB may be used only when an exact supported Aura contract is verified; a merely Aura-looking interface is diagnostic-only
+- backend priority is exact asusd Aura, allow-listed native G615JMR target HID, sysfs brightness, unavailable
+- active asusd ownership suppresses native HID to prevent competing writers
 - sysfs keyboard backlight remains available as a brightness-only fallback
 - sysfs-supported modes are limited to `Off` and `Static`
 - Aura-supported modes, speeds, and zones are not invented by the UI; they come from daemon/backend reporting
+- native HID authorization occurs only on Apply; its successful outcome is accepted without hardware readback
 
 ### Diagnostics report
 

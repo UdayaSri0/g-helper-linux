@@ -66,6 +66,27 @@ Recommended status words:
 - Fan rows with RPM:
 - Fan rows without RPM:
 
+### Lighting
+
+- Selected backend:
+- Alternative backend and suppression reason:
+- Keyboard brightness (backend/result):
+- Keyboard RGB physically observed:
+- Modes physically observed:
+- ARGB / multi-zone:
+- Per-key RGB:
+- Other zones/devices detected:
+- USB VID:PID:
+- USB interface:
+- HID driver:
+- Report descriptor SHA-256:
+- Report ID and payload/total size:
+- Protocol family:
+- Apply outcome and readback availability:
+- PolicyKit success / denial / cancellation:
+- Active-asusd conflict suppression:
+- Helper unavailable behavior:
+
 ### Diagnostics / Capability States
 
 - Missing `asusd` behavior observed:
@@ -90,7 +111,8 @@ Recommended status words:
 
 - `cargo run -p rog-cli -- hardware-report`:
 - `cargo run -p rog-cli -- services`:
-- `cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"`:
+- `cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"`:
+- `cargo run -p rog-cli -- lighting-diagnostics`:
 - `cargo run -p rog-cli -- sensors`:
 - `cargo run -p rog-cli -- caps`:
 - `busctl --user introspect io.github.roghelper.Daemon /io/github/roghelper/Daemon`:

@@ -393,6 +393,7 @@ enum PendingCpuAction {
 #[derive(Debug, Clone)]
 struct LightingInfo {
     backend: String,
+    backend_kind: String,
     device: String,
     brightness: u64,
     max_brightness: u64,
@@ -405,11 +406,20 @@ struct LightingInfo {
     supports_brightness: bool,
     supports_modes: bool,
     supports_rgb: bool,
+    supports_argb: bool,
+    supports_zones: bool,
+    supports_per_key: bool,
     rgb_hex: Option<String>,
+    secondary_rgb_hex: Option<String>,
     supported_modes: Vec<String>,
     supports_speed: bool,
     supported_speeds: Vec<String>,
+    speed: Option<String>,
+    supported_directions: Vec<String>,
+    direction: Option<String>,
     supported_zones: Vec<String>,
+    active_zone: Option<String>,
+    apply_outcome: Option<String>,
     status: String,
     last_error: Option<String>,
     diagnostics_summary: Option<String>,
@@ -424,6 +434,81 @@ struct PendingLighting {
     brightness: Option<u64>,
     mode: Option<String>,
     rgb_hex: Option<String>,
+    secondary_rgb_hex: Option<String>,
+    speed: Option<String>,
+    direction: Option<String>,
+    zone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LightingControlIdentity {
+    backend: String,
+    backend_kind: String,
+    device: String,
+    max_brightness: u64,
+    supports_brightness: bool,
+    supports_modes: bool,
+    supports_rgb: bool,
+    supports_argb: bool,
+    supports_zones: bool,
+    supports_per_key: bool,
+    supported_modes: Vec<String>,
+    supported_speeds: Vec<String>,
+    supported_directions: Vec<String>,
+    supported_zones: Vec<String>,
+}
+
+impl From<&LightingInfo> for LightingControlIdentity {
+    fn from(lighting: &LightingInfo) -> Self {
+        Self {
+            backend: lighting.backend.clone(),
+            backend_kind: lighting.backend_kind.clone(),
+            device: lighting.device.clone(),
+            max_brightness: lighting.max_brightness,
+            supports_brightness: lighting.supports_brightness,
+            supports_modes: lighting.supports_modes,
+            supports_rgb: lighting.supports_rgb,
+            supports_argb: lighting.supports_argb,
+            supports_zones: lighting.supports_zones,
+            supports_per_key: lighting.supports_per_key,
+            supported_modes: lighting.supported_modes.clone(),
+            supported_speeds: lighting.supported_speeds.clone(),
+            supported_directions: lighting.supported_directions.clone(),
+            supported_zones: lighting.supported_zones.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct LightingControlStage {
+    identity: Option<LightingControlIdentity>,
+    dirty: bool,
+    rendering: bool,
+}
+
+impl LightingControlStage {
+    fn begin_render(&mut self, identity: Option<LightingControlIdentity>) -> bool {
+        if self.identity != identity {
+            self.identity = identity;
+            self.dirty = false;
+        }
+        self.rendering = true;
+        !self.dirty
+    }
+
+    fn finish_render(&mut self) {
+        self.rendering = false;
+    }
+
+    fn mark_user_edited(&mut self) {
+        if !self.rendering {
+            self.dirty = true;
+        }
+    }
+
+    fn clear_after_apply_queued(&mut self) {
+        self.dirty = false;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1124,6 +1209,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     brightness: Some(desired_brightness),
                     mode: None,
                     rgb_hex: None,
+                    secondary_rgb_hex: None,
+                    speed: None,
+                    direction: None,
+                    zone: None,
                 });
                 st.lighting_error = None;
             }
@@ -3026,21 +3115,55 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let lighting_page = page_container();
     lighting_page.append(&page_header_group(
         "Lighting",
-        "Keyboard illumination controls shown only when the active backend exposes them.",
+        "Stage an effect locally, then apply one validated change through the detected backend.",
     ));
     let lighting_overview_group = adw::PreferencesGroup::builder()
-        .title("Keyboard Lighting")
-        .description("Current lighting support depends on the detected backend and write access.")
+        .title("Lighting Device")
+        .description("Hardware identity and capabilities reported by the active backend.")
         .build();
+    let lighting_device = pref_value_row(&lighting_overview_group, "Device", false);
     let lighting_backend = pref_value_row(&lighting_overview_group, "Backend", false);
     let lighting_current = pref_value_row(&lighting_overview_group, "Brightness", false);
     let lighting_mode = pref_value_row(&lighting_overview_group, "Mode", false);
     let lighting_rgb_current = pref_value_row(&lighting_overview_group, "RGB Colour", false);
+    let lighting_rgb_capability = pref_value_row(&lighting_overview_group, "RGB control", false);
+    let lighting_argb_capability = pref_value_row(
+        &lighting_overview_group,
+        "Addressable / multi-zone RGB",
+        false,
+    );
+    let lighting_per_key_capability =
+        pref_value_row(&lighting_overview_group, "Per-key RGB", false);
 
     let lighting_capability_banner = adw::Banner::new("Lighting support is being checked");
     lighting_capability_banner.add_css_class("compact-banner");
     lighting_capability_banner.set_revealed(true);
     lighting_page.append(&lighting_capability_banner);
+
+    let preview_colour = std::rc::Rc::new(std::cell::RefCell::new(gdk::RGBA::new(
+        0.28, 0.31, 0.36, 1.0,
+    )));
+    let preview_draw_colour = preview_colour.clone();
+    let lighting_preview = gtk::DrawingArea::new();
+    lighting_preview.set_content_width(520);
+    lighting_preview.set_content_height(150);
+    lighting_preview.set_hexpand(true);
+    lighting_preview.set_draw_func(move |_, ctx, width, height| {
+        draw_keyboard_lighting_preview(ctx, width, height, &preview_draw_colour.borrow());
+    });
+    let preview_caption = gtk::Label::new(Some("Checking keyboard lighting topology…"));
+    preview_caption.set_xalign(0.0);
+    preview_caption.set_wrap(true);
+    preview_caption.add_css_class("dim-label");
+    let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    preview_box.append(&lighting_preview);
+    preview_box.append(&preview_caption);
+    let lighting_preview_group = adw::PreferencesGroup::builder()
+        .title("Keyboard Preview")
+        .description("This preview is local. Hardware is written only when Apply is clicked.")
+        .build();
+    lighting_preview_group.add(&preview_box);
+    lighting_page.append(&lighting_preview_group);
 
     let lighting_controls_group = adw::PreferencesGroup::builder().title("Controls").build();
     let mode_combo = gtk::ComboBoxText::new();
@@ -3072,6 +3195,52 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     rgb_row.set_activatable(false);
     lighting_controls_group.add(&rgb_row);
 
+    let secondary_rgb_button = gtk::ColorButton::new();
+    secondary_rgb_button.set_use_alpha(false);
+    secondary_rgb_button.set_title("Secondary RGB colour");
+    secondary_rgb_button.set_sensitive(false);
+    let secondary_rgb_row = adw::ActionRow::builder()
+        .title("Secondary Colour")
+        .subtitle("Used only by the Breathe effect on supported hardware.")
+        .build();
+    secondary_rgb_row.set_visible(false);
+    secondary_rgb_row.add_suffix(&secondary_rgb_button);
+    secondary_rgb_row.set_activatable(false);
+    lighting_controls_group.add(&secondary_rgb_row);
+
+    let speed_combo = gtk::ComboBoxText::new();
+    speed_combo.set_sensitive(false);
+    let speed_row = adw::ActionRow::builder()
+        .title("Effect Speed")
+        .subtitle("Speed is available only for effects that support it.")
+        .build();
+    speed_row.set_visible(false);
+    speed_row.add_suffix(&speed_combo);
+    speed_row.set_activatable(false);
+    lighting_controls_group.add(&speed_row);
+
+    let direction_combo = gtk::ComboBoxText::new();
+    direction_combo.set_sensitive(false);
+    let direction_row = adw::ActionRow::builder()
+        .title("Direction")
+        .subtitle("Direction applies only to Rainbow Wave.")
+        .build();
+    direction_row.set_visible(false);
+    direction_row.add_suffix(&direction_combo);
+    direction_row.set_activatable(false);
+    lighting_controls_group.add(&direction_row);
+
+    let zone_combo = gtk::ComboBoxText::new();
+    zone_combo.set_sensitive(false);
+    let zone_row = adw::ActionRow::builder()
+        .title("Lighting Zone")
+        .subtitle("Only zones reported by the selected backend are listed.")
+        .build();
+    zone_row.set_visible(false);
+    zone_row.add_suffix(&zone_combo);
+    zone_row.set_activatable(false);
+    lighting_controls_group.add(&zone_row);
+
     let apply_lighting = gtk::Button::with_label("Apply lighting");
     apply_lighting.add_css_class("suggested-action");
     let apply_row = adw::ActionRow::builder().title("Apply Changes").build();
@@ -3091,7 +3260,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let lighting_status_group = adw::PreferencesGroup::builder().title("Status").build();
     let lighting_availability = pref_value_row(&lighting_status_group, "Availability", false);
     let lighting_last_action = pref_value_row(&lighting_status_group, "Last action", false);
+    let copy_lighting_diagnostics = gtk::Button::with_label("Copy Diagnostics");
+    let copy_lighting_row = adw::ActionRow::builder()
+        .title("Lighting Diagnostics")
+        .subtitle("Copy the local capability and backend report to the clipboard.")
+        .build();
+    copy_lighting_row.add_suffix(&copy_lighting_diagnostics);
+    copy_lighting_row.set_activatable(false);
+    lighting_status_group.add(&copy_lighting_row);
     lighting_page.append(&lighting_status_group);
+    {
+        let shared = shared.clone();
+        copy_lighting_diagnostics.connect_clicked(move |_| {
+            let Some(display) = gtk::gdk::Display::default() else {
+                return;
+            };
+            let text = shared
+                .lock()
+                .ok()
+                .and_then(|state| state.lighting.as_ref().map(lighting_diagnostics_text))
+                .unwrap_or_else(|| "Lighting diagnostics are not available yet.".to_string());
+            display.clipboard().set_text(&text);
+        });
+    }
 
     let lighting_backend_expander = gtk::Expander::new(Some("Backend details"));
     lighting_backend_expander.set_expanded(false);
@@ -3103,10 +3294,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lighting_page.append(&lighting_backend_container);
 
     let lighting_unknown = FeatureAvailability::unknown();
+    lighting_device.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_backend.set_text(&feature_value_label(&lighting_unknown));
     lighting_current.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_mode.set_text(&lighting_placeholder_value(&lighting_unknown));
     lighting_rgb_current.set_text(&lighting_placeholder_value(&lighting_unknown));
+    lighting_rgb_capability.set_text("Checking support");
+    lighting_argb_capability.set_text("Checking support");
+    lighting_per_key_capability.set_text("Checking support");
     lighting_availability.set_text(&feature_value_label(&lighting_unknown));
     lighting_last_action.set_text(&lighting_last_action_text(None, &lighting_unknown));
     brightness_row.set_subtitle(&lighting_brightness_subtitle(None, &lighting_unknown));
@@ -3119,6 +3314,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let brightness_scale = brightness_scale.clone();
         let mode_combo = mode_combo.clone();
         let rgb_button = rgb_button.clone();
+        let secondary_rgb_button = secondary_rgb_button.clone();
+        let speed_combo = speed_combo.clone();
+        let direction_combo = direction_combo.clone();
+        let zone_combo = zone_combo.clone();
         apply_lighting.connect_clicked(move |_| {
             let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
             let desired_mode = mode_combo.active_id().map(|s| s.to_string());
@@ -3127,21 +3326,86 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 let Some(lighting) = st.lighting.as_ref() else {
                     return;
                 };
+                let selected_mode = desired_mode
+                    .as_deref()
+                    .unwrap_or(&lighting.mode)
+                    .to_string();
                 let brightness = lighting.supports_brightness.then_some(desired_brightness);
                 let mode = lighting.supports_modes.then_some(desired_mode).flatten();
-                let rgb_hex = lighting
-                    .supports_rgb
-                    .then(|| rgba_to_hex(&rgb_button.rgba()));
-                if brightness.is_none() && mode.is_none() && rgb_hex.is_none() {
+                let rgb_hex = (lighting.supports_rgb
+                    && lighting_mode_supports_primary_colour(&selected_mode))
+                .then(|| rgba_to_hex(&rgb_button.rgba()));
+                let secondary_rgb_hex = (lighting.supports_rgb
+                    && lighting_mode_supports_secondary_colour(&selected_mode))
+                .then(|| rgba_to_hex(&secondary_rgb_button.rgba()));
+                let speed = (lighting.supports_speed
+                    && lighting_mode_supports_speed(&selected_mode))
+                .then(|| speed_combo.active_id().map(|value| value.to_string()))
+                .flatten();
+                let direction = lighting_mode_supports_direction(&selected_mode)
+                    .then(|| direction_combo.active_id().map(|value| value.to_string()))
+                    .flatten();
+                let zone = (lighting.supports_zones && !lighting.supported_zones.is_empty())
+                    .then(|| zone_combo.active_id().map(|value| value.to_string()))
+                    .flatten();
+                if brightness.is_none()
+                    && mode.is_none()
+                    && rgb_hex.is_none()
+                    && secondary_rgb_hex.is_none()
+                    && speed.is_none()
+                    && direction.is_none()
+                    && zone.is_none()
+                {
                     return;
                 }
                 st.pending_lighting = Some(PendingLighting {
                     brightness,
                     mode,
                     rgb_hex,
+                    secondary_rgb_hex,
+                    speed,
+                    direction,
+                    zone,
                 });
                 st.lighting_error = None;
             }
+        });
+    }
+
+    {
+        let preview_colour = preview_colour.clone();
+        let lighting_preview = lighting_preview.clone();
+        rgb_button.connect_color_set(move |button| {
+            *preview_colour.borrow_mut() = button.rgba();
+            lighting_preview.queue_draw();
+        });
+    }
+    {
+        let shared = shared.clone();
+        let secondary_rgb_row = secondary_rgb_row.clone();
+        let speed_row = speed_row.clone();
+        let direction_row = direction_row.clone();
+        mode_combo.connect_changed(move |combo| {
+            let selected_mode = combo.active_id().map(|value| value.to_string());
+            let lighting = shared.lock().ok().and_then(|state| state.lighting.clone());
+            let Some(lighting) = lighting else {
+                secondary_rgb_row.set_visible(false);
+                speed_row.set_visible(false);
+                direction_row.set_visible(false);
+                return;
+            };
+            let mode = selected_mode.as_deref().unwrap_or(&lighting.mode);
+            secondary_rgb_row.set_visible(
+                lighting.supports_rgb && lighting_mode_supports_secondary_colour(mode),
+            );
+            speed_row.set_visible(
+                lighting.supports_speed
+                    && !lighting.supported_speeds.is_empty()
+                    && lighting_mode_supports_speed(mode),
+            );
+            direction_row.set_visible(
+                !lighting.supported_directions.is_empty() && lighting_mode_supports_direction(mode),
+            );
         });
     }
 
@@ -3742,6 +4006,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let update_check_available = app_metadata.repository_url.is_some();
     let update_action_available = app_metadata.releases_url.is_some();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_supported_speeds =
+        std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_supported_directions =
+        std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
+    let last_supported_zones = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_gpu_supported_modes =
         std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
@@ -5631,10 +5900,35 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &caps.kbd_backlight_access,
         ));
         if let Some(ref l) = lighting {
+            lighting_overview_group.set_title(&lighting_device_title(l));
+            lighting_device.set_text(&lighting_device_label(l));
             lighting_backend.set_text(&lighting_backend_label(l));
             lighting_current.set_text(&lighting_current_label(l));
             lighting_mode.set_text(&lighting_mode_label(l));
             lighting_rgb_current.set_text(&lighting_rgb_current_label(l));
+            lighting_rgb_capability.set_text(if l.supports_rgb {
+                "Available"
+            } else {
+                "Not available"
+            });
+            lighting_argb_capability.set_text(if l.supports_argb || l.supports_zones {
+                "Supported by backend"
+            } else {
+                "Not reported by backend"
+            });
+            lighting_per_key_capability.set_text(if l.supports_per_key {
+                "Supported by backend"
+            } else {
+                "Not reported by backend"
+            });
+            lighting_preview_group.set_visible(true);
+            preview_caption.set_text(&lighting_preview_caption(l));
+            if let Some(rgba) = l.rgb_hex.as_deref().and_then(rgb_hex_to_rgba) {
+                if !rgb_button.is_focus() {
+                    *preview_colour.borrow_mut() = rgba;
+                    lighting_preview.queue_draw();
+                }
+            }
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
             if !brightness_scale.is_focus() {
@@ -5694,8 +5988,78 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 }
             }
 
-            rgb_button.set_sensitive(can_set && l.supports_rgb);
-            rgb_row.set_visible(l.supports_rgb);
+            let selected_mode = mode_combo
+                .active_id()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| l.mode.clone());
+
+            let show_primary_colour =
+                l.supports_rgb && lighting_mode_supports_primary_colour(&selected_mode);
+            rgb_button.set_sensitive(can_set && show_primary_colour);
+            rgb_row.set_visible(show_primary_colour);
+            secondary_rgb_row.set_visible(
+                l.supports_rgb && lighting_mode_supports_secondary_colour(&selected_mode),
+            );
+            secondary_rgb_button.set_sensitive(can_set && l.supports_rgb);
+            if let Some(rgba) = l
+                .secondary_rgb_hex
+                .as_deref()
+                .and_then(rgb_hex_to_rgba)
+                .filter(|_| !secondary_rgb_button.is_focus())
+            {
+                secondary_rgb_button.set_rgba(&rgba);
+            }
+
+            let speeds = l.supported_speeds.clone();
+            let show_speed = l.supports_speed
+                && !speeds.is_empty()
+                && lighting_mode_supports_speed(&selected_mode);
+            speed_row.set_visible(show_speed);
+            speed_combo.set_sensitive(can_set && show_speed);
+            if !speed_combo.is_focus() {
+                let mut last = last_supported_speeds.borrow_mut();
+                if *last != speeds {
+                    speed_combo.remove_all();
+                    for speed in &speeds {
+                        speed_combo.append(Some(speed), speed);
+                    }
+                    *last = speeds.clone();
+                }
+                select_combo_value(&speed_combo, &speeds, l.speed.as_deref());
+            }
+
+            let directions = l.supported_directions.clone();
+            let show_direction =
+                !directions.is_empty() && lighting_mode_supports_direction(&selected_mode);
+            direction_row.set_visible(show_direction);
+            direction_combo.set_sensitive(can_set && show_direction);
+            if !direction_combo.is_focus() {
+                let mut last = last_supported_directions.borrow_mut();
+                if *last != directions {
+                    direction_combo.remove_all();
+                    for direction in &directions {
+                        direction_combo.append(Some(direction), direction);
+                    }
+                    *last = directions.clone();
+                }
+                select_combo_value(&direction_combo, &directions, l.direction.as_deref());
+            }
+
+            let zones = l.supported_zones.clone();
+            let show_zones = l.supports_zones && !zones.is_empty();
+            zone_row.set_visible(show_zones);
+            zone_combo.set_sensitive(can_set && show_zones);
+            if !zone_combo.is_focus() {
+                let mut last = last_supported_zones.borrow_mut();
+                if *last != zones {
+                    zone_combo.remove_all();
+                    for zone in &zones {
+                        zone_combo.append(Some(zone), zone);
+                    }
+                    *last = zones.clone();
+                }
+                select_combo_value(&zone_combo, &zones, l.active_zone.as_deref());
+            }
             let has_visible_controls =
                 l.supports_brightness || (l.supports_modes && !modes.is_empty()) || l.supports_rgb;
             lighting_controls_group.set_visible(has_visible_controls);
@@ -5717,15 +6081,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
             rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
         } else {
+            lighting_overview_group.set_title("Lighting Device");
             lighting_capability_banner.set_title(&format!(
                 "Lighting controls unavailable · {}",
                 feature_value_label(&caps.kbd_backlight_access)
             ));
             lighting_capability_banner.set_revealed(true);
             lighting_backend.set_text(&feature_value_label(&caps.kbd_backlight_access));
+            lighting_device.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_mode.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
             lighting_rgb_current.set_text(&lighting_placeholder_value(&caps.kbd_backlight_access));
+            lighting_rgb_capability.set_text("Not available");
+            lighting_argb_capability.set_text("Not available");
+            lighting_per_key_capability.set_text("Not available");
+            lighting_preview_group.set_visible(false);
             brightness_scale.set_range(0.0, 3.0);
             if !brightness_scale.is_focus() {
                 brightness_scale.set_value(0.0);
@@ -5739,6 +6109,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             mode_row.set_visible(false);
             apply_row.set_visible(false);
             rgb_row.set_visible(false);
+            secondary_rgb_row.set_visible(false);
+            speed_row.set_visible(false);
+            direction_row.set_visible(false);
+            zone_row.set_visible(false);
             lighting_rgb_note.set_visible(true);
             brightness_row.set_subtitle(&lighting_brightness_subtitle(
                 None,
@@ -5754,6 +6128,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 mode_combo.remove_all();
                 last_supported_modes.borrow_mut().clear();
             }
+            speed_combo.remove_all();
+            direction_combo.remove_all();
+            zone_combo.remove_all();
+            last_supported_speeds.borrow_mut().clear();
+            last_supported_directions.borrow_mut().clear();
+            last_supported_zones.borrow_mut().clear();
         }
 
         if let Some(msg) = lighting_error_txt {
@@ -6436,21 +6816,41 @@ async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to connect to daemon proxy: {e}"))?;
 
-    let mut m = HashMap::new();
-    if let Some(brightness) = p.brightness {
-        m.insert("brightness".to_string(), OwnedValue::from(brightness));
-    }
-    if let Some(mode) = p.mode {
-        m.insert("mode".to_string(), ov(mode));
-    }
-    if let Some(rgb) = p.rgb_hex {
-        m.insert("rgb_hex".to_string(), ov(rgb));
-    }
+    let m = lighting_request_to_dbus(p);
     proxy
         .set_lighting(m)
         .await
         .map_err(|e| format!("daemon SetLighting failed: {e}"))?;
     Ok(())
+}
+
+fn lighting_request_to_dbus(p: PendingLighting) -> HashMap<String, OwnedValue> {
+    let mut m = HashMap::new();
+    if let Some(brightness) = p.brightness {
+        m.insert(
+            dbus_keys::lighting::BRIGHTNESS.to_string(),
+            OwnedValue::from(brightness),
+        );
+    }
+    if let Some(mode) = p.mode {
+        m.insert(dbus_keys::lighting::MODE.to_string(), ov(mode));
+    }
+    if let Some(rgb) = p.rgb_hex {
+        m.insert(dbus_keys::lighting::RGB_HEX.to_string(), ov(rgb));
+    }
+    if let Some(rgb) = p.secondary_rgb_hex {
+        m.insert(dbus_keys::lighting::SECONDARY_RGB_HEX.to_string(), ov(rgb));
+    }
+    if let Some(speed) = p.speed {
+        m.insert(dbus_keys::lighting::SPEED.to_string(), ov(speed));
+    }
+    if let Some(direction) = p.direction {
+        m.insert(dbus_keys::lighting::DIRECTION.to_string(), ov(direction));
+    }
+    if let Some(zone) = p.zone {
+        m.insert("zone".to_string(), ov(zone));
+    }
+    m
 }
 
 async fn apply_fan_action(action: PendingFanAction) -> Result<(), String> {
@@ -8108,20 +8508,129 @@ fn lighting_placeholder_value(access: &FeatureAvailability) -> String {
 }
 
 fn lighting_backend_label(lighting: &LightingInfo) -> String {
-    let backend = if is_placeholder_text(&lighting.backend) {
+    let backend_value = if is_placeholder_text(&lighting.backend_kind) {
+        &lighting.backend
+    } else {
+        &lighting.backend_kind
+    };
+    let backend = if is_placeholder_text(backend_value) {
         "Detected lighting backend".to_string()
     } else {
-        match normalize_label(&lighting.backend).as_str() {
-            "sysfsled" => "Sysfs LED backend".to_string(),
-            "asusdaura" => "ASUS Aura DBus backend".to_string(),
-            _ => lighting.backend.clone(),
+        match normalize_label(backend_value).as_str() {
+            "sysfsled" => "Sysfs keyboard brightness".to_string(),
+            "asusdaura" => "Verified asusd Aura".to_string(),
+            "nativeaurahid" => "Verified native ASUS Aura HID".to_string(),
+            "none" => "No lighting backend".to_string(),
+            _ => backend_value.clone(),
         }
     };
+    backend
+}
 
-    if is_placeholder_text(&lighting.device) {
-        backend
+fn lighting_device_title(lighting: &LightingInfo) -> String {
+    if is_placeholder_text(&lighting.device)
+        || lighting.device.eq_ignore_ascii_case("unknown device")
+    {
+        if normalize_label(&lighting.backend_kind) == "sysfsled" {
+            "Keyboard Backlight".to_string()
+        } else {
+            "Lighting Device".to_string()
+        }
     } else {
-        format!("{backend} ({})", lighting.device)
+        lighting.device.clone()
+    }
+}
+
+fn lighting_device_label(lighting: &LightingInfo) -> String {
+    lighting_device_title(lighting)
+}
+
+fn lighting_preview_caption(lighting: &LightingInfo) -> String {
+    if lighting.supports_per_key {
+        "Per-key RGB is reported. The preview shows the staged target colour, not an editable key map."
+            .to_string()
+    } else if lighting.supports_argb || lighting.supports_zones {
+        let zone = lighting.active_zone.as_deref().unwrap_or("reported zone");
+        format!("Multi-zone/addressable RGB is reported. Previewing staged colour for {zone}.")
+    } else if lighting.supports_rgb {
+        "Single-target RGB: the selected colour applies to the entire keyboard target.".to_string()
+    } else {
+        "Brightness-only keyboard backlight. RGB and ARGB controls were not reported.".to_string()
+    }
+}
+
+fn lighting_mode_supports_secondary_colour(mode: &str) -> bool {
+    normalize_label(mode) == "breathe"
+}
+
+fn lighting_mode_supports_primary_colour(mode: &str) -> bool {
+    matches!(
+        normalize_label(mode).as_str(),
+        "static"
+            | "breathe"
+            | "star"
+            | "highlight"
+            | "laser"
+            | "ripple"
+            | "pulse"
+            | "comet"
+            | "flash"
+    )
+}
+
+fn lighting_mode_supports_speed(mode: &str) -> bool {
+    matches!(
+        normalize_label(mode).as_str(),
+        "breathe" | "rainbowcycle" | "rainbowwave" | "pulse"
+    )
+}
+
+fn lighting_mode_supports_direction(mode: &str) -> bool {
+    normalize_label(mode) == "rainbowwave"
+}
+
+fn select_combo_value(combo: &gtk::ComboBoxText, values: &[String], current: Option<&str>) {
+    let selected = current
+        .and_then(|current| {
+            values
+                .iter()
+                .find(|value| value.eq_ignore_ascii_case(current))
+        })
+        .or_else(|| values.first());
+    combo.set_active_id(selected.map(String::as_str));
+}
+
+fn draw_keyboard_lighting_preview(
+    ctx: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    colour: &gdk::RGBA,
+) {
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let margin = 12.0;
+    let keyboard_width = (width - margin * 2.0).max(1.0);
+    let keyboard_height = (height - margin * 2.0).max(1.0);
+    ctx.set_source_rgba(0.08, 0.09, 0.11, 1.0);
+    ctx.rectangle(margin, margin, keyboard_width, keyboard_height);
+    let _ = ctx.fill();
+
+    let rows = 5;
+    let columns = 15;
+    let gap = 4.0;
+    let key_width = (keyboard_width - gap * (f64::from(columns) + 1.0)) / f64::from(columns);
+    let key_height = (keyboard_height - gap * (f64::from(rows) + 1.0)) / f64::from(rows);
+    let red = f64::from(colour.red());
+    let green = f64::from(colour.green());
+    let blue = f64::from(colour.blue());
+    for row in 0..rows {
+        for column in 0..columns {
+            let x = margin + gap + f64::from(column) * (key_width + gap);
+            let y = margin + gap + f64::from(row) * (key_height + gap);
+            ctx.set_source_rgba(red, green, blue, 0.88);
+            ctx.rectangle(x, y, key_width.max(1.0), key_height.max(1.0));
+            let _ = ctx.fill();
+        }
     }
 }
 
@@ -8304,6 +8813,21 @@ fn lighting_last_action_text(
     access: &FeatureAvailability,
 ) -> String {
     if let Some(lighting) = lighting {
+        if let Some(outcome) = lighting.apply_outcome.as_deref() {
+            return match outcome {
+                "verified" => "Applied and verified by hardware readback.".to_string(),
+                "accepted_no_readback" => {
+                    "Applied; this backend does not provide reliable readback.".to_string()
+                }
+                value if value.starts_with("failed:") => {
+                    format!(
+                        "Apply failed: {}",
+                        value.trim_start_matches("failed:").trim()
+                    )
+                }
+                value => value.to_string(),
+            };
+        }
         if lighting.can_set {
             "No lighting change applied yet.".to_string()
         } else if access.reason.is_empty() {
@@ -9932,6 +10456,8 @@ fn update_detail_rows_dynamic(
 fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> {
     let supported_modes =
         dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_MODES).unwrap_or_default();
+    let supported_zones =
+        dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_ZONES).unwrap_or_default();
     let max_brightness =
         dbus_decode::unsigned(&map, dbus_keys::lighting::MAX_BRIGHTNESS).unwrap_or(0);
     let supports_brightness = dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_BRIGHTNESS)
@@ -9942,6 +10468,9 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
     Some(LightingInfo {
         backend: dbus_decode::string(&map, dbus_keys::lighting::BACKEND)
             .unwrap_or_else(|| "Unknown backend".to_string()),
+        backend_kind: dbus_decode::string(&map, dbus_keys::lighting::BACKEND_KIND)
+            .or_else(|| dbus_decode::string(&map, dbus_keys::lighting::BACKEND))
+            .unwrap_or_else(|| "none".to_string()),
         device: dbus_decode::string(&map, dbus_keys::lighting::DEVICE)
             .unwrap_or_else(|| "Unknown device".to_string()),
         brightness: dbus_decode::unsigned(&map, dbus_keys::lighting::BRIGHTNESS).unwrap_or(0),
@@ -9964,14 +10493,26 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         supports_modes,
         supports_rgb: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_RGB)
             .unwrap_or(false),
+        supports_argb: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_ARGB)
+            .unwrap_or(false),
+        supports_zones: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_ZONES)
+            .unwrap_or(!supported_zones.is_empty()),
+        supports_per_key: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_PER_KEY)
+            .unwrap_or(false),
         rgb_hex: dbus_decode::string(&map, dbus_keys::lighting::RGB_HEX),
+        secondary_rgb_hex: dbus_decode::string(&map, dbus_keys::lighting::SECONDARY_RGB_HEX),
         supported_modes,
         supports_speed: dbus_decode::boolean(&map, dbus_keys::lighting::SUPPORTS_SPEED)
             .unwrap_or(false),
         supported_speeds: dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_SPEEDS)
             .unwrap_or_default(),
-        supported_zones: dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_ZONES)
+        speed: dbus_decode::string(&map, dbus_keys::lighting::SPEED),
+        supported_directions: dbus_decode::strings(&map, dbus_keys::lighting::SUPPORTED_DIRECTIONS)
             .unwrap_or_default(),
+        direction: dbus_decode::string(&map, dbus_keys::lighting::DIRECTION),
+        supported_zones,
+        active_zone: dbus_decode::string(&map, dbus_keys::lighting::ACTIVE_ZONE),
+        apply_outcome: dbus_decode::string(&map, dbus_keys::lighting::APPLY_OUTCOME),
         status: dbus_decode::string(&map, dbus_keys::lighting::STATUS)
             .unwrap_or_else(|| "unknown".to_string()),
         last_error: dbus_decode::string(&map, dbus_keys::lighting::LAST_ERROR),
@@ -11229,6 +11770,7 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
     lines.push("Lighting Diagnostics".to_string());
     lines.push("====================".to_string());
     lines.push(format!("backend: {}", lighting.backend));
+    lines.push(format!("backend_kind: {}", lighting.backend_kind));
     lines.push(format!("device: {}", lighting.device));
     lines.push(format!(
         "brightness: {}/{}",
@@ -11249,6 +11791,9 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
     ));
     lines.push(format!("supports_modes: {}", lighting.supports_modes));
     lines.push(format!("supports_rgb: {}", lighting.supports_rgb));
+    lines.push(format!("supports_argb: {}", lighting.supports_argb));
+    lines.push(format!("supports_zones: {}", lighting.supports_zones));
+    lines.push(format!("supports_per_key: {}", lighting.supports_per_key));
     lines.push(format!("supports_speed: {}", lighting.supports_speed));
     lines.push(format!(
         "supported_speeds: {}",
@@ -11257,6 +11802,22 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
         } else {
             lighting.supported_speeds.join(", ")
         }
+    ));
+    lines.push(format!(
+        "speed: {}",
+        lighting.speed.as_deref().unwrap_or("(not reported)")
+    ));
+    lines.push(format!(
+        "supported_directions: {}",
+        if lighting.supported_directions.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            lighting.supported_directions.join(", ")
+        }
+    ));
+    lines.push(format!(
+        "direction: {}",
+        lighting.direction.as_deref().unwrap_or("(not reported)")
     ));
     lines.push(format!(
         "supported_zones: {}",
@@ -11269,6 +11830,21 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
     lines.push(format!(
         "rgb_hex: {}",
         lighting.rgb_hex.as_deref().unwrap_or("(not reported)")
+    ));
+    lines.push(format!(
+        "secondary_rgb_hex: {}",
+        lighting
+            .secondary_rgb_hex
+            .as_deref()
+            .unwrap_or("(not reported)")
+    ));
+    lines.push(format!(
+        "active_zone: {}",
+        lighting.active_zone.as_deref().unwrap_or("(not reported)")
+    ));
+    lines.push(format!(
+        "apply_outcome: {}",
+        lighting.apply_outcome.as_deref().unwrap_or("(none)")
     ));
     lines.push(format!("writable: {}", lighting.can_set));
     lines.push(format!("direct_writable: {}", lighting.direct_writable));
@@ -11529,6 +12105,10 @@ mod tests {
     fn lighting_from_dbus_parses_explicit_backend_capabilities() {
         let mut map = HashMap::new();
         map.insert("backend".to_string(), ov("verified-aura".to_string()));
+        map.insert(
+            "backend_kind".to_string(),
+            ov("native-aura-hid".to_string()),
+        );
         map.insert("device".to_string(), ov("test-endpoint".to_string()));
         map.insert("can_set".to_string(), OwnedValue::from(true));
         map.insert("direct_writable".to_string(), OwnedValue::from(false));
@@ -11538,7 +12118,11 @@ mod tests {
         map.insert("supports_brightness".to_string(), OwnedValue::from(false));
         map.insert("supports_modes".to_string(), OwnedValue::from(true));
         map.insert("supports_rgb".to_string(), OwnedValue::from(true));
+        map.insert("supports_argb".to_string(), OwnedValue::from(false));
+        map.insert("supports_zones".to_string(), OwnedValue::from(true));
+        map.insert("supports_per_key".to_string(), OwnedValue::from(false));
         map.insert("supports_speed".to_string(), OwnedValue::from(true));
+        map.insert("secondary_rgb_hex".to_string(), ov("#001122".to_string()));
         map.insert(
             "supported_modes".to_string(),
             ov(vec!["Static".to_string(), "Breathe".to_string()]),
@@ -11547,23 +12131,103 @@ mod tests {
             "supported_speeds".to_string(),
             ov(vec!["Medium".to_string()]),
         );
+        map.insert("speed".to_string(), ov("Medium".to_string()));
+        map.insert(
+            "supported_directions".to_string(),
+            ov(vec!["Left".to_string(), "Right".to_string()]),
+        );
+        map.insert("direction".to_string(), ov("Left".to_string()));
         map.insert(
             "supported_zones".to_string(),
             ov(vec!["Keyboard".to_string()]),
+        );
+        map.insert("active_zone".to_string(), ov("Keyboard".to_string()));
+        map.insert(
+            "apply_outcome".to_string(),
+            ov("accepted_no_readback".to_string()),
         );
 
         let lighting = lighting_from_dbus(map).expect("lighting state should parse");
         assert!(!lighting.supports_brightness);
         assert!(lighting.supports_modes);
         assert!(lighting.supports_rgb);
+        assert!(!lighting.supports_argb);
+        assert!(lighting.supports_zones);
+        assert!(!lighting.supports_per_key);
         assert!(lighting.supports_speed);
+        assert_eq!(lighting.backend_kind, "native-aura-hid");
         assert!(!lighting.direct_writable);
         assert!(lighting.privileged_writable);
         assert!(lighting.authorization_required);
         assert_eq!(lighting.authorization, "not_checked");
         assert_eq!(lighting.supported_modes, ["Static", "Breathe"]);
         assert_eq!(lighting.supported_speeds, ["Medium"]);
+        assert_eq!(lighting.speed.as_deref(), Some("Medium"));
+        assert_eq!(lighting.supported_directions, ["Left", "Right"]);
+        assert_eq!(lighting.direction.as_deref(), Some("Left"));
         assert_eq!(lighting.supported_zones, ["Keyboard"]);
+        assert_eq!(lighting.active_zone.as_deref(), Some("Keyboard"));
+        assert_eq!(lighting.secondary_rgb_hex.as_deref(), Some("#001122"));
+        assert_eq!(
+            lighting.apply_outcome.as_deref(),
+            Some("accepted_no_readback")
+        );
+    }
+
+    #[test]
+    fn lighting_request_encoder_keeps_effect_fields_optional() {
+        let brightness_only = lighting_request_to_dbus(PendingLighting {
+            brightness: Some(2),
+            mode: None,
+            rgb_hex: None,
+            secondary_rgb_hex: None,
+            speed: None,
+            direction: None,
+            zone: None,
+        });
+        assert_eq!(brightness_only.len(), 1);
+        assert_eq!(
+            dbus_decode::unsigned(&brightness_only, dbus_keys::lighting::BRIGHTNESS),
+            Some(2)
+        );
+
+        let effect = lighting_request_to_dbus(PendingLighting {
+            brightness: None,
+            mode: Some("Breathe".to_string()),
+            rgb_hex: Some("#FF0000".to_string()),
+            secondary_rgb_hex: Some("#0000FF".to_string()),
+            speed: Some("Fast".to_string()),
+            direction: Some("Left".to_string()),
+            zone: Some("Keyboard".to_string()),
+        });
+        assert_eq!(
+            dbus_decode::string(&effect, dbus_keys::lighting::SECONDARY_RGB_HEX).as_deref(),
+            Some("#0000FF")
+        );
+        assert_eq!(
+            dbus_decode::string(&effect, dbus_keys::lighting::SPEED).as_deref(),
+            Some("Fast")
+        );
+        assert_eq!(
+            dbus_decode::string(&effect, dbus_keys::lighting::DIRECTION).as_deref(),
+            Some("Left")
+        );
+        assert_eq!(
+            dbus_decode::string(&effect, "zone").as_deref(),
+            Some("Keyboard")
+        );
+    }
+
+    #[test]
+    fn effect_specific_controls_are_conservative() {
+        assert!(lighting_mode_supports_primary_colour("Static"));
+        assert!(!lighting_mode_supports_primary_colour("Rainbow Cycle"));
+        assert!(lighting_mode_supports_secondary_colour("Breathe"));
+        assert!(!lighting_mode_supports_secondary_colour("Static"));
+        assert!(lighting_mode_supports_speed("Rainbow Cycle"));
+        assert!(!lighting_mode_supports_speed("Static"));
+        assert!(lighting_mode_supports_direction("Rainbow Wave"));
+        assert!(!lighting_mode_supports_direction("Rainbow Cycle"));
     }
 
     #[test]

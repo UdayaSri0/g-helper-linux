@@ -20,6 +20,7 @@ DBUS_SYSTEM_SERVICE="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privil
 DBUS_SYSTEM_POLICY="$REPO_ROOT/packaging/dbus-system/io.github.roghelper.Privileged.conf"
 SYSTEMD_SYSTEM_SERVICE="$REPO_ROOT/packaging/systemd-system/rog-helper-privileged.service"
 POLKIT_POLICY="$REPO_ROOT/packaging/polkit/io.github.roghelper.policy"
+UDEV_AURA_RULE="$REPO_ROOT/packaging/udev/60-rog-helper-aura.rules"
 LICENSE_FILES=("$REPO_ROOT/LICENSE-APACHE" "$REPO_ROOT/LICENSE-MIT")
 ICON_SIZES=(16 24 32 48 64 128 256 512)
 
@@ -265,6 +266,9 @@ install_privileged_integration() {
   install -Dm0644 \
     "$POLKIT_POLICY" \
     "$prefix_root/share/polkit-1/actions/io.github.roghelper.policy"
+  install -Dm0644 \
+    "$UDEV_AURA_RULE" \
+    "$prefix_root/lib/udev/rules.d/60-rog-helper-aura.rules"
 }
 
 install_license_docs() {

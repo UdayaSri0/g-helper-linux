@@ -103,6 +103,8 @@ def main() -> int:
         "NoNewPrivileges=yes",
         "PrivateTmp=yes",
         "PrivateDevices=yes",
+        "BindPaths=-/dev/rog-helper-aura",
+        "DeviceAllow=/dev/rog-helper-aura rw",
         "ProtectHome=yes",
         "ProtectSystem=strict",
         "ProtectKernelModules=yes",
@@ -125,6 +127,16 @@ def main() -> int:
     ]:
         require(directive in privileged_systemd, f"privileged service hardening drift: {directive}")
     require("ProtectKernelTunables=no" in privileged_systemd, "required sysfs-write exception is undocumented in the unit")
+    require("PrivateDevices=no" not in privileged_systemd, "privileged helper must keep a private device namespace")
+    require("hidraw*" not in privileged_systemd, "privileged helper must not bind generic hidraw devices")
+
+    aura_udev = text("packaging/udev/60-rog-helper-aura.rules")
+    require('ATTRS{idVendor}=="0b05"' in aura_udev, "Aura udev vendor match missing")
+    require('ATTRS{idProduct}=="19b6"' in aura_udev, "Aura udev product match missing")
+    require('ENV{ID_USB_INTERFACE_NUM}=="00"' in aura_udev, "Aura udev interface match missing")
+    require('SYMLINK+="rog-helper-aura"' in aura_udev, "Aura root-only alias missing")
+    for forbidden in ['TAG+="uaccess"', "MODE=", "GROUP=", "RUN=", "SYSTEMD_WANTS="]:
+        require(forbidden not in aura_udev, f"Aura udev rule broadens access: {forbidden}")
 
     package_common = text("packaging/scripts/package-common.sh")
     require("umask 0022" in package_common, "package payload modes must not inherit a permissive builder umask")

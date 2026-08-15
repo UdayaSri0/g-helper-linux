@@ -19,6 +19,28 @@ Implication:
 - the repository currently has implementation coverage, not hardware-certification coverage
 - unless a machine record is added, treat that machine or scenario as untested
 
+### Structured lighting implementation record (not physical validation)
+
+| Field | G615JMR target status |
+| --- | --- |
+| Model / DMI | ASUS ROG Strix G16; observed board `G615JMR_G615JMR`, matched by the narrow `G615JM` prefix |
+| Keyboard brightness | Detected through `/sys/class/leds/asus::kbd_backlight`; read-only target evidence recorded, write not physically retested |
+| Keyboard RGB | Implemented in code through `native-aura-hid`; **not physically validated** |
+| Keyboard zones | None exposed by the verified upstream capability record |
+| Keyboard per-key RGB | Unsupported |
+| ARGB / multi-zone | Unsupported |
+| Lightbar / logo / rear lighting | Not claimed by this target mapping |
+| Native identity | USB `0b05:19b6`, interface `00`, driver `asus` |
+| Descriptor / report | SHA-256 `bdcf63294f0793588d96a966c08b1e28062b36b5fdf5d54e714b0102bf1e1094`; report ID `0x5d`; 63-byte payload / 64-byte write |
+| Protocol | `asus-g615jm-laptop-aura-64` |
+| Modes encoded | Static, Breathe, Rainbow Cycle, Rainbow Wave, Pulse |
+| Backend priority | verified asusd -> verified native HID -> sysfs brightness -> unavailable |
+| Readback | No reliable hardware effect-state readback; accepted writes are not physical confirmation |
+| Physical Apply observed | **No** |
+
+This record describes the implementation allow-list and existing read-only discovery evidence. It
+does not satisfy the validation requirements below and must not be advertised as working hardware.
+
 ## Untested / Not Yet Validated
 
 The scenarios below are the minimum release hardware checks that still need real evidence unless a linked record is added.
@@ -30,6 +52,8 @@ The scenarios below are the minimum release hardware checks that still need real
 | CPU readable but not writable | Untested | none |
 | CPU writable | Untested | none |
 | keyboard backlight readable but not writable | Untested | none |
+| G615JMR native Aura RGB physical Apply | Untested | no write/readback evidence committed |
+| native Aura PolicyKit and asusd-conflict flows | Untested | automated tests only |
 | fan count `0` | Untested | none |
 | fan count `1` | Untested | none |
 | fan count `2` | Untested | none |
@@ -138,6 +162,7 @@ The rows below describe what the first release should eventually have evidence f
 | CPU writable | CPU control sysfs paths are writable for the daemon user | at least one quick control and one policy control apply successfully | `caps`, CPU screenshot before/after, Diagnostics copy |
 | keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness is still visible and the control is clearly read-only | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
 | Aura/RGB exposed by asusd | `caps` reports `has_aura: true` and the lighting backend is `asusd-aura` | RGB picker and backend-reported lighting modes are enabled when writable; brightness still works through Aura or sysfs fallback | `caps`, `lighting-diagnostics`, `dbus --filter "asus\|rog\|aura\|kbd\|keyboard\|led\|rgb"`, Lighting screenshot, Diagnostics copy |
+| G615JMR native Aura | lighting backend is `native-aura-hid` and diagnostics match the complete allow-list above | only single-target RGB and the five supported modes are shown; Apply requests PolicyKit; result says accepted without readback; ARGB/zones/per-key remain unavailable | before/after physical observation, `caps`, `lighting-diagnostics`, Lighting screenshot, PolicyKit success/denial, asusd conflict test |
 | asusd present without Aura/RGB | asusd service exists, but `caps` reports `has_aura: false` | RGB picker stays disabled with a clear “not exposed by asusd” or brightness-only fallback message | `caps`, `lighting-diagnostics`, DBus introspection output, Lighting screenshot |
 | fan count `0` | no usable `fan_rows` are detected | UI does not invent fan rows; Diagnostics explains that fan telemetry is unavailable | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
@@ -166,6 +191,19 @@ Include these fields in each machine record when fan testing is relevant:
 - restore Auto works
 - backend used
 - notes/warnings
+
+## Lighting Validation Fields
+
+Include these fields whenever lighting is tested:
+
+- brightness working and backend used
+- RGB physically changes: yes/no/not tested
+- supported modes physically observed
+- ARGB/multi-zone and per-key claims (normally `unsupported` unless independently verified)
+- VID, PID, interface, driver, descriptor hash, report ID/size, and protocol family
+- selected backend and alternatives suppressed
+- PolicyKit success, denial/cancellation, helper unavailable, and active-asusd conflict results
+- returned apply outcome, explicitly noting whether hardware readback exists
 
 ## How To Add Real Evidence
 

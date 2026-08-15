@@ -48,7 +48,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | `GetFanState` | `fan_caps a{sv}`, `fans aa{sv}`, `mode s`, `sync_enabled b`, `warnings as`; optional `last_action s`, `active_boost_fan_id s`, `active_boost_until_ms t`, `active_curve_summary s` | Empty/read-only fan model, mode `read_only`, sync `false`, optionals absent. |
 | Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping `unknown`, measurements absent. |
 | `GetFanCurves` | `supported b`, `reason s` | No current UI/CLI decoder. This response remains documented for external clients. |
-| Lighting map | `backend s`, `device s`, `brightness t`, `max_brightness t`, `can_set b`, `writable b`, optional `mode s`, `supported_modes as`, `supports_brightness b`, `supports_modes b`, `supports_rgb b`, optional `rgb_hex s`, `supports_speed b`, `supported_speeds as`, `supported_zones as`, `status s`, optional `last_error s`, `diagnostics_summary s`, `diagnostics_details s`, optional `fallback_reason s`, `unavailable_reason s`, `permission_warning s` | Backend/device/status use calm unknown labels, numeric values `0`, capabilities/writable false, lists empty, optional values absent. Compatibility inference enables brightness only when an older daemon reports `max_brightness > 0`, and modes only when it reports a non-empty mode list. |
+| Lighting map | `backend s`, `backend_kind s`, `device s`, `brightness t`, `max_brightness t`, `can_set b`, `writable b`, `direct_writable b`, `privileged_writable b`, `authorization_required b`, `authorization s`, optional `mode s`, `supported_modes as`, `supports_brightness b`, `supports_modes b`, `supports_rgb b`, `supports_argb b`, `supports_zones b`, `supports_per_key b`, optional `rgb_hex s`, `secondary_rgb_hex s`, `supports_speed b`, `supported_speeds as`, optional `speed s`, `supported_directions as`, optional `direction s`, `supported_zones as`, optional `active_zone s`, `apply_outcome s`, `status s`, optional `last_error s`, `diagnostics_summary s`, `diagnostics_details s`, `fallback_reason s`, `unavailable_reason s`, `permission_warning s` | Backend/device/status use calm unknown labels, numeric values `0`, capabilities/writable false, lists empty, optional values absent. Compatibility inference enables brightness only when an older daemon reports `max_brightness > 0`, and modes only when it reports a non-empty mode list. RGB/ARGB/zones/per-key are never inferred. |
 
 ## Non-map Responses and Setter Requests
 
@@ -57,7 +57,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | `GetConfiguration`, `ResetConfiguration` | Normalized versioned TOML string. |
 | `SetConfiguration` | Complete TOML string; validation failure is `InvalidArgs`; no hardware setter runs. |
 | `GetCpuDiagnostics` | Human-readable string; not a machine schema. |
-| `SetLighting` | Request keys `brightness`, `mode`, `rgb_hex`, `speed`, `zone`. Unknown keys/types are rejected; unsupported backend capabilities return `NotSupported`. |
+| `SetLighting` | Request keys `brightness`, `mode`, `rgb_hex`, `secondary_rgb_hex`, `speed`, `direction`, `zone`. Unknown keys/types are rejected; unsupported backend capabilities return `NotSupported`. Native HID requests cross the system bus only as the five high-level `SetAuraEffect` strings, never as paths or bytes. |
 | `SetFanCurve` | Map key `points` containing row maps with `temp_c` and `speed_percent` (or compatibility alias `duty_percent`); malformed, out-of-range, or unsafe curves are rejected before the provider. |
 | Other setters | Typed DBus arguments listed in `DBUS_API.md`; they do not depend on response-map string keys. |
 
@@ -77,3 +77,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 - `rog-core` tests canonical status mapping and centralized error-message classification.
 
 The complete public method descriptions and accepted setter values remain in [DBUS_API.md](DBUS_API.md).
+
+The separate privileged system API is version 2. Its native Aura surface is exactly
+`SetAuraEffect(sssss) -> b`: mode, primary colour, secondary colour, speed, and direction. No path,
+zone, raw packet, report ID, or command ID crosses DBus. See `DBUS_API.md` for the external asusd
+6.3.8-6.4.0 signature allow-list and the privileged method inventory.

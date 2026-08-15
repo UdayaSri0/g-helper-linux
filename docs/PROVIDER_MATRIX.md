@@ -44,18 +44,39 @@ File: `crates/rog-providers/src/aura.rs`
   - system DBus
   - `asusd` service exposing an introspectable Aura/keyboard LED interface
 - External services and paths
-  - service candidates:
-    - `xyz.ljones.Asusd`
-    - `org.asuslinux.Daemon`
-  - object paths and interface names are discovered through DBus introspection
+  - verified service: `xyz.ljones.Asusd`
+  - dynamic object path shape: `/xyz/ljones/aura/<device>` from the root ObjectManager
+  - interface: `xyz.ljones.Aura`
+  - verified ABI: asusd 6.3.8 through 6.4.0, with exact `LedModeData`, `LedMode`,
+    `SupportedBasicModes`, `SupportedBasicZones`, `AllModeData`, and `DirectAddressingRaw`
+    signatures; brightness properties are optional and raw addressing is never called
 - Current limitations
-  - no hardcoded hardware model database
-  - object paths are learned from the standard DBus root rather than guessed
+  - object paths are learned from the ObjectManager rather than guessed
   - Aura-looking method/property names do not enable controls by themselves; signatures must match
   - if Aura is absent or unverified, the daemon keeps the safe keyboard brightness fallback and
     reports RGB/modes unsupported
-  - no privileged USB, HID, raw-device, or generic sysfs fallback exists
+  - unknown asusd versions/contracts remain diagnostic-only
   - exact target evidence and the implementation gate are in `AURA_BACKEND_DISCOVERY.md`
+
+## `aura_hid`
+
+File: `crates/rog-providers/src/aura_hid.rs`
+
+- Purpose
+  - privacy-conscious ASUS hidraw discovery, exact target matching, and deterministic effect encoding
+- Read / Write
+  - provider discovery is read-only; the privileged helper owns the only transport write
+- Verified target
+  - DMI board prefix `G615JM` (target record `G615JMR_G615JMR`)
+  - USB `0b05:19b6`, interface `00`, kernel driver `asus`
+  - report descriptor SHA-256 `bdcf63294f0793588d96a966c08b1e28062b36b5fdf5d54e714b0102bf1e1094`
+  - output report `0x5d`, 63-byte descriptor payload / 64-byte write
+  - protocol family `asus-g615jm-laptop-aura-64`
+- Current limitations
+  - single-target RGB only: no ARGB, zones, or per-key control
+  - modes are Static, Breathe, Rainbow Cycle, Rainbow Wave, and Pulse
+  - no reliable effect-state readback; success means the fixed three-report write was accepted
+  - no other ASUS PID, interface, descriptor, or model is writable
 
 ## `supergfx`
 
@@ -198,6 +219,7 @@ File: `crates/rog-providers/src/lighting.rs`
 - Dependencies
   - `kbd_backlight`
   - `aura`
+  - native `aura_hid` scan results supplied by the daemon
   - `rog-core` lighting diagnostics model
 - Current limitations
   - it reports backend capability and probe evidence; it does not perform hardware writes itself
@@ -331,8 +353,8 @@ File: `crates/rog-providers/src/traits.rs`
 The provider layer already covers a meaningful amount of real system integration, but it is still uneven:
 
 - profile, battery limit, GPU mode, sysfs keyboard brightness, CPU control, and multiple telemetry sources are implemented
-- Aura/RGB writes are backend-dependent and enabled only for an introspection-verified asusd
-  contract; discovery without an exact contract remains diagnostic-only
+- Aura/RGB writes are backend-dependent and enabled only for the exact asusd 6.3.8-6.4.0
+  contract or the allow-listed G615JMR target identity; discovery without a match remains diagnostic-only
 - ASUS WMI eight-point fan curves and Auto restore are implemented behind exact identity/layout
   checks; generic fan duty and RPM-target writes remain unsupported
 - the broader provider traits and a unified telemetry abstraction are not implemented end-to-end

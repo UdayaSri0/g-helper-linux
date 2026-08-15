@@ -48,6 +48,7 @@ Current repository note:
 
 - [ ] `packaging/systemd-user/rog-helperd.service` reviewed
 - [ ] `packaging/systemd-system/rog-helper-privileged.service` reviewed against `PRIVILEGED_SECURITY_REVIEW.md`
+- [ ] root-only `packaging/udev/60-rog-helper-aura.rules` and helper `DeviceAllow`/`BindPaths` reviewed; confirm no user access mode/group/uaccess tag is added
 - [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
 - [ ] privileged binary is root-owned, executable, and not group/world-writable in each native package
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
@@ -144,6 +145,10 @@ Every row below should be marked either:
 - [ ] ASUS profile read/write verified where supported
 - [ ] battery charge-limit read/write verified where supported
 - [ ] keyboard backlight brightness verified where supported
+- [ ] G615JMR native Aura RGB physically observed for every advertised mode; `accepted_no_readback` alone is not treated as success evidence
+- [ ] native Aura exposes RGB only, with ARGB/zones/per-key hidden
+- [ ] native Aura PolicyKit success, denial/cancellation, helper-unavailable, duplicate/rate-limit, timeout, and active-asusd suppression flows verified
+- [ ] unknown ASUS PID/interface/descriptor and multiple matching devices remain diagnostic-only and produce no write
 - [ ] dynamic fan telemetry verified against detected `fan_rows`
 - [ ] Diagnostics page copy flow verified
 - [ ] About page metadata verified
@@ -168,9 +173,9 @@ Review and explicitly record:
 Current repository note:
 
 - the exact ASUS WMI eight-point fan-curve backend is implemented, but generic manual fan duty,
-  RPM-target, and boost writes remain unsupported; Aura/RGB writes require an exact verified asusd
-  contract; auto-policy integration, persistent hardware/control configuration, and broader
-  hardware support validation are not implemented end-to-end
+  RPM-target, and boost writes remain unsupported; Aura/RGB supports only the exact asusd
+  6.3.8-6.4.0 ABI and the allow-listed G615JMR target identity, whose physical behavior is
+  not yet validated; ARGB/zones/per-key and broader hardware coverage are not claimed
 
 ## Final Sign-Off
 

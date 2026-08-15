@@ -118,6 +118,8 @@ package() {
   chmod 0644 "${pkgdir}/usr/lib/systemd/system/rog-helper-privileged.service"
   install -Dm0644 packaging/polkit/io.github.roghelper.policy \
     "${pkgdir}/usr/share/polkit-1/actions/io.github.roghelper.policy"
+  install -Dm0644 packaging/udev/60-rog-helper-aura.rules \
+    "${pkgdir}/usr/lib/udev/rules.d/60-rog-helper-aura.rules"
 
   install -Dm0644 LICENSE-APACHE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
   install -Dm0644 LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"

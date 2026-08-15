@@ -31,6 +31,8 @@ cp -a usr %{buildroot}/
 
 %post
 /bin/systemctl daemon-reload >/dev/null 2>&1 || :
+/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
+/bin/udevadm trigger --subsystem-match=hidraw --action=change >/dev/null 2>&1 || :
 
 %preun
 if [ "$1" -eq 0 ]; then
@@ -39,6 +41,8 @@ fi
 
 %postun
 /bin/systemctl daemon-reload >/dev/null 2>&1 || :
+/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
+/bin/udevadm trigger --subsystem-match=hidraw --action=change >/dev/null 2>&1 || :
 
 %files
 %license %{_docdir}/%{name}/LICENSE-APACHE
@@ -65,6 +69,7 @@ fi
 %{_datadir}/pixmaps/rog-helper.png
 /usr/lib/systemd/user/rog-helperd.service
 %{_unitdir}/rog-helper-privileged.service
+%{_prefix}/lib/udev/rules.d/60-rog-helper-aura.rules
 
 %changelog
 * @CHANGELOG_DATE@ @MAINTAINER@ - @VERSION@-@RPM_RELEASE@

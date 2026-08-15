@@ -12,12 +12,16 @@ use rog_core::{
     BatteryState, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest,
     CpuPathAccess, CpuPowerMode, CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps,
     FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
-    FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState, LightingDiagnostics,
-    LightingMode, LightingState, PerformanceProfile, PermissionStatus, PowerSource, RgbColor,
-    SetupIssue, SetupStatus, TelemetrySnapshot,
+    FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState, LightingApplyOutcome,
+    LightingApplyRequest, LightingBackendKind, LightingCaps, LightingDiagnostics,
+    LightingDirection, LightingMode, LightingSpeed, LightingState, PerformanceProfile,
+    PermissionStatus, PowerSource, RgbColor, SetupIssue, SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
-use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
+use rog_providers::aura::{
+    AsusdAuraDirection, AsusdAuraSpeed, AsusdAuraZone, AuraProbeDiagnostics, AuraProvider,
+};
+use rog_providers::aura_hid::{g615jm_lighting_caps, scan_native_aura_hid, AuraHidScan};
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
@@ -50,6 +54,13 @@ struct SharedState {
     cpu_privilege: RwLock<CpuPrivilegeState>,
     fan_authorization: RwLock<String>,
     lighting_authorization: RwLock<String>,
+    native_lighting: RwLock<NativeLightingState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NativeLightingState {
+    request: Option<LightingApplyRequest>,
+    outcome: Option<LightingApplyOutcome>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +163,7 @@ fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::
             "the privileged lighting helper is unavailable".to_string(),
         ),
         Code::Unexpected => rog_core::RogError::Unexpected(
-            "the privileged keyboard brightness write or readback failed".to_string(),
+            "the privileged lighting operation failed safely".to_string(),
         ),
     }
 }
@@ -228,6 +239,7 @@ struct RogHelperDaemon {
     kbd_backlight_probe_error: Option<String>,
     aura: Option<AuraProvider>,
     aura_probe_diagnostics: AuraProbeDiagnostics,
+    native_aura_hid: AuraHidScan,
     asusd: Option<AsusdPlatformProvider>,
     supergfx: Option<SupergfxProvider>,
     cpu: CpuTelemetryProvider,
@@ -244,6 +256,7 @@ impl RogHelperDaemon {
         kbd_backlight_probe_error: Option<String>,
         aura: Option<AuraProvider>,
         aura_probe_diagnostics: AuraProbeDiagnostics,
+        native_aura_hid: AuraHidScan,
         asusd: Option<AsusdPlatformProvider>,
         supergfx: Option<SupergfxProvider>,
         cpu: CpuTelemetryProvider,
@@ -257,6 +270,7 @@ impl RogHelperDaemon {
             kbd_backlight_probe_error,
             aura,
             aura_probe_diagnostics,
+            native_aura_hid,
             asusd,
             supergfx,
             cpu,
@@ -799,7 +813,15 @@ impl RogHelperDaemon {
     }
 
     async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
-        const ACCEPTED_KEYS: &[&str] = &["brightness", "mode", "rgb_hex", "speed", "zone"];
+        const ACCEPTED_KEYS: &[&str] = &[
+            "brightness",
+            "mode",
+            "rgb_hex",
+            "secondary_rgb_hex",
+            "speed",
+            "direction",
+            "zone",
+        ];
         if let Some(key) = state
             .keys()
             .find(|key| !ACCEPTED_KEYS.contains(&key.as_str()))
@@ -807,19 +829,6 @@ impl RogHelperDaemon {
             return Err(fdo::Error::InvalidArgs(format!(
                 "unknown lighting key '{key}'"
             )));
-        }
-
-        if state.contains_key("speed") {
-            return Err(fdo::Error::NotSupported(
-                "Lighting speed is unavailable because no verified backend speed contract is active."
-                    .to_string(),
-            ));
-        }
-        if state.contains_key("zone") {
-            return Err(fdo::Error::NotSupported(
-                "Lighting zones are unavailable because no verified backend zone contract is active."
-                    .to_string(),
-            ));
         }
 
         let mode = state
@@ -849,6 +858,15 @@ impl RogHelperDaemon {
             .map(RgbColor::parse_hex)
             .transpose()
             .map_err(map_rog_error_to_fdo)?;
+        let secondary_rgb = optional_lighting_string(&state, "secondary_rgb_hex")?
+            .map(|value| RgbColor::parse_hex(&value))
+            .transpose()
+            .map_err(map_rog_error_to_fdo)?;
+        let speed = optional_lighting_string(&state, "speed")?
+            .map(|value| LightingSpeed::from_backend_label(&value));
+        let direction = optional_lighting_string(&state, "direction")?
+            .map(|value| LightingDirection::from_backend_label(&value));
+        let zone = optional_lighting_string(&state, "zone")?;
         let brightness = u64_from_map(&state, "brightness");
         if state.contains_key("brightness") && brightness.is_none() {
             return Err(fdo::Error::InvalidArgs(
@@ -865,7 +883,14 @@ impl RogHelperDaemon {
             })
             .transpose()?;
 
-        if mode.is_none() && rgb.is_none() && brightness.is_none() {
+        if mode.is_none()
+            && rgb.is_none()
+            && secondary_rgb.is_none()
+            && speed.is_none()
+            && direction.is_none()
+            && zone.is_none()
+            && brightness.is_none()
+        {
             return Err(fdo::Error::InvalidArgs(
                 "lighting request contains no control value".to_string(),
             ));
@@ -884,6 +909,14 @@ impl RogHelperDaemon {
                     "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
                 ));
             }
+            if (secondary_rgb.is_some() || speed.is_some() || direction.is_some() || zone.is_some())
+                && !aura.supports_rgb()
+            {
+                return Err(fdo::Error::NotSupported(
+                    "The active asusd Aura contract does not expose structured effects."
+                        .to_string(),
+                ));
+            }
             if !aura.can_set_brightness() {
                 if let (Some(brightness), Some(kbd)) = (brightness, self.kbd_backlight.as_ref()) {
                     if brightness > kbd.max_brightness() {
@@ -899,16 +932,36 @@ impl RogHelperDaemon {
                     ));
                 }
             }
-            if let Some(mode) = mode.as_deref() {
-                let parsed_mode = LightingMode::parse_label(mode)
-                    .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
-                aura.set_mode(parsed_mode)
+            let has_effect_fields = mode.is_some()
+                || rgb.is_some()
+                || secondary_rgb.is_some()
+                || speed.is_some()
+                || direction.is_some()
+                || zone.is_some();
+            if has_effect_fields {
+                let mut effect = aura.read_effect().await.map_err(map_rog_error_to_fdo)?;
+                if let Some(mode) = mode.as_deref() {
+                    effect.mode = LightingMode::parse_label(mode)
+                        .unwrap_or_else(|| LightingMode::Other(mode.trim().to_string()));
+                }
+                if let Some(rgb) = rgb {
+                    effect.primary = rgb;
+                }
+                if let Some(rgb) = secondary_rgb {
+                    effect.secondary = rgb;
+                }
+                if let Some(speed) = speed.as_ref() {
+                    effect.speed = asusd_speed(speed)?;
+                }
+                if let Some(direction) = direction.as_ref() {
+                    effect.direction = asusd_direction(direction)?;
+                }
+                if let Some(zone) = zone.as_deref() {
+                    effect.zone = asusd_zone(zone)?;
+                }
+                aura.set_effect(effect)
                     .await
                     .map_err(map_rog_error_to_fdo)?;
-            }
-
-            if let Some(rgb) = rgb {
-                aura.set_rgb(rgb).await.map_err(map_rog_error_to_fdo)?;
             }
 
             if let Some(brightness) = brightness {
@@ -926,9 +979,112 @@ impl RogHelperDaemon {
             return Ok(());
         }
 
-        if rgb.is_some() {
+        if self.native_aura_hid_supported() {
+            if zone.is_some() {
+                return Err(fdo::Error::NotSupported(
+                    "This verified G615JM Aura backend is single-target RGB and exposes no basic zones."
+                        .to_string(),
+                ));
+            }
+            let has_effect_fields = mode.is_some()
+                || rgb.is_some()
+                || secondary_rgb.is_some()
+                || speed.is_some()
+                || direction.is_some();
+            if has_effect_fields {
+                let previous = self
+                    .state
+                    .native_lighting
+                    .read()
+                    .expect("rwlock poisoned")
+                    .request
+                    .clone();
+                let requested_mode = mode
+                    .as_deref()
+                    .map(LightingMode::from_backend_label)
+                    .or_else(|| previous.as_ref().map(|request| request.mode.clone()))
+                    .unwrap_or(LightingMode::Static);
+                let request = LightingApplyRequest {
+                    mode: requested_mode,
+                    primary_rgb: rgb
+                        .or_else(|| previous.as_ref().and_then(|request| request.primary_rgb)),
+                    secondary_rgb: secondary_rgb
+                        .or_else(|| previous.as_ref().and_then(|request| request.secondary_rgb)),
+                    brightness: None,
+                    speed: speed
+                        .or_else(|| previous.as_ref().and_then(|request| request.speed.clone())),
+                    direction: direction.or_else(|| {
+                        previous
+                            .as_ref()
+                            .and_then(|request| request.direction.clone())
+                    }),
+                    zone: None,
+                    apply_to_all: false,
+                };
+                request
+                    .validate_against(&g615jm_lighting_caps())
+                    .map_err(map_rog_error_to_fdo)?;
+                let applied = match privileged_client::set_aura_effect(&request).await {
+                    Ok(applied) => applied,
+                    Err(error) => {
+                        let authorization = match error.code {
+                            rog_core::PrivilegedErrorCode::NotAuthorized => "denied",
+                            rog_core::PrivilegedErrorCode::HardwareUnavailable
+                            | rog_core::PrivilegedErrorCode::PermissionDenied
+                            | rog_core::PrivilegedErrorCode::BackendFailure
+                            | rog_core::PrivilegedErrorCode::Unexpected => "unavailable",
+                            rog_core::PrivilegedErrorCode::NotSupported
+                            | rog_core::PrivilegedErrorCode::InvalidInput => "not_checked",
+                        };
+                        *self
+                            .state
+                            .lighting_authorization
+                            .write()
+                            .expect("rwlock poisoned") = authorization.to_string();
+                        self.state
+                            .native_lighting
+                            .write()
+                            .expect("rwlock poisoned")
+                            .outcome = Some(LightingApplyOutcome::Failed(error.message.clone()));
+                        return Err(map_rog_error_to_fdo(map_privileged_lighting_error(error)));
+                    }
+                };
+                let outcome = LightingApplyOutcome::AcceptedNoReadback;
+                let mut runtime = self.state.native_lighting.write().expect("rwlock poisoned");
+                runtime.request = Some(request);
+                runtime.outcome = Some(outcome);
+                drop(runtime);
+                *self
+                    .state
+                    .lighting_authorization
+                    .write()
+                    .expect("rwlock poisoned") = "authorized".to_string();
+                if !applied {
+                    info!("suppressed duplicate native Aura effect request");
+                }
+            }
+            if let Some(brightness) = brightness {
+                let Some(kbd) = &self.kbd_backlight else {
+                    return Err(fdo::Error::NotSupported(
+                        "Native Aura RGB is available, but no keyboard brightness endpoint was found."
+                            .to_string(),
+                    ));
+                };
+                self.set_sysfs_keyboard_brightness(kbd, brightness)
+                    .await
+                    .map_err(map_rog_error_to_fdo)?;
+            }
+            return Ok(());
+        }
+
+        if rgb.is_some()
+            || secondary_rgb.is_some()
+            || speed.is_some()
+            || direction.is_some()
+            || zone.is_some()
+        {
             return Err(fdo::Error::NotSupported(
-                "RGB colour requires ASUS Aura support. Current backend only supports keyboard brightness."
+                "RGB/effect controls require ASUS Aura support. Current backend only supports keyboard brightness."
                     .to_string(),
             ));
         }
@@ -1195,6 +1351,11 @@ async fn main() -> anyhow::Result<()> {
                 )
             }
         };
+    let native_aura_hid = scan_native_aura_hid();
+    let native_aura_supported = native_aura_hid
+        .devices
+        .iter()
+        .any(|device| device.protocol.is_some());
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
         Ok(v) => (v, None),
         Err(e) => {
@@ -1250,7 +1411,7 @@ async fn main() -> anyhow::Result<()> {
         caps.endpoints.push(format!("fan:{endpoint}"));
     }
     let kbd_backlight_detected = kbd_backlight.is_some() || detect_kbd_backlight();
-    caps.has_aura = aura.is_some();
+    caps.has_aura = aura.is_some() || native_aura_supported;
     caps.has_kbd_backlight = kbd_backlight_detected;
     let sysfs_writable = kbd_backlight
         .as_ref()
@@ -1271,12 +1432,25 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(aura) = &aura {
         caps.endpoints.push(aura.endpoint_tag());
+        if native_aura_supported {
+            caps.notes.push(
+                "Verified native Aura HID was also detected but is suppressed because asusd owns the preferred Aura backend."
+                    .to_string(),
+            );
+        }
+    } else if native_aura_supported {
+        caps.endpoints
+            .push("native-aura-hid:0b05:19b6:interface-00".to_string());
+        caps.notes.push(
+            "Verified native Aura HID detected for G615JM; high-level writes require the privileged helper."
+                .to_string(),
+        );
     }
     if let Some(err) = &aura_probe_error {
         caps.notes.push(format!("asusd Aura probe failed: {err}"));
     }
     caps.notes.extend(aura_probe_notes);
-    let startup_lighting_diagnostics = build_lighting_diagnostics(
+    let mut startup_lighting_diagnostics = build_lighting_diagnostics(
         kbd_backlight.as_ref(),
         kbd_backlight_detected,
         kbd_backlight_probe_error.as_deref(),
@@ -1284,6 +1458,12 @@ async fn main() -> anyhow::Result<()> {
         &aura_probe_diagnostics,
         None,
         aura_probe_error.as_deref(),
+    );
+    native_aura_hid.populate_diagnostics(&mut startup_lighting_diagnostics);
+    apply_native_hid_diagnostics_selection(
+        &mut startup_lighting_diagnostics,
+        aura.is_some(),
+        native_aura_supported,
     );
     caps.notes.push(startup_lighting_diagnostics.summary_line());
     if let Some(warning) = &startup_lighting_diagnostics.permission_warning {
@@ -1578,6 +1758,7 @@ async fn main() -> anyhow::Result<()> {
         }),
         fan_authorization: RwLock::new("not_checked".to_string()),
         lighting_authorization: RwLock::new("not_checked".to_string()),
+        native_lighting: RwLock::new(NativeLightingState::default()),
     });
 
     // Export DBus service on the session bus.
@@ -1588,6 +1769,7 @@ async fn main() -> anyhow::Result<()> {
         kbd_backlight_probe_error.clone(),
         aura.clone(),
         aura_probe_diagnostics.clone(),
+        native_aura_hid.clone(),
         asusd.clone(),
         supergfx.clone(),
         cpu.clone(),
@@ -3823,6 +4005,70 @@ fn u64_from_map(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u64> {
         .or_else(|| u32::try_from(v).ok().map(|v| v as u64))
 }
 
+fn optional_lighting_string(
+    map: &HashMap<String, OwnedValue>,
+    key: &str,
+) -> fdo::Result<Option<String>> {
+    map.get(key)
+        .map(|value| {
+            let value = <&str>::try_from(value)
+                .map_err(|_| fdo::Error::InvalidArgs(format!("lighting {key} must be a string")))?;
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "lighting {key} cannot be empty"
+                )));
+            }
+            Ok(value.to_string())
+        })
+        .transpose()
+}
+
+fn asusd_speed(speed: &LightingSpeed) -> fdo::Result<AsusdAuraSpeed> {
+    match speed {
+        LightingSpeed::Slow => Ok(AsusdAuraSpeed::Low),
+        LightingSpeed::Medium => Ok(AsusdAuraSpeed::Med),
+        LightingSpeed::Fast => Ok(AsusdAuraSpeed::High),
+        LightingSpeed::Other(value) => Err(fdo::Error::NotSupported(format!(
+            "Aura speed '{value}' is not part of the verified asusd contract"
+        ))),
+    }
+}
+
+fn asusd_direction(direction: &LightingDirection) -> fdo::Result<AsusdAuraDirection> {
+    match direction {
+        LightingDirection::Right => Ok(AsusdAuraDirection::Right),
+        LightingDirection::Left => Ok(AsusdAuraDirection::Left),
+        LightingDirection::Up => Ok(AsusdAuraDirection::Up),
+        LightingDirection::Down => Ok(AsusdAuraDirection::Down),
+        other => Err(fdo::Error::NotSupported(format!(
+            "Aura direction '{}' is not part of the verified asusd contract",
+            other.label()
+        ))),
+    }
+}
+
+fn asusd_zone(zone: &str) -> fdo::Result<AsusdAuraZone> {
+    let key = zone
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    match key.as_str() {
+        "all" | "allzones" => Ok(AsusdAuraZone::All),
+        "keyboardzone1" => Ok(AsusdAuraZone::KeyboardZone1),
+        "keyboardzone2" => Ok(AsusdAuraZone::KeyboardZone2),
+        "keyboardzone3" => Ok(AsusdAuraZone::KeyboardZone3),
+        "keyboardzone4" => Ok(AsusdAuraZone::KeyboardZone4),
+        "logo" | "roglogo" => Ok(AsusdAuraZone::Logo),
+        "lightbarleft" => Ok(AsusdAuraZone::LightbarLeft),
+        "lightbarright" => Ok(AsusdAuraZone::LightbarRight),
+        _ => Err(fdo::Error::NotSupported(format!(
+            "Aura zone '{zone}' is not part of the verified asusd contract"
+        ))),
+    }
+}
+
 fn fan_curve_from_dbus(
     fan_id: &str,
     map: &HashMap<String, OwnedValue>,
@@ -4004,19 +4250,35 @@ impl RogHelperDaemon {
             "unavailable".to_string()
         };
         state.writable |= privileged;
+        state.capabilities.writable = state.writable;
         if direct && state.backend == "sysfs-led" {
             state.status = "sysfs_direct_writable".to_string();
         } else if privileged {
             state.fallback_reason = Some(
-                "The verified asusd API does not provide this brightness write, so Apply may use the approved privileged ASUS keyboard LED fallback."
-                    .to_string(),
+                if state.backend_kind == LightingBackendKind::NativeAuraHid {
+                    "Native Aura RGB and keyboard brightness use high-level, PolicyKit-authorized privileged operations."
+                    .to_string()
+                } else {
+                    "The verified asusd API does not provide this brightness write, so Apply may use the approved privileged ASUS keyboard LED fallback."
+                    .to_string()
+                },
             );
             if state.authorization == "denied" {
                 state.status = "authorization_denied".to_string();
             } else if state.authorization_required {
                 state.status = "authorization_required".to_string();
+            } else if matches!(
+                state.last_apply_outcome,
+                Some(LightingApplyOutcome::AcceptedNoReadback)
+            ) {
+                state.status = "write_accepted_no_readback".to_string();
             } else {
-                state.status = "sysfs_privileged_writable".to_string();
+                state.status = if state.backend_kind == LightingBackendKind::NativeAuraHid {
+                    "native_hid_privileged_writable"
+                } else {
+                    "sysfs_privileged_writable"
+                }
+                .to_string();
             }
         } else if !direct {
             state.status = if keyboard.privileged_write_approved() {
@@ -4049,6 +4311,17 @@ impl RogHelperDaemon {
                     return Some(lighting_state_to_dbus(
                         &LightingState {
                             backend: "asusd-aura".to_string(),
+                            backend_kind: LightingBackendKind::AsusdAura,
+                            capabilities: LightingCaps {
+                                backend: LightingBackendKind::AsusdAura,
+                                supports_brightness: aura.supports_brightness(),
+                                supports_rgb: aura.supports_rgb(),
+                                supported_modes: aura.supported_modes_hint(),
+                                writable: aura.supports_rgb()
+                                    || aura.can_set_mode()
+                                    || aura.can_set_brightness(),
+                                ..LightingCaps::default()
+                            },
                             device: aura.endpoint_tag(),
                             brightness: None,
                             max_brightness: None,
@@ -4072,13 +4345,26 @@ impl RogHelperDaemon {
                             authorization: "not_required".to_string(),
                             fallback_reason: None,
                             rgb: None,
+                            secondary_rgb: None,
+                            speed: None,
+                            direction: None,
+                            active_zone: None,
                             status: "backend_error".to_string(),
                             last_error: Some(format!("Aura backend read failed: {error}")),
+                            last_apply_outcome: Some(LightingApplyOutcome::Failed(error)),
                         },
                         &diagnostics,
                     ));
                 }
             }
+        }
+
+        if self.native_aura_hid_supported() {
+            let mut state = self.native_hid_lighting_state();
+            self.merge_sysfs_brightness(&mut state);
+            self.apply_lighting_privilege_to_state(&mut state);
+            let diagnostics = self.lighting_diagnostics(Some(&state), None);
+            return Some(lighting_state_to_dbus(&state, &diagnostics));
         }
 
         self.sysfs_lighting_state().map(|mut state| {
@@ -4147,7 +4433,82 @@ impl RogHelperDaemon {
         if let Some(reason) = state.and_then(|state| state.fallback_reason.clone()) {
             diagnostics.fallback_reason = Some(reason);
         }
+        self.native_aura_hid.populate_diagnostics(&mut diagnostics);
+        apply_native_hid_diagnostics_selection(
+            &mut diagnostics,
+            self.aura.is_some(),
+            self.native_aura_hid_supported(),
+        );
         diagnostics
+    }
+
+    fn native_aura_hid_supported(&self) -> bool {
+        self.aura.is_none()
+            && self
+                .native_aura_hid
+                .devices
+                .iter()
+                .any(|device| device.protocol.is_some())
+    }
+
+    fn native_hid_lighting_state(&self) -> LightingState {
+        let runtime = self
+            .state
+            .native_lighting
+            .read()
+            .expect("rwlock poisoned")
+            .clone();
+        let caps = g615jm_lighting_caps();
+        let device = self
+            .native_aura_hid
+            .devices
+            .iter()
+            .find(|device| device.protocol.is_some())
+            .and_then(|device| device.diagnostics.product_name.clone())
+            .unwrap_or_else(|| "ASUS ROG Keyboard".to_string());
+        let request = runtime.request.as_ref();
+        LightingState {
+            backend: "native-aura-hid".to_string(),
+            backend_kind: LightingBackendKind::NativeAuraHid,
+            capabilities: caps.clone(),
+            device,
+            brightness: None,
+            max_brightness: None,
+            mode: request.map(|request| request.mode.clone()),
+            supports_brightness: false,
+            supports_modes: true,
+            supported_modes: caps.supported_modes.clone(),
+            supports_rgb: true,
+            rgb: request.and_then(|request| request.primary_rgb),
+            secondary_rgb: request.and_then(|request| request.secondary_rgb),
+            supports_speed: true,
+            supported_speeds: caps
+                .supported_speeds
+                .iter()
+                .map(LightingSpeed::label)
+                .collect(),
+            speed: request.and_then(|request| request.speed.clone()),
+            direction: request.and_then(|request| request.direction.clone()),
+            supported_zones: Vec::new(),
+            active_zone: None,
+            writable: false,
+            direct_writable: false,
+            privileged_writable: false,
+            authorization_required: true,
+            authorization: "not_checked".to_string(),
+            fallback_reason: Some(
+                "Verified native ASUS Aura HID provides RGB/effects; sysfs remains the brightness fallback. Hardware effect state has no reliable readback."
+                    .to_string(),
+            ),
+            status: if runtime.outcome.is_some() {
+                "write_accepted_no_readback"
+            } else {
+                "authorization_required"
+            }
+            .to_string(),
+            last_error: None,
+            last_apply_outcome: runtime.outcome,
+        }
     }
 
     fn merge_sysfs_brightness(&self, state: &mut LightingState) {
@@ -4164,6 +4525,8 @@ impl RogHelperDaemon {
             state.max_brightness = Some(kbd.max_brightness());
         }
         state.supports_brightness = true;
+        state.capabilities.supports_brightness = true;
+        state.capabilities.max_brightness = Some(kbd.max_brightness());
         state.writable |= kbd.can_set_brightness();
     }
 
@@ -4178,6 +4541,15 @@ impl RogHelperDaemon {
 
         Some(LightingState {
             backend: "sysfs-led".to_string(),
+            backend_kind: LightingBackendKind::SysfsLed,
+            capabilities: LightingCaps {
+                backend: LightingBackendKind::SysfsLed,
+                supports_brightness: true,
+                max_brightness: Some(kbd.max_brightness()),
+                supported_modes: vec![LightingMode::Off, LightingMode::Static],
+                writable: kbd.can_set_brightness(),
+                ..LightingCaps::default()
+            },
             device: kbd.led_name().to_string(),
             brightness: Some(brightness),
             max_brightness: Some(kbd.max_brightness()),
@@ -4187,9 +4559,13 @@ impl RogHelperDaemon {
             supported_modes: vec![LightingMode::Off, LightingMode::Static],
             supports_rgb: false,
             rgb: None,
+            secondary_rgb: None,
             supports_speed: false,
             supported_speeds: Vec::new(),
+            speed: None,
+            direction: None,
             supported_zones: Vec::new(),
+            active_zone: None,
             writable: kbd.can_set_brightness(),
             direct_writable: kbd.can_set_brightness(),
             privileged_writable: false,
@@ -4205,7 +4581,81 @@ impl RogHelperDaemon {
             ),
             status: "rgb_unsupported".to_string(),
             last_error: None,
+            last_apply_outcome: None,
         })
+    }
+}
+
+fn apply_native_hid_diagnostics_selection(
+    diagnostics: &mut LightingDiagnostics,
+    asusd_selected: bool,
+    native_supported: bool,
+) {
+    let selected = select_lighting_backend(
+        asusd_selected,
+        native_supported,
+        diagnostics.keyboard_backlight_detected,
+    );
+    if selected == LightingBackendKind::AsusdAura {
+        if native_supported {
+            diagnostics.probe_errors.push(
+                "Verified native Aura HID is suppressed because the verified asusd Aura backend owns the preferred control path."
+                    .to_string(),
+            );
+        }
+        return;
+    }
+    if selected == LightingBackendKind::NativeAuraHid {
+        let caps = g615jm_lighting_caps();
+        diagnostics.selected_backend_kind = LightingBackendKind::NativeAuraHid;
+        diagnostics.capabilities = caps.clone();
+        diagnostics.supports_argb = false;
+        diagnostics.supports_zones = false;
+        diagnostics.supports_per_key = false;
+        diagnostics.supports_rgb = true;
+        diagnostics.rgb_backend_detected = true;
+        diagnostics.rgb_backend_name = Some("native-aura-hid".to_string());
+        diagnostics.supports_modes = true;
+        diagnostics.supported_modes = caps
+            .supported_modes
+            .iter()
+            .map(LightingMode::label)
+            .collect();
+        diagnostics.supports_speed = true;
+        diagnostics.supported_speeds = caps
+            .supported_speeds
+            .iter()
+            .map(LightingSpeed::label)
+            .collect();
+        diagnostics.supported_zones.clear();
+        diagnostics.active_backend = "native-aura-hid".to_string();
+        diagnostics.fallback_reason = Some(
+            "Verified native Aura HID was selected for RGB/effects; sysfs remains the keyboard brightness fallback."
+                .to_string(),
+        );
+        diagnostics.unavailable_reason = None;
+        diagnostics.recommended_action = None;
+    } else if diagnostics.native_aura_hid_detected {
+        diagnostics.recommended_action = Some(
+            "An ASUS HID device was detected but its exact protocol/interface/descriptor contract is unsupported; include this report when requesting support."
+                .to_string(),
+        );
+    }
+}
+
+fn select_lighting_backend(
+    verified_asusd: bool,
+    verified_native_hid: bool,
+    sysfs_brightness: bool,
+) -> LightingBackendKind {
+    if verified_asusd {
+        LightingBackendKind::AsusdAura
+    } else if verified_native_hid {
+        LightingBackendKind::NativeAuraHid
+    } else if sysfs_brightness {
+        LightingBackendKind::SysfsLed
+    } else {
+        LightingBackendKind::None
     }
 }
 
@@ -4217,6 +4667,10 @@ fn lighting_state_to_dbus(
     m.insert(
         dbus_keys::lighting::BACKEND.to_string(),
         ov(state.backend.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::BACKEND_KIND.to_string(),
+        ov(state.backend_kind.as_str().to_string()),
     );
     m.insert(
         dbus_keys::lighting::DEVICE.to_string(),
@@ -4273,8 +4727,26 @@ fn lighting_state_to_dbus(
         dbus_keys::lighting::SUPPORTS_RGB.to_string(),
         OwnedValue::from(state.supports_rgb),
     );
+    m.insert(
+        dbus_keys::lighting::SUPPORTS_ARGB.to_string(),
+        OwnedValue::from(state.capabilities.supports_argb),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTS_ZONES.to_string(),
+        OwnedValue::from(state.capabilities.supports_zones),
+    );
+    m.insert(
+        dbus_keys::lighting::SUPPORTS_PER_KEY.to_string(),
+        OwnedValue::from(state.capabilities.supports_per_key),
+    );
     if let Some(rgb) = state.rgb {
         m.insert(dbus_keys::lighting::RGB_HEX.to_string(), ov(rgb.to_hex()));
+    }
+    if let Some(rgb) = state.secondary_rgb {
+        m.insert(
+            dbus_keys::lighting::SECONDARY_RGB_HEX.to_string(),
+            ov(rgb.to_hex()),
+        );
     }
     m.insert(
         dbus_keys::lighting::SUPPORTS_SPEED.to_string(),
@@ -4284,10 +4756,43 @@ fn lighting_state_to_dbus(
         dbus_keys::lighting::SUPPORTED_SPEEDS.to_string(),
         ov(state.supported_speeds.clone()),
     );
+    if let Some(speed) = &state.speed {
+        m.insert(dbus_keys::lighting::SPEED.to_string(), ov(speed.label()));
+    }
+    m.insert(
+        dbus_keys::lighting::SUPPORTED_DIRECTIONS.to_string(),
+        ov(state
+            .capabilities
+            .supported_directions
+            .iter()
+            .map(LightingDirection::label)
+            .collect::<Vec<_>>()),
+    );
+    if let Some(direction) = &state.direction {
+        m.insert(
+            dbus_keys::lighting::DIRECTION.to_string(),
+            ov(direction.label()),
+        );
+    }
     m.insert(
         dbus_keys::lighting::SUPPORTED_ZONES.to_string(),
         ov(state.supported_zones.clone()),
     );
+    if let Some(zone) = &state.active_zone {
+        m.insert(
+            dbus_keys::lighting::ACTIVE_ZONE.to_string(),
+            ov(zone.label()),
+        );
+    }
+    if let Some(outcome) = &state.last_apply_outcome {
+        let outcome = match outcome {
+            LightingApplyOutcome::Verified => "verified".to_string(),
+            LightingApplyOutcome::AcceptedNoReadback => "accepted_no_readback".to_string(),
+            LightingApplyOutcome::Failed(message) => format!("failed: {message}"),
+            LightingApplyOutcome::Other(value) => value.clone(),
+        };
+        m.insert(dbus_keys::lighting::APPLY_OUTCOME.to_string(), ov(outcome));
+    }
     m.insert(
         dbus_keys::lighting::STATUS.to_string(),
         ov(state.status.clone()),
@@ -4880,9 +5385,41 @@ mod tests {
     }
 
     #[test]
+    fn lighting_backend_selection_enforces_priority_and_conflict_suppression() {
+        assert_eq!(
+            select_lighting_backend(true, true, true),
+            LightingBackendKind::AsusdAura
+        );
+        assert_eq!(
+            select_lighting_backend(false, true, true),
+            LightingBackendKind::NativeAuraHid
+        );
+        assert_eq!(
+            select_lighting_backend(false, false, true),
+            LightingBackendKind::SysfsLed
+        );
+        assert_eq!(
+            select_lighting_backend(false, false, false),
+            LightingBackendKind::None
+        );
+    }
+
+    #[test]
     fn lighting_dbus_map_exposes_explicit_optional_capabilities() {
         let state = LightingState {
             backend: "test-verified-aura".to_string(),
+            backend_kind: LightingBackendKind::AsusdAura,
+            capabilities: LightingCaps {
+                backend: LightingBackendKind::AsusdAura,
+                supports_rgb: true,
+                supports_argb: true,
+                supports_zones: true,
+                supported_modes: vec![LightingMode::Static],
+                supported_speeds: vec![LightingSpeed::Medium],
+                supported_directions: vec![LightingDirection::Right],
+                writable: true,
+                ..LightingCaps::default()
+            },
             device: "test-endpoint".to_string(),
             brightness: None,
             max_brightness: None,
@@ -4892,9 +5429,13 @@ mod tests {
             supported_modes: vec![LightingMode::Static],
             supports_rgb: true,
             rgb: Some(RgbColor::new(1, 2, 3)),
+            secondary_rgb: Some(RgbColor::new(4, 5, 6)),
             supports_speed: true,
             supported_speeds: vec!["Medium".to_string()],
+            speed: Some(LightingSpeed::Medium),
+            direction: Some(LightingDirection::Right),
             supported_zones: vec!["Keyboard".to_string()],
+            active_zone: None,
             writable: true,
             direct_writable: true,
             privileged_writable: false,
@@ -4903,6 +5444,7 @@ mod tests {
             fallback_reason: None,
             status: "available".to_string(),
             last_error: None,
+            last_apply_outcome: Some(LightingApplyOutcome::Verified),
         };
 
         let map = lighting_state_to_dbus(&state, &LightingDiagnostics::unknown());
@@ -5166,6 +5708,8 @@ mod tests {
         assert!(!lighting_helper_ready(&status));
         let state = LightingState {
             backend: "sysfs-led".to_string(),
+            backend_kind: LightingBackendKind::SysfsLed,
+            capabilities: LightingCaps::default(),
             device: "asus::kbd_backlight".to_string(),
             brightness: Some(1),
             max_brightness: Some(3),
@@ -5175,9 +5719,13 @@ mod tests {
             supported_modes: vec![LightingMode::Off, LightingMode::Static],
             supports_rgb: false,
             rgb: None,
+            secondary_rgb: None,
             supports_speed: false,
             supported_speeds: Vec::new(),
+            speed: None,
+            direction: None,
             supported_zones: Vec::new(),
+            active_zone: None,
             writable: false,
             direct_writable: false,
             privileged_writable: false,
@@ -5186,6 +5734,7 @@ mod tests {
             fallback_reason: None,
             status: "rgb_unsupported".to_string(),
             last_error: None,
+            last_apply_outcome: None,
         };
         assert!(!state.supports_rgb);
         assert!(!state.privileged_writable);

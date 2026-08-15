@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 pub const PRIVILEGED_DBUS_NAME: &str = "io.github.roghelper.Privileged";
 pub const PRIVILEGED_DBUS_PATH: &str = "/io/github/roghelper/Privileged";
 pub const PRIVILEGED_DBUS_INTERFACE: &str = "io.github.roghelper.Privileged1";
-pub const PRIVILEGED_API_VERSION: u32 = 1;
+/// Version 2 adds the path-free, high-level native Aura effect operation.
+pub const PRIVILEGED_API_VERSION: u32 = 2;
 
 pub const POLKIT_ACTION_CPU_CONTROL: &str = "io.github.roghelper.cpu.control";
 pub const POLKIT_ACTION_BATTERY_CONTROL: &str = "io.github.roghelper.battery.control";

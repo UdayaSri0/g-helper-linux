@@ -12,6 +12,7 @@ repository.workspace = true
 futures-util.workspace = true
 regex.workspace = true
 serde.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

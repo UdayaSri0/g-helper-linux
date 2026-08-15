@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use rog_core::{
-    AuthorizationState, CpuControlRequest, FanCurve, PrivilegedCapabilities, PrivilegedError,
-    PrivilegedErrorCode, PrivilegedStatus, POLKIT_ACTION_CPU_CONTROL, PRIVILEGED_API_VERSION,
-    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
+    AuthorizationState, CpuControlRequest, FanCurve, LightingApplyRequest, LightingDirection,
+    LightingMode, LightingSpeed, PrivilegedCapabilities, PrivilegedError, PrivilegedErrorCode,
+    PrivilegedStatus, POLKIT_ACTION_CPU_CONTROL, PRIVILEGED_API_VERSION, PRIVILEGED_DBUS_INTERFACE,
+    PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use tokio::time::timeout;
 use zbus::{Connection, Proxy};
@@ -189,6 +190,74 @@ pub async fn set_keyboard_backlight_brightness(level: u32) -> Result<(), Privile
     .map_err(|_| lighting_helper_unavailable())?;
     helper
         .call::<_, _, ()>("SetKeyboardBacklightBrightness", &(u64::from(level),))
+        .await
+        .map_err(|error| map_zbus_error_or(error, lighting_helper_unavailable))
+}
+
+pub async fn set_aura_effect(request: &LightingApplyRequest) -> Result<bool, PrivilegedError> {
+    let mode = match request.mode {
+        LightingMode::Static => "static",
+        LightingMode::Breathe => "breathe",
+        LightingMode::RainbowCycle => "rainbow-cycle",
+        LightingMode::RainbowWave => "rainbow-wave",
+        LightingMode::Pulse => "pulse",
+        _ => {
+            return Err(PrivilegedError::new(
+                PrivilegedErrorCode::NotSupported,
+                "the requested lighting mode has no verified native Aura mapping",
+            ))
+        }
+    };
+    let primary = request
+        .primary_rgb
+        .map(|colour| colour.to_hex())
+        .unwrap_or_default();
+    let secondary = request
+        .secondary_rgb
+        .map(|colour| colour.to_hex())
+        .unwrap_or_default();
+    let speed = match request.speed.as_ref() {
+        None => "",
+        Some(LightingSpeed::Slow) => "slow",
+        Some(LightingSpeed::Medium) => "medium",
+        Some(LightingSpeed::Fast) => "fast",
+        Some(LightingSpeed::Other(_)) => {
+            return Err(PrivilegedError::new(
+                PrivilegedErrorCode::NotSupported,
+                "the requested lighting speed has no verified native Aura mapping",
+            ))
+        }
+    };
+    let direction = match request.direction.as_ref() {
+        None => "",
+        Some(LightingDirection::Right) => "right",
+        Some(LightingDirection::Left) => "left",
+        Some(LightingDirection::Up) => "up",
+        Some(LightingDirection::Down) => "down",
+        Some(_) => {
+            return Err(PrivilegedError::new(
+                PrivilegedErrorCode::NotSupported,
+                "the requested lighting direction has no verified native Aura mapping",
+            ))
+        }
+    };
+
+    let connection = Connection::system()
+        .await
+        .map_err(|_| lighting_helper_unavailable())?;
+    let helper = Proxy::new(
+        &connection,
+        PRIVILEGED_DBUS_NAME,
+        PRIVILEGED_DBUS_PATH,
+        PRIVILEGED_DBUS_INTERFACE,
+    )
+    .await
+    .map_err(|_| lighting_helper_unavailable())?;
+    helper
+        .call::<_, _, bool>(
+            "SetAuraEffect",
+            &(mode, primary.as_str(), secondary.as_str(), speed, direction),
+        )
         .await
         .map_err(|error| map_zbus_error_or(error, lighting_helper_unavailable))
 }

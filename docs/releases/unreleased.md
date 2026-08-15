@@ -10,6 +10,11 @@
 - CLI fan diagnostics via `rog-helper fans` and `rog-helper fan-caps`.
 - Setup & Access page with verified service readiness, explicit write-permission states, safe guidance, refresh/copy actions, and advanced technical evidence.
 - Session DBus `GetSetupStatus` method and terminal parity through `rog-helper setup-check`.
+- Capability-gated ASUS Aura lighting with exact asusd 6.3.8-6.4.0 DBus matching and one
+  allow-listed G615JMR target HID protocol (`0b05:19b6`, interface `00`, DMI prefix `G615JM`).
+- Richer lighting state and Apply request fields for RGB, secondary colour, speed, direction, and
+  zones, while keeping unsupported controls hidden.
+- Privileged API v2 high-level `SetAuraEffect` operation and a root-only target-specific udev alias.
 
 ## Safety
 
@@ -19,3 +24,6 @@
 - Boost is time-limited and restores Auto/BIOS mode when the timer ends.
 - Dangerous fan curves are rejected by shared core validation.
 - Setup checks remain unprivileged and never install packages, invoke `sudo`, change sysfs permissions, or bypass DBus policy.
+- Native Aura accepts no paths or packet bytes, revalidates the device before writes, suppresses
+  conflicts with asusd and duplicate/rate-limited requests, and does not claim hardware readback.
+- The G615JMR mapping is RGB only—not ARGB, multi-zone, or per-key—and has not yet been physically validated.

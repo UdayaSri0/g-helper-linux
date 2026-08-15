@@ -729,11 +729,13 @@ pub fn validate_fan_request(request: &FanControlRequest, fans: &[FanInfo]) -> Ro
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LightingMode {
     Off,
     Static,
     Breathe,
+    RainbowCycle,
+    RainbowWave,
     Rainbow,
     Strobe,
     Pulse,
@@ -748,6 +750,8 @@ impl LightingMode {
             "off" | "none" => Some(Self::Off),
             "static" | "steady" | "constant" => Some(Self::Static),
             "breathe" | "breathing" | "breath" => Some(Self::Breathe),
+            "rainbowcycle" | "colourcycle" | "colorcycle" => Some(Self::RainbowCycle),
+            "rainbowwave" => Some(Self::RainbowWave),
             "strobe" | "strobing" | "flash" | "flashing" => Some(Self::Strobe),
             "rainbow" => Some(Self::Rainbow),
             "pulse" | "pulsing" => Some(Self::Pulse),
@@ -765,6 +769,8 @@ impl LightingMode {
             Self::Off => "Off".to_string(),
             Self::Static => "Static".to_string(),
             Self::Breathe => "Breathe".to_string(),
+            Self::RainbowCycle => "Rainbow Cycle".to_string(),
+            Self::RainbowWave => "Rainbow Wave".to_string(),
             Self::Rainbow => "Rainbow".to_string(),
             Self::Strobe => "Strobe".to_string(),
             Self::Pulse => "Pulse".to_string(),
@@ -776,6 +782,330 @@ impl LightingMode {
     pub fn same_user_mode(&self, other: &Self) -> bool {
         normalize_lighting_word(&self.label()) == normalize_lighting_word(&other.label())
     }
+}
+
+/// The selected lighting implementation, separate from the legacy display string.
+///
+/// `Other` lets dictionary/JSON clients preserve a future backend label without
+/// treating it as one of the contracts known by this version.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum LightingBackendKind {
+    #[default]
+    None,
+    AsusdAura,
+    NativeAuraHid,
+    SysfsLed,
+    Other(String),
+}
+
+impl LightingBackendKind {
+    pub fn from_backend_label(value: &str) -> Self {
+        match normalize_lighting_word(value).as_str() {
+            "" | "none" | "unavailable" => Self::None,
+            "asusdaura" | "asusd" => Self::AsusdAura,
+            "nativeaurahid" | "aurahid" => Self::NativeAuraHid,
+            "sysfsled" | "sysfs" => Self::SysfsLed,
+            _ => Self::Other(value.trim().to_string()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::AsusdAura => "asusd-aura",
+            Self::NativeAuraHid => "native-aura-hid",
+            Self::SysfsLed => "sysfs-led",
+            Self::Other(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LightingZone {
+    All,
+    Keyboard,
+    KeyboardZone(u8),
+    Lightbar,
+    LightbarLeft,
+    LightbarCenter,
+    LightbarRight,
+    RearGlow,
+    Lid,
+    RogLogo,
+    Logo,
+    Other(String),
+}
+
+impl LightingZone {
+    pub fn from_backend_label(value: &str) -> Self {
+        let trimmed = value.trim();
+        let key = normalize_lighting_word(trimmed);
+        match key.as_str() {
+            "all" | "allzones" => Self::All,
+            "keyboard" => Self::Keyboard,
+            "lightbar" => Self::Lightbar,
+            "lightbarleft" => Self::LightbarLeft,
+            "lightbarcentre" | "lightbarcenter" => Self::LightbarCenter,
+            "lightbarright" => Self::LightbarRight,
+            "rearglow" => Self::RearGlow,
+            "lid" => Self::Lid,
+            "roglogo" => Self::RogLogo,
+            "logo" => Self::Logo,
+            _ => key
+                .strip_prefix("keyboardzone")
+                .and_then(|zone| zone.parse::<u8>().ok())
+                .map(Self::KeyboardZone)
+                .unwrap_or_else(|| Self::Other(trimmed.to_string())),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::All => "All".to_string(),
+            Self::Keyboard => "Keyboard".to_string(),
+            Self::KeyboardZone(zone) => format!("Keyboard Zone {zone}"),
+            Self::Lightbar => "Lightbar".to_string(),
+            Self::LightbarLeft => "Lightbar Left".to_string(),
+            Self::LightbarCenter => "Lightbar Centre".to_string(),
+            Self::LightbarRight => "Lightbar Right".to_string(),
+            Self::RearGlow => "Rear Glow".to_string(),
+            Self::Lid => "Lid".to_string(),
+            Self::RogLogo => "ROG Logo".to_string(),
+            Self::Logo => "Logo".to_string(),
+            Self::Other(value) => value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LightingSpeed {
+    Slow,
+    Medium,
+    Fast,
+    Other(String),
+}
+
+impl LightingSpeed {
+    pub fn from_backend_label(value: &str) -> Self {
+        match normalize_lighting_word(value).as_str() {
+            "slow" | "low" => Self::Slow,
+            "medium" | "med" | "normal" => Self::Medium,
+            "fast" | "high" => Self::Fast,
+            _ => Self::Other(value.trim().to_string()),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Slow => "Slow".to_string(),
+            Self::Medium => "Medium".to_string(),
+            Self::Fast => "Fast".to_string(),
+            Self::Other(value) => value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LightingDirection {
+    Right,
+    Left,
+    Up,
+    Down,
+    Clockwise,
+    CounterClockwise,
+    Other(String),
+}
+
+impl LightingDirection {
+    pub fn from_backend_label(value: &str) -> Self {
+        match normalize_lighting_word(value).as_str() {
+            "right" => Self::Right,
+            "left" => Self::Left,
+            "up" => Self::Up,
+            "down" => Self::Down,
+            "clockwise" => Self::Clockwise,
+            "counterclockwise" | "anticlockwise" => Self::CounterClockwise,
+            _ => Self::Other(value.trim().to_string()),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Right => "Right".to_string(),
+            Self::Left => "Left".to_string(),
+            Self::Up => "Up".to_string(),
+            Self::Down => "Down".to_string(),
+            Self::Clockwise => "Clockwise".to_string(),
+            Self::CounterClockwise => "Counter-clockwise".to_string(),
+            Self::Other(value) => value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LightingCaps {
+    #[serde(default)]
+    pub backend: LightingBackendKind,
+    #[serde(default)]
+    pub supports_brightness: bool,
+    #[serde(default)]
+    pub max_brightness: Option<u32>,
+    #[serde(default)]
+    pub supports_rgb: bool,
+    #[serde(default)]
+    pub supports_argb: bool,
+    #[serde(default)]
+    pub supports_zones: bool,
+    #[serde(default)]
+    pub supports_per_key: bool,
+    #[serde(default)]
+    pub supported_modes: Vec<LightingMode>,
+    #[serde(default)]
+    pub supported_speeds: Vec<LightingSpeed>,
+    #[serde(default)]
+    pub supported_directions: Vec<LightingDirection>,
+    #[serde(default)]
+    pub zones: Vec<LightingZone>,
+    #[serde(default)]
+    pub modes_requiring_primary_rgb: Vec<LightingMode>,
+    #[serde(default)]
+    pub modes_supporting_secondary_rgb: Vec<LightingMode>,
+    #[serde(default)]
+    pub modes_supporting_speed: Vec<LightingMode>,
+    #[serde(default)]
+    pub modes_supporting_direction: Vec<LightingMode>,
+    #[serde(default)]
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightingApplyRequest {
+    pub mode: LightingMode,
+    #[serde(default)]
+    pub primary_rgb: Option<RgbColor>,
+    #[serde(default)]
+    pub secondary_rgb: Option<RgbColor>,
+    #[serde(default)]
+    pub brightness: Option<u32>,
+    #[serde(default)]
+    pub speed: Option<LightingSpeed>,
+    #[serde(default)]
+    pub direction: Option<LightingDirection>,
+    #[serde(default)]
+    pub zone: Option<LightingZone>,
+    #[serde(default)]
+    pub apply_to_all: bool,
+}
+
+impl LightingApplyRequest {
+    pub fn validate_against(&self, caps: &LightingCaps) -> RogResult<()> {
+        if !caps.writable {
+            return Err(RogError::NotSupported(
+                "the selected lighting backend is not writable".to_string(),
+            ));
+        }
+        if !mode_list_contains(&caps.supported_modes, &self.mode) {
+            return Err(RogError::NotSupported(format!(
+                "lighting mode '{}' is not supported by the selected backend",
+                self.mode.label()
+            )));
+        }
+
+        if mode_list_contains(&caps.modes_requiring_primary_rgb, &self.mode)
+            && self.primary_rgb.is_none()
+        {
+            return Err(RogError::InvalidInput(format!(
+                "lighting mode '{}' requires a primary RGB colour",
+                self.mode.label()
+            )));
+        }
+        if (self.primary_rgb.is_some() || self.secondary_rgb.is_some()) && !caps.supports_rgb {
+            return Err(RogError::NotSupported(
+                "the selected lighting backend does not support RGB colour".to_string(),
+            ));
+        }
+        if self.secondary_rgb.is_some()
+            && !mode_list_contains(&caps.modes_supporting_secondary_rgb, &self.mode)
+        {
+            return Err(RogError::NotSupported(format!(
+                "a secondary colour is not supported for lighting mode '{}'",
+                self.mode.label()
+            )));
+        }
+
+        if let Some(brightness) = self.brightness {
+            if !caps.supports_brightness {
+                return Err(RogError::NotSupported(
+                    "the selected lighting backend does not support brightness".to_string(),
+                ));
+            }
+            if let Some(max_brightness) = caps.max_brightness {
+                if brightness > max_brightness {
+                    return Err(RogError::InvalidInput(format!(
+                        "brightness {brightness} exceeds the backend maximum {max_brightness}"
+                    )));
+                }
+            }
+        }
+
+        if let Some(speed) = &self.speed {
+            if !mode_list_contains(&caps.modes_supporting_speed, &self.mode) {
+                return Err(RogError::NotSupported(format!(
+                    "speed is not supported for lighting mode '{}'",
+                    self.mode.label()
+                )));
+            }
+            if !caps.supported_speeds.contains(speed) {
+                return Err(RogError::NotSupported(format!(
+                    "lighting speed '{}' is not supported by the selected backend",
+                    speed.label()
+                )));
+            }
+        }
+
+        if let Some(direction) = &self.direction {
+            if !mode_list_contains(&caps.modes_supporting_direction, &self.mode) {
+                return Err(RogError::NotSupported(format!(
+                    "direction is not supported for lighting mode '{}'",
+                    self.mode.label()
+                )));
+            }
+            if !caps.supported_directions.contains(direction) {
+                return Err(RogError::NotSupported(format!(
+                    "lighting direction '{}' is not supported by the selected backend",
+                    direction.label()
+                )));
+            }
+        }
+
+        if let Some(zone) = &self.zone {
+            if !caps.supports_zones || !caps.zones.contains(zone) {
+                return Err(RogError::NotSupported(format!(
+                    "lighting zone '{}' is not supported by the selected backend",
+                    zone.label()
+                )));
+            }
+        }
+        if self.apply_to_all && !caps.supports_zones {
+            return Err(RogError::NotSupported(
+                "apply-to-all requires a backend with verified lighting zones".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LightingApplyOutcome {
+    Verified,
+    AcceptedNoReadback,
+    Failed(String),
+    Other(String),
+}
+
+fn mode_list_contains(modes: &[LightingMode], requested: &LightingMode) -> bool {
+    modes.iter().any(|mode| mode.same_user_mode(requested))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -813,6 +1143,10 @@ impl RgbColor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightingState {
     pub backend: String,
+    #[serde(default)]
+    pub backend_kind: LightingBackendKind,
+    #[serde(default)]
+    pub capabilities: LightingCaps,
     pub device: String,
     pub brightness: Option<u32>,
     pub max_brightness: Option<u32>,
@@ -825,11 +1159,19 @@ pub struct LightingState {
     pub supports_rgb: bool,
     pub rgb: Option<RgbColor>,
     #[serde(default)]
+    pub secondary_rgb: Option<RgbColor>,
+    #[serde(default)]
     pub supports_speed: bool,
     #[serde(default)]
     pub supported_speeds: Vec<String>,
     #[serde(default)]
+    pub speed: Option<LightingSpeed>,
+    #[serde(default)]
+    pub direction: Option<LightingDirection>,
+    #[serde(default)]
     pub supported_zones: Vec<String>,
+    #[serde(default)]
+    pub active_zone: Option<LightingZone>,
     pub writable: bool,
     #[serde(default)]
     pub direct_writable: bool,
@@ -843,6 +1185,32 @@ pub struct LightingState {
     pub fallback_reason: Option<String>,
     pub status: String,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_apply_outcome: Option<LightingApplyOutcome>,
+}
+
+/// Privacy-conscious HID metadata suitable for diagnostics output.
+///
+/// It intentionally excludes USB serial numbers and full physical/sysfs paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LightingHidDeviceDiagnostics {
+    pub hidraw_name: String,
+    pub vendor_id: Option<String>,
+    pub product_id: Option<String>,
+    pub interface_number: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product_name: Option<String>,
+    pub driver: Option<String>,
+    pub report_descriptor_sha256: Option<String>,
+    pub output_report_payload_bytes: Option<u32>,
+    pub output_report_total_bytes: Option<u32>,
+    pub device_node_mode: Option<u32>,
+    pub physical_path_sha256: Option<String>,
+    pub protocol_family: Option<String>,
+    #[serde(default)]
+    pub supported: bool,
+    #[serde(default)]
+    pub rejection_reasons: Vec<String>,
 }
 
 impl LightingState {
@@ -860,6 +1228,16 @@ impl LightingState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightingDiagnostics {
+    #[serde(default)]
+    pub selected_backend_kind: LightingBackendKind,
+    #[serde(default)]
+    pub capabilities: LightingCaps,
+    #[serde(default)]
+    pub supports_argb: bool,
+    #[serde(default)]
+    pub supports_zones: bool,
+    #[serde(default)]
+    pub supports_per_key: bool,
     pub keyboard_backlight_detected: bool,
     pub keyboard_backlight_backend: Option<String>,
     pub keyboard_backlight_device: Option<String>,
@@ -907,6 +1285,15 @@ pub struct LightingDiagnostics {
     pub asusd_zone_properties_detected: Vec<String>,
     pub asusd_verified_aura_interface: bool,
 
+    #[serde(default)]
+    pub native_aura_hid_detected: bool,
+    #[serde(default)]
+    pub native_aura_hid_supported: bool,
+    #[serde(default)]
+    pub dmi_board_name: Option<String>,
+    #[serde(default)]
+    pub native_aura_hid_devices: Vec<LightingHidDeviceDiagnostics>,
+
     pub active_backend: String,
     pub fallback_reason: Option<String>,
     pub unavailable_reason: Option<String>,
@@ -919,6 +1306,11 @@ pub struct LightingDiagnostics {
 impl LightingDiagnostics {
     pub fn unknown() -> Self {
         Self {
+            selected_backend_kind: LightingBackendKind::None,
+            capabilities: LightingCaps::default(),
+            supports_argb: false,
+            supports_zones: false,
+            supports_per_key: false,
             keyboard_backlight_detected: false,
             keyboard_backlight_backend: None,
             keyboard_backlight_device: None,
@@ -962,6 +1354,10 @@ impl LightingDiagnostics {
             asusd_zone_methods_detected: Vec::new(),
             asusd_zone_properties_detected: Vec::new(),
             asusd_verified_aura_interface: false,
+            native_aura_hid_detected: false,
+            native_aura_hid_supported: false,
+            dmi_board_name: None,
+            native_aura_hid_devices: Vec::new(),
             active_backend: "none".to_string(),
             fallback_reason: None,
             unavailable_reason: None,
@@ -994,8 +1390,8 @@ impl LightingDiagnostics {
 
     pub fn to_report_text(&self) -> String {
         let mut lines = Vec::new();
-        lines.push("Keyboard Lighting / RGB Diagnostics".to_string());
-        lines.push("===================================".to_string());
+        lines.push("ROG Helper Lighting Diagnostics".to_string());
+        lines.push("===============================".to_string());
         lines.push(String::new());
         lines.push("Summary:".to_string());
         lines.push(format!(
@@ -1018,6 +1414,11 @@ impl LightingDiagnostics {
                 "not available"
             }
         ));
+        lines.push(format!(
+            "- ARGB / multi-zone: {}",
+            yes_no(self.supports_argb)
+        ));
+        lines.push(format!("- Per-key RGB: {}", yes_no(self.supports_per_key)));
         lines.push(format!(
             "- Effect speed: {}",
             if self.supports_speed {
@@ -1058,6 +1459,30 @@ impl LightingDiagnostics {
         if let Some(action) = &self.recommended_action {
             lines.push(format!("- Recommended action: {action}"));
         }
+
+        lines.push(String::new());
+        lines.push("Backend candidates:".to_string());
+        lines.push(format!(
+            "- asusd-aura: detected={}, verified={}",
+            yes_no(self.asusd_service_detected),
+            yes_no(self.asusd_verified_aura_interface)
+        ));
+        lines.push(format!(
+            "- native-aura-hid: detected={}, supported={}",
+            yes_no(self.native_aura_hid_detected),
+            yes_no(self.native_aura_hid_supported)
+        ));
+        lines.push(format!(
+            "- sysfs-led: detected={}, brightness={}",
+            yes_no(self.keyboard_backlight_detected),
+            yes_no(self.supports_brightness)
+        ));
+        lines.push(format!("- Selected: {}", self.active_backend));
+        let selection_reason = self
+            .fallback_reason
+            .clone()
+            .unwrap_or_else(|| self.summary_line());
+        lines.push(format!("- Reason: {selection_reason}"));
 
         lines.push(String::new());
         lines.push("Sysfs Keyboard Backlight:".to_string());
@@ -1111,7 +1536,11 @@ impl LightingDiagnostics {
         ));
         lines.push(format!(
             "- Supported modes: {}",
-            list_text(&self.supported_modes)
+            if self.keyboard_backlight_detected {
+                "Off, Static"
+            } else {
+                "(none)"
+            }
         ));
         lines.push(format!("- Supports RGB: {}", yes_no(false)));
 
@@ -1197,6 +1626,71 @@ impl LightingDiagnostics {
             yes_no(self.asusd_verified_aura_interface)
         ));
         lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
+
+        lines.push(String::new());
+        lines.push("Native ASUS Aura HID Discovery:".to_string());
+        lines.push(format!(
+            "- DMI board: {}",
+            opt_text(self.dmi_board_name.as_deref())
+        ));
+        lines.push(format!(
+            "- ASUS HID detected: {}",
+            yes_no(self.native_aura_hid_detected)
+        ));
+        lines.push(format!(
+            "- Verified native protocol: {}",
+            yes_no(self.native_aura_hid_supported)
+        ));
+        if self.native_aura_hid_devices.is_empty() {
+            lines.push("- Devices: none".to_string());
+        } else {
+            for device in &self.native_aura_hid_devices {
+                lines.push(format!("- Device: {}", device.hidraw_name));
+                lines.push(format!(
+                    "  Product: {} / {}",
+                    opt_text(device.manufacturer.as_deref()),
+                    opt_text(device.product_name.as_deref())
+                ));
+                lines.push(format!(
+                    "  VID:PID/interface: {}:{} / {}",
+                    opt_text(device.vendor_id.as_deref()),
+                    opt_text(device.product_id.as_deref()),
+                    opt_text(device.interface_number.as_deref())
+                ));
+                lines.push(format!("  Driver: {}", opt_text(device.driver.as_deref())));
+                lines.push(format!(
+                    "  Device-node mode: {}",
+                    device
+                        .device_node_mode
+                        .map(|mode| format!("{mode:04o}"))
+                        .unwrap_or_else(|| "(unknown)".to_string())
+                ));
+                lines.push(format!(
+                    "  Descriptor SHA-256: {}",
+                    opt_text(device.report_descriptor_sha256.as_deref())
+                ));
+                lines.push(format!(
+                    "  Output report: payload={} total={}",
+                    opt_u32(device.output_report_payload_bytes),
+                    opt_u32(device.output_report_total_bytes)
+                ));
+                lines.push(format!(
+                    "  Protocol: {} ({})",
+                    opt_text(device.protocol_family.as_deref()),
+                    if device.supported {
+                        "supported"
+                    } else {
+                        "diagnostic-only"
+                    }
+                ));
+                if !device.rejection_reasons.is_empty() {
+                    lines.push(format!(
+                        "  Rejected because: {}",
+                        list_text(&device.rejection_reasons)
+                    ));
+                }
+            }
+        }
 
         lines.push(String::new());
         lines.push("Decision:".to_string());
@@ -2629,6 +3123,133 @@ mod tests {
             Some(LightingMode::Strobe)
         );
         assert_eq!(LightingMode::parse_label("not-a-mode"), None);
+    }
+
+    fn test_lighting_caps() -> LightingCaps {
+        LightingCaps {
+            backend: LightingBackendKind::NativeAuraHid,
+            supports_rgb: true,
+            supported_modes: vec![
+                LightingMode::Static,
+                LightingMode::Breathe,
+                LightingMode::RainbowWave,
+            ],
+            supported_speeds: vec![
+                LightingSpeed::Slow,
+                LightingSpeed::Medium,
+                LightingSpeed::Fast,
+            ],
+            supported_directions: vec![LightingDirection::Right, LightingDirection::Left],
+            modes_requiring_primary_rgb: vec![LightingMode::Static, LightingMode::Breathe],
+            modes_supporting_secondary_rgb: vec![LightingMode::Breathe],
+            modes_supporting_speed: vec![LightingMode::Breathe, LightingMode::RainbowWave],
+            modes_supporting_direction: vec![LightingMode::RainbowWave],
+            writable: true,
+            ..LightingCaps::default()
+        }
+    }
+
+    fn static_request() -> LightingApplyRequest {
+        LightingApplyRequest {
+            mode: LightingMode::Static,
+            primary_rgb: Some(RgbColor::new(255, 0, 0)),
+            secondary_rgb: None,
+            brightness: None,
+            speed: None,
+            direction: None,
+            zone: None,
+            apply_to_all: false,
+        }
+    }
+
+    #[test]
+    fn lighting_request_validation_accepts_capability_gated_request() {
+        assert!(static_request()
+            .validate_against(&test_lighting_caps())
+            .is_ok());
+
+        let breathe = LightingApplyRequest {
+            mode: LightingMode::Breathe,
+            primary_rgb: Some(RgbColor::new(1, 2, 3)),
+            secondary_rgb: Some(RgbColor::new(4, 5, 6)),
+            speed: Some(LightingSpeed::Fast),
+            ..static_request()
+        };
+        assert!(breathe.validate_against(&test_lighting_caps()).is_ok());
+    }
+
+    #[test]
+    fn lighting_request_validation_rejects_invalid_mode_and_missing_colour() {
+        let mut request = static_request();
+        request.mode = LightingMode::Pulse;
+        assert!(request.validate_against(&test_lighting_caps()).is_err());
+
+        request.mode = LightingMode::Static;
+        request.primary_rgb = None;
+        assert!(request.validate_against(&test_lighting_caps()).is_err());
+    }
+
+    #[test]
+    fn lighting_request_validation_rejects_irrelevant_controls() {
+        let caps = test_lighting_caps();
+
+        let mut request = static_request();
+        request.speed = Some(LightingSpeed::Medium);
+        assert!(request.validate_against(&caps).is_err());
+
+        let mut request = static_request();
+        request.direction = Some(LightingDirection::Left);
+        assert!(request.validate_against(&caps).is_err());
+
+        let mut request = static_request();
+        request.zone = Some(LightingZone::Keyboard);
+        assert!(request.validate_against(&caps).is_err());
+
+        let mut request = static_request();
+        request.secondary_rgb = Some(RgbColor::new(0, 0, 0));
+        assert!(request.validate_against(&caps).is_err());
+    }
+
+    #[test]
+    fn lighting_request_validation_rejects_unlisted_speed_and_direction() {
+        let caps = test_lighting_caps();
+        let mut request = static_request();
+        request.mode = LightingMode::RainbowWave;
+        request.primary_rgb = None;
+        request.speed = Some(LightingSpeed::Other("turbo".to_string()));
+        assert!(request.validate_against(&caps).is_err());
+
+        request.speed = Some(LightingSpeed::Medium);
+        request.direction = Some(LightingDirection::Down);
+        assert!(request.validate_against(&caps).is_err());
+    }
+
+    #[test]
+    fn legacy_lighting_state_deserializes_with_typed_defaults() {
+        let state: LightingState = toml::from_str(
+            r#"
+backend = "sysfs-led"
+device = "asus::kbd_backlight"
+brightness = 2
+max_brightness = 3
+mode = "Static"
+supports_brightness = true
+supports_modes = true
+supported_modes = ["Off", "Static"]
+supports_rgb = false
+supports_speed = false
+supported_speeds = []
+supported_zones = []
+writable = true
+status = "available"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.backend_kind, LightingBackendKind::None);
+        assert_eq!(state.capabilities, LightingCaps::default());
+        assert_eq!(state.secondary_rgb, None);
+        assert_eq!(state.last_apply_outcome, None);
     }
 
     #[test]

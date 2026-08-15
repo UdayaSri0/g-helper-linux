@@ -2,14 +2,20 @@ use std::collections::{BTreeSet, VecDeque};
 use std::time::Duration;
 
 use regex::Regex;
-use rog_core::{LightingMode, LightingState, RgbColor, RogError, RogResult};
+use rog_core::{
+    LightingBackendKind, LightingCaps, LightingDirection, LightingMode, LightingSpeed,
+    LightingState, LightingZone, RgbColor, RogError, RogResult,
+};
 use tokio::time::timeout;
 use tracing::debug;
-use zbus::fdo::DBusProxy;
+use zbus::fdo::{DBusProxy, ObjectManagerProxy};
 use zbus::zvariant::OwnedValue;
 use zbus::Proxy;
 
 const SERVICE_CANDIDATES: &[&str] = &["xyz.ljones.Asusd", "org.asuslinux.Daemon"];
+const ASUSD_SERVICE: &str = "xyz.ljones.Asusd";
+const ASUSD_AURA_INTERFACE: &str = "xyz.ljones.Aura";
+const ASUSD_AURA_PATH_PREFIX: &str = "/xyz/ljones/aura/";
 const PROBE_TIMEOUT_MS: u64 = 1200;
 const PROBE_MAX_DEPTH: usize = 3;
 const PROBE_MAX_NODES: usize = 80;
@@ -20,6 +26,143 @@ pub struct AuraEndpoint {
     pub path: String,
     pub interface: String,
 }
+
+/// A DBus ABI which is safe for this provider to call.
+///
+/// Source: <https://github.com/OpenGamingCollective/asusctl>. The ABI was
+/// checked against asusctl/asusd 6.3.8 (commit
+/// 47bf9b134b4e702e0b5e18db7cc66839e42d9035) and the unchanged 6.4.0/current
+/// interface at 1c456fa3dd8fe11287289b4bbee9dd3561afc5a3. Upstream is
+/// MPL-2.0. This is an independently implemented DBus adapter; no upstream
+/// implementation code or HID packet encoder is copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsusdAuraContract {
+    V6_3_8ToV6_4_0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsusdAuraSpeed {
+    Low,
+    Med,
+    High,
+}
+
+impl AsusdAuraSpeed {
+    fn as_wire(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Med => "Med",
+            Self::High => "High",
+        }
+    }
+
+    fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "Low" => Some(Self::Low),
+            "Med" => Some(Self::Med),
+            "High" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsusdAuraDirection {
+    Right,
+    Left,
+    Up,
+    Down,
+}
+
+impl AsusdAuraDirection {
+    fn as_wire(self) -> &'static str {
+        match self {
+            Self::Right => "Right",
+            Self::Left => "Left",
+            Self::Up => "Up",
+            Self::Down => "Down",
+        }
+    }
+
+    fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "Right" => Some(Self::Right),
+            "Left" => Some(Self::Left),
+            "Up" => Some(Self::Up),
+            "Down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsusdAuraZone {
+    All,
+    KeyboardZone1,
+    KeyboardZone2,
+    KeyboardZone3,
+    KeyboardZone4,
+    Logo,
+    LightbarLeft,
+    LightbarRight,
+    Unknown(u32),
+}
+
+impl AsusdAuraZone {
+    fn id(self) -> Option<u32> {
+        match self {
+            Self::All => Some(0),
+            Self::KeyboardZone1 => Some(1),
+            Self::KeyboardZone2 => Some(2),
+            Self::KeyboardZone3 => Some(3),
+            Self::KeyboardZone4 => Some(4),
+            Self::Logo => Some(5),
+            Self::LightbarLeft => Some(6),
+            Self::LightbarRight => Some(7),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    fn from_id(id: u32) -> Self {
+        match id {
+            0 => Self::All,
+            1 => Self::KeyboardZone1,
+            2 => Self::KeyboardZone2,
+            3 => Self::KeyboardZone3,
+            4 => Self::KeyboardZone4,
+            5 => Self::Logo,
+            6 => Self::LightbarLeft,
+            7 => Self::LightbarRight,
+            id => Self::Unknown(id),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::All => "All".to_string(),
+            Self::KeyboardZone1 => "Keyboard Zone 1".to_string(),
+            Self::KeyboardZone2 => "Keyboard Zone 2".to_string(),
+            Self::KeyboardZone3 => "Keyboard Zone 3".to_string(),
+            Self::KeyboardZone4 => "Keyboard Zone 4".to_string(),
+            Self::Logo => "Logo".to_string(),
+            Self::LightbarLeft => "Lightbar Left".to_string(),
+            Self::LightbarRight => "Lightbar Right".to_string(),
+            Self::Unknown(id) => format!("ASUS Aura zone {id}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsusdAuraEffect {
+    pub mode: LightingMode,
+    pub zone: AsusdAuraZone,
+    pub primary: RgbColor,
+    pub secondary: RgbColor,
+    pub speed: AsusdAuraSpeed,
+    pub direction: AsusdAuraDirection,
+}
+
+type AsusdAuraEffectWire = (u32, u32, (u8, u8, u8), (u8, u8, u8), String, String);
 
 impl AuraEndpoint {
     pub fn tag(&self) -> String {
@@ -73,6 +216,7 @@ pub struct AuraProbeDiagnostics {
 pub struct AuraProvider {
     conn: zbus::Connection,
     endpoint: AuraEndpoint,
+    contract: AsusdAuraContract,
     controls: AuraControls,
 }
 
@@ -111,57 +255,61 @@ impl AuraProvider {
                 diagnostics.service_name = Some(service.clone());
             }
 
-            // The root is standardized by DBus. All descendant object paths
-            // are learned from introspection rather than guessed.
-            for root in ["/"] {
-                let walk = walk_introspection(&conn, service, root).await;
-                for path in walk.paths_checked {
-                    push_unique(&mut diagnostics.object_paths_checked, path);
-                }
-                for error in walk.errors {
-                    push_unique(&mut diagnostics.probe_errors, error);
-                }
+            // Current asusd publishes dynamic device paths through the DBus
+            // ObjectManager at `/`. A path obtained only by guessing or by an
+            // unrelated service's introspection tree can never authorize
+            // writes.
+            let walk = if service == ASUSD_SERVICE {
+                walk_managed_objects(&conn, service).await
+            } else {
+                walk_introspection(&conn, service, "/").await
+            };
+            for path in walk.paths_checked {
+                push_unique(&mut diagnostics.object_paths_checked, path);
+            }
+            for error in walk.errors {
+                push_unique(&mut diagnostics.probe_errors, error);
+            }
 
-                let nodes = walk.nodes;
-                for node in nodes {
-                    for iface in parse_interfaces(&node.xml) {
-                        record_interface_diagnostics(&mut diagnostics, service, &node.path, &iface);
+            for node in walk.nodes {
+                for iface in parse_interfaces(&node.xml) {
+                    record_interface_diagnostics(&mut diagnostics, service, &node.path, &iface);
 
-                        let Some(candidate) =
-                            AuraControls::candidate_from_interface(&node.path, &iface)
-                        else {
-                            continue;
-                        };
-                        let Some(controls) =
-                            verified_controls_for_interface(service, &node.path, &iface, candidate)
-                        else {
-                            continue;
-                        };
+                    let Some(candidate) =
+                        AuraControls::candidate_from_interface(&node.path, &iface)
+                    else {
+                        continue;
+                    };
+                    let Some((contract, controls)) =
+                        verified_controls_for_interface(service, &node.path, &iface, candidate)
+                    else {
+                        continue;
+                    };
 
-                        let endpoint = AuraEndpoint {
-                            service: service.clone(),
-                            path: node.path.clone(),
-                            interface: iface.name.clone(),
-                        };
-                        let provider = AuraProvider {
-                            conn: conn.clone(),
-                            endpoint,
-                            controls,
-                        };
+                    let endpoint = AuraEndpoint {
+                        service: service.clone(),
+                        path: node.path.clone(),
+                        interface: iface.name.clone(),
+                    };
+                    let provider = AuraProvider {
+                        conn: conn.clone(),
+                        endpoint,
+                        contract,
+                        controls,
+                    };
 
-                        diagnostics.selected_endpoint = Some(provider.endpoint.endpoint_tag());
-                        diagnostics.verified_interface_detected = true;
-                        notes.push(format!(
-                            "ASUS Aura/RGB lighting exposed by {}.",
-                            provider.endpoint.endpoint_tag()
-                        ));
-                        notes.push(provider.capability_note());
-                        return Ok(AuraProbeResult {
-                            provider: Some(provider),
-                            diagnostics,
-                            notes,
-                        });
-                    }
+                    diagnostics.selected_endpoint = Some(provider.endpoint.endpoint_tag());
+                    diagnostics.verified_interface_detected = true;
+                    notes.push(format!(
+                        "ASUS Aura/RGB lighting exposed by {}.",
+                        provider.endpoint.endpoint_tag()
+                    ));
+                    notes.push(provider.capability_note());
+                    return Ok(AuraProbeResult {
+                        provider: Some(provider),
+                        diagnostics,
+                        notes,
+                    });
                 }
             }
         }
@@ -191,6 +339,10 @@ impl AuraProvider {
         self.endpoint.endpoint_tag()
     }
 
+    pub fn contract(&self) -> AsusdAuraContract {
+        self.contract
+    }
+
     pub fn supports_rgb(&self) -> bool {
         self.controls.can_set_rgb()
     }
@@ -208,7 +360,7 @@ impl AuraProvider {
     }
 
     pub fn supports_speed(&self) -> bool {
-        false
+        matches!(self.contract, AsusdAuraContract::V6_3_8ToV6_4_0)
     }
 
     pub fn supported_zones(&self) -> Vec<String> {
@@ -285,6 +437,58 @@ impl AuraProvider {
             }
         };
 
+        let supported_zones = match self.read_supported_zones(&proxy).await {
+            Ok(zones) => zones,
+            Err(e) => {
+                if !matches!(e, RogError::NotSupported(_)) {
+                    last_error = Some(format!("supported Aura zones read failed: {e}"));
+                }
+                Vec::new()
+            }
+        };
+
+        let effect = match self
+            .read_effect_wire(&proxy)
+            .await
+            .and_then(effect_from_wire)
+        {
+            Ok(effect) => Some(effect),
+            Err(e) => {
+                last_error = Some(format!("structured Aura effect read failed: {e}"));
+                None
+            }
+        };
+        let secondary_rgb = effect.as_ref().map(|effect| effect.secondary);
+        let speed = effect.as_ref().map(|effect| match effect.speed {
+            AsusdAuraSpeed::Low => LightingSpeed::Slow,
+            AsusdAuraSpeed::Med => LightingSpeed::Medium,
+            AsusdAuraSpeed::High => LightingSpeed::Fast,
+        });
+        let direction = effect.as_ref().map(|effect| match effect.direction {
+            AsusdAuraDirection::Right => LightingDirection::Right,
+            AsusdAuraDirection::Left => LightingDirection::Left,
+            AsusdAuraDirection::Up => LightingDirection::Up,
+            AsusdAuraDirection::Down => LightingDirection::Down,
+        });
+        let active_zone = effect
+            .as_ref()
+            .map(|effect| LightingZone::from_backend_label(&effect.zone.label()));
+        let zones = supported_zones
+            .iter()
+            .map(|zone| LightingZone::from_backend_label(zone))
+            .collect::<Vec<_>>();
+        let supported_speeds = vec![
+            LightingSpeed::Slow,
+            LightingSpeed::Medium,
+            LightingSpeed::Fast,
+        ];
+        let supported_directions = vec![
+            LightingDirection::Right,
+            LightingDirection::Left,
+            LightingDirection::Up,
+            LightingDirection::Down,
+        ];
+
         let status = if last_error.is_some() {
             "backend_error"
         } else if self.supports_rgb() {
@@ -297,6 +501,20 @@ impl AuraProvider {
 
         Ok(LightingState {
             backend: "asusd-aura".to_string(),
+            backend_kind: LightingBackendKind::AsusdAura,
+            capabilities: LightingCaps {
+                backend: LightingBackendKind::AsusdAura,
+                supports_brightness: self.controls.supports_brightness(),
+                supports_rgb: self.supports_rgb(),
+                supports_argb: !zones.is_empty(),
+                supports_zones: !zones.is_empty(),
+                supported_modes: supported_modes.clone(),
+                supported_speeds: supported_speeds.clone(),
+                supported_directions,
+                zones,
+                writable: self.controls.can_set_any(),
+                ..LightingCaps::default()
+            },
             device: self.endpoint.endpoint_tag(),
             brightness,
             max_brightness: None,
@@ -306,9 +524,13 @@ impl AuraProvider {
             supported_modes,
             supports_rgb: self.supports_rgb(),
             rgb,
+            secondary_rgb,
             supports_speed: self.supports_speed(),
-            supported_speeds: Vec::new(),
-            supported_zones: self.supported_zones(),
+            supported_speeds: vec!["Low".to_string(), "Med".to_string(), "High".to_string()],
+            speed,
+            direction,
+            supported_zones,
+            active_zone,
             writable: self.controls.can_set_any(),
             direct_writable: self.controls.can_set_any(),
             privileged_writable: false,
@@ -317,22 +539,29 @@ impl AuraProvider {
             fallback_reason: None,
             status: status.to_string(),
             last_error,
+            last_apply_outcome: None,
         })
     }
 
     pub async fn set_mode(&self, mode: LightingMode) -> RogResult<()> {
         let proxy = self.proxy().await?;
-        let supported = self.read_supported_modes(&proxy).await?;
+        let mode_id = mode_to_asusd_id(&mode).ok_or_else(|| {
+            RogError::NotSupported(format!(
+                "Aura lighting mode '{}' has no verified asusd 6.3.8/6.4.0 mode ID.",
+                mode.label()
+            ))
+        })?;
+        let supported = self.read_supported_mode_ids(&proxy).await?;
         if supported.is_empty() {
             return Err(RogError::NotSupported(
                 "Aura backend did not report supported lighting modes; refusing an unverified mode write."
                     .to_string(),
             ));
         }
-        if !supported.iter().any(|m| m.same_user_mode(&mode)) {
+        if !supported.contains(&mode_id) {
             let supported = supported
                 .iter()
-                .map(LightingMode::label)
+                .map(|id| mode_from_asusd_id(*id).label())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(RogError::NotSupported(format!(
@@ -341,33 +570,70 @@ impl AuraProvider {
             )));
         }
 
-        if let Some(prop) = &self.controls.mode_set_property {
-            return set_mode_property(&proxy, prop, &mode).await;
-        }
-        if let Some(method) = &self.controls.mode_set_method {
-            return call_set_mode_method(&proxy, method, &mode).await;
-        }
-
-        Err(RogError::NotSupported(
-            "asusd Aura backend does not expose a writable lighting mode control.".to_string(),
-        ))
+        let mut effect = self.read_effect_wire(&proxy).await?;
+        effect.0 = mode_id;
+        self.write_effect_wire(&proxy, effect).await
     }
 
     pub async fn set_rgb(&self, rgb: RgbColor) -> RogResult<()> {
         let proxy = self.proxy().await?;
-        if let Some(prop) = &self.controls.rgb_set_property {
-            return set_rgb_property(&proxy, prop, rgb).await;
+        let mut effect = self.read_effect_wire(&proxy).await?;
+        effect.2 = (rgb.r, rgb.g, rgb.b);
+        self.write_effect_wire(&proxy, effect).await
+    }
+
+    /// Apply one complete basic Aura effect through the verified structured
+    /// property. Existing `set_mode` and `set_rgb` remain read-modify-write
+    /// helpers for callers which only want to change one field.
+    pub async fn set_effect(&self, effect: AsusdAuraEffect) -> RogResult<()> {
+        let proxy = self.proxy().await?;
+        let mode_id = mode_to_asusd_id(&effect.mode).ok_or_else(|| {
+            RogError::NotSupported(format!(
+                "Aura lighting mode '{}' has no verified asusd mode ID.",
+                effect.mode.label()
+            ))
+        })?;
+        let zone_id = effect.zone.id().ok_or_else(|| {
+            RogError::NotSupported("unknown ASUS Aura zones are read-only".to_string())
+        })?;
+
+        let supported_modes = self.read_supported_mode_ids(&proxy).await?;
+        if !supported_modes.contains(&mode_id) {
+            return Err(RogError::NotSupported(format!(
+                "Aura lighting mode '{}' is not advertised by asusd.",
+                effect.mode.label()
+            )));
         }
-        if let Some(method) = &self.controls.rgb_set_method {
-            return call_set_rgb_method(&proxy, method, rgb).await;
+        if zone_id != 0 {
+            let supported_zones = self.read_supported_zone_ids(&proxy).await?;
+            if !supported_zones.contains(&zone_id) {
+                return Err(RogError::NotSupported(format!(
+                    "Aura zone '{}' is not advertised by asusd.",
+                    effect.zone.label()
+                )));
+            }
         }
 
-        Err(RogError::NotSupported(
-            "RGB colour is not exposed as a writable asusd Aura control.".to_string(),
-        ))
+        self.write_effect_wire(
+            &proxy,
+            (
+                mode_id,
+                zone_id,
+                (effect.primary.r, effect.primary.g, effect.primary.b),
+                (effect.secondary.r, effect.secondary.g, effect.secondary.b),
+                effect.speed.as_wire().to_string(),
+                effect.direction.as_wire().to_string(),
+            ),
+        )
+        .await
     }
 
     pub async fn set_brightness(&self, brightness: u32) -> RogResult<()> {
+        if brightness > 3 {
+            return Err(RogError::InvalidInput(format!(
+                "asusd Aura brightness {brightness} is outside the verified 0..=3 range."
+            )));
+        }
         let proxy = self.proxy().await?;
         if let Some(prop) = &self.controls.brightness_set_property {
             return set_u32_property(&proxy, prop, brightness).await;
@@ -393,40 +659,23 @@ impl AuraProvider {
     }
 
     async fn read_mode(&self, proxy: &Proxy<'_>) -> RogResult<Option<LightingMode>> {
-        let Some(prop) = &self.controls.mode_get_property else {
-            return Err(RogError::NotSupported(
-                "Aura lighting mode is not readable.".to_string(),
-            ));
-        };
-        let value: OwnedValue = proxy
-            .get_property(&prop.name)
-            .await
-            .map_err(|e| map_dbus_error("read Aura lighting mode", e))?;
-        Ok(parse_mode_value(&value))
+        Ok(Some(mode_from_asusd_id(
+            self.read_effect_wire(proxy).await?.0,
+        )))
     }
 
     async fn read_supported_modes(&self, proxy: &Proxy<'_>) -> RogResult<Vec<LightingMode>> {
-        let Some(prop) = &self.controls.supported_modes_property else {
-            return Ok(self.controls.known_supported_modes.clone());
-        };
-        let value: OwnedValue = proxy
-            .get_property(&prop.name)
-            .await
-            .map_err(|e| map_dbus_error("read Aura supported modes", e))?;
-        Ok(parse_mode_list_value(&value))
+        Ok(self
+            .read_supported_mode_ids(proxy)
+            .await?
+            .into_iter()
+            .map(mode_from_asusd_id)
+            .collect())
     }
 
     async fn read_rgb(&self, proxy: &Proxy<'_>) -> RogResult<Option<RgbColor>> {
-        let Some(prop) = &self.controls.rgb_get_property else {
-            return Err(RogError::NotSupported(
-                "Aura RGB colour is not readable.".to_string(),
-            ));
-        };
-        let value: OwnedValue = proxy
-            .get_property(&prop.name)
-            .await
-            .map_err(|e| map_dbus_error("read Aura RGB colour", e))?;
-        Ok(parse_rgb_value(&value))
+        let colour = self.read_effect_wire(proxy).await?.2;
+        Ok(Some(RgbColor::new(colour.0, colour.1, colour.2)))
     }
 
     async fn read_brightness(&self, proxy: &Proxy<'_>) -> RogResult<Option<u32>> {
@@ -440,6 +689,53 @@ impl AuraProvider {
             .await
             .map_err(|e| map_dbus_error("read Aura brightness", e))?;
         Ok(value_to_u32(&value))
+    }
+
+    async fn read_effect_wire(&self, proxy: &Proxy<'_>) -> RogResult<AsusdAuraEffectWire> {
+        proxy
+            .get_property("LedModeData")
+            .await
+            .map_err(|e| map_dbus_error("read structured Aura effect", e))
+    }
+
+    async fn write_effect_wire(
+        &self,
+        proxy: &Proxy<'_>,
+        effect: AsusdAuraEffectWire,
+    ) -> RogResult<()> {
+        validate_effect_wire(&effect)?;
+        proxy
+            .set_property("LedModeData", effect)
+            .await
+            .map_err(|e| map_fdo_error("set structured Aura effect", e))
+    }
+
+    pub async fn read_effect(&self) -> RogResult<AsusdAuraEffect> {
+        let proxy = self.proxy().await?;
+        effect_from_wire(self.read_effect_wire(&proxy).await?)
+    }
+
+    async fn read_supported_mode_ids(&self, proxy: &Proxy<'_>) -> RogResult<Vec<u32>> {
+        proxy
+            .get_property("SupportedBasicModes")
+            .await
+            .map_err(|e| map_dbus_error("read Aura supported modes", e))
+    }
+
+    async fn read_supported_zone_ids(&self, proxy: &Proxy<'_>) -> RogResult<Vec<u32>> {
+        proxy
+            .get_property("SupportedBasicZones")
+            .await
+            .map_err(|e| map_dbus_error("read Aura supported zones", e))
+    }
+
+    async fn read_supported_zones(&self, proxy: &Proxy<'_>) -> RogResult<Vec<String>> {
+        Ok(self
+            .read_supported_zone_ids(proxy)
+            .await?
+            .into_iter()
+            .map(|id| AsusdAuraZone::from_id(id).label())
+            .collect())
     }
 }
 
@@ -553,14 +849,96 @@ fn verified_controls_for_interface(
     service: &str,
     path: &str,
     iface: &InterfaceInfo,
-    candidate: AuraControls,
-) -> Option<AuraControls> {
-    // No installed Aura service exists on the validated target, so there is no
-    // captured interface contract that can safely authorize calls. Add an exact
-    // service/path/interface/signature match here only alongside real
-    // introspection output and contract-specific fixture tests.
-    let _ = (service, path, iface, candidate);
-    None
+    _candidate: AuraControls,
+) -> Option<(AsusdAuraContract, AuraControls)> {
+    if service != ASUSD_SERVICE
+        || iface.name != ASUSD_AURA_INTERFACE
+        || !is_asusd_aura_device_path(path)
+    {
+        return None;
+    }
+
+    let led_mode_data = exact_property(iface, "LedModeData", "(uu(yyy)(yyy)ss)", true, true)?;
+    let led_mode = exact_property(iface, "LedMode", "u", true, true)?;
+    let supported_modes = exact_property(iface, "SupportedBasicModes", "au", true, false)?;
+    exact_property(iface, "SupportedBasicZones", "au", true, false)?;
+
+    // These are part of the current interface. We verify their signatures so
+    // that an Aura-looking but incompatible API cannot become writable. This
+    // provider deliberately has no call site for DirectAddressingRaw.
+    exact_method(iface, "AllModeData", &[], &["a{u(uu(yyy)(yyy)ss)}"])?;
+    exact_method(iface, "DirectAddressingRaw", &["aay"], &[])?;
+
+    let brightness = optional_exact_property(iface, "Brightness", "u", true, true)?;
+    optional_exact_property(iface, "SupportedBrightness", "au", true, false)?;
+
+    let controls = AuraControls {
+        mode_get_property: Some(led_mode_data.clone()),
+        mode_set_property: Some(led_mode),
+        supported_modes_property: Some(supported_modes),
+        rgb_get_property: Some(led_mode_data.clone()),
+        rgb_set_property: Some(led_mode_data),
+        brightness_get_property: brightness.clone(),
+        brightness_set_property: brightness,
+        ..AuraControls::default()
+    };
+
+    Some((AsusdAuraContract::V6_3_8ToV6_4_0, controls))
+}
+
+fn is_asusd_aura_device_path(path: &str) -> bool {
+    path.strip_prefix(ASUSD_AURA_PATH_PREFIX)
+        .is_some_and(|device| !device.is_empty() && !device.contains('/'))
+}
+
+fn exact_property(
+    iface: &InterfaceInfo,
+    name: &str,
+    signature: &str,
+    readable: bool,
+    writable: bool,
+) -> Option<DbusProperty> {
+    iface
+        .properties
+        .iter()
+        .find(|prop| {
+            prop.name == name
+                && prop.signature == signature
+                && prop.readable == readable
+                && prop.writable == writable
+        })
+        .cloned()
+}
+
+fn optional_exact_property(
+    iface: &InterfaceInfo,
+    name: &str,
+    signature: &str,
+    readable: bool,
+    writable: bool,
+) -> Option<Option<DbusProperty>> {
+    let properties = iface
+        .properties
+        .iter()
+        .filter(|prop| prop.name == name)
+        .collect::<Vec<_>>();
+    if properties.is_empty() {
+        return Some(None);
+    }
+    if properties.len() != 1 {
+        return None;
+    }
+    exact_property(iface, name, signature, readable, writable).map(Some)
+}
+
+fn exact_method(
+    iface: &InterfaceInfo,
+    name: &str,
+    input_types: &[&str],
+    output_types: &[&str],
+) -> Option<()> {
+    let method = iface.methods.iter().find(|method| method.name == name)?;
+    (method.input_types == input_types && method.output_types == output_types).then_some(())
 }
 
 #[derive(Debug, Clone)]
@@ -587,6 +965,7 @@ struct InterfaceInfo {
 struct DbusMethod {
     name: String,
     input_types: Vec<String>,
+    output_types: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -654,6 +1033,51 @@ async fn walk_introspection(
         }
     }
 
+    out
+}
+
+async fn walk_managed_objects(conn: &zbus::Connection, service: &str) -> IntrospectionWalk {
+    let mut out = IntrospectionWalk::default();
+    let manager = match ObjectManagerProxy::new(conn, service, "/").await {
+        Ok(manager) => manager,
+        Err(e) => {
+            out.errors
+                .push(format!("build ObjectManager proxy for {service}: {e}"));
+            return out;
+        }
+    };
+    let managed = match timeout(
+        Duration::from_millis(PROBE_TIMEOUT_MS),
+        manager.get_managed_objects(),
+    )
+    .await
+    {
+        Ok(Ok(managed)) => managed,
+        Ok(Err(e)) => {
+            out.errors
+                .push(format!("read ObjectManager objects for {service}: {e}"));
+            return out;
+        }
+        Err(_) => {
+            out.errors
+                .push(format!("ObjectManager query timed out for {service}"));
+            return out;
+        }
+    };
+
+    let mut paths = managed.keys().map(ToString::to_string).collect::<Vec<_>>();
+    paths.sort();
+    paths.truncate(PROBE_MAX_NODES);
+    for path in paths {
+        push_unique(&mut out.paths_checked, format!("{service}:{path}"));
+        match introspect(conn, service, &path).await {
+            Ok(xml) => out.nodes.push(DbusNode { path, xml }),
+            Err(e) => push_unique(
+                &mut out.errors,
+                format!("introspection failed for {service}:{path}: {e}"),
+            ),
+        }
+    }
     out
 }
 
@@ -786,7 +1210,20 @@ fn parse_methods(body: &str) -> Vec<DbusMethod> {
                     }
                 })
                 .collect();
-            Some(DbusMethod { name, input_types })
+            let output_types = arg_re
+                .captures_iter(body)
+                .filter_map(|arg_caps| {
+                    let attrs = arg_caps.get(1)?.as_str();
+                    (attr_value(attrs, "direction").as_deref() == Some("out"))
+                        .then(|| attr_value(attrs, "type"))
+                        .flatten()
+                })
+                .collect();
+            Some(DbusMethod {
+                name,
+                input_types,
+                output_types,
+            })
         })
         .collect()
 }
@@ -936,57 +1373,90 @@ fn supported_modes_from_names(iface: &InterfaceInfo) -> Vec<LightingMode> {
     modes
 }
 
-fn parse_mode_value(value: &OwnedValue) -> Option<LightingMode> {
-    if let Ok(text) = <&str>::try_from(value) {
-        return Some(LightingMode::from_backend_label(text));
-    }
-    None
-}
-
-fn parse_mode_list_value(value: &OwnedValue) -> Vec<LightingMode> {
-    let mut out = Vec::new();
-
-    if let Ok(values) = Vec::<String>::try_from(value.clone()) {
-        for value in values {
-            push_mode(&mut out, LightingMode::from_backend_label(&value));
-        }
-    } else if let Ok(values) = Vec::<OwnedValue>::try_from(value.clone()) {
-        for value in values {
-            if let Some(mode) = parse_mode_value(&value) {
-                push_mode(&mut out, mode);
-            }
-        }
-    }
-
-    out
-}
-
-fn push_mode(out: &mut Vec<LightingMode>, mode: LightingMode) {
-    if !out.iter().any(|existing| existing.same_user_mode(&mode)) {
-        out.push(mode);
+fn mode_from_asusd_id(id: u32) -> LightingMode {
+    match id {
+        0 => LightingMode::Static,
+        1 => LightingMode::Breathe,
+        2 => LightingMode::RainbowCycle,
+        3 => LightingMode::RainbowWave,
+        4 => LightingMode::Other("Stars".to_string()),
+        5 => LightingMode::Other("Rain".to_string()),
+        6 => LightingMode::Other("Highlight".to_string()),
+        7 => LightingMode::Other("Laser".to_string()),
+        8 => LightingMode::Other("Ripple".to_string()),
+        10 => LightingMode::Pulse,
+        11 => LightingMode::Other("Comet".to_string()),
+        12 => LightingMode::Strobe,
+        id => LightingMode::Other(format!("ASUS Aura mode {id}")),
     }
 }
 
-fn parse_rgb_value(value: &OwnedValue) -> Option<RgbColor> {
-    if let Ok(text) = <&str>::try_from(value) {
-        if let Ok(rgb) = RgbColor::parse_hex(text) {
-            return Some(rgb);
-        }
+fn mode_to_asusd_id(mode: &LightingMode) -> Option<u32> {
+    match mode {
+        LightingMode::Static => Some(0),
+        LightingMode::Breathe => Some(1),
+        LightingMode::RainbowCycle | LightingMode::Rainbow => Some(2),
+        LightingMode::RainbowWave | LightingMode::Wave => Some(3),
+        LightingMode::Pulse => Some(10),
+        LightingMode::Strobe => Some(12),
+        LightingMode::Other(name) => match normalize_name(name).as_str() {
+            "rainbowcycle" => Some(2),
+            "rainbowwave" => Some(3),
+            "star" | "stars" => Some(4),
+            "rain" => Some(5),
+            "highlight" => Some(6),
+            "laser" => Some(7),
+            "ripple" => Some(8),
+            "comet" => Some(11),
+            "flash" => Some(12),
+            _ => None,
+        },
+        LightingMode::Off => None,
     }
-    if let Ok((r, g, b)) = <(u8, u8, u8)>::try_from(value.clone()) {
-        return Some(RgbColor::new(r, g, b));
+}
+
+fn validate_effect_wire(effect: &AsusdAuraEffectWire) -> RogResult<()> {
+    if mode_to_asusd_id(&mode_from_asusd_id(effect.0)) != Some(effect.0) {
+        return Err(RogError::NotSupported(format!(
+            "ASUS Aura mode ID {} is not part of the verified contract.",
+            effect.0
+        )));
     }
-    if let Ok(values) = Vec::<u8>::try_from(value.clone()) {
-        if values.len() >= 3 {
-            return Some(RgbColor::new(values[0], values[1], values[2]));
-        }
+    if AsusdAuraZone::from_id(effect.1).id() != Some(effect.1) {
+        return Err(RogError::NotSupported(format!(
+            "ASUS Aura zone ID {} is not part of the verified contract.",
+            effect.1
+        )));
     }
-    value_to_u32(value).map(|packed| {
-        RgbColor::new(
-            ((packed >> 16) & 0xff) as u8,
-            ((packed >> 8) & 0xff) as u8,
-            (packed & 0xff) as u8,
-        )
+    if AsusdAuraSpeed::from_wire(&effect.4).is_none() {
+        return Err(RogError::NotSupported(format!(
+            "ASUS Aura speed '{}' is not Low, Med, or High.",
+            effect.4
+        )));
+    }
+    if AsusdAuraDirection::from_wire(&effect.5).is_none() {
+        return Err(RogError::NotSupported(format!(
+            "ASUS Aura direction '{}' is not Right, Left, Up, or Down.",
+            effect.5
+        )));
+    }
+    Ok(())
+}
+
+fn effect_from_wire(effect: AsusdAuraEffectWire) -> RogResult<AsusdAuraEffect> {
+    let speed = AsusdAuraSpeed::from_wire(&effect.4).ok_or_else(|| {
+        RogError::NotSupported(format!("unknown ASUS Aura speed '{}'.", effect.4))
+    })?;
+    let direction = AsusdAuraDirection::from_wire(&effect.5).ok_or_else(|| {
+        RogError::NotSupported(format!("unknown ASUS Aura direction '{}'.", effect.5))
+    })?;
+    Ok(AsusdAuraEffect {
+        mode: mode_from_asusd_id(effect.0),
+        zone: AsusdAuraZone::from_id(effect.1),
+        primary: RgbColor::new(effect.2 .0, effect.2 .1, effect.2 .2),
+        secondary: RgbColor::new(effect.3 .0, effect.3 .1, effect.3 .2),
+        speed,
+        direction,
     })
 }
 
@@ -1005,97 +1475,6 @@ fn value_to_u32(value: &OwnedValue) -> Option<u32> {
                 .ok()
                 .and_then(|v| u32::try_from(v).ok())
         })
-}
-
-async fn set_mode_property(
-    proxy: &Proxy<'_>,
-    prop: &DbusProperty,
-    mode: &LightingMode,
-) -> RogResult<()> {
-    match prop.signature.as_str() {
-        "s" => proxy
-            .set_property(&prop.name, mode.label())
-            .await
-            .map_err(|e| map_fdo_error("set Aura lighting mode", e)),
-        sig => Err(RogError::NotSupported(format!(
-            "Aura lighting mode property '{}' has unsupported DBus signature '{sig}'.",
-            prop.name
-        ))),
-    }
-}
-
-async fn call_set_mode_method(
-    proxy: &Proxy<'_>,
-    method: &DbusMethod,
-    mode: &LightingMode,
-) -> RogResult<()> {
-    match method.input_types.as_slice() {
-        [sig] if sig == "s" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(mode.label()))
-            .await
-            .map_err(|e| map_dbus_error("call Aura mode setter", e)),
-        _ => Err(RogError::NotSupported(format!(
-            "Aura mode method '{}' has unsupported input signature {:?}.",
-            method.name, method.input_types
-        ))),
-    }
-}
-
-async fn set_rgb_property(proxy: &Proxy<'_>, prop: &DbusProperty, rgb: RgbColor) -> RogResult<()> {
-    match prop.signature.as_str() {
-        "s" => proxy
-            .set_property(&prop.name, rgb.to_hex())
-            .await
-            .map_err(|e| map_fdo_error("set Aura RGB colour", e)),
-        "(yyy)" => proxy
-            .set_property(&prop.name, (rgb.r, rgb.g, rgb.b))
-            .await
-            .map_err(|e| map_fdo_error("set Aura RGB colour", e)),
-        "ay" => proxy
-            .set_property(&prop.name, vec![rgb.r, rgb.g, rgb.b])
-            .await
-            .map_err(|e| map_fdo_error("set Aura RGB colour", e)),
-        "u" => proxy
-            .set_property(&prop.name, rgb_to_u32(rgb))
-            .await
-            .map_err(|e| map_fdo_error("set Aura RGB colour", e)),
-        sig => Err(RogError::NotSupported(format!(
-            "Aura RGB property '{}' has unsupported DBus signature '{sig}'.",
-            prop.name
-        ))),
-    }
-}
-
-async fn call_set_rgb_method(
-    proxy: &Proxy<'_>,
-    method: &DbusMethod,
-    rgb: RgbColor,
-) -> RogResult<()> {
-    match method.input_types.as_slice() {
-        [sig] if sig == "s" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(rgb.to_hex()))
-            .await
-            .map_err(|e| map_dbus_error("call Aura RGB setter", e)),
-        [a, b, c] if a == "y" && b == "y" && c == "y" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(rgb.r, rgb.g, rgb.b))
-            .await
-            .map_err(|e| map_dbus_error("call Aura RGB setter", e)),
-        [a, b, c] if a == "u" && b == "u" && c == "u" => proxy
-            .call::<_, _, ()>(
-                method.name.as_str(),
-                &(rgb.r as u32, rgb.g as u32, rgb.b as u32),
-            )
-            .await
-            .map_err(|e| map_dbus_error("call Aura RGB setter", e)),
-        [sig] if sig == "u" => proxy
-            .call::<_, _, ()>(method.name.as_str(), &(rgb_to_u32(rgb)))
-            .await
-            .map_err(|e| map_dbus_error("call Aura RGB setter", e)),
-        _ => Err(RogError::NotSupported(format!(
-            "Aura RGB method '{}' has unsupported input signature {:?}.",
-            method.name, method.input_types
-        ))),
-    }
 }
 
 async fn set_u32_property(proxy: &Proxy<'_>, prop: &DbusProperty, value: u32) -> RogResult<()> {
@@ -1140,10 +1519,6 @@ async fn call_set_u32_method(proxy: &Proxy<'_>, method: &DbusMethod, value: u32)
     }
 }
 
-fn rgb_to_u32(rgb: RgbColor) -> u32 {
-    ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32
-}
-
 fn push_unique(values: &mut Vec<String>, value: String) {
     if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
         values.push(value);
@@ -1180,66 +1555,92 @@ fn classify_error(ctx: &str, msg: &str) -> RogError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn introspection_parser_reports_candidate_without_authorizing_controls() {
-        let xml = r#"
-            <node>
-              <interface name="xyz.ljones.Aura">
-                <method name="SetLedMode">
-                  <arg name="mode" type="y" direction="in"/>
-                </method>
-                <method name="SetLedColour">
-                  <arg name="r" type="y" direction="in"/>
-                  <arg name="g" type="y" direction="in"/>
-                  <arg name="b" type="y" direction="in"/>
-                </method>
-                <method name="SetEffectSpeed">
-                  <arg name="speed" type="s" direction="in"/>
-                </method>
-                <method name="SetBrightness">
-                  <arg name="brightness" type="u" direction="in"/>
-                </method>
-                <property name="LedMode" type="s" access="readwrite"/>
-                <property name="LedColour" type="(yyy)" access="readwrite"/>
-                <property name="SupportedLedModes" type="as" access="read"/>
-                <property name="SupportedZones" type="as" access="read"/>
-              </interface>
-            </node>
-        "#;
+    const ASUSD_AURA_XML: &str = include_str!("fixtures/asusd-aura-6.3.8.xml");
 
+    fn match_contract(
+        service: &str,
+        path: &str,
+        xml: &str,
+    ) -> Option<(AsusdAuraContract, AuraControls)> {
         let iface = parse_interfaces(xml).remove(0);
-        let controls = AuraControls::candidate_from_interface("/xyz/ljones", &iface).unwrap();
+        let candidate = AuraControls::candidate_from_interface(path, &iface)?;
+        verified_controls_for_interface(service, path, &iface, candidate)
+    }
 
+    #[test]
+    fn captured_asusd_6_3_8_contract_is_writable() {
+        let (contract, controls) =
+            match_contract(ASUSD_SERVICE, "/xyz/ljones/aura/19b6_3_1", ASUSD_AURA_XML).unwrap();
+        assert_eq!(contract, AsusdAuraContract::V6_3_8ToV6_4_0);
         assert!(controls.can_set_rgb());
         assert!(controls.supports_modes());
-        assert!(controls.mode_set_method.is_some());
+        assert!(controls.can_set_brightness());
         assert!(controls.supported_modes_property.is_some());
-        assert!(verified_controls_for_interface(
-            "xyz.ljones.Asusd",
-            "/xyz/ljones",
-            &iface,
-            controls
+    }
+
+    #[test]
+    fn wrong_service_path_and_interface_are_diagnostic_only() {
+        assert!(match_contract(
+            "org.asuslinux.Daemon",
+            "/xyz/ljones/aura/19b6_3_1",
+            ASUSD_AURA_XML,
         )
         .is_none());
+        assert!(match_contract(ASUSD_SERVICE, "/xyz/ljones/Aura", ASUSD_AURA_XML).is_none());
+        assert!(match_contract(ASUSD_SERVICE, "/xyz/ljones/aura", ASUSD_AURA_XML).is_none());
+
+        let wrong_interface = ASUSD_AURA_XML.replace("xyz.ljones.Aura", "xyz.ljones.Aura2");
+        assert!(
+            match_contract(ASUSD_SERVICE, "/xyz/ljones/aura/19b6_3_1", &wrong_interface,).is_none()
+        );
+    }
+
+    #[test]
+    fn wrong_property_method_access_and_signature_are_diagnostic_only() {
+        let cases = [
+            ASUSD_AURA_XML.replace("name=\"LedModeData\"", "name=\"ModeData\""),
+            ASUSD_AURA_XML.replace(
+                "name=\"DirectAddressingRaw\"",
+                "name=\"DirectAddressingBytes\"",
+            ),
+            ASUSD_AURA_XML.replace(
+                "name=\"LedModeData\" type=\"(uu(yyy)(yyy)ss)\" access=\"readwrite\"",
+                "name=\"LedModeData\" type=\"(uu(yyy)(yyy)ss)\" access=\"read\"",
+            ),
+            ASUSD_AURA_XML.replace("type=\"(uu(yyy)(yyy)ss)\"", "type=\"(u(yyy)ss)\""),
+            ASUSD_AURA_XML.replace(
+                "type=\"aay\" direction=\"in\"",
+                "type=\"ay\" direction=\"in\"",
+            ),
+        ];
+        for xml in cases {
+            assert!(match_contract(ASUSD_SERVICE, "/xyz/ljones/aura/19b6_3_1", &xml,).is_none());
+        }
+    }
+
+    #[test]
+    fn captured_contract_remains_visible_in_diagnostics() {
+        let iface = parse_interfaces(ASUSD_AURA_XML).remove(0);
 
         let mut diagnostics = AuraProbeDiagnostics::default();
-        record_interface_diagnostics(&mut diagnostics, "xyz.ljones.Asusd", "/xyz/ljones", &iface);
-        assert!(diagnostics
-            .speed_methods_detected
-            .iter()
-            .any(|method| method.contains("SetEffectSpeed(s)")));
+        record_interface_diagnostics(
+            &mut diagnostics,
+            ASUSD_SERVICE,
+            "/xyz/ljones/aura/19b6_3_1",
+            &iface,
+        );
         assert!(diagnostics
             .zone_properties_detected
             .iter()
-            .any(|property| property.contains("SupportedZones:as:read")));
+            .any(|property| property.contains("SupportedBasicZones:au:read")));
         assert!(diagnostics
-            .brightness_methods_detected
+            .brightness_properties_detected
             .iter()
-            .any(|method| method.contains("SetBrightness(u)")));
+            .any(|property| property.contains("Brightness:u:readwrite")));
         assert!(diagnostics
             .mode_properties_detected
             .iter()
-            .any(|property| property.contains("SupportedLedModes:as:read")));
+            .any(|property| property.contains("SupportedBasicModes:au:read")));
         assert!(!diagnostics.verified_interface_detected);
     }
 
@@ -1259,7 +1660,37 @@ mod tests {
     }
 
     #[test]
-    fn numeric_mode_ids_are_not_invented_without_a_verified_contract() {
-        assert_eq!(parse_mode_value(&OwnedValue::from(1_u32)), None);
+    fn unknown_numeric_mode_ids_are_not_writable() {
+        assert_eq!(
+            mode_to_asusd_id(&mode_from_asusd_id(99)),
+            None,
+            "unknown numeric IDs must remain diagnostic-only"
+        );
+    }
+
+    #[test]
+    fn current_mode_zone_speed_and_direction_maps_are_exact() {
+        assert_eq!(mode_to_asusd_id(&LightingMode::Static), Some(0));
+        assert_eq!(mode_to_asusd_id(&LightingMode::Breathe), Some(1));
+        assert_eq!(mode_to_asusd_id(&LightingMode::RainbowCycle), Some(2));
+        assert_eq!(mode_to_asusd_id(&LightingMode::RainbowWave), Some(3));
+        assert_eq!(mode_to_asusd_id(&LightingMode::Pulse), Some(10));
+        assert_eq!(mode_to_asusd_id(&LightingMode::Strobe), Some(12));
+        assert_eq!(mode_to_asusd_id(&LightingMode::Off), None);
+        assert_eq!(AsusdAuraZone::from_id(6), AsusdAuraZone::LightbarLeft);
+        assert_eq!(AsusdAuraZone::from_id(7), AsusdAuraZone::LightbarRight);
+        assert_eq!(AsusdAuraSpeed::from_wire("Med"), Some(AsusdAuraSpeed::Med));
+        assert_eq!(
+            AsusdAuraDirection::from_wire("Down"),
+            Some(AsusdAuraDirection::Down)
+        );
+    }
+
+    #[test]
+    fn structured_effect_update_rejects_unverified_strings() {
+        let bad_speed = (0, 0, (1, 2, 3), (4, 5, 6), "Medium".into(), "Right".into());
+        assert!(validate_effect_wire(&bad_speed).is_err());
+        let bad_direction = (0, 0, (1, 2, 3), (4, 5, 6), "Med".into(), "Clockwise".into());
+        assert!(validate_effect_wire(&bad_direction).is_err());
     }
 }

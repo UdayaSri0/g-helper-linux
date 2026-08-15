@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -8,15 +10,23 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use rog_core::{
     require_authorized, validate_polkit_action, CpuControlRequest, CpuPowerMode, FanCurve,
-    FanCurvePolicy, FanDomain, FanPoint, PrivilegedCapabilities, PrivilegedError,
-    PrivilegedErrorCode, RogError, POLKIT_ACTION_BATTERY_CONTROL, POLKIT_ACTION_CPU_CONTROL,
-    POLKIT_ACTION_FANS_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE,
-    PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
+    FanCurvePolicy, FanDomain, FanPoint, LightingApplyRequest, LightingDirection, LightingMode,
+    LightingSpeed, PrivilegedCapabilities, PrivilegedError, PrivilegedErrorCode, RgbColor,
+    RogError, POLKIT_ACTION_BATTERY_CONTROL, POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_FANS_CONTROL,
+    POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME,
+    PRIVILEGED_DBUS_PATH,
+};
+use rog_providers::aura_hid::{
+    encode_g615jm_effect, match_g615jm, parse_output_report_sizes, scan_native_aura_hid,
+    AuraHidIdentity, AURA_OUTPUT_REPORT_BYTES, G615JM_AURA_USB_INTERFACE,
+    G615JM_REPORT_DESCRIPTOR_SHA256,
 };
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::hwmon::{HwmonTelemetryProvider, ASUS_WMI_CURVE_POINTS};
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
+use sha2::{Digest, Sha256};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::interval;
 use tracing::{info, warn};
 use zbus::message::Header;
@@ -28,6 +38,21 @@ const POLKIT_NAME: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 const FAN_SAFETY_MARKER: &str = "/run/rog-helper/fan-control-active";
+const AURA_DEVICE_ALIAS: &str = "/dev/rog-helper-aura";
+const AURA_MIN_WRITE_INTERVAL: Duration = Duration::from_millis(250);
+const AURA_REPORT_TIMEOUT: Duration = Duration::from_millis(250);
+const AURA_OPERATION_TIMEOUT: Duration = Duration::from_secs(1);
+const DBUS_DAEMON_NAME: &str = "org.freedesktop.DBus";
+const DBUS_DAEMON_PATH: &str = "/org/freedesktop/DBus";
+const DBUS_DAEMON_INTERFACE: &str = "org.freedesktop.DBus";
+const AURA_OWNER_NAMES: &[&str] = &["xyz.ljones.Asusd", "org.asuslinux.Daemon"];
+
+#[derive(Debug, Default)]
+struct NativeAuraControlState {
+    last_request: Option<LightingApplyRequest>,
+    last_device_generation: Option<(u64, u64)>,
+    last_attempt: Option<Instant>,
+}
 
 #[derive(Debug, Clone)]
 struct PrivilegedService {
@@ -37,6 +62,7 @@ struct PrivilegedService {
     keyboard_backlight: Option<KbdBacklightSysfs>,
     battery_charge_limit: Option<BatteryChargeLimitControl>,
     fan_safety_marker: PathBuf,
+    native_aura: Arc<AsyncMutex<NativeAuraControlState>>,
 }
 
 impl PrivilegedService {
@@ -51,6 +77,7 @@ impl PrivilegedService {
                 .ok()
                 .flatten(),
             fan_safety_marker: PathBuf::from(FAN_SAFETY_MARKER),
+            native_aura: Arc::new(AsyncMutex::new(NativeAuraControlState::default())),
         }
     }
 
@@ -307,6 +334,61 @@ impl PrivilegedService {
         keyboard
             .set_approved_brightness(level)
             .map_err(map_lighting_error)
+    }
+
+    /// Apply one validated factory Aura effect to the single verified target.
+    ///
+    /// No device path, report ID, command ID, zone, or packet bytes cross D-Bus.
+    // The five scalar effect fields are intentionally separate in the stable
+    // D-Bus ABI; the remaining parameters are zbus-injected call context.
+    #[allow(clippy::too_many_arguments)]
+    async fn set_aura_effect(
+        &self,
+        mode: &str,
+        primary_rgb_hex: &str,
+        secondary_rgb_hex: &str,
+        speed: &str,
+        direction: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<bool> {
+        let request =
+            parse_native_aura_request(mode, primary_rgb_hex, secondary_rgb_hex, speed, direction)
+                .map_err(map_lighting_error)?;
+        let reports = encode_g615jm_effect(&request).map_err(map_lighting_error)?;
+
+        reject_if_asusd_owned(connection).await?;
+        require_single_supported_aura_device().map_err(map_lighting_error)?;
+        self.authorize_lighting(connection, &header).await?;
+
+        let mut state = self.native_aura.lock().await;
+        reject_if_asusd_owned(connection).await?;
+        let (file, generation) = open_and_validate_aura_device().map_err(map_lighting_error)?;
+
+        if state.last_request.as_ref() == Some(&request)
+            && state.last_device_generation == Some(generation)
+        {
+            return Ok(false);
+        }
+        if state
+            .last_attempt
+            .is_some_and(|attempt| attempt.elapsed() < AURA_MIN_WRITE_INTERVAL)
+        {
+            return Err(map_lighting_error(RogError::TemporarilyUnavailable(
+                "Aura lighting requests are limited to one distinct update every 250 ms"
+                    .to_string(),
+            )));
+        }
+        state.last_attempt = Some(Instant::now());
+
+        let operation_started = Instant::now();
+        for report in reports.ordered() {
+            reject_if_asusd_owned(connection).await?;
+            write_aura_report(&file, report, operation_started).map_err(map_lighting_error)?;
+        }
+        state.last_request = Some(request);
+        state.last_device_generation = Some(generation);
+        Ok(true)
     }
 
     async fn set_battery_charge_limit(
@@ -588,30 +670,350 @@ fn map_fan_error(error: RogError) -> fdo::Error {
     map_privileged_error(privileged)
 }
 
+fn parse_native_aura_request(
+    mode: &str,
+    primary_rgb_hex: &str,
+    secondary_rgb_hex: &str,
+    speed: &str,
+    direction: &str,
+) -> rog_core::RogResult<LightingApplyRequest> {
+    let mode =
+        match mode {
+            "static" => LightingMode::Static,
+            "breathe" => LightingMode::Breathe,
+            "rainbow-cycle" => LightingMode::RainbowCycle,
+            "rainbow-wave" => LightingMode::RainbowWave,
+            "pulse" => LightingMode::Pulse,
+            _ => return Err(RogError::InvalidInput(
+                "native Aura mode must be static, breathe, rainbow-cycle, rainbow-wave, or pulse"
+                    .to_string(),
+            )),
+        };
+    let parse_colour = |value: &str, field: &str| -> rog_core::RogResult<Option<RgbColor>> {
+        if value.is_empty() {
+            return Ok(None);
+        }
+        if value.len() != 7 || !value.starts_with('#') {
+            return Err(RogError::InvalidInput(format!(
+                "{field} must be empty or use exact #RRGGBB form"
+            )));
+        }
+        RgbColor::parse_hex(value).map(Some)
+    };
+    let speed = match speed {
+        "" => None,
+        "slow" => Some(LightingSpeed::Slow),
+        "medium" => Some(LightingSpeed::Medium),
+        "fast" => Some(LightingSpeed::Fast),
+        _ => {
+            return Err(RogError::InvalidInput(
+                "native Aura speed must be empty, slow, medium, or fast".to_string(),
+            ))
+        }
+    };
+    let direction = match direction {
+        "" => None,
+        "right" => Some(LightingDirection::Right),
+        "left" => Some(LightingDirection::Left),
+        "up" => Some(LightingDirection::Up),
+        "down" => Some(LightingDirection::Down),
+        _ => {
+            return Err(RogError::InvalidInput(
+                "native Aura direction must be empty, right, left, up, or down".to_string(),
+            ))
+        }
+    };
+    let request = LightingApplyRequest {
+        mode,
+        primary_rgb: parse_colour(primary_rgb_hex, "primary_rgb_hex")?,
+        secondary_rgb: parse_colour(secondary_rgb_hex, "secondary_rgb_hex")?,
+        brightness: None,
+        speed,
+        direction,
+        zone: None,
+        apply_to_all: false,
+    };
+    request.validate_against(&rog_providers::aura_hid::g615jm_lighting_caps())?;
+    Ok(request)
+}
+
+async fn reject_if_asusd_owned(connection: &Connection) -> fdo::Result<()> {
+    let bus = Proxy::new(
+        connection,
+        DBUS_DAEMON_NAME,
+        DBUS_DAEMON_PATH,
+        DBUS_DAEMON_INTERFACE,
+    )
+    .await
+    .map_err(|error| {
+        map_lighting_error(RogError::TemporarilyUnavailable(format!(
+            "could not check ASUS lighting ownership: {error}"
+        )))
+    })?;
+    for name in AURA_OWNER_NAMES {
+        let owned: bool = bus.call("NameHasOwner", &(*name,)).await.map_err(|error| {
+            map_lighting_error(RogError::TemporarilyUnavailable(format!(
+                "could not check whether {name} owns the Aura device: {error}"
+            )))
+        })?;
+        if owned {
+            return Err(map_lighting_error(RogError::TemporarilyUnavailable(
+                format!(
+                    "native Aura HID is suppressed because {name} is active and may own the device"
+                ),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn require_single_supported_aura_device() -> rog_core::RogResult<()> {
+    let scan = scan_native_aura_hid();
+    let supported = scan
+        .devices
+        .iter()
+        .filter(|device| device.protocol.is_some())
+        .collect::<Vec<_>>();
+    if supported.len() != 1 {
+        return Err(RogError::NotSupported(format!(
+            "native Aura requires exactly one verified G615JM HID interface; found {}",
+            supported.len()
+        )));
+    }
+    if supported[0].diagnostics.driver.as_deref() != Some("asus") {
+        return Err(RogError::NotSupported(
+            "the verified Aura HID interface is not bound to the expected ASUS HID driver"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct HidrawDevInfo {
+    bustype: u32,
+    vendor: i16,
+    product: i16,
+}
+
+#[repr(C)]
+struct HidrawReportDescriptor {
+    size: u32,
+    value: [u8; 4096],
+}
+
+impl Default for HidrawReportDescriptor {
+    fn default() -> Self {
+        Self {
+            size: 0,
+            value: [0; 4096],
+        }
+    }
+}
+
+const HIDIOCGRDESCSIZE: libc::c_ulong = 0x8004_4801;
+const HIDIOCGRDESC: libc::c_ulong = 0x9004_4802;
+const HIDIOCGRAWINFO: libc::c_ulong = 0x8008_4803;
+const BUS_USB: u32 = 0x03;
+
+fn open_and_validate_aura_device() -> rog_core::RogResult<(File, (u64, u64))> {
+    let scan = scan_native_aura_hid();
+    let supported = scan
+        .devices
+        .iter()
+        .filter(|device| device.protocol.is_some())
+        .collect::<Vec<_>>();
+    if supported.len() != 1 {
+        return Err(RogError::NotSupported(format!(
+            "native Aura requires exactly one verified HID interface; found {}",
+            supported.len()
+        )));
+    }
+    let device = supported[0];
+    if device.diagnostics.driver.as_deref() != Some("asus") {
+        return Err(RogError::NotSupported(
+            "Aura HID driver identity changed before write".to_string(),
+        ));
+    }
+    let hidraw_name = &device.diagnostics.hidraw_name;
+    let sysfs_entry = PathBuf::from("/sys/class/hidraw").join(hidraw_name);
+    let dev_numbers = fs::read_to_string(sysfs_entry.join("dev")).map_err(|error| {
+        RogError::TemporarilyUnavailable(format!("could not read Aura hidraw dev_t: {error}"))
+    })?;
+    let (major, minor) = dev_numbers.trim().split_once(':').ok_or_else(|| {
+        RogError::Unexpected("Aura hidraw dev_t has an invalid format".to_string())
+    })?;
+    let major = major
+        .parse::<u64>()
+        .map_err(|error| RogError::Unexpected(format!("Aura hidraw major is invalid: {error}")))?;
+    let minor = minor
+        .parse::<u64>()
+        .map_err(|error| RogError::Unexpected(format!("Aura hidraw minor is invalid: {error}")))?;
+    let expected_rdev = libc::makedev(major as _, minor as _);
+    let sysfs_inode = fs::metadata(sysfs_entry.join("device"))
+        .map_err(|error| {
+            RogError::TemporarilyUnavailable(format!(
+                "could not stat the Aura HID sysfs device: {error}"
+            ))
+        })?
+        .ino();
+
+    let file = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(AURA_DEVICE_ALIAS)
+        .map_err(|error| {
+            RogError::PermissionDenied(format!(
+                "could not open the root-only Aura device alias {AURA_DEVICE_ALIAS}: {error}"
+            ))
+        })?;
+    let metadata = file.metadata().map_err(|error| {
+        RogError::TemporarilyUnavailable(format!("could not stat the opened Aura device: {error}"))
+    })?;
+    if metadata.rdev() != expected_rdev {
+        return Err(RogError::NotSupported(
+            "the Aura device alias does not reference the verified hidraw interface".to_string(),
+        ));
+    }
+
+    revalidate_open_aura_fd(&file, scan.board_name.as_deref().unwrap_or(""))?;
+    Ok((file, (metadata.rdev(), sysfs_inode)))
+}
+
+fn revalidate_open_aura_fd(file: &File, board_name: &str) -> rog_core::RogResult<()> {
+    let fd = file.as_raw_fd();
+    let mut info = HidrawDevInfo::default();
+    let mut descriptor_size: libc::c_int = 0;
+    // SAFETY: each ioctl is the Linux hidraw read-only query for the declared,
+    // correctly sized output structure and the file descriptor remains open.
+    let info_result = unsafe { libc::ioctl(fd, HIDIOCGRAWINFO, &mut info) };
+    // SAFETY: see the safety note above; this writes one c_int.
+    let size_result = unsafe { libc::ioctl(fd, HIDIOCGRDESCSIZE, &mut descriptor_size) };
+    if info_result < 0 || size_result < 0 {
+        return Err(RogError::NotSupported(
+            "the opened Aura alias is not a queryable hidraw device".to_string(),
+        ));
+    }
+    if info.bustype != BUS_USB || info.vendor as u16 != 0x0b05 || info.product as u16 != 0x19b6 {
+        return Err(RogError::NotSupported(
+            "the opened hidraw device identity does not match ASUS 0b05:19b6".to_string(),
+        ));
+    }
+    if !(1..=4096).contains(&descriptor_size) {
+        return Err(RogError::NotSupported(format!(
+            "the opened hidraw descriptor size {descriptor_size} is invalid"
+        )));
+    }
+    let mut descriptor = HidrawReportDescriptor {
+        size: descriptor_size as u32,
+        ..HidrawReportDescriptor::default()
+    };
+    // SAFETY: HIDIOCGRDESC fills at most descriptor.size bytes of the 4096-byte
+    // inline buffer while the source file descriptor remains open.
+    let descriptor_result = unsafe { libc::ioctl(fd, HIDIOCGRDESC, &mut descriptor) };
+    if descriptor_result < 0 || descriptor.size as usize > descriptor.value.len() {
+        return Err(RogError::NotSupported(
+            "the opened Aura hidraw report descriptor could not be verified".to_string(),
+        ));
+    }
+    let bytes = &descriptor.value[..descriptor.size as usize];
+    let hash = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if hash != G615JM_REPORT_DESCRIPTOR_SHA256 {
+        return Err(RogError::NotSupported(
+            "the opened Aura hidraw descriptor hash is not allow-listed".to_string(),
+        ));
+    }
+    let identity = AuraHidIdentity {
+        vendor_id: info.vendor as u16,
+        product_id: info.product as u16,
+        interface_number: G615JM_AURA_USB_INTERFACE,
+        board_name: board_name.to_string(),
+        report_descriptor_sha256: hash,
+        output_report_payload_bytes: parse_output_report_sizes(bytes).map_err(|error| {
+            RogError::NotSupported(format!("invalid Aura HID report descriptor: {error}"))
+        })?,
+    };
+    let matched = match_g615jm(&identity);
+    if !matched.is_supported() {
+        return Err(RogError::NotSupported(format!(
+            "the opened Aura HID interface no longer matches: {}",
+            matched.rejection_reasons.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+fn write_aura_report(
+    file: &File,
+    report: &[u8; AURA_OUTPUT_REPORT_BYTES],
+    operation_started: Instant,
+) -> rog_core::RogResult<()> {
+    let operation_remaining = AURA_OPERATION_TIMEOUT
+        .checked_sub(operation_started.elapsed())
+        .ok_or_else(|| {
+            RogError::TemporarilyUnavailable("Aura HID operation timed out".to_string())
+        })?;
+    let timeout = operation_remaining.min(AURA_REPORT_TIMEOUT);
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let mut pollfd = libc::pollfd {
+        fd: file.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: pollfd references one initialized descriptor for the duration of
+    // the call; the owned File keeps that descriptor alive.
+    let poll_result = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    if poll_result <= 0 || pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(RogError::TemporarilyUnavailable(
+            "Aura HID device did not become writable before the deadline".to_string(),
+        ));
+    }
+    // SAFETY: report is an initialized 64-byte buffer and the File owns a
+    // writable hidraw descriptor. A single write is intentionally not retried.
+    let written = unsafe {
+        libc::write(
+            file.as_raw_fd(),
+            report.as_ptr().cast::<libc::c_void>(),
+            report.len(),
+        )
+    };
+    if written != report.len() as isize {
+        return Err(RogError::TransientFailure(format!(
+            "Aura HID report write returned {written}, expected {}",
+            report.len()
+        )));
+    }
+    Ok(())
+}
+
 fn map_lighting_error(error: RogError) -> fdo::Error {
     let privileged = match error {
         RogError::NotSupported(_) => PrivilegedError::new(
             PrivilegedErrorCode::NotSupported,
-            "no approved ASUS keyboard brightness endpoint is available",
+            "no approved ASUS lighting endpoint is available",
         ),
         RogError::InvalidInput(message) => {
             PrivilegedError::new(PrivilegedErrorCode::InvalidInput, message)
         }
         RogError::PermissionDenied(_) => PrivilegedError::new(
             PrivilegedErrorCode::PermissionDenied,
-            "the approved keyboard brightness endpoint could not be written",
+            "the approved ASUS lighting endpoint could not be written",
         ),
         RogError::TemporarilyUnavailable(_) => PrivilegedError::new(
             PrivilegedErrorCode::HardwareUnavailable,
-            "the keyboard backlight is temporarily unavailable",
+            "the ASUS lighting hardware is temporarily unavailable",
         ),
         RogError::DependencyMissing(_) | RogError::TransientFailure(_) => PrivilegedError::new(
             PrivilegedErrorCode::BackendFailure,
-            "the privileged keyboard backlight backend is unavailable",
+            "the privileged ASUS lighting backend is unavailable",
         ),
         RogError::Unexpected(_) => PrivilegedError::new(
             PrivilegedErrorCode::Unexpected,
-            "the keyboard brightness write or readback failed",
+            "the ASUS lighting operation failed safely",
         ),
     };
     map_privileged_error(privileged)
@@ -788,6 +1190,21 @@ mod tests {
         assert!(validate_polkit_action(POLKIT_ACTION_FANS_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_LIGHTING_CONTROL).is_ok());
         assert!(validate_polkit_action("io.github.roghelper.system.configure").is_err());
+    }
+
+    #[test]
+    fn native_aura_request_accepts_only_high_level_verified_fields() {
+        let request = parse_native_aura_request("breathe", "#FF0000", "#0000FF", "medium", "")
+            .expect("verified request");
+        assert_eq!(request.mode, LightingMode::Breathe);
+        assert_eq!(request.primary_rgb, Some(RgbColor::new(255, 0, 0)));
+        assert_eq!(request.secondary_rgb, Some(RgbColor::new(0, 0, 255)));
+
+        assert!(parse_native_aura_request("strobe", "#FF0000", "", "", "").is_err());
+        assert!(parse_native_aura_request("static", "FF0000", "", "", "").is_err());
+        assert!(parse_native_aura_request("static", "#FF0000", "", "fast", "").is_err());
+        assert!(parse_native_aura_request("rainbow-cycle", "", "#0000FF", "medium", "").is_err());
+        assert!(parse_native_aura_request("rainbow-wave", "", "", "medium", "clockwise").is_err());
     }
 
     #[cfg(unix)]
