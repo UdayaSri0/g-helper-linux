@@ -77,6 +77,10 @@ File: `crates/rog-providers/src/aura_hid.rs`
   - modes are Static, Breathe, Rainbow Cycle, Rainbow Wave, and Pulse
   - no reliable effect-state readback; success means the fixed three-report write was accepted
   - no other ASUS PID, interface, descriptor, or model is writable
+  - the exact `asus` HID driver is part of the matcher, not merely a diagnostic field; the helper
+    revalidates it again on the opened file descriptor
+  - ROG Helper's own `io.github.roghelper.Privileged` service is excluded from asusd/Aura service
+    candidate discovery
 
 ## `supergfx`
 

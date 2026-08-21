@@ -5,13 +5,13 @@
     "semantic_hash": ""
   },
   "crates/rog-cli/src/main.rs": {
-    "mtime": 1786641454.8440034,
-    "ast_hash": "03708ba143500762ab42e9149eac27cc",
+    "mtime": 1787307512.3047647,
+    "ast_hash": "56b0352997c00909ded43a0fee58d1ca",
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
-    "mtime": 1786656064.916536,
-    "ast_hash": "08ed2217e774f73240c6dd5f3ca5234a",
+    "mtime": 1787306699.038227,
+    "ast_hash": "3201349e02839b7b4ee35dfbff24425f",
     "semantic_hash": ""
   },
   "crates/rog-core/src/error.rs": {
@@ -25,8 +25,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/model.rs": {
-    "mtime": 1786642541.2250538,
-    "ast_hash": "8f581d8b344c46bace10fdd14e3f9ef3",
+    "mtime": 1787303958.7664125,
+    "ast_hash": "54756e477879cb0689d7bcef4ab67aaf",
     "semantic_hash": ""
   },
   "crates/rog-core/src/policy.rs": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1786656509.955464,
-    "ast_hash": "cd652b06dcbaad52e165ccef5020cf37",
+    "mtime": 1787306888.192435,
+    "ast_hash": "c4da4dcd9de776e1ebd7ca15eb3f301f",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -45,8 +45,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/aura.rs": {
-    "mtime": 1786640347.5979323,
-    "ast_hash": "506a90ddb986c4e3dfc6f91abb2042bd",
+    "mtime": 1787306732.940622,
+    "ast_hash": "303a310aa92fe72e06f810b2a56b5ecb",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/cpu.rs": {
@@ -70,8 +70,8 @@
     "semantic_hash": ""
   },
   "crates/rog-providers/src/lib.rs": {
-    "mtime": 1786562372.8950331,
-    "ast_hash": "98e28cf3c56fd3e9fa1ae0d78ab015f1",
+    "mtime": 1787303958.7723885,
+    "ast_hash": "11bc675d63ded4ec7063b58a2d5b3db8",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/lighting.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1786656689.8949792,
-    "ast_hash": "0b378cb43f6ee00d250d513d34a622ee",
+    "mtime": 1787307645.2413309,
+    "ast_hash": "5e5dc216b3cad89303ea27cc9cd02147",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -130,13 +130,13 @@
     "semantic_hash": ""
   },
   "packaging/debian/postinst": {
-    "mtime": 1786635587.2508898,
-    "ast_hash": "791111015b095d81ef4d8e18b94cc6e4",
+    "mtime": 1787307084.414734,
+    "ast_hash": "5591077f3ae59e2c65702ce6092068f5",
     "semantic_hash": ""
   },
   "packaging/debian/postrm": {
-    "mtime": 1786635936.2418973,
-    "ast_hash": "68a7a2a81e931d210ab7714a9e569a39",
+    "mtime": 1787307084.4167337,
+    "ast_hash": "cdb8057bb7cd9efbe49c9aa50dad9cbf",
     "semantic_hash": ""
   },
   "packaging/flatpak/cargo-sources.json": {
@@ -155,8 +155,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/build-deb.sh": {
-    "mtime": 1786635587.24889,
-    "ast_hash": "c65c3fa03a0eb13dcf3774317167bf79",
+    "mtime": 1787307200.9791024,
+    "ast_hash": "dde139f8827bb55ef5ca56342755eaa8",
     "semantic_hash": ""
   },
   "packaging/scripts/build-flatpak.sh": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/build-rpm.sh": {
-    "mtime": 1786635587.24889,
-    "ast_hash": "97a2a5723192415df620e252b0744dba",
+    "mtime": 1786724366.209288,
+    "ast_hash": "ff6fbb6923cb87545c9874102a15ba88",
     "semantic_hash": ""
   },
   "packaging/scripts/build-tarball.sh": {
@@ -185,8 +185,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/package-common.sh": {
-    "mtime": 1786669226.508723,
-    "ast_hash": "1c9982dcf3fbd391421863219c111f5a",
+    "mtime": 1787306974.5874462,
+    "ast_hash": "be864f3ca0b6ca52093c0239bec67b88",
     "semantic_hash": ""
   },
   "packaging/scripts/stage-apt-repo.sh": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
-    "mtime": 1785237171.6722045,
-    "ast_hash": "9665a6415743aa436bdaba152ddeabe7",
+    "mtime": 1786724366.2082882,
+    "ast_hash": "2106984b3a54cf874a6a43cac16c89e6",
     "semantic_hash": ""
   },
   ".github/workflows/release.yml": {
-    "mtime": 1785237171.672266,
-    "ast_hash": "d84d73e6a49dcb1cf95451e2c23e2eb3",
+    "mtime": 1787306553.3075337,
+    "ast_hash": "aec63a3f9d44d20e5d54c53ddb8dc5ae",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -215,23 +215,23 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1786668693.08002,
-    "ast_hash": "56a4a5ecc6ab9a3a4c6de0987ead9903",
+    "mtime": 1787307594.1847293,
+    "ast_hash": "ea74777feb675e67f433d9a5d15bca7b",
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1786668477.922996,
-    "ast_hash": "9a6f39578ab8980045c40f0954319adf",
+    "mtime": 1787307594.1877294,
+    "ast_hash": "067b874c3445d0c7bc2a898ee0fb5d02",
     "semantic_hash": ""
   },
   "docs/BUILD.md": {
-    "mtime": 1786669356.952913,
-    "ast_hash": "de4b4cda71b1fe998570865d6381899f",
+    "mtime": 1787307042.1362379,
+    "ast_hash": "36866f955894bc8b32cb3e0e29e57fe5",
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1786668693.08202,
-    "ast_hash": "5deb9cf4f238ba8fddb9294ba0d21f50",
+    "mtime": 1787306792.2143135,
+    "ast_hash": "434be2455f1662d49debbf07c614ec58",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -245,33 +245,33 @@
     "semantic_hash": ""
   },
   "docs/FEATURE_MATRIX.md": {
-    "mtime": 1786668693.08102,
-    "ast_hash": "4c8237327558cf8a6a89bd4fdd6f446f",
+    "mtime": 1787307594.1877294,
+    "ast_hash": "d16015933f23251de03e7835bdab590a",
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1786668477.9239962,
-    "ast_hash": "1038344c0f838e44cccda651d9e24654",
+    "mtime": 1787307594.1897292,
+    "ast_hash": "82352b7d6480ff6010749be250fbdbb1",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
-    "mtime": 1786569746.7621913,
-    "ast_hash": "9d9fa964338fab566af372b7858d1343",
+    "mtime": 1787307594.2077296,
+    "ast_hash": "5876db4bd246cd2809c753e36cad173b",
     "semantic_hash": ""
   },
   "docs/HARDWARE_VALIDATION_TEMPLATE.md": {
-    "mtime": 1786569746.7641914,
-    "ast_hash": "907649a6cdbd86686b3b4bc80de8f664",
+    "mtime": 1787303958.7814896,
+    "ast_hash": "40f5994abf7478fafd92b2fb36fee6e0",
     "semantic_hash": ""
   },
   "docs/PERMISSIONS.md": {
-    "mtime": 1786669024.368543,
-    "ast_hash": "173936e685be202359e169bfee8c19ff",
+    "mtime": 1787307594.1937294,
+    "ast_hash": "dcd52c60d0e93b8925b723eb06721e7a",
     "semantic_hash": ""
   },
   "docs/PROVIDER_MATRIX.md": {
-    "mtime": 1786669024.3695428,
-    "ast_hash": "455eed12476bae6a3b640e995e95bd8c",
+    "mtime": 1787307594.1927292,
+    "ast_hash": "95aed7ab6a2b9d30eecbb11ddb7486ad",
     "semantic_hash": ""
   },
   "docs/QUICK_START.md": {
@@ -280,23 +280,23 @@
     "semantic_hash": ""
   },
   "docs/RELEASE_CHECKLIST.md": {
-    "mtime": 1786669024.3695428,
-    "ast_hash": "732cc7f64632d2381b483c18afe84233",
+    "mtime": 1787307594.2087295,
+    "ast_hash": "a3adfeb1414032064378a0535d02e535",
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
-    "mtime": 1786641738.0806453,
-    "ast_hash": "1969dd60d0b833cca71d9cd6befb7dbf",
+    "mtime": 1787303958.7829652,
+    "ast_hash": "aaf6c5eea421c410717d735340f40dbd",
     "semantic_hash": ""
   },
   "docs/TROUBLESHOOTING.md": {
-    "mtime": 1786668693.08202,
-    "ast_hash": "57f2dbb868f67dc74d995935716752e6",
+    "mtime": 1787307594.1947293,
+    "ast_hash": "78fd646b4bd5980168f56ea875bc4abd",
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1786668477.9239962,
-    "ast_hash": "19fbb318ca84a170209c81025e1d5db8",
+    "mtime": 1787307594.1907294,
+    "ast_hash": "4d5dad94e2b2cb5f98787e8039489c14",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -325,8 +325,8 @@
     "semantic_hash": ""
   },
   "docs/releases/unreleased.md": {
-    "mtime": 1786563184.1163073,
-    "ast_hash": "b274588c918ec6011f20adf965babc79",
+    "mtime": 1787303958.7845237,
+    "ast_hash": "452bd1e347d4b6e8fea2e959ebcc76ed",
     "semantic_hash": ""
   },
   "docs/releases/v0.2.0.md": {
@@ -350,8 +350,8 @@
     "semantic_hash": ""
   },
   "packaging/arch/README.AUR.md": {
-    "mtime": 1785237171.6832497,
-    "ast_hash": "36e2f7d3ebd870fe101ebc7da61d1a04",
+    "mtime": 1787306553.3109782,
+    "ast_hash": "1cf1fd42f5ebfb843454ecec2b81b560",
     "semantic_hash": ""
   },
   "packaging/flatpak/README.md": {
@@ -425,42 +425,42 @@
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/128x128/apps/rog-helper.png": {
-    "mtime": 1786570043.755741,
+    "mtime": 1787307535.6590397,
     "ast_hash": "56ecae861787018c814956b7e07d8292",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png": {
-    "mtime": 1786570043.5442095,
+    "mtime": 1787307535.4365323,
     "ast_hash": "a62793dbd609e4a572691dce52b9fbb5",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png": {
-    "mtime": 1786570043.5785847,
+    "mtime": 1787307535.4700377,
     "ast_hash": "3c297002191a546e019b459779d25595",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png": {
-    "mtime": 1786570043.8797421,
+    "mtime": 1787307535.7870414,
     "ast_hash": "382eb00bfcf7ebe1e2d4dc1a5301388b",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png": {
-    "mtime": 1786570043.612739,
+    "mtime": 1787307535.507038,
     "ast_hash": "19052b1a2d5bbd23a5309beda3f7e846",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/48x48/apps/rog-helper.png": {
-    "mtime": 1786570043.6507394,
+    "mtime": 1787307535.5460384,
     "ast_hash": "973a7adab2b09f57e1df973ea5e6dc3a",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/512x512/apps/rog-helper.png": {
-    "mtime": 1786570044.25791,
+    "mtime": 1787307536.16437,
     "ast_hash": "c350868b8a994a9dfb1325764a70e6a8",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/64x64/apps/rog-helper.png": {
-    "mtime": 1786570043.6937401,
+    "mtime": 1787307535.591039,
     "ast_hash": "dff3006c393b15f92f97731b64513655",
     "semantic_hash": ""
   },
@@ -470,8 +470,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/theme.rs": {
-    "mtime": 1786633179.8651235,
-    "ast_hash": "626c38cadd81571a6d4e8f23a42c9de4",
+    "mtime": 1787307350.6098616,
+    "ast_hash": "0f5eb62ef226b8e1219de19f861e77f5",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/widgets/mod.rs": {
@@ -515,8 +515,8 @@
     "semantic_hash": ""
   },
   "docs/AURA_BACKEND_DISCOVERY.md": {
-    "mtime": 1786568195.6351817,
-    "ast_hash": "7ba7ec45915fd4618584343fa8c42684",
+    "mtime": 1787307594.1857293,
+    "ast_hash": "8cfb05562508d153c81d13be9626ccef",
     "semantic_hash": ""
   },
   "crates/rog-ui/src/dbus_decode.rs": {
@@ -525,33 +525,33 @@
     "semantic_hash": ""
   },
   "packaging/scripts/check-release-metadata.py": {
-    "mtime": 1786669356.951913,
-    "ast_hash": "d531e38c13950430813ebf6d5a7f1d88",
+    "mtime": 1787307277.4510012,
+    "ast_hash": "745e6b31cc2c8f3097b9b665d44605f9",
     "semantic_hash": ""
   },
   "docs/DBUS_CONTRACT_MAP.md": {
-    "mtime": 1786569712.3857734,
-    "ast_hash": "3bb90a105906b158001fe0012a8342d3",
+    "mtime": 1787307609.4099085,
+    "ast_hash": "4ba614a83948179e5fdd9dcd0787326d",
     "semantic_hash": ""
   },
   "docs/RELEASE_READINESS_AUDIT.md": {
-    "mtime": 1786570391.803193,
-    "ast_hash": "afac957b138caae3d579f2e59e9a0a92",
+    "mtime": 1787306553.3104198,
+    "ast_hash": "50264c59390e29fa4cd15748e62937e6",
     "semantic_hash": ""
   },
   "crates/rog-core/src/privileged.rs": {
-    "mtime": 1786667895.7446163,
-    "ast_hash": "03098e5ade31a50823be46e3bb607094",
+    "mtime": 1787303958.7667277,
+    "ast_hash": "83f71ca88d22e14946a85dc589eedf36",
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/privileged_client.rs": {
-    "mtime": 1786656064.916536,
-    "ast_hash": "14f8e68f8bd16d25dae9a094c126c0f9",
+    "mtime": 1787306742.9577389,
+    "ast_hash": "01ebb968c49da697bbb6e9542e16a8dd",
     "semantic_hash": ""
   },
   "crates/rog-privileged/src/main.rs": {
-    "mtime": 1786668910.7942996,
-    "ast_hash": "0daae424105272d7bb81e5ee5fbca7c8",
+    "mtime": 1787307074.4326167,
+    "ast_hash": "81c1eb15da81cc884c10ee3a1d4713b5",
     "semantic_hash": ""
   },
   "crates/rog-core/src/cpu_control.rs": {
@@ -560,8 +560,28 @@
     "semantic_hash": ""
   },
   "docs/PRIVILEGED_SECURITY_REVIEW.md": {
-    "mtime": 1786669356.952913,
-    "ast_hash": "b5b2016a47529e534afdfa7d25cc403a",
+    "mtime": 1786669611.4989088,
+    "ast_hash": "44a1996a460194f75ea96fef4e4a1408",
+    "semantic_hash": ""
+  },
+  "crates/rog-providers/src/aura_hid.rs": {
+    "mtime": 1787306817.2966063,
+    "ast_hash": "fdbacdb25cf99c40d6cf8a4124f166b0",
+    "semantic_hash": ""
+  },
+  "docs/releases/v0.3.0.md": {
+    "mtime": 1787306553.310534,
+    "ast_hash": "d65c584d6ea92256345a084b9e067087",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/install-dev-privileged.sh": {
+    "mtime": 1787307272.6959453,
+    "ast_hash": "1aa3142e76f0b66084ad06d502cc4bd4",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/validate-package-payload.py": {
+    "mtime": 1787307084.4137337,
+    "ast_hash": "2b1817117cd8291a772afec5c8975e2a",
     "semantic_hash": ""
   }
 }

@@ -10,6 +10,7 @@ ARCH="$(dpkg --print-architecture)"
 VERSION="$(package_version)"
 
 mkdir -p "$OUTPUT_DIR"
+export_source_date_epoch
 if [[ "${ROG_HELPER_SKIP_PREPARE:-0}" != "1" ]]; then
   prepare_release_assets
 fi
@@ -40,8 +41,10 @@ write_debian_control "$STAGE_ROOT/DEBIAN/control" "$ARCH" "$DEPENDS" "$INSTALLED
 install -Dm0755 "$REPO_ROOT/packaging/debian/postinst" "$STAGE_ROOT/DEBIAN/postinst"
 install -Dm0755 "$REPO_ROOT/packaging/debian/postrm" "$STAGE_ROOT/DEBIAN/postrm"
 
+validate_packaged_payload "$STAGE_ROOT"
 normalize_tree_timestamps "$STAGE_ROOT"
 
 PACKAGE_PATH="$OUTPUT_DIR/${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$STAGE_ROOT" "$PACKAGE_PATH" >/dev/null
+validate_packaged_payload "$PACKAGE_PATH"
 echo "built $PACKAGE_PATH"

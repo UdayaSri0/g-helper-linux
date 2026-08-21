@@ -271,6 +271,10 @@ install_privileged_integration() {
     "$prefix_root/lib/udev/rules.d/60-rog-helper-aura.rules"
 }
 
+validate_packaged_payload() {
+  python3 "$REPO_ROOT/packaging/scripts/validate-package-payload.py" "$1"
+}
+
 install_license_docs() {
   local prefix_root="$1"
   for license_file in "${LICENSE_FILES[@]}"; do

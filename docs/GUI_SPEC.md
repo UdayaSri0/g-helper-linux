@@ -233,14 +233,19 @@ Purpose:
 
 Current content:
 
-- device/backend and explicit RGB, ARGB/multi-zone, and per-key capability rows
-- local keyboard preview; it never writes hardware while the user edits controls
-- one read-only/unavailable capability banner
+- ROG Keyboard status card with backend, RGB support, effect count, control readiness, and neutral
+  authentication-on-Apply status
+- variable-width keyboard preview with a subtle glow and local Static/Breathe/rainbow rendering;
+  it never writes hardware while the user edits controls
+- separate helper installed/reachable/compatible, PolicyKit, lighting-category, and write-path
+  readiness behind clear capability wording
 - mode combo box only when `supports_modes` and non-empty `supported_modes` are reported
 - brightness slider only when `supports_brightness` is reported
-- RGB colour control only when `supports_rgb` is reported
+- primary/secondary GTK colour pickers, strict editable `#RRGGBB` fields, and nine visual preset
+  swatches only when the selected capability/mode supports them
 - secondary colour, speed, direction, and zone rows only when the selected mode/backend reports them
-- apply action
+- durable Current/Pending draft summaries, local-only Reset, and Apply enabled only for a valid dirty
+  draft; labels cover Unlock & Apply, Applying, Applied, and retryable failure
 - collapsed backend details containing device, backend, capabilities, brightness, mode, and RGB values
 
 Current implementation note:

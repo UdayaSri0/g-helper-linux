@@ -53,6 +53,10 @@ Current repository note:
 - [ ] root-only `packaging/udev/60-rog-helper-aura.rules` and helper `DeviceAllow`/`BindPaths` reviewed; confirm no user access mode/group/uaccess tag is added
 - [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
 - [ ] privileged binary is root-owned, executable, and not group/world-writable in each native package
+- [ ] `packaging/scripts/validate-package-payload.py` passes for the staged Debian tree and final
+  `.deb`; no `@PRIVILEGED_EXEC@` or other template token remains
+- [ ] `rog-helper privileged-status` confirms helper API compatibility plus udev rule, exact Aura
+  descriptor/protocol, and a valid `/dev/rog-helper-aura` alias on the target
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
 - [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed

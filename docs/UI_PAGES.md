@@ -225,8 +225,8 @@ Current behavior:
 
 ### What it shows
 
-- controls-first layout with one capability banner for read-only/unavailable states
-- local keyboard lighting preview, with an explicit Apply-only hardware-write boundary
+- ROG Keyboard status card with backend, RGB support, effect count, and control readiness
+- keyboard-shaped local preview with variable key widths and an explicit Apply-only hardware-write boundary
 - availability status
 - last action status
 - collapsed backend details for device, current backend, RGB/ARGB/per-key capability, brightness, mode, and colour
@@ -235,14 +235,16 @@ Current behavior:
 
 - mode selection only when `supports_modes` and backend modes are reported
 - brightness change only when `supports_brightness` is reported
-- apply action
-- RGB picker only when the daemon reports `supports_rgb`
+- strict `#RRGGBB` entry, GTK picker, and visual preset swatches only when the daemon reports `supports_rgb`
 - secondary colour, speed, direction, and zones only when the active mode/backend reports them
+- Current/Pending draft summaries, local Reset, and dirty-only Apply with applying/success/failure state
 
 ### Capability dependencies
 
 - depends on the daemon exposing a lighting backend
 - write support depends on backend writability
+- helper installation, reachability, API compatibility, PolicyKit, lighting category, and write-path
+  readiness are represented separately; `authorization=not_checked` remains editable
 - RGB support depends on `supports_rgb`
 - ARGB/multi-zone and per-key states use their own flags and are never inferred from RGB
 - secondary colour, speed, direction, and zone controls are not shown without explicit capability

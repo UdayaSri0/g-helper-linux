@@ -187,6 +187,16 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   border: 1px solid alpha(#4da3ff, 0.13);
 }
 .compact-banner { margin: 0; }
+.lighting-swatch {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 3px;
+  border-radius: 999px;
+  background: alpha(white, 0.045);
+  border: 1px solid alpha(white, 0.09);
+}
+.lighting-swatch:hover { border-color: alpha(#4da3ff, 0.55); }
+.lighting-swatch:focus-visible { outline: 2px solid alpha(#4da3ff, 0.82); }
 .dashboard-warning.warning-info,
 .compact-banner,
 .fans-warning-banner { background: alpha(#4da3ff, 0.16); }

@@ -268,6 +268,12 @@ bypass system DBus authorization. The privileged-status probe only asks PolicyKi
 non-interactive decision. Remediation falls back to installation and
 troubleshooting documentation when the repository has no verified distro-specific command.
 
+`rog-helper privileged-status` also performs local read-only installation checks for the expected
+binary, systemd unit, system-D-Bus activation/policy, PolicyKit policy, narrow udev rule, Aura
+alias, descriptor, and protocol. Development checkouts can install only the current privileged
+integration with `packaging/scripts/install-dev-privileged.sh`; that script may use `sudo`, but the
+UI and session daemon must continue to run as the desktop user.
+
 ## System DBus Expectations
 
 The repository assumes these service categories may exist:
@@ -291,7 +297,9 @@ The current implementation prefers graceful degradation over hidden failure.
 Current examples:
 
 - feature capability is false -> UI disables or hides the control
-- telemetry available but direct writes not allowed -> UI shows authorization-required, helper-missing, or read-only state plus diagnostics
+- telemetry available but direct writes not allowed -> UI distinguishes helper installation,
+  reachability, compatibility, PolicyKit, category, and write-path readiness; `not_checked` means
+  authentication on Apply rather than read-only
 - backend missing -> warnings and diagnostics expose the condition
 - session daemon missing -> UI surfaces daemon connectivity problems
 

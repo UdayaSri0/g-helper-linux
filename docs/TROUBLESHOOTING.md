@@ -120,6 +120,8 @@ busctl --system list | rg -n "io\.github\.roghelper\.Privileged|PolicyKit1"
 
 Interpretation:
 
+- the first two report sections verify installed files plus the Aura device/alias/descriptor before
+  showing the daemon capability status
 - `helper installed: no`: the system D-Bus activation file is not installed
 - `helper reachable: no`: activation failed, policy blocked the call, or the service exited/faulted
 - `helper compatible: no`: the helper API version is not supported by this daemon
@@ -127,6 +129,15 @@ Interpretation:
 - `authorization state: not_checked`: the non-interactive probe did not authorize silently; no prompt was requested
 - `authorization state: denied`: a preceding interactive write was denied
 - `privileged categories available: cpu`: the typed CPU fallback is installed and compatible
+
+For a source checkout whose user-session daemon/UI were built with Cargo but whose helper is stale
+or absent, install the current root-owned integration only:
+
+```bash
+packaging/scripts/install-dev-privileged.sh
+```
+
+Never run `rog-helper-ui` or `rog-helperd` with `sudo`.
 
 Inspect service logs with `journalctl -u rog-helper-privileged.service`. The helper is activated on
 demand and exits after being idle; an inactive unit by itself is not a fault. Do not run the GTK UI
@@ -455,6 +466,9 @@ Expected behavior:
 - `has_aura: true` only when an exact verified asusd or native Aura/RGB provider is selected
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
+- helper API v1 is intentionally incompatible with native Aura; current control requires API v2
+  and `SetAuraEffect`, plus the root-only `/dev/rog-helper-aura` alias
+- `authorization=not_checked` with a ready write path enables local editing; only Apply may prompt
 - if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only
 - if asusd owns an ASUS daemon name, native HID is suppressed to prevent competing writes
 - native G615JMR success is `accepted_no_readback`; physically inspect the LEDs because HID state

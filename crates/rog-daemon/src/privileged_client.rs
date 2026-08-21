@@ -73,17 +73,12 @@ async fn probe_inner() -> PrivilegedStatus {
         .call::<_, _, (u32, Vec<String>)>("GetCapabilities", &())
         .await
         .ok()
-        .and_then(|(api_version, categories)| {
-            PrivilegedCapabilities::decode(api_version, categories).ok()
-        });
-    let compatible = capabilities
-        .as_ref()
-        .is_some_and(|caps| caps.api_version == PRIVILEGED_API_VERSION);
+        .and_then(|(api_version, categories)| classify_capabilities(api_version, categories));
+    let compatible = capabilities.is_some();
     let categories = capabilities
-        .filter(|caps| caps.api_version == PRIVILEGED_API_VERSION)
-        .map(|caps| caps.categories)
+        .map(|capabilities| capabilities.categories)
         .unwrap_or_default();
-    let authorization_state = if !polkit_available {
+    let authorization_state = if !compatible || !polkit_available {
         AuthorizationState::Unavailable
     } else {
         match helper
@@ -111,6 +106,18 @@ async fn probe_inner() -> PrivilegedStatus {
         authorization_state,
         privileged_categories_available: categories,
     }
+}
+
+/// Accept only the exact helper API implemented by this daemon. Capability
+/// discovery is deliberately local and read-only: an old activatable helper is
+/// reported as installed and reachable, but it must not unlock any control
+/// category or cause an authorization check.
+fn classify_capabilities(
+    api_version: u32,
+    categories: Vec<String>,
+) -> Option<PrivilegedCapabilities> {
+    let capabilities = PrivilegedCapabilities::decode(api_version, categories).ok()?;
+    (capabilities.api_version == PRIVILEGED_API_VERSION).then_some(capabilities)
 }
 
 pub async fn apply_cpu(request: &CpuControlRequest) -> Result<(), PrivilegedError> {
@@ -360,5 +367,30 @@ mod tests {
         assert!(!status.privileged_helper_reachable);
         assert_eq!(status.authorization_state, AuthorizationState::Unavailable);
         assert!(status.privileged_categories_available.is_empty());
+    }
+
+    #[test]
+    fn api_v1_helper_is_reachable_but_not_control_compatible() {
+        assert!(classify_capabilities(
+            1,
+            vec![
+                "cpu".to_string(),
+                "battery".to_string(),
+                "fans".to_string(),
+                "lighting".to_string(),
+            ],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn current_api_exposes_only_decoded_categories() {
+        let capabilities =
+            classify_capabilities(PRIVILEGED_API_VERSION, vec!["lighting".to_string()])
+                .expect("current API should be compatible");
+        assert_eq!(
+            capabilities.categories,
+            vec![rog_core::PrivilegedCategory::Lighting]
+        );
     }
 }

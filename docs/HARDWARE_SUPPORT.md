@@ -38,6 +38,11 @@ Implication:
 | Readback | No reliable hardware effect-state readback; accepted writes are not physical confirmation |
 | Physical Apply observed | **No** |
 
+The 2026-08-21 installed-target audit verified the physical identity and descriptor again, but the
+installed package at that time contained an API-v1 helper and no Aura udev rule/alias. That explains
+the observed read-only UI; it is installation-path evidence, not physical colour-change evidence.
+Current source requires helper API v2 and validates the complete packaged payload before install.
+
 This record describes the implementation allow-list and existing read-only discovery evidence. It
 does not satisfy the validation requirements below and must not be advertised as working hardware.
 

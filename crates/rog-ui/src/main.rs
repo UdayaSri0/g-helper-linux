@@ -222,6 +222,8 @@ struct SharedUiState {
     pending_battery_limit: Option<u8>,
     pending_cpu_actions: Vec<PendingCpuAction>,
     pending_lighting: Option<PendingLighting>,
+    lighting_apply_in_progress: bool,
+    lighting_apply_success_revision: u64,
     pending_fan_action: Option<PendingFanAction>,
     lighting_error: Option<String>,
     action_error: Option<String>,
@@ -273,6 +275,8 @@ impl Default for SharedUiState {
             pending_battery_limit: None,
             pending_cpu_actions: Vec::new(),
             pending_lighting: None,
+            lighting_apply_in_progress: false,
+            lighting_apply_success_revision: 0,
             pending_fan_action: None,
             lighting_error: None,
             action_error: None,
@@ -299,6 +303,12 @@ impl Default for SharedUiState {
 impl SharedUiState {
     fn mark_render_dirty(&mut self) {
         self.render_revision = self.render_revision.wrapping_add(1);
+    }
+}
+
+fn mark_ui_render_dirty(shared: &Arc<Mutex<SharedUiState>>) {
+    if let Ok(mut state) = shared.lock() {
+        state.mark_render_dirty();
     }
 }
 
@@ -402,6 +412,12 @@ struct LightingInfo {
     privileged_writable: bool,
     authorization_required: bool,
     authorization: String,
+    privileged_helper_installed: bool,
+    privileged_helper_reachable: bool,
+    privileged_helper_compatible: bool,
+    polkit_available: bool,
+    privileged_lighting_category_available: bool,
+    write_path_ready: bool,
     mode: String,
     supports_brightness: bool,
     supports_modes: bool,
@@ -429,7 +445,7 @@ struct LightingInfo {
     permission_warning: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingLighting {
     brightness: Option<u64>,
     mode: Option<String>,
@@ -438,6 +454,96 @@ struct PendingLighting {
     speed: Option<String>,
     direction: Option<String>,
     zone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LightingDraft {
+    brightness: u64,
+    mode: String,
+    rgb_hex: String,
+    secondary_rgb_hex: String,
+    speed: Option<String>,
+    direction: Option<String>,
+    zone: Option<String>,
+}
+
+impl LightingDraft {
+    fn from_info(info: &LightingInfo) -> Self {
+        Self {
+            brightness: info.brightness,
+            mode: info.mode.clone(),
+            rgb_hex: info
+                .rgb_hex
+                .clone()
+                .unwrap_or_else(|| "#FFFFFF".to_string()),
+            secondary_rgb_hex: info
+                .secondary_rgb_hex
+                .clone()
+                .unwrap_or_else(|| "#000000".to_string()),
+            speed: info
+                .speed
+                .clone()
+                .or_else(|| info.supported_speeds.first().cloned()),
+            direction: info
+                .direction
+                .clone()
+                .or_else(|| info.supported_directions.first().cloned()),
+            zone: info
+                .active_zone
+                .clone()
+                .or_else(|| info.supported_zones.first().cloned()),
+        }
+    }
+
+    fn to_pending(&self, info: &LightingInfo) -> PendingLighting {
+        PendingLighting {
+            brightness: info.supports_brightness.then_some(self.brightness),
+            mode: info.supports_modes.then_some(self.mode.clone()),
+            rgb_hex: (info.supports_rgb && lighting_mode_supports_primary_colour(&self.mode))
+                .then_some(self.rgb_hex.clone()),
+            secondary_rgb_hex: (info.supports_rgb
+                && lighting_mode_supports_secondary_colour(&self.mode))
+            .then_some(self.secondary_rgb_hex.clone()),
+            speed: (info.supports_speed && lighting_mode_supports_speed(&self.mode))
+                .then(|| self.speed.clone())
+                .flatten(),
+            direction: lighting_mode_supports_direction(&self.mode)
+                .then(|| self.direction.clone())
+                .flatten(),
+            zone: info.supports_zones.then(|| self.zone.clone()).flatten(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LightingControlIdentity {
+    backend_kind: String,
+    device: String,
+    max_brightness: u64,
+    supports_brightness: bool,
+    supports_modes: bool,
+    supports_rgb: bool,
+    supported_modes: Vec<String>,
+    supported_speeds: Vec<String>,
+    supported_directions: Vec<String>,
+    supported_zones: Vec<String>,
+}
+
+impl From<&LightingInfo> for LightingControlIdentity {
+    fn from(info: &LightingInfo) -> Self {
+        Self {
+            backend_kind: info.backend_kind.clone(),
+            device: info.device.clone(),
+            max_brightness: info.max_brightness,
+            supports_brightness: info.supports_brightness,
+            supports_modes: info.supports_modes,
+            supports_rgb: info.supports_rgb,
+            supported_modes: info.supported_modes.clone(),
+            supported_speeds: info.supported_speeds.clone(),
+            supported_directions: info.supported_directions.clone(),
+            supported_zones: info.supported_zones.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2205,6 +2311,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         setup_pref_row(&setup_hardware_group, "GPU mode switching");
     let (setup_kbd_support_row, setup_kbd_support_value) =
         setup_pref_row(&setup_hardware_group, "Keyboard lighting");
+    let (setup_rgb_support_row, setup_rgb_support_value) =
+        setup_pref_row(&setup_hardware_group, "Keyboard RGB");
+    let (setup_aura_hid_row, setup_aura_hid_value) =
+        setup_pref_row(&setup_hardware_group, "Aura HID");
+    let (setup_lighting_service_row, setup_lighting_service_value) =
+        setup_pref_row(&setup_hardware_group, "Privileged lighting service");
+    let (setup_rgb_writes_row, setup_rgb_writes_value) =
+        setup_pref_row(&setup_hardware_group, "RGB writes");
     let (setup_fan_support_row, setup_fan_support_value) =
         setup_pref_row(&setup_hardware_group, "Fan telemetry and control");
     setup_root.append(&setup_hardware_group);
@@ -3069,16 +3183,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     lighting_capability_banner.set_revealed(true);
     lighting_page.append(&lighting_capability_banner);
 
-    let preview_colour = std::rc::Rc::new(std::cell::RefCell::new(gdk::RGBA::new(
-        0.28, 0.31, 0.36, 1.0,
-    )));
-    let preview_draw_colour = preview_colour.clone();
+    let lighting_device_group = adw::PreferencesGroup::builder()
+        .title("ROG Keyboard")
+        .description("Detected lighting target and control readiness.")
+        .build();
+    let lighting_device_backend = pref_value_row(&lighting_device_group, "Backend", false);
+    let lighting_device_rgb = pref_value_row(&lighting_device_group, "RGB", false);
+    let lighting_device_effects = pref_value_row(&lighting_device_group, "Effects", false);
+    let lighting_device_control = pref_value_row(&lighting_device_group, "Control", false);
+    lighting_page.append(&lighting_device_group);
+
+    let lighting_draft = std::rc::Rc::new(std::cell::RefCell::new(None::<LightingDraft>));
+    let lighting_baseline = std::rc::Rc::new(std::cell::RefCell::new(None::<LightingDraft>));
+    let lighting_draft_identity =
+        std::rc::Rc::new(std::cell::RefCell::new(None::<LightingControlIdentity>));
+    let lighting_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let preview_draw_draft = lighting_draft.clone();
     let lighting_preview = gtk::DrawingArea::new();
     lighting_preview.set_content_width(520);
-    lighting_preview.set_content_height(150);
+    lighting_preview.set_content_height(210);
     lighting_preview.set_hexpand(true);
     lighting_preview.set_draw_func(move |_, ctx, width, height| {
-        draw_keyboard_lighting_preview(ctx, width, height, &preview_draw_colour.borrow());
+        draw_keyboard_lighting_preview(ctx, width, height, preview_draw_draft.borrow().as_ref());
     });
     let preview_caption = gtk::Label::new(Some("Checking keyboard lighting topology…"));
     preview_caption.set_xalign(0.0);
@@ -3115,11 +3241,18 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     rgb_button.set_use_alpha(false);
     rgb_button.set_title("Keyboard RGB");
     rgb_button.set_sensitive(false);
+    let rgb_hex_entry = gtk::Entry::builder()
+        .placeholder_text("#RRGGBB")
+        .width_chars(9)
+        .max_length(7)
+        .build();
+    rgb_hex_entry.add_css_class("monospace");
     let rgb_row = adw::ActionRow::builder()
-        .title("RGB Colour")
+        .title("Primary Colour")
         .subtitle("Checking whether RGB colour control is available.")
         .build();
     rgb_row.set_visible(false);
+    rgb_row.add_suffix(&rgb_hex_entry);
     rgb_row.add_suffix(&rgb_button);
     rgb_row.set_activatable(false);
     lighting_controls_group.add(&rgb_row);
@@ -3128,11 +3261,18 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     secondary_rgb_button.set_use_alpha(false);
     secondary_rgb_button.set_title("Secondary RGB colour");
     secondary_rgb_button.set_sensitive(false);
+    let secondary_rgb_hex_entry = gtk::Entry::builder()
+        .placeholder_text("#RRGGBB")
+        .width_chars(9)
+        .max_length(7)
+        .build();
+    secondary_rgb_hex_entry.add_css_class("monospace");
     let secondary_rgb_row = adw::ActionRow::builder()
         .title("Secondary Colour")
         .subtitle("Used only by the Breathe effect on supported hardware.")
         .build();
     secondary_rgb_row.set_visible(false);
+    secondary_rgb_row.add_suffix(&secondary_rgb_hex_entry);
     secondary_rgb_row.add_suffix(&secondary_rgb_button);
     secondary_rgb_row.set_activatable(false);
     lighting_controls_group.add(&secondary_rgb_row);
@@ -3170,13 +3310,81 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     zone_row.set_activatable(false);
     lighting_controls_group.add(&zone_row);
 
-    let apply_lighting = gtk::Button::with_label("Apply lighting");
+    let quick_colours = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    quick_colours.set_halign(gtk::Align::Start);
+    let quick_colour_values = [
+        ("Red", "#FF3B30"),
+        ("Orange", "#FF9500"),
+        ("Yellow", "#FFD60A"),
+        ("Green", "#34C759"),
+        ("Cyan", "#32D7E8"),
+        ("Blue", "#0A84FF"),
+        ("Purple", "#BF5AF2"),
+        ("Pink", "#FF2D55"),
+        ("White", "#FFFFFF"),
+    ];
+    for (name, value) in quick_colour_values {
+        let swatch = lighting_quick_colour_button(name, value);
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let preview = lighting_preview.clone();
+        let colour_button = rgb_button.clone();
+        let hex_entry = rgb_hex_entry.clone();
+        let shared = shared.clone();
+        swatch.connect_clicked(move |_| {
+            if syncing.get() {
+                return;
+            }
+            if let Some(rgba) = rgb_hex_to_rgba(value) {
+                colour_button.set_rgba(&rgba);
+                hex_entry.set_text(value);
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.rgb_hex = value.to_string();
+                }
+                preview.queue_draw();
+                mark_ui_render_dirty(&shared);
+            }
+        });
+        quick_colours.append(&swatch);
+    }
+    let quick_colour_row = adw::ActionRow::builder()
+        .title("Quick Colours")
+        .subtitle("Preset swatches update the local preview only.")
+        .build();
+    quick_colour_row.add_suffix(&quick_colours);
+    quick_colour_row.set_activatable(false);
+    quick_colour_row.set_visible(false);
+    lighting_controls_group.add(&quick_colour_row);
+
+    let lighting_current_summary = gtk::Label::new(Some("Waiting for lighting state…"));
+    lighting_current_summary.set_xalign(0.0);
+    lighting_current_summary.set_wrap(true);
+    let lighting_pending_summary = gtk::Label::new(Some("No pending changes"));
+    lighting_pending_summary.set_xalign(0.0);
+    lighting_pending_summary.set_wrap(true);
+    lighting_pending_summary.add_css_class("accent");
+    let summary_group = adw::PreferencesGroup::builder().title("Changes").build();
+    let current_summary_row = adw::ActionRow::builder()
+        .title("Current hardware state")
+        .build();
+    current_summary_row.add_suffix(&lighting_current_summary);
+    current_summary_row.set_activatable(false);
+    summary_group.add(&current_summary_row);
+    let pending_summary_row = adw::ActionRow::builder().title("Pending").build();
+    pending_summary_row.add_suffix(&lighting_pending_summary);
+    pending_summary_row.set_activatable(false);
+    summary_group.add(&pending_summary_row);
+
+    let reset_lighting = gtk::Button::with_label("Reset");
+    let apply_lighting = gtk::Button::with_label("Apply to Keyboard");
     apply_lighting.add_css_class("suggested-action");
     let apply_row = adw::ActionRow::builder().title("Apply Changes").build();
+    apply_row.add_suffix(&reset_lighting);
     apply_row.add_suffix(&apply_lighting);
     apply_row.set_activatable(false);
-    lighting_controls_group.add(&apply_row);
+    summary_group.add(&apply_row);
     lighting_page.append(&lighting_controls_group);
+    lighting_page.append(&summary_group);
     let lighting_rgb_note = gtk::Label::new(Some(
         "RGB effects are not exposed by the current lighting backend.",
     ));
@@ -3240,77 +3448,127 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let brightness_scale = brightness_scale.clone();
-        let mode_combo = mode_combo.clone();
-        let rgb_button = rgb_button.clone();
-        let secondary_rgb_button = secondary_rgb_button.clone();
-        let speed_combo = speed_combo.clone();
-        let direction_combo = direction_combo.clone();
-        let zone_combo = zone_combo.clone();
+        let draft = lighting_draft.clone();
         apply_lighting.connect_clicked(move |_| {
-            let desired_brightness = brightness_scale.value().round().max(0.0) as u64;
-            let desired_mode = mode_combo.active_id().map(|s| s.to_string());
-
             if let Ok(mut st) = shared.lock() {
                 let Some(lighting) = st.lighting.as_ref() else {
                     return;
                 };
-                let selected_mode = desired_mode
-                    .as_deref()
-                    .unwrap_or(&lighting.mode)
-                    .to_string();
-                let brightness = lighting.supports_brightness.then_some(desired_brightness);
-                let mode = lighting.supports_modes.then_some(desired_mode).flatten();
-                let rgb_hex = (lighting.supports_rgb
-                    && lighting_mode_supports_primary_colour(&selected_mode))
-                .then(|| rgba_to_hex(&rgb_button.rgba()));
-                let secondary_rgb_hex = (lighting.supports_rgb
-                    && lighting_mode_supports_secondary_colour(&selected_mode))
-                .then(|| rgba_to_hex(&secondary_rgb_button.rgba()));
-                let speed = (lighting.supports_speed
-                    && lighting_mode_supports_speed(&selected_mode))
-                .then(|| speed_combo.active_id().map(|value| value.to_string()))
-                .flatten();
-                let direction = lighting_mode_supports_direction(&selected_mode)
-                    .then(|| direction_combo.active_id().map(|value| value.to_string()))
-                    .flatten();
-                let zone = (lighting.supports_zones && !lighting.supported_zones.is_empty())
-                    .then(|| zone_combo.active_id().map(|value| value.to_string()))
-                    .flatten();
-                if brightness.is_none()
-                    && mode.is_none()
-                    && rgb_hex.is_none()
-                    && secondary_rgb_hex.is_none()
-                    && speed.is_none()
-                    && direction.is_none()
-                    && zone.is_none()
-                {
+                let Some(draft) = draft.borrow().clone() else {
                     return;
-                }
-                st.pending_lighting = Some(PendingLighting {
-                    brightness,
-                    mode,
-                    rgb_hex,
-                    secondary_rgb_hex,
-                    speed,
-                    direction,
-                    zone,
-                });
+                };
+                st.pending_lighting = Some(draft.to_pending(lighting));
+                st.lighting_apply_in_progress = true;
                 st.lighting_error = None;
+                st.mark_render_dirty();
             }
         });
     }
 
     {
-        let preview_colour = preview_colour.clone();
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
         let lighting_preview = lighting_preview.clone();
+        let rgb_hex_entry = rgb_hex_entry.clone();
+        let shared = shared.clone();
         rgb_button.connect_color_set(move |button| {
-            *preview_colour.borrow_mut() = button.rgba();
+            if syncing.get() {
+                return;
+            }
+            let value = rgba_to_hex(&button.rgba());
+            rgb_hex_entry.set_text(&value);
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                draft.rgb_hex = value;
+            }
             lighting_preview.queue_draw();
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let lighting_preview = lighting_preview.clone();
+        let rgb_button = rgb_button.clone();
+        let shared = shared.clone();
+        rgb_hex_entry.connect_changed(move |entry| {
+            if syncing.get() {
+                return;
+            }
+            let value = entry.text().to_string();
+            if let Some(rgba) = rgb_hex_to_rgba(&value) {
+                entry.remove_css_class("error");
+                rgb_button.set_rgba(&rgba);
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.rgb_hex = value.to_ascii_uppercase();
+                }
+                lighting_preview.queue_draw();
+            } else {
+                entry.add_css_class("error");
+            }
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let secondary_entry = secondary_rgb_hex_entry.clone();
+        let lighting_preview = lighting_preview.clone();
+        let shared = shared.clone();
+        secondary_rgb_button.connect_color_set(move |button| {
+            if syncing.get() {
+                return;
+            }
+            let value = rgba_to_hex(&button.rgba());
+            secondary_entry.set_text(&value);
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                draft.secondary_rgb_hex = value;
+            }
+            lighting_preview.queue_draw();
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let secondary_button = secondary_rgb_button.clone();
+        let lighting_preview = lighting_preview.clone();
+        let shared = shared.clone();
+        secondary_rgb_hex_entry.connect_changed(move |entry| {
+            if syncing.get() {
+                return;
+            }
+            let value = entry.text().to_string();
+            if let Some(rgba) = rgb_hex_to_rgba(&value) {
+                entry.remove_css_class("error");
+                secondary_button.set_rgba(&rgba);
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.secondary_rgb_hex = value.to_ascii_uppercase();
+                }
+                lighting_preview.queue_draw();
+            } else {
+                entry.add_css_class("error");
+            }
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let shared = shared.clone();
+        brightness_scale.connect_value_changed(move |scale| {
+            if !syncing.get() {
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.brightness = scale.value().round().max(0.0) as u64;
+                }
+                mark_ui_render_dirty(&shared);
+            }
         });
     }
     {
         let shared = shared.clone();
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let preview = lighting_preview.clone();
         let secondary_rgb_row = secondary_rgb_row.clone();
         let speed_row = speed_row.clone();
         let direction_row = direction_row.clone();
@@ -3324,6 +3582,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 return;
             };
             let mode = selected_mode.as_deref().unwrap_or(&lighting.mode);
+            if !syncing.get() {
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.mode = mode.to_string();
+                }
+                preview.queue_draw();
+                mark_ui_render_dirty(&shared);
+            }
             secondary_rgb_row.set_visible(
                 lighting.supports_rgb && lighting_mode_supports_secondary_colour(mode),
             );
@@ -3335,6 +3600,63 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             direction_row.set_visible(
                 !lighting.supported_directions.is_empty() && lighting_mode_supports_direction(mode),
             );
+        });
+    }
+    for combo in [&speed_combo, &direction_combo, &zone_combo] {
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let speed_combo = speed_combo.clone();
+        let direction_combo = direction_combo.clone();
+        let zone_combo = zone_combo.clone();
+        let shared = shared.clone();
+        combo.connect_changed(move |_| {
+            if syncing.get() {
+                return;
+            }
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                draft.speed = speed_combo.active_id().map(|value| value.to_string());
+                draft.direction = direction_combo.active_id().map(|value| value.to_string());
+                draft.zone = zone_combo.active_id().map(|value| value.to_string());
+            }
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let baseline = lighting_baseline.clone();
+        let draft = lighting_draft.clone();
+        let syncing = lighting_syncing.clone();
+        let preview = lighting_preview.clone();
+        let brightness_scale = brightness_scale.clone();
+        let mode_combo = mode_combo.clone();
+        let rgb_button = rgb_button.clone();
+        let secondary_rgb_button = secondary_rgb_button.clone();
+        let rgb_hex_entry = rgb_hex_entry.clone();
+        let secondary_rgb_hex_entry = secondary_rgb_hex_entry.clone();
+        let speed_combo = speed_combo.clone();
+        let direction_combo = direction_combo.clone();
+        let zone_combo = zone_combo.clone();
+        let shared = shared.clone();
+        reset_lighting.connect_clicked(move |_| {
+            let Some(value) = baseline.borrow().clone() else {
+                return;
+            };
+            syncing.set(true);
+            set_lighting_controls_from_draft(
+                &value,
+                &brightness_scale,
+                &mode_combo,
+                &rgb_button,
+                &secondary_rgb_button,
+                &rgb_hex_entry,
+                &secondary_rgb_hex_entry,
+                &speed_combo,
+                &direction_combo,
+                &zone_combo,
+            );
+            *draft.borrow_mut() = Some(value);
+            syncing.set(false);
+            preview.queue_draw();
+            mark_ui_render_dirty(&shared);
         });
     }
 
@@ -3945,6 +4267,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let last_cpu_governors = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_cpu_epp = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_rendered_revision = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
+    let last_lighting_apply_success = std::rc::Rc::new(std::cell::Cell::new(0_u64));
     let last_dashboard_layout = std::rc::Rc::new(std::cell::Cell::new(None::<DashboardLayout>));
     let detail_fan_rows_ref = detail_fan_rows.clone();
     let details_fan_group_ref = details_fan_group.clone();
@@ -3995,6 +4318,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             lighting,
             fan_state,
             lighting_error_txt,
+            lighting_apply_in_progress,
+            lighting_apply_success_revision,
             action_error_txt,
             update_state,
             update_check_in_progress,
@@ -4041,6 +4366,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
+                st.lighting_apply_in_progress,
+                st.lighting_apply_success_revision,
                 st.action_error.clone(),
                 st.update_state.clone(),
                 st.update_check_in_progress,
@@ -4237,6 +4564,76 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &setup_kbd_support_value,
             &caps.kbd_backlight_access,
         );
+        if let Some(lighting) = lighting.as_ref() {
+            setup_rgb_support_value.set_text(if lighting.supports_rgb {
+                "Available"
+            } else {
+                "Unsupported"
+            });
+            setup_rgb_support_row.set_subtitle(if lighting.supports_rgb {
+                "The selected backend reports single-target RGB hardware support."
+            } else {
+                "The selected backend does not report RGB hardware support."
+            });
+            setup_aura_hid_value.set_text(if lighting.backend_kind == "native-aura-hid" {
+                "Detected"
+            } else if lighting.supports_rgb {
+                "Not selected"
+            } else {
+                "Not detected"
+            });
+            setup_aura_hid_row.set_subtitle(if lighting.backend_kind == "native-aura-hid" {
+                "The exact allow-listed ASUS Aura HID identity is the active RGB backend."
+            } else {
+                "Native Aura HID is shown only when the complete verified identity matches."
+            });
+            let lighting_service_ready = lighting.privileged_helper_installed
+                && lighting.privileged_helper_reachable
+                && lighting.privileged_helper_compatible
+                && lighting.polkit_available
+                && lighting.privileged_lighting_category_available;
+            setup_lighting_service_value.set_text(if lighting_service_ready {
+                "Ready"
+            } else if !lighting.privileged_helper_installed {
+                "Missing"
+            } else if !lighting.privileged_helper_compatible {
+                "Incompatible"
+            } else {
+                "Unavailable"
+            });
+            setup_lighting_service_row.set_subtitle(&lighting_readiness_message(lighting));
+            setup_rgb_writes_value.set_text(if lighting.supports_rgb && lighting.can_set {
+                if lighting.authorization_required {
+                    "Authentication required on Apply"
+                } else {
+                    "Available"
+                }
+            } else {
+                "Unavailable"
+            });
+            setup_rgb_writes_row.set_subtitle(if lighting.authorization_required && lighting.can_set
+            {
+                "Editing is available now; PolicyKit authorizes only the submitted Apply operation."
+            } else if lighting.can_set {
+                "The selected lighting backend has a ready write path."
+            } else {
+                "See the privileged lighting service status for the unavailable write path."
+            });
+        } else {
+            for value in [
+                &setup_rgb_support_value,
+                &setup_aura_hid_value,
+                &setup_lighting_service_value,
+                &setup_rgb_writes_value,
+            ] {
+                value.set_text("Unavailable");
+            }
+            setup_rgb_support_row.set_subtitle("No lighting backend state was received.");
+            setup_aura_hid_row.set_subtitle("No verified native Aura backend was reported.");
+            setup_lighting_service_row
+                .set_subtitle("Refresh Setup & Access after rog-helperd reconnects.");
+            setup_rgb_writes_row.set_subtitle("No RGB write path is currently available.");
+        }
         setup_fan_support_value.set_text(if fan_state.caps.has_individual_fan_control {
             "Available"
         } else if !fan_state.fans.is_empty() {
@@ -5829,6 +6226,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &caps.kbd_backlight_access,
         ));
         if let Some(ref l) = lighting {
+            let successful_apply =
+                lighting_apply_success_revision != last_lighting_apply_success.get();
+            let reported_identity = LightingControlIdentity::from(l);
+            let identity_changed =
+                lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
+            let draft_is_clean =
+                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
+            let should_sync_draft = identity_changed
+                || lighting_baseline.borrow().is_none()
+                || successful_apply
+                || draft_is_clean;
+            if successful_apply {
+                last_lighting_apply_success.set(lighting_apply_success_revision);
+            }
+            lighting_syncing.set(true);
             lighting_overview_group.set_title(&lighting_device_title(l));
             lighting_device.set_text(&lighting_device_label(l));
             lighting_backend.set_text(&lighting_backend_label(l));
@@ -5850,29 +6262,36 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 "Not reported by backend"
             });
+            lighting_device_group.set_title(&lighting_device_title(l));
+            lighting_device_backend.set_text(&lighting_backend_label(l));
+            lighting_device_rgb.set_text(if l.supports_rgb {
+                "Supported"
+            } else {
+                "Not supported"
+            });
+            lighting_device_effects.set_text(&l.supported_modes.len().to_string());
+            lighting_device_control.set_text(if l.authorization_required && l.can_set {
+                "Available · authentication on Apply"
+            } else if l.can_set {
+                "Available"
+            } else {
+                "Unavailable"
+            });
             lighting_preview_group.set_visible(true);
             preview_caption.set_text(&lighting_preview_caption(l));
-            if let Some(rgba) = l.rgb_hex.as_deref().and_then(rgb_hex_to_rgba) {
-                if !rgb_button.is_focus() {
-                    *preview_colour.borrow_mut() = rgba;
-                    lighting_preview.queue_draw();
-                }
-            }
 
             brightness_scale.set_range(0.0, l.max_brightness as f64);
-            if !brightness_scale.is_focus() {
-                brightness_scale.set_value(l.brightness as f64);
-            }
             let can_set = l.can_set;
-            lighting_capability_banner.set_title(if l.authorization_required {
-                "Administrator access required to change keyboard lighting"
+            let capability_title = if l.authorization_required {
+                "Administrator authorization required when applying".to_string()
             } else if l.authorization == "denied" {
-                "Administrator authorization was denied"
+                "Administrator authorization was denied".to_string()
             } else if can_set {
-                "Lighting controls are available"
+                "Lighting controls are available".to_string()
             } else {
-                "Lighting telemetry is available, but controls are read-only"
-            });
+                lighting_readiness_message(l)
+            };
+            lighting_capability_banner.set_title(&capability_title);
             lighting_capability_banner
                 .set_revealed(!can_set || l.authorization_required || l.authorization == "denied");
             brightness_row.set_visible(l.supports_brightness);
@@ -5904,40 +6323,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = modes.clone();
                 }
-
-                if let Some(desired) = modes
-                    .iter()
-                    .find(|m| m.as_str().eq_ignore_ascii_case(&l.mode))
-                    .cloned()
-                    .or_else(|| modes.first().cloned())
-                {
-                    mode_combo.set_active_id(Some(&desired));
-                } else {
-                    mode_combo.set_active_id(None);
-                }
             }
 
-            let selected_mode = mode_combo
-                .active_id()
-                .map(|value| value.to_string())
+            let selected_mode = lighting_draft
+                .borrow()
+                .as_ref()
+                .map(|draft| draft.mode.clone())
                 .unwrap_or_else(|| l.mode.clone());
 
             let show_primary_colour =
                 l.supports_rgb && lighting_mode_supports_primary_colour(&selected_mode);
             rgb_button.set_sensitive(can_set && show_primary_colour);
+            rgb_hex_entry.set_sensitive(can_set && show_primary_colour);
             rgb_row.set_visible(show_primary_colour);
+            quick_colour_row.set_visible(show_primary_colour);
             secondary_rgb_row.set_visible(
                 l.supports_rgb && lighting_mode_supports_secondary_colour(&selected_mode),
             );
             secondary_rgb_button.set_sensitive(can_set && l.supports_rgb);
-            if let Some(rgba) = l
-                .secondary_rgb_hex
-                .as_deref()
-                .and_then(rgb_hex_to_rgba)
-                .filter(|_| !secondary_rgb_button.is_focus())
-            {
-                secondary_rgb_button.set_rgba(&rgba);
-            }
+            secondary_rgb_hex_entry.set_sensitive(can_set && l.supports_rgb);
 
             let speeds = l.supported_speeds.clone();
             let show_speed = l.supports_speed
@@ -5993,22 +6397,77 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 l.supports_brightness || (l.supports_modes && !modes.is_empty()) || l.supports_rgb;
             lighting_controls_group.set_visible(has_visible_controls);
             apply_row.set_visible(can_set && has_visible_controls);
-            apply_lighting.set_sensitive(can_set && has_visible_controls);
-            apply_lighting.set_label(if l.authorization_required {
-                "Unlock & Apply lighting"
-            } else {
-                "Apply lighting"
-            });
-            lighting_rgb_note.set_visible(!l.supports_rgb);
-            if let Some(rgba) = l
-                .rgb_hex
-                .as_deref()
-                .and_then(rgb_hex_to_rgba)
-                .filter(|_| !rgb_button.is_focus())
-            {
-                rgb_button.set_rgba(&rgba);
+            if should_sync_draft {
+                let value = if successful_apply && !identity_changed {
+                    lighting_draft
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| LightingDraft::from_info(l))
+                } else {
+                    LightingDraft::from_info(l)
+                };
+                set_lighting_controls_from_draft(
+                    &value,
+                    &brightness_scale,
+                    &mode_combo,
+                    &rgb_button,
+                    &secondary_rgb_button,
+                    &rgb_hex_entry,
+                    &secondary_rgb_hex_entry,
+                    &speed_combo,
+                    &direction_combo,
+                    &zone_combo,
+                );
+                *lighting_baseline.borrow_mut() = Some(value.clone());
+                *lighting_draft.borrow_mut() = Some(value);
+                *lighting_draft_identity.borrow_mut() = Some(reported_identity);
+                lighting_preview.queue_draw();
             }
+            let dirty = lighting_draft.borrow().as_ref() != lighting_baseline.borrow().as_ref();
+            let valid_hex = (!show_primary_colour
+                || rgb_hex_to_rgba(&rgb_hex_entry.text()).is_some())
+                && (!secondary_rgb_row.is_visible()
+                    || rgb_hex_to_rgba(&secondary_rgb_hex_entry.text()).is_some());
+            apply_lighting.set_sensitive(
+                can_set
+                    && has_visible_controls
+                    && dirty
+                    && valid_hex
+                    && !lighting_apply_in_progress,
+            );
+            reset_lighting.set_sensitive(dirty && !lighting_apply_in_progress);
+            apply_lighting.set_label(if lighting_apply_in_progress {
+                "Applying…"
+            } else if successful_apply {
+                "Applied"
+            } else if lighting_error_txt.is_some() {
+                "Failed · Retry"
+            } else if l.authorization_required {
+                "Unlock & Apply"
+            } else {
+                "Apply to Keyboard"
+            });
+            lighting_current_summary
+                .set_text(&lighting_draft_summary(lighting_baseline.borrow().as_ref()));
+            let pending_summary = if dirty {
+                lighting_draft_summary(lighting_draft.borrow().as_ref())
+            } else {
+                "No pending changes".to_string()
+            };
+            lighting_pending_summary.set_text(&pending_summary);
+            lighting_rgb_note.set_visible(!l.supports_rgb);
             rgb_row.set_subtitle(&lighting_rgb_subtitle(Some(l), &caps.kbd_backlight_access));
+            let apply_subtitle = if lighting_apply_in_progress {
+                "Sending the staged command through the keyboard backend.".to_string()
+            } else if successful_apply {
+                "Command accepted by keyboard backend.".to_string()
+            } else if let Some(error) = lighting_error_txt.as_deref() {
+                friendly_lighting_error(error)
+            } else {
+                lighting_apply_subtitle(Some(l), &caps.kbd_backlight_access)
+            };
+            apply_row.set_subtitle(&apply_subtitle);
+            lighting_syncing.set(false);
         } else {
             lighting_overview_group.set_title("Lighting Device");
             lighting_capability_banner.set_title(&format!(
@@ -6025,6 +6484,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             lighting_argb_capability.set_text("Not available");
             lighting_per_key_capability.set_text("Not available");
             lighting_preview_group.set_visible(false);
+            lighting_device_group.set_title("ROG Keyboard");
+            lighting_device_backend.set_text("Not detected");
+            lighting_device_rgb.set_text("Unavailable");
+            lighting_device_effects.set_text("0");
+            lighting_device_control.set_text("Unavailable");
             brightness_scale.set_range(0.0, 3.0);
             if !brightness_scale.is_focus() {
                 brightness_scale.set_value(0.0);
@@ -6032,12 +6496,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             brightness_scale.set_sensitive(false);
             mode_combo.set_sensitive(false);
             apply_lighting.set_sensitive(false);
+            reset_lighting.set_sensitive(false);
             rgb_button.set_sensitive(false);
             lighting_controls_group.set_visible(false);
             brightness_row.set_visible(false);
             mode_row.set_visible(false);
             apply_row.set_visible(false);
             rgb_row.set_visible(false);
+            quick_colour_row.set_visible(false);
             secondary_rgb_row.set_visible(false);
             speed_row.set_visible(false);
             direction_row.set_visible(false);
@@ -6308,9 +6774,29 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_lighting.take());
                 if let Some(p) = pending {
-                    if let Err(e) = apply_lighting(p).await {
-                        if let Ok(mut st) = shared.lock() {
-                            st.lighting_error = Some(e);
+                    match apply_lighting(p).await {
+                        Ok(()) => {
+                            if let Ok(mut st) = shared.lock() {
+                                let lighting_page_apply = st.lighting_apply_in_progress;
+                                st.lighting_apply_in_progress = false;
+                                if lighting_page_apply {
+                                    st.lighting_apply_success_revision =
+                                        st.lighting_apply_success_revision.wrapping_add(1);
+                                }
+                                st.lighting_error = None;
+                                st.pending_toast =
+                                    Some(("Keyboard lighting updated.".to_string(), false));
+                                st.mark_render_dirty();
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.lighting_apply_in_progress = false;
+                                st.lighting_error = Some(e.clone());
+                                st.pending_toast =
+                                    Some((friendly_lighting_error(&e), true));
+                                st.mark_render_dirty();
+                            }
                         }
                     }
                 }
@@ -8529,38 +9015,269 @@ fn select_combo_value(combo: &gtk::ComboBoxText, values: &[String], current: Opt
     combo.set_active_id(selected.map(String::as_str));
 }
 
+#[allow(clippy::too_many_arguments)]
+fn set_lighting_controls_from_draft(
+    draft: &LightingDraft,
+    brightness: &gtk::Scale,
+    mode: &gtk::ComboBoxText,
+    primary_button: &gtk::ColorButton,
+    secondary_button: &gtk::ColorButton,
+    primary_hex: &gtk::Entry,
+    secondary_hex: &gtk::Entry,
+    speed: &gtk::ComboBoxText,
+    direction: &gtk::ComboBoxText,
+    zone: &gtk::ComboBoxText,
+) {
+    brightness.set_value(draft.brightness as f64);
+    mode.set_active_id(Some(&draft.mode));
+    primary_hex.set_text(&draft.rgb_hex);
+    secondary_hex.set_text(&draft.secondary_rgb_hex);
+    primary_hex.remove_css_class("error");
+    secondary_hex.remove_css_class("error");
+    if let Some(rgba) = rgb_hex_to_rgba(&draft.rgb_hex) {
+        primary_button.set_rgba(&rgba);
+    }
+    if let Some(rgba) = rgb_hex_to_rgba(&draft.secondary_rgb_hex) {
+        secondary_button.set_rgba(&rgba);
+    }
+    speed.set_active_id(draft.speed.as_deref());
+    direction.set_active_id(draft.direction.as_deref());
+    zone.set_active_id(draft.zone.as_deref());
+}
+
+fn lighting_draft_summary(draft: Option<&LightingDraft>) -> String {
+    let Some(draft) = draft else {
+        return "Not reported".to_string();
+    };
+    let mut parts = vec![draft.mode.clone()];
+    if lighting_mode_supports_primary_colour(&draft.mode) {
+        parts.push(draft.rgb_hex.clone());
+    }
+    if lighting_mode_supports_secondary_colour(&draft.mode) {
+        parts.push(format!("+ {}", draft.secondary_rgb_hex));
+    }
+    if lighting_mode_supports_speed(&draft.mode) {
+        if let Some(speed) = &draft.speed {
+            parts.push(speed.clone());
+        }
+    }
+    if lighting_mode_supports_direction(&draft.mode) {
+        if let Some(direction) = &draft.direction {
+            parts.push(direction.clone());
+        }
+    }
+    parts.push(format!("Brightness {}", draft.brightness));
+    parts.join(" / ")
+}
+
+fn lighting_quick_colour_button(name: &str, hex: &str) -> gtk::Button {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(22);
+    area.set_content_height(22);
+    let colour = rgb_hex_to_rgba(hex).unwrap_or_else(|| gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+    area.set_draw_func(move |_, ctx, width, height| {
+        let radius = f64::from(width.min(height)) / 2.0 - 1.0;
+        ctx.arc(
+            f64::from(width) / 2.0,
+            f64::from(height) / 2.0,
+            radius,
+            0.0,
+            std::f64::consts::TAU,
+        );
+        ctx.set_source_rgba(
+            f64::from(colour.red()),
+            f64::from(colour.green()),
+            f64::from(colour.blue()),
+            1.0,
+        );
+        let _ = ctx.fill_preserve();
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.28);
+        ctx.set_line_width(1.0);
+        let _ = ctx.stroke();
+    });
+    let button = gtk::Button::builder()
+        .child(&area)
+        .tooltip_text(name)
+        .build();
+    button.add_css_class("lighting-swatch");
+    button
+}
+
+fn lighting_readiness_message(lighting: &LightingInfo) -> String {
+    if lighting.direct_writable {
+        return "Lighting controls are available".to_string();
+    }
+    if !lighting.privileged_helper_installed {
+        "Privileged lighting helper is not installed".to_string()
+    } else if !lighting.privileged_helper_reachable {
+        "Privileged lighting service is not reachable".to_string()
+    } else if !lighting.privileged_helper_compatible {
+        "Privileged lighting service is incompatible".to_string()
+    } else if !lighting.polkit_available {
+        "PolicyKit authorization service is unavailable".to_string()
+    } else if !lighting.privileged_lighting_category_available {
+        "Privileged helper does not expose lighting control".to_string()
+    } else if !lighting.write_path_ready {
+        "Aura keyboard write path is not ready".to_string()
+    } else {
+        lighting.unavailable_reason.clone().unwrap_or_else(|| {
+            "Lighting telemetry is available, but controls are read-only".to_string()
+        })
+    }
+}
+
+fn friendly_lighting_error(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("cancel") || lower.contains("denied") || lower.contains("not authorized") {
+        "Administrator authorization was cancelled.".to_string()
+    } else if lower.contains("unknown mode") || lower.contains("not supported") {
+        "This lighting effect is not supported by the detected keyboard.".to_string()
+    } else if lower.contains("open") && (lower.contains("aura") || lower.contains("device")) {
+        "The Aura keyboard device could not be opened.".to_string()
+    } else if lower.contains("dbus") || lower.contains("service") || lower.contains("daemon") {
+        "RGB control service is unavailable.".to_string()
+    } else {
+        "Keyboard lighting could not be updated.".to_string()
+    }
+}
+
 fn draw_keyboard_lighting_preview(
     ctx: &gtk::cairo::Context,
     width: i32,
     height: i32,
-    colour: &gdk::RGBA,
+    draft: Option<&LightingDraft>,
 ) {
     let width = f64::from(width);
     let height = f64::from(height);
     let margin = 12.0;
     let keyboard_width = (width - margin * 2.0).max(1.0);
     let keyboard_height = (height - margin * 2.0).max(1.0);
-    ctx.set_source_rgba(0.08, 0.09, 0.11, 1.0);
-    ctx.rectangle(margin, margin, keyboard_width, keyboard_height);
+    rounded_rectangle(ctx, margin, margin, keyboard_width, keyboard_height, 12.0);
+    ctx.set_source_rgba(0.055, 0.065, 0.085, 1.0);
     let _ = ctx.fill();
 
-    let rows = 5;
-    let columns = 15;
-    let gap = 4.0;
-    let key_width = (keyboard_width - gap * (f64::from(columns) + 1.0)) / f64::from(columns);
-    let key_height = (keyboard_height - gap * (f64::from(rows) + 1.0)) / f64::from(rows);
-    let red = f64::from(colour.red());
-    let green = f64::from(colour.green());
-    let blue = f64::from(colour.blue());
-    for row in 0..rows {
-        for column in 0..columns {
-            let x = margin + gap + f64::from(column) * (key_width + gap);
-            let y = margin + gap + f64::from(row) * (key_height + gap);
-            ctx.set_source_rgba(red, green, blue, 0.88);
-            ctx.rectangle(x, y, key_width.max(1.0), key_height.max(1.0));
+    const KEY_ROWS: &[&[f64]] = &[
+        &[
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0,
+        ],
+        &[
+            1.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0,
+        ],
+        &[1.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.2],
+        &[2.3, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.7],
+        &[1.2, 1.2, 1.2, 6.2, 1.2, 1.2, 1.2],
+    ];
+    let gap = 5.0;
+    let inner_width = keyboard_width - gap * 2.0;
+    let key_height =
+        (keyboard_height - gap * (KEY_ROWS.len() as f64 + 1.0)) / KEY_ROWS.len() as f64;
+    let mode = draft
+        .map(|draft| normalize_label(&draft.mode))
+        .unwrap_or_default();
+    let primary = draft
+        .and_then(|draft| rgb_hex_to_rgba(&draft.rgb_hex))
+        .unwrap_or_else(|| gdk::RGBA::new(0.28, 0.31, 0.36, 1.0));
+    let secondary = draft
+        .and_then(|draft| rgb_hex_to_rgba(&draft.secondary_rgb_hex))
+        .unwrap_or(primary);
+    for (row_index, row) in KEY_ROWS.iter().enumerate() {
+        let units: f64 = row.iter().sum();
+        let unit_width = (inner_width - gap * (row.len().saturating_sub(1) as f64)) / units;
+        let y = margin + gap + row_index as f64 * (key_height + gap);
+        let mut x = margin + gap;
+        for (key_index, key_units) in row.iter().enumerate() {
+            let key_width = unit_width * key_units;
+            let colour = if mode == "rainbowcycle" || mode == "rainbowwave" {
+                rainbow_rgba((key_index as f64 / row.len() as f64 + row_index as f64 * 0.08) % 1.0)
+            } else if mode == "breathe" && (key_index + row_index) % 2 == 1 {
+                secondary
+            } else {
+                primary
+            };
+            rounded_rectangle(
+                ctx,
+                x - 1.5,
+                y - 1.5,
+                key_width + 3.0,
+                key_height + 3.0,
+                5.0,
+            );
+            ctx.set_source_rgba(
+                f64::from(colour.red()),
+                f64::from(colour.green()),
+                f64::from(colour.blue()),
+                0.14,
+            );
             let _ = ctx.fill();
+            rounded_rectangle(ctx, x, y, key_width, key_height, 4.0);
+            ctx.set_source_rgba(
+                f64::from(colour.red()),
+                f64::from(colour.green()),
+                f64::from(colour.blue()),
+                0.82,
+            );
+            let _ = ctx.fill_preserve();
+            ctx.set_source_rgba(1.0, 1.0, 1.0, 0.16);
+            ctx.set_line_width(0.8);
+            let _ = ctx.stroke();
+            x += key_width + gap;
         }
     }
+}
+
+fn rounded_rectangle(
+    ctx: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    let radius = radius.min(width / 2.0).min(height / 2.0);
+    ctx.new_sub_path();
+    ctx.arc(
+        x + width - radius,
+        y + radius,
+        radius,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    ctx.arc(
+        x + width - radius,
+        y + height - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    ctx.arc(
+        x + radius,
+        y + height - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    ctx.arc(
+        x + radius,
+        y + radius,
+        radius,
+        std::f64::consts::PI,
+        std::f64::consts::PI * 1.5,
+    );
+    ctx.close_path();
+}
+
+fn rainbow_rgba(position: f64) -> gdk::RGBA {
+    let h = position * 6.0;
+    let x = 1.0 - ((h % 2.0) - 1.0).abs();
+    let (r, g, b) = match h as u8 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    gdk::RGBA::new(r as f32, g as f32, b as f32, 1.0)
 }
 
 fn lighting_current_label(lighting: &LightingInfo) -> String {
@@ -10416,6 +11133,30 @@ fn lighting_from_dbus(map: HashMap<String, OwnedValue>) -> Option<LightingInfo> 
         .unwrap_or(false),
         authorization: dbus_decode::string(&map, dbus_keys::lighting::AUTHORIZATION)
             .unwrap_or_else(|| "not_applicable".to_string()),
+        privileged_helper_installed: dbus_decode::boolean(
+            &map,
+            dbus_keys::lighting::PRIVILEGED_HELPER_INSTALLED,
+        )
+        .unwrap_or(false),
+        privileged_helper_reachable: dbus_decode::boolean(
+            &map,
+            dbus_keys::lighting::PRIVILEGED_HELPER_REACHABLE,
+        )
+        .unwrap_or(false),
+        privileged_helper_compatible: dbus_decode::boolean(
+            &map,
+            dbus_keys::lighting::PRIVILEGED_HELPER_COMPATIBLE,
+        )
+        .unwrap_or(false),
+        polkit_available: dbus_decode::boolean(&map, dbus_keys::lighting::POLKIT_AVAILABLE)
+            .unwrap_or(false),
+        privileged_lighting_category_available: dbus_decode::boolean(
+            &map,
+            dbus_keys::lighting::PRIVILEGED_LIGHTING_CATEGORY_AVAILABLE,
+        )
+        .unwrap_or(false),
+        write_path_ready: dbus_decode::boolean(&map, dbus_keys::lighting::WRITE_PATH_READY)
+            .unwrap_or(false),
         mode: dbus_decode::string(&map, dbus_keys::lighting::MODE)
             .unwrap_or_else(|| "Current mode not reported".to_string()),
         supports_brightness,
@@ -10707,6 +11448,9 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
 }
 
 fn rgb_hex_to_rgba(value: &str) -> Option<gtk::gdk::RGBA> {
+    if value.len() != 7 || !value.starts_with('#') {
+        return None;
+    }
     let rgb = RgbColor::parse_hex(value).ok()?;
     Some(gtk::gdk::RGBA::new(
         rgb.r as f32 / 255.0,
@@ -11787,6 +12531,24 @@ fn lighting_diagnostics_text(lighting: &LightingInfo) -> String {
     ));
     lines.push(format!("authorization: {}", lighting.authorization));
     lines.push(format!(
+        "privileged_helper_installed: {}",
+        lighting.privileged_helper_installed
+    ));
+    lines.push(format!(
+        "privileged_helper_reachable: {}",
+        lighting.privileged_helper_reachable
+    ));
+    lines.push(format!(
+        "privileged_helper_compatible: {}",
+        lighting.privileged_helper_compatible
+    ));
+    lines.push(format!("polkit_available: {}", lighting.polkit_available));
+    lines.push(format!(
+        "privileged_lighting_category_available: {}",
+        lighting.privileged_lighting_category_available
+    ));
+    lines.push(format!("write_path_ready: {}", lighting.write_path_ready));
+    lines.push(format!(
         "fallback_reason: {}",
         lighting.fallback_reason.as_deref().unwrap_or("(none)")
     ));
@@ -12044,6 +12806,30 @@ mod tests {
         map.insert("privileged_writable".to_string(), OwnedValue::from(true));
         map.insert("authorization_required".to_string(), OwnedValue::from(true));
         map.insert("authorization".to_string(), ov("not_checked".to_string()));
+        map.insert(
+            dbus_keys::lighting::PRIVILEGED_HELPER_INSTALLED.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::lighting::PRIVILEGED_HELPER_REACHABLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::lighting::PRIVILEGED_HELPER_COMPATIBLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::lighting::POLKIT_AVAILABLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::lighting::PRIVILEGED_LIGHTING_CATEGORY_AVAILABLE.to_string(),
+            OwnedValue::from(true),
+        );
+        map.insert(
+            dbus_keys::lighting::WRITE_PATH_READY.to_string(),
+            OwnedValue::from(true),
+        );
         map.insert("supports_brightness".to_string(), OwnedValue::from(false));
         map.insert("supports_modes".to_string(), OwnedValue::from(true));
         map.insert("supports_rgb".to_string(), OwnedValue::from(true));
@@ -12089,6 +12875,12 @@ mod tests {
         assert!(lighting.privileged_writable);
         assert!(lighting.authorization_required);
         assert_eq!(lighting.authorization, "not_checked");
+        assert!(lighting.privileged_helper_installed);
+        assert!(lighting.privileged_helper_reachable);
+        assert!(lighting.privileged_helper_compatible);
+        assert!(lighting.polkit_available);
+        assert!(lighting.privileged_lighting_category_available);
+        assert!(lighting.write_path_ready);
         assert_eq!(lighting.supported_modes, ["Static", "Breathe"]);
         assert_eq!(lighting.supported_speeds, ["Medium"]);
         assert_eq!(lighting.speed.as_deref(), Some("Medium"));
@@ -12157,6 +12949,87 @@ mod tests {
         assert!(!lighting_mode_supports_speed("Static"));
         assert!(lighting_mode_supports_direction("Rainbow Wave"));
         assert!(!lighting_mode_supports_direction("Rainbow Cycle"));
+    }
+
+    #[test]
+    fn lighting_draft_stages_only_effect_relevant_fields() {
+        let mut map = HashMap::new();
+        map.insert("can_set".to_string(), OwnedValue::from(true));
+        map.insert("supports_brightness".to_string(), OwnedValue::from(true));
+        map.insert("supports_modes".to_string(), OwnedValue::from(true));
+        map.insert("supports_rgb".to_string(), OwnedValue::from(true));
+        map.insert("supports_speed".to_string(), OwnedValue::from(true));
+        map.insert("supports_zones".to_string(), OwnedValue::from(false));
+        let info = lighting_from_dbus(map).expect("lighting map should decode");
+        let draft = LightingDraft {
+            brightness: 2,
+            mode: "Rainbow Wave".to_string(),
+            rgb_hex: "#FF0000".to_string(),
+            secondary_rgb_hex: "#0000FF".to_string(),
+            speed: Some("Fast".to_string()),
+            direction: Some("Left".to_string()),
+            zone: None,
+        };
+
+        let pending = draft.to_pending(&info);
+        assert_eq!(pending.brightness, Some(2));
+        assert_eq!(pending.mode.as_deref(), Some("Rainbow Wave"));
+        assert_eq!(pending.rgb_hex, None);
+        assert_eq!(pending.secondary_rgb_hex, None);
+        assert_eq!(pending.speed.as_deref(), Some("Fast"));
+        assert_eq!(pending.direction.as_deref(), Some("Left"));
+    }
+
+    #[test]
+    fn lighting_readiness_explains_each_privileged_gate() {
+        let base_map = || {
+            let mut map = HashMap::new();
+            map.insert("supports_rgb".to_string(), OwnedValue::from(true));
+            map
+        };
+        let decode = |overrides: &[(&str, bool)]| {
+            let mut map = base_map();
+            for (key, value) in overrides {
+                map.insert((*key).to_string(), OwnedValue::from(*value));
+            }
+            lighting_from_dbus(map).expect("lighting map should decode")
+        };
+
+        assert_eq!(
+            lighting_readiness_message(&decode(&[])),
+            "Privileged lighting helper is not installed"
+        );
+        assert_eq!(
+            lighting_readiness_message(&decode(&[(
+                dbus_keys::lighting::PRIVILEGED_HELPER_INSTALLED,
+                true,
+            )])),
+            "Privileged lighting service is not reachable"
+        );
+        let ready = decode(&[
+            (dbus_keys::lighting::PRIVILEGED_HELPER_INSTALLED, true),
+            (dbus_keys::lighting::PRIVILEGED_HELPER_REACHABLE, true),
+            (dbus_keys::lighting::PRIVILEGED_HELPER_COMPATIBLE, true),
+            (dbus_keys::lighting::POLKIT_AVAILABLE, true),
+            (
+                dbus_keys::lighting::PRIVILEGED_LIGHTING_CATEGORY_AVAILABLE,
+                true,
+            ),
+            (dbus_keys::lighting::WRITE_PATH_READY, true),
+        ]);
+        assert_eq!(
+            lighting_readiness_message(&ready),
+            "Lighting telemetry is available, but controls are read-only"
+        );
+    }
+
+    #[test]
+    fn ui_hex_validation_requires_hash_rrggbb() {
+        assert!(rgb_hex_to_rgba("#FF2A55").is_some());
+        assert!(rgb_hex_to_rgba("#ff2a55").is_some());
+        assert!(rgb_hex_to_rgba("FF2A55").is_none());
+        assert!(rgb_hex_to_rgba("#FFF").is_none());
+        assert!(rgb_hex_to_rgba("#GG0000").is_none());
     }
 
     #[test]
