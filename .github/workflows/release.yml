@@ -72,7 +72,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Build Release Assets
-        run: ROG_HELPER_BUILD_APPIMAGE=0 packaging/scripts/build-release-assets.sh dist
+        run: ROG_HELPER_BUILD_APPIMAGE=0 ROG_HELPER_BUILD_RPM=0 packaging/scripts/build-release-assets.sh dist
 
       - name: Verify AppImage Host Tools
         run: packaging/scripts/build-appimage.sh --check-deps
@@ -148,7 +148,7 @@ jobs:
             cargo rust gcc \
             pkgconf-pkg-config gtk4-devel libadwaita-devel \
             appstream desktop-file-utils python3-pillow \
-            rpm-build
+            rpm-build systemd-rpm-macros
 
       - name: Verify Tag Matches Workspace Version
         env:

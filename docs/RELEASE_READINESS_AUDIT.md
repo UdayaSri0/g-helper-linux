@@ -1,8 +1,8 @@
 # Release Readiness Audit
 
-Audit date: 2026-08-13
+Audit date: 2026-08-15
 
-This report walks [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) without converting unverified work into checked items. The repository is **not yet ready for final release sign-off** because installed-runtime, cross-package, and real-hardware evidence is incomplete.
+This report records the evidence used for the stable `v0.3.0` decision without converting unverified work into checked items. On 2026-08-15, the release owner approved `v0.3.0` for publication with incomplete installed-runtime, cross-package, and real-hardware checks retained as explicit known limitations. That approval is not evidence that those checks passed.
 
 ## Documentation
 
@@ -18,7 +18,7 @@ Status: reviewed for this hardening pass, but not manually validated end-to-end 
 
 Status: verified by `packaging/scripts/check-release-metadata.py`.
 
-- Workspace version: `0.2.2`.
+- Workspace version: `0.3.0`.
 - All crates inherit workspace version, edition, authors, homepage, license, and repository.
 - License: `MIT OR Apache-2.0`; both license files are present and packaged.
 - Homepage/repository: `https://github.com/UdayaSri0/g-helper-linux`.
@@ -90,7 +90,7 @@ Status: automated model/contract tests pass; manual UI/hardware verification rem
 - No hardware setters were invoked during this audit.
 - All checklist items that require observed UI behavior or a successful hardware write remain unchecked.
 
-## Remaining Release Blockers
+## Accepted v0.3.0 Limitations and Follow-Up
 
 1. Complete an installed daemon/UI/session-DBus smoke test and verify tray/launcher/About/update behavior.
 2. Add at least one reviewed hardware-validation record, then keep unsupported scenarios explicitly untested.
@@ -99,4 +99,4 @@ Status: automated model/contract tests pass; manual UI/hardware verification rem
 5. Perform the release-owner documentation and feature-advertising review across every checklist document.
 6. Re-run all checks from a clean checkout at the intended release commit and record final sign-off.
 
-No release, tag, commit, or push was performed.
+Release preparation targets `v0.3.0`. The release notes must retain these limitations, and future validation evidence should update the checklist rather than retroactively implying that an untested scenario passed.
