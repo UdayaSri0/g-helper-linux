@@ -48,7 +48,8 @@ Current repository note:
 
 ## Service and Packaging Files
 
-- [ ] `packaging/systemd-user/rog-helperd.service` reviewed
+- [ ] `packaging/systemd-user/rog-helperd.service` reviewed; it is `Type=dbus`, owns only
+  `io.github.roghelper.Daemon`, and uses the packaged unprivileged daemon
 - [ ] `packaging/systemd-system/rog-helper-privileged.service` reviewed against `PRIVILEGED_SECURITY_REVIEW.md`
 - [ ] root-only `packaging/udev/60-rog-helper-aura.rules` and helper `DeviceAllow`/`BindPaths` reviewed; confirm no user access mode/group/uaccess tag is added
 - [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
@@ -58,7 +59,8 @@ Current repository note:
 - [ ] `rog-helper privileged-status` confirms helper API compatibility plus udev rule, exact Aura
   descriptor/protocol, and a valid `/dev/rog-helper-aura` alias on the target
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
-- [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
+- [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed; `Exec` is the
+  unprivileged daemon fallback and `SystemdService` names only `rog-helperd.service`
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
 - [ ] `packaging/arch/PKGBUILD` reviewed
 - [ ] `packaging/arch/.SRCINFO` reviewed

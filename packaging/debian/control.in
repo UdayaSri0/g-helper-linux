@@ -7,5 +7,7 @@ Maintainer: @MAINTAINER@
 Homepage: @HOMEPAGE@
 Installed-Size: @INSTALLED_SIZE@
 Depends: @DEPENDS@
+Recommends: @RECOMMENDS@
+Suggests: @SUGGESTS@
 Description: @SUMMARY@
 @DESCRIPTION@

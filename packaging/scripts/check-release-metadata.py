@@ -82,10 +82,19 @@ def main() -> int:
     require(provided == desktop_binaries, "AppStream binary list drift")
 
     systemd = text("packaging/systemd-user/rog-helperd.service")
+    require("Type=dbus" in systemd, "user daemon must use D-Bus readiness")
+    require(
+        "BusName=io.github.roghelper.Daemon" in systemd,
+        "user daemon systemd bus name drift",
+    )
     require("ExecStart=rog-helperd" in systemd, "systemd daemon binary drift")
     dbus = text("packaging/dbus-session/io.github.roghelper.Daemon.service")
     require("Name=io.github.roghelper.Daemon" in dbus, "DBus service name drift")
     require("Exec=rog-helperd" in dbus, "DBus daemon binary drift")
+    require(
+        "SystemdService=rog-helperd.service" in dbus,
+        "session D-Bus activation must use the packaged user unit",
+    )
 
     privileged_dbus = text("packaging/dbus-system/io.github.roghelper.Privileged.service")
     require("Name=io.github.roghelper.Privileged" in privileged_dbus, "privileged DBus service name drift")
@@ -94,6 +103,12 @@ def main() -> int:
     allow_rules = privileged_bus_policy.findall("./policy/allow")
     require(any(rule.get("own") == "io.github.roghelper.Privileged" for rule in allow_rules), "privileged DBus ownership policy missing")
     require(any(rule.get("send_destination") == "io.github.roghelper.Privileged" for rule in allow_rules), "privileged DBus send policy missing")
+    default_policy = privileged_bus_policy.find("./policy[@context='default']")
+    require(default_policy is not None, "privileged default D-Bus policy missing")
+    require(
+        not default_policy.findall("./allow[@own]"),
+        "non-root callers must not be allowed to own the privileged bus name",
+    )
 
     privileged_systemd = text("packaging/systemd-system/rog-helper-privileged.service")
     require("Type=dbus" in privileged_systemd, "privileged service must use Type=dbus")

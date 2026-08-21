@@ -5,13 +5,13 @@
     "semantic_hash": ""
   },
   "crates/rog-cli/src/main.rs": {
-    "mtime": 1787307512.3047647,
-    "ast_hash": "56b0352997c00909ded43a0fee58d1ca",
+    "mtime": 1787309424.823341,
+    "ast_hash": "354066001fa515d2424c49d5e57eaf29",
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
-    "mtime": 1787306699.038227,
-    "ast_hash": "3201349e02839b7b4ee35dfbff24425f",
+    "mtime": 1787308834.771626,
+    "ast_hash": "1e4530370966b2cfd870b8fe27d9f123",
     "semantic_hash": ""
   },
   "crates/rog-core/src/error.rs": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1787306888.192435,
-    "ast_hash": "c4da4dcd9de776e1ebd7ca15eb3f301f",
+    "mtime": 1787308942.3606281,
+    "ast_hash": "74a2ad6f0c2926170b2032f8a1ccda8f",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1787307645.2413309,
-    "ast_hash": "5e5dc216b3cad89303ea27cc9cd02147",
+    "mtime": 1787309672.860859,
+    "ast_hash": "d29173427fbaade1814bbd3995ae773d",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -130,13 +130,13 @@
     "semantic_hash": ""
   },
   "packaging/debian/postinst": {
-    "mtime": 1787307084.414734,
-    "ast_hash": "5591077f3ae59e2c65702ce6092068f5",
+    "mtime": 1787308657.6161087,
+    "ast_hash": "0cba40af37f9d4f8fcbc432dccbc3d36",
     "semantic_hash": ""
   },
   "packaging/debian/postrm": {
-    "mtime": 1787307084.4167337,
-    "ast_hash": "cdb8057bb7cd9efbe49c9aa50dad9cbf",
+    "mtime": 1787308657.6181087,
+    "ast_hash": "76332ac4117054404a565be32c172f6c",
     "semantic_hash": ""
   },
   "packaging/flatpak/cargo-sources.json": {
@@ -155,8 +155,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/build-deb.sh": {
-    "mtime": 1787307200.9791024,
-    "ast_hash": "dde139f8827bb55ef5ca56342755eaa8",
+    "mtime": 1787308698.138936,
+    "ast_hash": "4b8f040bff35fe4d46b93cb493fd43aa",
     "semantic_hash": ""
   },
   "packaging/scripts/build-flatpak.sh": {
@@ -185,8 +185,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/package-common.sh": {
-    "mtime": 1787306974.5874462,
-    "ast_hash": "be864f3ca0b6ca52093c0239bec67b88",
+    "mtime": 1787308873.6416047,
+    "ast_hash": "850fa781fcc8562e1b8accec1012a800",
     "semantic_hash": ""
   },
   "packaging/scripts/stage-apt-repo.sh": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
-    "mtime": 1786724366.2082882,
-    "ast_hash": "2106984b3a54cf874a6a43cac16c89e6",
+    "mtime": 1787309334.4798684,
+    "ast_hash": "f35c2facdb9051cf40aee5187733e53e",
     "semantic_hash": ""
   },
   ".github/workflows/release.yml": {
-    "mtime": 1787306553.3075337,
-    "ast_hash": "aec63a3f9d44d20e5d54c53ddb8dc5ae",
+    "mtime": 1787309334.4818685,
+    "ast_hash": "b47e36e38547e051e2975850756bcfa3",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -215,8 +215,8 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1787307594.1847293,
-    "ast_hash": "ea74777feb675e67f433d9a5d15bca7b",
+    "mtime": 1787309447.5234673,
+    "ast_hash": "031f98b63bc1b23f0fdb902a7696cf75",
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
@@ -225,13 +225,13 @@
     "semantic_hash": ""
   },
   "docs/BUILD.md": {
-    "mtime": 1787307042.1362379,
-    "ast_hash": "36866f955894bc8b32cb3e0e29e57fe5",
+    "mtime": 1787309010.3657205,
+    "ast_hash": "814e55342b79bd5493400a4085c0a056",
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1787306792.2143135,
-    "ast_hash": "434be2455f1662d49debbf07c614ec58",
+    "mtime": 1787309008.408717,
+    "ast_hash": "08720ec01d37bbb5ceba81df46e1a4cf",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -280,8 +280,8 @@
     "semantic_hash": ""
   },
   "docs/RELEASE_CHECKLIST.md": {
-    "mtime": 1787307594.2087295,
-    "ast_hash": "a3adfeb1414032064378a0535d02e535",
+    "mtime": 1787308723.6868474,
+    "ast_hash": "103d4b2b192e43dcb7907e56bd30c79c",
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
@@ -425,42 +425,42 @@
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/128x128/apps/rog-helper.png": {
-    "mtime": 1787307535.6590397,
+    "mtime": 1787309492.0707238,
     "ast_hash": "56ecae861787018c814956b7e07d8292",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png": {
-    "mtime": 1787307535.4365323,
+    "mtime": 1787309491.9120767,
     "ast_hash": "a62793dbd609e4a572691dce52b9fbb5",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png": {
-    "mtime": 1787307535.4700377,
+    "mtime": 1787309491.9357228,
     "ast_hash": "3c297002191a546e019b459779d25595",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png": {
-    "mtime": 1787307535.7870414,
+    "mtime": 1787309492.1647243,
     "ast_hash": "382eb00bfcf7ebe1e2d4dc1a5301388b",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png": {
-    "mtime": 1787307535.507038,
+    "mtime": 1787309491.961723,
     "ast_hash": "19052b1a2d5bbd23a5309beda3f7e846",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/48x48/apps/rog-helper.png": {
-    "mtime": 1787307535.5460384,
+    "mtime": 1787309491.9907234,
     "ast_hash": "973a7adab2b09f57e1df973ea5e6dc3a",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/512x512/apps/rog-helper.png": {
-    "mtime": 1787307536.16437,
+    "mtime": 1787309492.456726,
     "ast_hash": "c350868b8a994a9dfb1325764a70e6a8",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/64x64/apps/rog-helper.png": {
-    "mtime": 1787307535.591039,
+    "mtime": 1787309492.0237234,
     "ast_hash": "dff3006c393b15f92f97731b64513655",
     "semantic_hash": ""
   },
@@ -525,8 +525,8 @@
     "semantic_hash": ""
   },
   "packaging/scripts/check-release-metadata.py": {
-    "mtime": 1787307277.4510012,
-    "ast_hash": "745e6b31cc2c8f3097b9b665d44605f9",
+    "mtime": 1787308673.9200344,
+    "ast_hash": "fdf1fae13b79a3667ca6fd692b00dc15",
     "semantic_hash": ""
   },
   "docs/DBUS_CONTRACT_MAP.md": {
@@ -560,8 +560,8 @@
     "semantic_hash": ""
   },
   "docs/PRIVILEGED_SECURITY_REVIEW.md": {
-    "mtime": 1786669611.4989088,
-    "ast_hash": "44a1996a460194f75ea96fef4e4a1408",
+    "mtime": 1787308817.4926443,
+    "ast_hash": "ea20df5f5b8009a8c59fdef0c4412280",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/aura_hid.rs": {
@@ -580,8 +580,38 @@
     "semantic_hash": ""
   },
   "packaging/scripts/validate-package-payload.py": {
-    "mtime": 1787307084.4137337,
-    "ast_hash": "2b1817117cd8291a772afec5c8975e2a",
+    "mtime": 1787309360.9330013,
+    "ast_hash": "dced344eac2e393f411a0ddb512e89d7",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-debian-maintainer-scripts.sh": {
+    "mtime": 1787308679.3180113,
+    "ast_hash": "934020f94ef87670794d669c18656031",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-deb-lifecycle.py": {
+    "mtime": 1787309017.8587346,
+    "ast_hash": "79d538bb40157dd80dd1d2e777ea30a3",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/check-deb-package.sh": {
+    "mtime": 1787309167.313151,
+    "ast_hash": "785a50430703564f51d7174e294a2330",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/install-dev.sh": {
+    "mtime": 1787309167.3141508,
+    "ast_hash": "f7279df20a453a1cfbc3c51fa47a78cc",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-install-dev.sh": {
+    "mtime": 1787309167.3141508,
+    "ast_hash": "30a8457a431920321ea17575e98c1c63",
+    "semantic_hash": ""
+  },
+  "docs/DEVELOPER_INSTALL.md": {
+    "mtime": 1787309167.315151,
+    "ast_hash": "5b67390bfc6afc26dda45da7cb171291",
     "semantic_hash": ""
   }
 }

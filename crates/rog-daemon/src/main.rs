@@ -468,6 +468,13 @@ impl RogHelperDaemon {
 
 #[interface(name = "io.github.roghelper.Daemon1")]
 impl RogHelperDaemon {
+    /// Read-only identity handshake used by the UI after package upgrades.
+    /// Keeping this independent from GetState lets a new UI distinguish an old
+    /// but otherwise responsive session process from a healthy installation.
+    fn get_daemon_info(&self) -> HashMap<String, OwnedValue> {
+        daemon_info_to_dbus()
+    }
+
     fn get_configuration(&self) -> String {
         config_to_toml(&self.read_config()).unwrap_or_else(|error| {
             warn!("failed to serialize in-memory configuration: {error}");
@@ -2347,6 +2354,19 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
         ov(s.warnings.clone()),
     );
     m
+}
+
+fn daemon_info_to_dbus() -> HashMap<String, OwnedValue> {
+    HashMap::from([
+        (
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        ),
+        (
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov(env!("CARGO_PKG_VERSION").to_string()),
+        ),
+    ])
 }
 
 #[derive(Debug)]
@@ -5331,6 +5351,21 @@ mod tests {
             1
         );
         assert_eq!(rows_from_value(&map[dbus_keys::SETUP_ISSUES_KEY]).len(), 1);
+    }
+
+    #[test]
+    fn daemon_identity_reports_workspace_api_and_package_version() {
+        let map = daemon_info_to_dbus();
+
+        assert_eq!(
+            map.get(dbus_keys::daemon_info::API_VERSION)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(u64::from(dbus_keys::DAEMON_API_VERSION))
+        );
+        assert_eq!(
+            value_as_str(&map, dbus_keys::daemon_info::PACKAGE_VERSION),
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[test]

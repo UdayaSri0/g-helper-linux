@@ -1,6 +1,16 @@
 #!/bin/sh
 set -e
 
+case "${1:-}" in
+    configure)
+        ;;
+    *)
+        # Debian may invoke postinst while unwinding a failed operation. There
+        # is no newly configured package to refresh in those cases.
+        exit 0
+        ;;
+esac
+
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true
 fi
@@ -11,6 +21,13 @@ fi
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
+
+    # $2 is the previously configured version. On an upgrade or reinstall,
+    # replace an already-running helper so it cannot keep serving an old D-Bus
+    # API. Never start the helper here: D-Bus activation remains authoritative.
+    if [ -n "${2:-}" ] && systemctl is-active --quiet rog-helper-privileged.service; then
+        systemctl try-restart rog-helper-privileged.service || true
+    fi
 fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules || true

@@ -231,14 +231,12 @@ Direct `.deb` install:
 ```bash
 sha256sum -c rog-helper-0.3.0-SHA256SUMS.txt --ignore-missing
 sudo apt install ./rog-helper_0.3.0_amd64.deb
+rog-helper privileged-status
 ```
 
-Optional user-session daemon enablement:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now rog-helperd.service
-```
+No manual systemd, D-Bus, PolicyKit, udev, device-permission, or daemon setup is required.
+Launching `rog-helper-ui` activates the unprivileged session daemon on demand. The package
+manager installs and refreshes the root-owned integration during the single APT transaction.
 
 The Debian-family package installs:
 
@@ -249,6 +247,9 @@ The Debian-family package installs:
 - session D-Bus activation under `/usr/share/dbus-1/services`
 - the user service under `/usr/lib/systemd/user`
 - the root-owned `rog-helper-privileged` binary under `/usr/libexec`, plus its systemd, system-D-Bus, PolicyKit, and root-only Aura udev integration
+
+Developers building from this checkout can use the normal-user, one-command flow documented in
+[docs/DEVELOPER_INSTALL.md](docs/DEVELOPER_INSTALL.md).
 
 Remove cleanly with:
 
@@ -388,6 +389,9 @@ The AppImage bundles:
 
 Important AppImage notes:
 
+- the AppImage cannot safely install the root helper, system D-Bus policy, PolicyKit policy,
+  systemd system service, or Aura udev rule; privileged hardware features require separately
+  installed system integration, so the `.deb` is the recommended full-featured format
 - the AppImage does not install itself into the system menu or enable desktop integration automatically
 - the bundled `rog-helperd.service` unit is included for reference, but it is not installed or enabled by running the AppImage
 - the AppImage updates the session environment so the bundled D-Bus activation file can find `rog-helperd`, but if you want persistent login-session integration, prefer the `.deb` package

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -68,6 +69,7 @@ const ICON_ABOUT: &str = "rog-about-symbolic";
     default_path = "/io/github/roghelper/Daemon"
 )]
 trait Daemon1 {
+    fn get_daemon_info(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_configuration(&self) -> zbus::Result<String>;
     fn set_configuration(&self, contents: &str) -> zbus::Result<()>;
     fn reset_configuration(&self) -> zbus::Result<String>;
@@ -209,8 +211,11 @@ struct SharedUiState {
     caps_text: String,
     setup_status: SetupStatus,
     privileged_status: Option<PrivilegedStatus>,
+    daemon_identity: DaemonIdentity,
     pending_setup_refresh: bool,
     setup_refreshing: bool,
+    pending_daemon_restart: bool,
+    daemon_restart_in_progress: bool,
     warnings: Vec<String>,
     profile: Option<String>,
     gpu_mode: Option<String>,
@@ -262,8 +267,11 @@ impl Default for SharedUiState {
             caps_text: String::new(),
             setup_status: SetupStatus::unknown(),
             privileged_status: None,
+            daemon_identity: DaemonIdentity::checking(),
             pending_setup_refresh: true,
             setup_refreshing: false,
+            pending_daemon_restart: false,
+            daemon_restart_in_progress: false,
             warnings: Vec::new(),
             profile: None,
             gpu_mode: None,
@@ -297,6 +305,88 @@ impl Default for SharedUiState {
             show_gpu_page: false,
             quit: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonIdentity {
+    api_version: Option<u32>,
+    package_version: Option<String>,
+    connected: bool,
+    compatible: bool,
+    detail: String,
+}
+
+impl DaemonIdentity {
+    fn checking() -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: false,
+            compatible: false,
+            detail: "Checking the session service identity…".to_string(),
+        }
+    }
+
+    fn legacy(error: &str) -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: true,
+            compatible: false,
+            detail: format!(
+                "The connected session service does not expose this release's identity API ({error})."
+            ),
+        }
+    }
+
+    fn unreachable(error: &str) -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: false,
+            compatible: false,
+            detail: format!("The session service could not be reached ({error})."),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.connected && !self.compatible
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallationHealth {
+    Checking,
+    Ready,
+    StaleDaemon,
+    NeedsAttention,
+}
+
+fn installation_health(
+    daemon: &DaemonIdentity,
+    privileged: Option<&PrivilegedStatus>,
+) -> InstallationHealth {
+    if daemon.detail.starts_with("Checking") || privileged.is_none() {
+        return InstallationHealth::Checking;
+    }
+    if !daemon.compatible {
+        return if daemon.is_stale() {
+            InstallationHealth::StaleDaemon
+        } else {
+            InstallationHealth::NeedsAttention
+        };
+    }
+    let privileged = privileged.expect("checked above");
+    if privileged.system_bus_connected
+        && privileged.privileged_helper_installed
+        && privileged.privileged_helper_reachable
+        && privileged.privileged_helper_compatible
+        && privileged.polkit_available
+    {
+        InstallationHealth::Ready
+    } else {
+        InstallationHealth::NeedsAttention
     }
 }
 
@@ -2247,12 +2337,41 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_safety_banner.set_revealed(true);
     setup_root.append(&setup_safety_banner);
 
+    let setup_installation_group = adw::PreferencesGroup::builder()
+        .title("Installation")
+        .description(
+            "Core package and service health; optional providers are reported separately below.",
+        )
+        .build();
+    let (setup_installation_row, setup_installation_value) =
+        setup_pref_row(&setup_installation_group, "System Integration");
+    setup_root.append(&setup_installation_group);
+
     let setup_session_group = adw::PreferencesGroup::builder()
         .title("Session Daemon")
         .description("The unprivileged session service used by the desktop application.")
         .build();
     let (setup_daemon_row, setup_daemon_value) =
         setup_pref_row(&setup_session_group, "rog-helperd");
+    let restart_daemon_button = gtk::Button::with_label("Restart Service");
+    restart_daemon_button.set_tooltip_text(Some(
+        "Restart rog-helperd in this user session and reconnect through D-Bus activation.",
+    ));
+    restart_daemon_button.set_visible(false);
+    setup_daemon_row.add_suffix(&restart_daemon_button);
+    {
+        let shared = shared.clone();
+        restart_daemon_button.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            if let Ok(mut state) = shared.lock() {
+                if state.daemon_identity.is_stale() {
+                    state.pending_daemon_restart = true;
+                    state.daemon_restart_in_progress = true;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
     setup_root.append(&setup_session_group);
 
     let setup_administrator_group = adw::PreferencesGroup::builder()
@@ -2274,8 +2393,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_root.append(&setup_administrator_group);
 
     let setup_services_group = adw::PreferencesGroup::builder()
-        .title("Control Services")
-        .description("A live API check is required; a binary alone is not considered ready.")
+        .title("Optional Providers")
+        .description("These integrations enable particular features; a missing optional provider does not make the ROG Helper installation unhealthy.")
         .build();
     let (setup_asusd_row, setup_asusd_value) = setup_pref_row(&setup_services_group, "asusd");
     let (setup_supergfxd_row, setup_supergfxd_value) =
@@ -2334,7 +2453,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_issues_group.add(&setup_issues_row);
     setup_root.append(&setup_issues_group);
 
-    let refresh_setup_button = gtk::Button::with_label("Refresh checks");
+    let refresh_setup_button = gtk::Button::with_label("Recheck Installation");
     refresh_setup_button.add_css_class("suggested-action");
     {
         let shared = shared.clone();
@@ -4310,7 +4429,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             caps_text,
             setup_status,
             privileged_status,
+            daemon_identity,
             setup_refreshing,
+            daemon_restart_in_progress,
             warnings,
             profile,
             gpu_mode,
@@ -4358,7 +4479,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.caps_text.clone(),
                 st.setup_status.clone(),
                 st.privileged_status.clone(),
+                st.daemon_identity.clone(),
                 st.setup_refreshing,
+                st.daemon_restart_in_progress,
                 st.warnings.clone(),
                 st.profile.clone(),
                 st.gpu_mode.clone(),
@@ -4467,6 +4590,34 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         connection_status.remove_css_class("disconnected");
         let state_received = telemetry.is_some();
 
+        let install_health = installation_health(&daemon_identity, privileged_status.as_ref());
+        match install_health {
+            InstallationHealth::Checking => {
+                setup_installation_value.set_text("Checking");
+                setup_installation_row.set_subtitle(
+                    "Reading the session and privileged service identities without requesting authorization.",
+                );
+            }
+            InstallationHealth::Ready => {
+                setup_installation_value.set_text("Ready");
+                setup_installation_row.set_subtitle(
+                    "The session daemon, system D-Bus helper, and PolicyKit integration match this application release.",
+                );
+            }
+            InstallationHealth::StaleDaemon => {
+                setup_installation_value.set_text("Service restart needed");
+                setup_installation_row.set_subtitle(
+                    "ROG Helper was updated, but this user session is still connected to an older service process.",
+                );
+            }
+            InstallationHealth::NeedsAttention => {
+                setup_installation_value.set_text("Needs attention");
+                setup_installation_row.set_subtitle(
+                    "One or more required package integrations are unavailable. Optional providers do not affect this result.",
+                );
+            }
+        }
+
         update_setup_dependency_row(
             &setup_status,
             DependencyKind::RogHelperd,
@@ -4523,11 +4674,37 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &caps,
             &administrator_access_rows,
         );
+        if daemon_identity.compatible {
+            setup_daemon_value.set_text("Connected");
+            setup_daemon_row.set_subtitle(&format!(
+                "Session API v{} · service {} · UI {}",
+                daemon_identity.api_version.unwrap_or_default(),
+                daemon_identity
+                    .package_version
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                env!("CARGO_PKG_VERSION")
+            ));
+        } else if daemon_identity.is_stale() {
+            setup_daemon_value.set_text("Restart needed");
+            setup_daemon_row.set_subtitle(&daemon_identity.detail);
+        } else if !daemon_identity.connected {
+            setup_daemon_value.set_text("Unavailable");
+            setup_daemon_row.set_subtitle(&daemon_identity.detail);
+        }
+        restart_daemon_button.set_visible(daemon_identity.is_stale());
+        restart_daemon_button
+            .set_sensitive(daemon_identity.is_stale() && !daemon_restart_in_progress);
+        restart_daemon_button.set_label(if daemon_restart_in_progress {
+            "Restarting…"
+        } else {
+            "Restart Service"
+        });
         refresh_setup_button.set_sensitive(!setup_refreshing);
         refresh_setup_button.set_label(if setup_refreshing {
-            "Refreshing…"
+            "Rechecking…"
         } else {
-            "Refresh checks"
+            "Recheck Installation"
         });
         setup_advanced_buffer.set_text(&setup_status.to_report_text(true));
         if setup_status.issues.is_empty() {
@@ -5919,6 +6096,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
+        } else if daemon_identity.is_stale() {
+            warning_banner.remove_css_class("warning-info");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class("warning-warning");
+            warning_banner.set_title("ROG Helper was updated");
+            warning_banner.set_button_label(Some("Open Setup"));
+            warning_subtitle.set_text(
+                "The session service is still running an older version. Restart it from Setup & Access; no reboot or administrator access is required.",
+            );
+            warning_subtitle.set_visible(true);
+            warning_banner.set_revealed(true);
+            warning_area.set_visible(true);
+            open_diagnostics_button.set_visible(false);
         } else if setup_status.control_issue_count() > 0 {
             warning_banner.remove_css_class("warning-info");
             warning_banner.remove_css_class("warning-error");
@@ -6919,6 +7109,36 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     }
                 }
 
+                let pending_daemon_restart = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_daemon_restart))
+                    .unwrap_or(false);
+                if pending_daemon_restart {
+                    match restart_current_user_daemon().await {
+                        Ok(()) => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            if let Ok(mut state) = shared.lock() {
+                                state.daemon_restart_in_progress = false;
+                                state.daemon_identity = DaemonIdentity::checking();
+                                state.pending_setup_refresh = true;
+                                state.pending_toast = Some((
+                                    "Session service restarted for this user.".to_string(),
+                                    false,
+                                ));
+                                state.mark_render_dirty();
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.daemon_restart_in_progress = false;
+                                state.pending_toast = Some((error, true));
+                                state.mark_render_dirty();
+                            }
+                        }
+                    }
+                }
+
                 match fetch_state().await {
                     Ok((
                         t,
@@ -6998,12 +7218,24 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         state.setup_refreshing = true;
                         state.mark_render_dirty();
                     }
-                    let (setup_result, privileged_result) =
-                        tokio::join!(fetch_setup_status(), fetch_privileged_status());
+                    let (setup_result, privileged_result, identity_result) = tokio::join!(
+                        fetch_setup_status(),
+                        fetch_privileged_status(),
+                        fetch_daemon_identity()
+                    );
                     if let Ok(mut state) = shared.lock() {
                         state.privileged_status = Some(privileged_result.unwrap_or_else(|_| {
                             PrivilegedStatus::unavailable(false, false)
                         }));
+                        state.daemon_identity = match identity_result {
+                            Ok(identity) => identity,
+                            Err(ref error)
+                                if setup_result.is_ok() || state.daemon_error.is_none() =>
+                            {
+                                DaemonIdentity::legacy(error)
+                            }
+                            Err(ref error) => DaemonIdentity::unreachable(error),
+                        };
                     }
                     match setup_result {
                         Ok(status) => {
@@ -7039,6 +7271,115 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
             }
         });
     });
+}
+
+async fn restart_current_user_daemon() -> Result<(), String> {
+    tokio::task::spawn_blocking(terminate_legacy_current_user_daemons)
+        .await
+        .map_err(|error| {
+            format!("Unable to inspect the current user's session service: {error}")
+        })??;
+
+    let status = tokio::task::spawn_blocking(|| current_user_daemon_restart_command().status())
+        .await
+        .map_err(|error| format!("Unable to run the current-user service restart: {error}"))?
+        .map_err(|error| format!("Unable to start systemctl for this user: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "The current-user service restart failed with {status}. No administrator command was attempted."
+        ))
+    }
+}
+
+fn terminate_legacy_current_user_daemons() -> Result<(), String> {
+    let current_uid = fs::metadata("/proc/self")
+        .map_err(|error| format!("Unable to identify the current user: {error}"))?
+        .uid();
+    let mut pids = Vec::new();
+    let processes = fs::read_dir("/proc")
+        .map_err(|error| format!("Unable to inspect running processes: {error}"))?;
+
+    for entry in processes.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id()
+            || entry.metadata().map(|metadata| metadata.uid()).ok() != Some(current_uid)
+        {
+            continue;
+        }
+        let comm_matches = fs::read_to_string(entry.path().join("comm"))
+            .is_ok_and(|comm| comm.trim() == "rog-helperd");
+        let executable_matches = fs::read_link(entry.path().join("exe"))
+            .ok()
+            .as_deref()
+            .is_some_and(is_rog_helper_daemon_executable);
+        if comm_matches && executable_matches {
+            pids.push(pid);
+        }
+    }
+
+    let Some(mut command) = current_user_daemon_terminate_command(&pids) else {
+        return Ok(());
+    };
+    let status = command
+        .status()
+        .map_err(|error| format!("Unable to terminate the old session service: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "The old current-user session service could not be stopped ({status})."
+        ))
+    }
+}
+
+fn is_rog_helper_daemon_executable(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "rog-helperd" || name == "rog-helperd (deleted)")
+}
+
+fn current_user_daemon_terminate_command(pids: &[u32]) -> Option<Command> {
+    if pids.is_empty() {
+        return None;
+    }
+    let mut command = Command::new("/bin/kill");
+    command.arg("-TERM");
+    command.args(pids.iter().map(u32::to_string));
+    Some(command)
+}
+
+fn current_user_daemon_restart_command() -> Command {
+    let mut command = Command::new("systemctl");
+    command.args([
+        "--user",
+        "--no-ask-password",
+        "restart",
+        "rog-helperd.service",
+    ]);
+    command
+}
+
+async fn fetch_daemon_identity() -> Result<DaemonIdentity, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let map = proxy
+        .get_daemon_info()
+        .await
+        .map_err(|error| format!("daemon GetDaemonInfo failed: {error}"))?;
+    Ok(daemon_identity_from_dbus(&map, env!("CARGO_PKG_VERSION")))
 }
 
 async fn fetch_setup_status() -> Result<SetupStatus, String> {
@@ -11674,6 +12015,44 @@ fn privileged_status_from_dbus(map: &HashMap<String, OwnedValue>) -> PrivilegedS
     }
 }
 
+fn daemon_identity_from_dbus(
+    map: &HashMap<String, OwnedValue>,
+    expected_package_version: &str,
+) -> DaemonIdentity {
+    let api_version = map
+        .get(dbus_keys::daemon_info::API_VERSION)
+        .and_then(u64_from_value)
+        .and_then(|value| u32::try_from(value).ok());
+    let package_version = dbus_decode::string(map, dbus_keys::daemon_info::PACKAGE_VERSION);
+    let compatible = api_version == Some(dbus_keys::DAEMON_API_VERSION)
+        && package_version.as_deref() == Some(expected_package_version);
+    let detail = if compatible {
+        format!(
+            "Session API v{} and service version {} match this application.",
+            dbus_keys::DAEMON_API_VERSION,
+            expected_package_version
+        )
+    } else {
+        format!(
+            "ROG Helper was updated, but the running session service reports API {} and version {} (expected API {} and version {}).",
+            api_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            package_version.as_deref().unwrap_or("unknown"),
+            dbus_keys::DAEMON_API_VERSION,
+            expected_package_version
+        )
+    };
+
+    DaemonIdentity {
+        api_version,
+        package_version,
+        connected: true,
+        compatible,
+        detail,
+    }
+}
+
 fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
     let b = |key| dbus_decode::boolean(map, key).unwrap_or(false);
 
@@ -12621,6 +13000,95 @@ mod tests {
             status.privileged_categories_available,
             [PrivilegedCategory::Cpu, PrivilegedCategory::Fans]
         );
+    }
+
+    #[test]
+    fn daemon_identity_requires_matching_api_and_package_version() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        map.insert(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.3.0".to_string()),
+        );
+
+        let matching = daemon_identity_from_dbus(&map, "0.3.0");
+        assert!(matching.connected);
+        assert!(matching.compatible);
+        assert!(!matching.is_stale());
+
+        let stale = daemon_identity_from_dbus(&map, "0.4.0");
+        assert!(stale.connected);
+        assert!(!stale.compatible);
+        assert!(stale.is_stale());
+        assert!(stale.detail.contains("Restart") || stale.detail.contains("running session"));
+    }
+
+    #[test]
+    fn installation_health_excludes_optional_provider_availability() {
+        let daemon = DaemonIdentity {
+            api_version: Some(dbus_keys::DAEMON_API_VERSION),
+            package_version: Some("0.3.0".to_string()),
+            connected: true,
+            compatible: true,
+            detail: "ready".to_string(),
+        };
+        let mut privileged = PrivilegedStatus::unavailable(true, true);
+        privileged.system_bus_connected = true;
+        privileged.privileged_helper_installed = true;
+        privileged.privileged_helper_reachable = true;
+        privileged.privileged_helper_compatible = true;
+        privileged.polkit_available = true;
+
+        assert_eq!(
+            installation_health(&daemon, Some(&privileged)),
+            InstallationHealth::Ready
+        );
+    }
+
+    #[test]
+    fn daemon_restart_command_is_fixed_and_current_user_only() {
+        let command = current_user_daemon_restart_command();
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "--user",
+                "--no-ask-password",
+                "restart",
+                "rog-helperd.service"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_daemon_termination_is_exact_and_current_user_only() {
+        assert!(is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helperd"
+        )));
+        assert!(is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helperd (deleted)"
+        )));
+        assert!(!is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helper-ui"
+        )));
+
+        let command = current_user_daemon_terminate_command(&[123, 456])
+            .expect("non-empty PID list should produce a command");
+        assert_eq!(command.get_program(), "/bin/kill");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["-TERM", "123", "456"]
+        );
+        assert!(current_user_daemon_terminate_command(&[]).is_none());
     }
 
     #[test]
