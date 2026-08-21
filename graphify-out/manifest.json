@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1787309672.860859,
-    "ast_hash": "d29173427fbaade1814bbd3995ae773d",
+    "mtime": 1787311546.778288,
+    "ast_hash": "dd4fcca5e2be6b235c80d79f005cbb2a",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -220,8 +220,8 @@
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1787307594.1877294,
-    "ast_hash": "067b874c3445d0c7bc2a898ee0fb5d02",
+    "mtime": 1787311480.7699895,
+    "ast_hash": "d1a1c0fed2580ab916538ce5a00a400f",
     "semantic_hash": ""
   },
   "docs/BUILD.md": {
@@ -250,8 +250,8 @@
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1787307594.1897292,
-    "ast_hash": "82352b7d6480ff6010749be250fbdbb1",
+    "mtime": 1787311480.7719886,
+    "ast_hash": "f0f876c2a309e89d6d09e1e07e039243",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1787307594.1907294,
-    "ast_hash": "4d5dad94e2b2cb5f98787e8039489c14",
+    "mtime": 1787311480.772988,
+    "ast_hash": "f2996c8e6374ed63ff0b23ce92a0f641",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -425,42 +425,42 @@
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/128x128/apps/rog-helper.png": {
-    "mtime": 1787309492.0707238,
+    "mtime": 1787309751.5143917,
     "ast_hash": "56ecae861787018c814956b7e07d8292",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png": {
-    "mtime": 1787309491.9120767,
+    "mtime": 1787309751.3005266,
     "ast_hash": "a62793dbd609e4a572691dce52b9fbb5",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png": {
-    "mtime": 1787309491.9357228,
+    "mtime": 1787309751.3343904,
     "ast_hash": "3c297002191a546e019b459779d25595",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png": {
-    "mtime": 1787309492.1647243,
+    "mtime": 1787309751.6373925,
     "ast_hash": "382eb00bfcf7ebe1e2d4dc1a5301388b",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png": {
-    "mtime": 1787309491.961723,
+    "mtime": 1787309751.3693907,
     "ast_hash": "19052b1a2d5bbd23a5309beda3f7e846",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/48x48/apps/rog-helper.png": {
-    "mtime": 1787309491.9907234,
+    "mtime": 1787309751.408391,
     "ast_hash": "973a7adab2b09f57e1df973ea5e6dc3a",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/512x512/apps/rog-helper.png": {
-    "mtime": 1787309492.456726,
+    "mtime": 1787309752.0178232,
     "ast_hash": "c350868b8a994a9dfb1325764a70e6a8",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/64x64/apps/rog-helper.png": {
-    "mtime": 1787309492.0237234,
+    "mtime": 1787309751.4523911,
     "ast_hash": "dff3006c393b15f92f97731b64513655",
     "semantic_hash": ""
   },
