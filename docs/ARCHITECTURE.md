@@ -260,12 +260,19 @@ third, then unavailable. Native Aura crosses the root boundary only as high-leve
 zone, or byte array is caller-controlled. A root-only udev alias is revalidated against the live
 device before each write.
 
-The control/privilege matrix makes this policy observable. GPU and profile rows report
+The control/privilege matrix makes this policy observable. Lighting additionally exports separate
+helper-installed, helper-reachable, API-compatible, PolicyKit, lighting-category, and write-path
+facts. A `not_checked` authorization state therefore remains editable and requests authentication
+only when Apply crosses the typed privileged boundary. Native RGB readiness is independent of the
+optional sysfs brightness fallback, allowing one coherent page when RGB and brightness use
+different safe routes. GPU and profile rows report
 `external-service` access rather than implying that root access to ROG Helper would help. Battery,
 CPU, fan, and keyboard rows distinguish direct, privileged, read-only, and unsupported states.
 User configuration and login integration report direct user-session access and are never routed
 through the root helper.
-`rog-helperd` probes it only when diagnostics are requested and continues normally when it is
+`rog-helperd` refreshes the non-authorizing helper capability probe when lighting/status is read
+so a newly installed helper can become available without restarting the session daemon; this probe
+does not request interactive PolicyKit authorization. It continues normally when the helper is
 missing, blocked, incompatible, or unavailable. The helper cannot receive filesystem paths,
 program names, shell text, or arbitrary values to write. Future control methods must map a
 validated domain operation to a fixed internal endpoint and authorize the original system-bus

@@ -27,6 +27,14 @@ The verified fallback is the kernel LED-class keyboard backlight:
 The original target discovery was read-only. No physical RGB write has been performed as part of
 the repository evidence.
 
+An installed-target audit on 2026-08-21 found why the then-installed UI remained read-only despite
+this discovery: the installed helper exposed privileged API v1 without `SetAuraEffect`, while the
+current daemon requires API v2, and that package lacked both `60-rog-helper-aura.rules` and
+`/dev/rog-helper-aura`. D-Bus activation and the lighting PolicyKit action were present. Current
+source packaging includes and validates the API-v2 helper, narrow udev rule, D-Bus/systemd files,
+PolicyKit policy, and sandbox device allow-list; reinstalling current source/package is required to
+replace an older installed payload.
+
 ## Evidence
 
 Read-only inspection found:
@@ -92,6 +100,11 @@ interface discovery, driver, device number, open-file identity, descriptor hash,
 that exactly one supported target exists. It sends one fixed three-report effect/set/apply sequence,
 does not retry a failed report, limits distinct requests to one per 250 ms, suppresses duplicates,
 and bounds the operation to one second.
+
+Readiness is reported as separate facts: hardware support, selected backend, helper
+installed/reachable/compatible, PolicyKit availability, lighting category availability, and final
+write-path readiness. `not_checked` authorization is an editable state; it is not read-only and
+does not authenticate until Apply.
 
 ## Provider hierarchy
 

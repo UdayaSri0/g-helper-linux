@@ -56,6 +56,7 @@ pub struct AuraHidIdentity {
     pub vendor_id: u16,
     pub product_id: u16,
     pub interface_number: u8,
+    pub driver: Option<String>,
     pub board_name: String,
     pub report_descriptor_sha256: String,
     pub output_report_payload_bytes: BTreeMap<u8, usize>,
@@ -202,6 +203,12 @@ pub fn match_g615jm(identity: &AuraHidIdentity) -> AuraHidMatch {
         rejection_reasons.push(format!(
             "USB interface {:02x} is not the verified interface {:02x}",
             identity.interface_number, G615JM_AURA_USB_INTERFACE
+        ));
+    }
+    if identity.driver.as_deref() != Some("asus") {
+        rejection_reasons.push(format!(
+            "HID driver '{}' is not the verified ASUS driver 'asus'",
+            identity.driver.as_deref().unwrap_or("unbound")
         ));
     }
     if !is_g615jm_board(&identity.board_name) {
@@ -489,10 +496,12 @@ fn inspect_hidraw(
     let output_reports = parse_output_report_sizes(&descriptor)
         .map_err(|error| format!("invalid HID report descriptor: {error}"))?;
 
+    let driver = find_driver_name(&hid_device);
     let identity = AuraHidIdentity {
         vendor_id,
         product_id,
         interface_number: interface.unwrap_or(u8::MAX),
+        driver: driver.clone(),
         board_name: board_name.to_string(),
         report_descriptor_sha256: descriptor_hash.clone(),
         output_report_payload_bytes: output_reports.clone(),
@@ -502,7 +511,6 @@ fn inspect_hidraw(
     let devnode_mode = fs::metadata(dev_root.join(hidraw_name))
         .ok()
         .map(|metadata| metadata.permissions().mode() & 0o7777);
-    let driver = find_driver_name(&hid_device);
     let protocol_family = matched
         .protocol
         .map(|protocol| protocol.as_str().to_string());
@@ -601,6 +609,7 @@ mod tests {
             vendor_id: ASUS_USB_VENDOR_ID,
             product_id: G615JM_AURA_PRODUCT_ID,
             interface_number: G615JM_AURA_USB_INTERFACE,
+            driver: Some("asus".to_string()),
             board_name: "G615JM".to_string(),
             report_descriptor_sha256: G615JM_REPORT_DESCRIPTOR_SHA256.to_string(),
             output_report_payload_bytes: BTreeMap::from([(
@@ -660,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn matcher_rejects_wrong_vendor_product_interface_board_and_descriptor() {
+    fn matcher_rejects_any_identity_field_outside_verified_contract() {
         let mutations = [
             {
                 let mut value = valid_identity();
@@ -675,6 +684,11 @@ mod tests {
             {
                 let mut value = valid_identity();
                 value.interface_number = 1;
+                value
+            },
+            {
+                let mut value = valid_identity();
+                value.driver = Some("hid-generic".to_string());
                 value
             },
             {
@@ -744,6 +758,80 @@ mod tests {
         assert_eq!(&reports.effect()[4..7], &[0xff, 0x11, 0xdd]);
         assert_eq!(reports.effect()[7], 0xf5);
         assert_eq!(&reports.effect()[10..13], &[0x10, 0x20, 0x30]);
+    }
+
+    #[test]
+    fn every_verified_mode_has_the_expected_protocol_id() {
+        let cases = [
+            (LightingMode::Static, 0x00, true, [0xff, 0x11, 0xdd]),
+            (LightingMode::Breathe, 0x01, true, [0xff, 0x11, 0xdd]),
+            (LightingMode::RainbowCycle, 0x02, false, [0, 0, 0]),
+            (LightingMode::RainbowWave, 0x03, false, [0, 0, 0]),
+            (LightingMode::Pulse, 0x0a, true, [0xff, 0x11, 0xdd]),
+        ];
+
+        for (mode, expected_id, needs_primary, expected_primary) in cases {
+            let mut effect = request(mode.clone());
+            if !needs_primary {
+                effect.primary_rgb = None;
+            }
+            if matches!(
+                mode,
+                LightingMode::Breathe
+                    | LightingMode::RainbowCycle
+                    | LightingMode::RainbowWave
+                    | LightingMode::Pulse
+            ) {
+                effect.speed = Some(LightingSpeed::Medium);
+            }
+            let reports = encode_g615jm_effect(&effect)
+                .unwrap_or_else(|error| panic!("{} should encode: {error}", mode.label()));
+            assert_eq!(reports.effect()[3], expected_id, "{}", mode.label());
+            assert_eq!(
+                &reports.effect()[4..7],
+                &expected_primary,
+                "{}",
+                mode.label()
+            );
+            assert_eq!(reports.effect()[7], 0xeb, "{}", mode.label());
+            assert_eq!(reports.effect()[8], 0x00, "{}", mode.label());
+            assert_eq!(&reports.effect()[10..13], &[0, 0, 0], "{}", mode.label());
+            assert_eq!(reports.effect().len(), AURA_OUTPUT_REPORT_BYTES);
+            assert_eq!(reports.set()[..2], [AURA_REPORT_ID, SET_COMMAND]);
+            assert_eq!(reports.apply()[..2], [AURA_REPORT_ID, APPLY_COMMAND]);
+        }
+    }
+
+    #[test]
+    fn every_verified_speed_maps_to_the_expected_protocol_byte() {
+        for (speed, expected) in [
+            (LightingSpeed::Slow, 0xe1),
+            (LightingSpeed::Medium, 0xeb),
+            (LightingSpeed::Fast, 0xf5),
+        ] {
+            let mut effect = request(LightingMode::Pulse);
+            effect.speed = Some(speed.clone());
+            let reports = encode_g615jm_effect(&effect)
+                .unwrap_or_else(|error| panic!("{} should encode: {error}", speed.label()));
+            assert_eq!(reports.effect()[7], expected, "{}", speed.label());
+        }
+    }
+
+    #[test]
+    fn every_verified_wave_direction_maps_to_the_expected_protocol_byte() {
+        for (direction, expected) in [
+            (LightingDirection::Right, 0x00),
+            (LightingDirection::Left, 0x01),
+            (LightingDirection::Up, 0x02),
+            (LightingDirection::Down, 0x03),
+        ] {
+            let mut effect = request(LightingMode::RainbowWave);
+            effect.primary_rgb = None;
+            effect.direction = Some(direction.clone());
+            let reports = encode_g615jm_effect(&effect)
+                .unwrap_or_else(|error| panic!("{} should encode: {error}", direction.label()));
+            assert_eq!(reports.effect()[8], expected, "{}", direction.label());
+        }
     }
 
     #[test]

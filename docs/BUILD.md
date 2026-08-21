@@ -128,6 +128,21 @@ cargo install --path crates/rog-ui --bin rog-helper-ui --locked
 cargo install --path crates/rog-cli --bin rog-helper --locked
 ```
 
+This user-local install does not install the root-owned privileged integration.
+For lighting or other supported high-level hardware writes during development,
+install only that integration from the current checkout:
+
+```bash
+packaging/scripts/install-dev-privileged.sh
+```
+
+The script builds the current `rog-helper-privileged`, renders and validates its
+system D-Bus activation/policy, hardened systemd unit, PolicyKit actions, and
+narrow Aura udev rule, then installs them under `/usr`. It uses `sudo` only for
+those root-owned installation/reload operations. It triggers `change` only for a
+detected `0b05:19b6` interface `00` hidraw device and verifies D-Bus activation.
+Continue to run `rog-helperd` and `rog-helper-ui` as your normal desktop user.
+
 ## Install From Release Artifacts
 
 Tagged releases publish:
@@ -245,6 +260,13 @@ This builds release binaries, installs the desktop entry, AppStream metadata, se
 It also installs `/usr/libexec/rog-helper-privileged` as root-owned mode `0755` together with its
 system service, system-D-Bus activation/policy, and PolicyKit actions. Validate the generated file
 ownership and modes with `dpkg-deb --contents` before publishing.
+The builder also validates the staged tree and the finished `.deb`; it fails if
+any required binary/integration file is absent, has an unsafe mode, or contains
+an unresolved token such as `@PRIVILEGED_EXEC@`. Re-run the same check directly:
+
+```bash
+python3 packaging/scripts/validate-package-payload.py dist/rog-helper_<version>_<arch>.deb
+```
 
 Requirements:
 

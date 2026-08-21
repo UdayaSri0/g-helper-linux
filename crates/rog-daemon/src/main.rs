@@ -581,7 +581,7 @@ impl RogHelperDaemon {
     }
 
     async fn get_privileged_status(&self) -> HashMap<String, OwnedValue> {
-        privileged_status_to_dbus(&privileged_client::probe().await)
+        privileged_status_to_dbus(&self.refresh_privileged_status().await)
     }
 
     fn get_fan_caps(&self) -> HashMap<String, OwnedValue> {
@@ -976,6 +976,12 @@ impl RogHelperDaemon {
                 }
             }
 
+            self.record_lighting_outcome(if has_effect_fields {
+                LightingApplyOutcome::AcceptedNoReadback
+            } else {
+                LightingApplyOutcome::Verified
+            });
+
             return Ok(());
         }
 
@@ -1049,10 +1055,8 @@ impl RogHelperDaemon {
                         return Err(map_rog_error_to_fdo(map_privileged_lighting_error(error)));
                     }
                 };
-                let outcome = LightingApplyOutcome::AcceptedNoReadback;
                 let mut runtime = self.state.native_lighting.write().expect("rwlock poisoned");
                 runtime.request = Some(request);
-                runtime.outcome = Some(outcome);
                 drop(runtime);
                 *self
                     .state
@@ -1070,10 +1074,16 @@ impl RogHelperDaemon {
                             .to_string(),
                     ));
                 };
-                self.set_sysfs_keyboard_brightness(kbd, brightness)
-                    .await
-                    .map_err(map_rog_error_to_fdo)?;
+                if let Err(error) = self.set_sysfs_keyboard_brightness(kbd, brightness).await {
+                    self.record_lighting_outcome(LightingApplyOutcome::Failed(error.to_string()));
+                    return Err(map_rog_error_to_fdo(error));
+                }
             }
+            self.record_lighting_outcome(if has_effect_fields {
+                LightingApplyOutcome::AcceptedNoReadback
+            } else {
+                LightingApplyOutcome::Verified
+            });
             return Ok(());
         }
 
@@ -1115,6 +1125,7 @@ impl RogHelperDaemon {
         self.set_sysfs_keyboard_brightness(kbd, brightness)
             .await
             .map_err(map_rog_error_to_fdo)?;
+        self.record_lighting_outcome(LightingApplyOutcome::Verified);
         Ok(())
     }
 
@@ -2204,6 +2215,58 @@ fn lighting_helper_ready(status: &rog_core::PrivilegedStatus) -> bool {
         && status
             .privileged_categories_available
             .contains(&rog_core::PrivilegedCategory::Lighting)
+}
+
+fn lighting_unavailable_status(status: &rog_core::PrivilegedStatus) -> &'static str {
+    if !status.privileged_helper_installed {
+        "helper_missing"
+    } else if !status.privileged_helper_reachable {
+        "dbus_activation_missing"
+    } else if !status.privileged_helper_compatible {
+        "helper_incompatible"
+    } else if !status.polkit_available {
+        "polkit_missing"
+    } else if !status
+        .privileged_categories_available
+        .contains(&rog_core::PrivilegedCategory::Lighting)
+    {
+        "lighting_category_missing"
+    } else {
+        "read_only"
+    }
+}
+
+fn apply_lighting_write_access(
+    state: &mut LightingState,
+    keyboard: Option<&KbdBacklightSysfs>,
+    aura_brightness_writable: bool,
+    status: &rog_core::PrivilegedStatus,
+    authorization: &str,
+) {
+    let helper_ready = lighting_helper_ready(status);
+    let native_rgb_privileged =
+        state.backend_kind == LightingBackendKind::NativeAuraHid && helper_ready;
+    let direct_brightness =
+        aura_brightness_writable || keyboard.is_some_and(KbdBacklightSysfs::can_set_brightness);
+    let privileged_brightness = !aura_brightness_writable
+        && keyboard.is_some_and(KbdBacklightSysfs::privileged_write_approved)
+        && helper_ready;
+    let privileged = native_rgb_privileged || privileged_brightness;
+
+    state.direct_writable |= direct_brightness;
+    state.privileged_writable = privileged;
+    state.authorization_required = privileged && authorization != "authorized";
+    state.authorization = if privileged {
+        // `not_checked` is intentionally retained: it means the controls are
+        // editable and Apply will perform per-operation authorization.
+        authorization.to_string()
+    } else if state.direct_writable {
+        "not_required".to_string()
+    } else {
+        "unavailable".to_string()
+    };
+    state.writable |= privileged;
+    state.capabilities.writable = state.writable;
 }
 
 fn lighting_access_with_privilege(
@@ -4168,6 +4231,27 @@ fn privileged_status_to_dbus(status: &rog_core::PrivilegedStatus) -> HashMap<Str
 }
 
 impl RogHelperDaemon {
+    fn record_lighting_outcome(&self, outcome: LightingApplyOutcome) {
+        self.state
+            .native_lighting
+            .write()
+            .expect("rwlock poisoned")
+            .outcome = Some(outcome);
+    }
+
+    async fn refresh_privileged_status(&self) -> rog_core::PrivilegedStatus {
+        // GetCapabilities/GetApiVersion are deliberately non-authorizing. Refreshing
+        // readiness here may activate the system service, but must never show a
+        // PolicyKit prompt merely because Lighting was opened.
+        let status = privileged_client::probe().await;
+        self.state
+            .cpu_privilege
+            .write()
+            .expect("rwlock poisoned")
+            .status = status.clone();
+        status
+    }
+
     async fn set_sysfs_keyboard_brightness(
         &self,
         keyboard: &KbdBacklightSysfs,
@@ -4214,9 +4298,6 @@ impl RogHelperDaemon {
     }
 
     fn apply_lighting_privilege_to_state(&self, state: &mut LightingState) {
-        let Some(keyboard) = self.kbd_backlight.as_ref() else {
-            return;
-        };
         let status = self
             .state
             .cpu_privilege
@@ -4234,26 +4315,16 @@ impl RogHelperDaemon {
             .aura
             .as_ref()
             .is_some_and(AuraProvider::can_set_brightness);
-        let direct = aura_brightness_writable || keyboard.can_set_brightness();
-        let privileged = !direct
-            && authorization != "unavailable"
-            && keyboard.privileged_write_approved()
-            && lighting_helper_ready(&status);
-        state.direct_writable |= direct;
-        state.privileged_writable = privileged;
-        state.authorization_required = privileged && authorization != "authorized";
-        state.authorization = if direct {
-            "not_required".to_string()
-        } else if privileged {
-            authorization
-        } else {
-            "unavailable".to_string()
-        };
-        state.writable |= privileged;
-        state.capabilities.writable = state.writable;
-        if direct && state.backend == "sysfs-led" {
+        apply_lighting_write_access(
+            state,
+            self.kbd_backlight.as_ref(),
+            aura_brightness_writable,
+            &status,
+            &authorization,
+        );
+        if state.direct_writable && state.backend == "sysfs-led" {
             state.status = "sysfs_direct_writable".to_string();
-        } else if privileged {
+        } else if state.privileged_writable {
             state.fallback_reason = Some(
                 if state.backend_kind == LightingBackendKind::NativeAuraHid {
                     "Native Aura RGB and keyboard brightness use high-level, PolicyKit-authorized privileged operations."
@@ -4280,24 +4351,33 @@ impl RogHelperDaemon {
                 }
                 .to_string();
             }
-        } else if !direct {
-            state.status = if keyboard.privileged_write_approved() {
-                "read_only_helper_missing"
-            } else {
-                "read_only"
-            }
-            .to_string();
+        } else if !state.direct_writable {
+            state.status = lighting_unavailable_status(&status).to_string();
         }
     }
 
     async fn lighting_to_dbus(&self) -> Option<HashMap<String, OwnedValue>> {
+        // Re-probe so a newly installed/fixed system service becomes usable
+        // without restarting the session daemon. This does not authorize a write.
+        let privileged_status = self.refresh_privileged_status().await;
         if let Some(aura) = &self.aura {
             match aura.read_state().await {
                 Ok(mut state) => {
+                    state.last_apply_outcome = self
+                        .state
+                        .native_lighting
+                        .read()
+                        .expect("rwlock poisoned")
+                        .outcome
+                        .clone();
                     self.merge_sysfs_brightness(&mut state);
                     self.apply_lighting_privilege_to_state(&mut state);
                     let diagnostics = self.lighting_diagnostics(Some(&state), None);
-                    return Some(lighting_state_to_dbus(&state, &diagnostics));
+                    return Some(lighting_state_to_dbus(
+                        &state,
+                        &diagnostics,
+                        &privileged_status,
+                    ));
                 }
                 Err(e) => {
                     let error = e.to_string();
@@ -4306,7 +4386,11 @@ impl RogHelperDaemon {
                         self.apply_lighting_privilege_to_state(&mut state);
                         state.status = "aura_backend_error".to_string();
                         state.last_error = Some(format!("Aura backend read failed: {error}"));
-                        return Some(lighting_state_to_dbus(&state, &diagnostics));
+                        return Some(lighting_state_to_dbus(
+                            &state,
+                            &diagnostics,
+                            &privileged_status,
+                        ));
                     }
                     return Some(lighting_state_to_dbus(
                         &LightingState {
@@ -4354,6 +4438,7 @@ impl RogHelperDaemon {
                             last_apply_outcome: Some(LightingApplyOutcome::Failed(error)),
                         },
                         &diagnostics,
+                        &privileged_status,
                     ));
                 }
             }
@@ -4364,13 +4449,17 @@ impl RogHelperDaemon {
             self.merge_sysfs_brightness(&mut state);
             self.apply_lighting_privilege_to_state(&mut state);
             let diagnostics = self.lighting_diagnostics(Some(&state), None);
-            return Some(lighting_state_to_dbus(&state, &diagnostics));
+            return Some(lighting_state_to_dbus(
+                &state,
+                &diagnostics,
+                &privileged_status,
+            ));
         }
 
         self.sysfs_lighting_state().map(|mut state| {
             self.apply_lighting_privilege_to_state(&mut state);
             let diagnostics = self.lighting_diagnostics(Some(&state), None);
-            lighting_state_to_dbus(&state, &diagnostics)
+            lighting_state_to_dbus(&state, &diagnostics, &privileged_status)
         })
     }
 
@@ -4581,7 +4670,13 @@ impl RogHelperDaemon {
             ),
             status: "rgb_unsupported".to_string(),
             last_error: None,
-            last_apply_outcome: None,
+            last_apply_outcome: self
+                .state
+                .native_lighting
+                .read()
+                .expect("rwlock poisoned")
+                .outcome
+                .clone(),
         })
     }
 }
@@ -4662,6 +4757,7 @@ fn select_lighting_backend(
 fn lighting_state_to_dbus(
     state: &LightingState,
     diagnostics: &LightingDiagnostics,
+    privileged_status: &rog_core::PrivilegedStatus,
 ) -> HashMap<String, OwnedValue> {
     let mut m = HashMap::new();
     m.insert(
@@ -4707,6 +4803,34 @@ fn lighting_state_to_dbus(
     m.insert(
         dbus_keys::lighting::AUTHORIZATION.to_string(),
         ov(state.authorization.clone()),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_HELPER_INSTALLED.to_string(),
+        OwnedValue::from(privileged_status.privileged_helper_installed),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_HELPER_REACHABLE.to_string(),
+        OwnedValue::from(privileged_status.privileged_helper_reachable),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_HELPER_COMPATIBLE.to_string(),
+        OwnedValue::from(privileged_status.privileged_helper_compatible),
+    );
+    m.insert(
+        dbus_keys::lighting::POLKIT_AVAILABLE.to_string(),
+        OwnedValue::from(privileged_status.polkit_available),
+    );
+    m.insert(
+        dbus_keys::lighting::PRIVILEGED_LIGHTING_CATEGORY_AVAILABLE.to_string(),
+        OwnedValue::from(
+            privileged_status
+                .privileged_categories_available
+                .contains(&rog_core::PrivilegedCategory::Lighting),
+        ),
+    );
+    m.insert(
+        dbus_keys::lighting::WRITE_PATH_READY.to_string(),
+        OwnedValue::from(state.direct_writable || state.privileged_writable),
     );
     if let Some(mode) = state.mode_label() {
         m.insert(dbus_keys::lighting::MODE.to_string(), ov(mode));
@@ -4792,6 +4916,19 @@ fn lighting_state_to_dbus(
             LightingApplyOutcome::Other(value) => value.clone(),
         };
         m.insert(dbus_keys::lighting::APPLY_OUTCOME.to_string(), ov(outcome));
+        let last_action = match &state.last_apply_outcome {
+            Some(LightingApplyOutcome::Verified) => "Lighting write verified by the backend.",
+            Some(LightingApplyOutcome::AcceptedNoReadback) => {
+                "Command accepted by keyboard backend."
+            }
+            Some(LightingApplyOutcome::Failed(_)) => "Lighting apply failed.",
+            Some(LightingApplyOutcome::Other(_)) => "Lighting action completed.",
+            None => unreachable!("outcome was matched above"),
+        };
+        m.insert(
+            dbus_keys::lighting::LAST_ACTION.to_string(),
+            ov(last_action.to_string()),
+        );
     }
     m.insert(
         dbus_keys::lighting::STATUS.to_string(),
@@ -5447,7 +5584,9 @@ mod tests {
             last_apply_outcome: Some(LightingApplyOutcome::Verified),
         };
 
-        let map = lighting_state_to_dbus(&state, &LightingDiagnostics::unknown());
+        let privileged_status = rog_core::PrivilegedStatus::unavailable(false, false);
+        let map =
+            lighting_state_to_dbus(&state, &LightingDiagnostics::unknown(), &privileged_status);
         assert_eq!(
             map.get("supports_brightness")
                 .and_then(|value| bool::try_from(value).ok()),
@@ -5482,6 +5621,16 @@ mod tests {
             map.get(dbus_keys::lighting::PRIVILEGED_WRITABLE)
                 .and_then(|value| bool::try_from(value).ok()),
             Some(false)
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::WRITE_PATH_READY)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(dbus_keys::lighting::LAST_ACTION)
+                .and_then(|value| <&str>::try_from(value).ok()),
+            Some("Lighting write verified by the backend.")
         );
     }
 
@@ -5738,5 +5887,104 @@ mod tests {
         };
         assert!(!state.supports_rgb);
         assert!(!state.privileged_writable);
+    }
+
+    fn native_lighting_test_state() -> LightingState {
+        LightingState {
+            backend: "native-aura-hid".to_string(),
+            backend_kind: LightingBackendKind::NativeAuraHid,
+            capabilities: g615jm_lighting_caps(),
+            device: "ASUS ROG Keyboard".to_string(),
+            brightness: None,
+            max_brightness: None,
+            mode: None,
+            supports_brightness: false,
+            supports_modes: true,
+            supported_modes: g615jm_lighting_caps().supported_modes,
+            supports_rgb: true,
+            rgb: None,
+            secondary_rgb: None,
+            supports_speed: true,
+            supported_speeds: vec!["Slow".to_string(), "Medium".to_string(), "Fast".to_string()],
+            speed: None,
+            direction: None,
+            supported_zones: Vec::new(),
+            active_zone: None,
+            writable: false,
+            direct_writable: false,
+            privileged_writable: false,
+            authorization_required: true,
+            authorization: "not_checked".to_string(),
+            fallback_reason: None,
+            status: "authorization_required".to_string(),
+            last_error: None,
+            last_apply_outcome: None,
+        }
+    }
+
+    fn ready_lighting_helper() -> rog_core::PrivilegedStatus {
+        rog_core::PrivilegedStatus {
+            system_bus_connected: true,
+            privileged_helper_installed: true,
+            privileged_helper_reachable: true,
+            privileged_helper_compatible: true,
+            privileged_helper_version: Some("2".to_string()),
+            polkit_available: true,
+            authorization_backend: "polkit".to_string(),
+            authorization_state: rog_core::AuthorizationState::NotChecked,
+            privileged_categories_available: vec![rog_core::PrivilegedCategory::Lighting],
+        }
+    }
+
+    #[test]
+    fn native_rgb_is_editable_before_authorization_without_sysfs_brightness() {
+        let mut state = native_lighting_test_state();
+        apply_lighting_write_access(
+            &mut state,
+            None,
+            false,
+            &ready_lighting_helper(),
+            "not_checked",
+        );
+
+        assert!(state.writable);
+        assert!(state.privileged_writable);
+        assert!(state.authorization_required);
+        assert_eq!(state.authorization, "not_checked");
+    }
+
+    #[test]
+    fn native_rgb_helper_failure_is_distinct_from_not_yet_authorized() {
+        let mut incompatible = ready_lighting_helper();
+        incompatible.privileged_helper_compatible = false;
+        let mut no_polkit = ready_lighting_helper();
+        no_polkit.polkit_available = false;
+        let mut no_lighting_category = ready_lighting_helper();
+        no_lighting_category.privileged_categories_available.clear();
+        let cases = [
+            (
+                rog_core::PrivilegedStatus::unavailable(false, true),
+                "helper_missing",
+            ),
+            (
+                rog_core::PrivilegedStatus::unavailable(true, true),
+                "dbus_activation_missing",
+            ),
+            (incompatible, "helper_incompatible"),
+            (no_polkit, "polkit_missing"),
+            (no_lighting_category, "lighting_category_missing"),
+        ];
+        for (status, expected) in cases {
+            let mut state = native_lighting_test_state();
+            apply_lighting_write_access(&mut state, None, false, &status, "not_checked");
+            assert!(!state.writable);
+            assert!(!state.privileged_writable);
+            assert!(!state.authorization_required);
+            assert_eq!(state.authorization, "unavailable");
+            assert_eq!(lighting_unavailable_status(&status), expected);
+        }
+
+        let ready = ready_lighting_helper();
+        assert_eq!(lighting_unavailable_status(&ready), "read_only");
     }
 }

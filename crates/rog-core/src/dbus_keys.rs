@@ -148,6 +148,13 @@ pub mod lighting {
     pub const PRIVILEGED_WRITABLE: &str = "privileged_writable";
     pub const AUTHORIZATION_REQUIRED: &str = "authorization_required";
     pub const AUTHORIZATION: &str = "authorization";
+    pub const PRIVILEGED_HELPER_INSTALLED: &str = "privileged_helper_installed";
+    pub const PRIVILEGED_HELPER_REACHABLE: &str = "privileged_helper_reachable";
+    pub const PRIVILEGED_HELPER_COMPATIBLE: &str = "privileged_helper_compatible";
+    pub const POLKIT_AVAILABLE: &str = "polkit_available";
+    pub const PRIVILEGED_LIGHTING_CATEGORY_AVAILABLE: &str =
+        "privileged_lighting_category_available";
+    pub const WRITE_PATH_READY: &str = "write_path_ready";
     pub const MODE: &str = "mode";
     pub const SUPPORTED_MODES: &str = "supported_modes";
     pub const SUPPORTS_BRIGHTNESS: &str = "supports_brightness";
@@ -166,6 +173,7 @@ pub mod lighting {
     pub const SUPPORTED_ZONES: &str = "supported_zones";
     pub const ACTIVE_ZONE: &str = "active_zone";
     pub const APPLY_OUTCOME: &str = "apply_outcome";
+    pub const LAST_ACTION: &str = "last_action";
     pub const STATUS: &str = "status";
     pub const LAST_ERROR: &str = "last_error";
     pub const DIAGNOSTICS_SUMMARY: &str = "diagnostics_summary";

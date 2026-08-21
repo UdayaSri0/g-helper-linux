@@ -259,7 +259,14 @@ When present, `lighting` includes:
 - `direct_writable` / `privileged_writable` -> `b`
 - `authorization_required` -> `b`
 - `authorization` -> `s`, such as `not_required`, `not_checked`, `authorized`, `denied`, or `unavailable`
+- `privileged_helper_installed` -> `b`
+- `privileged_helper_reachable` -> `b` (includes successful system-bus activation)
+- `privileged_helper_compatible` -> `b`
+- `polkit_available` -> `b`
+- `privileged_lighting_category_available` -> `b`
+- `write_path_ready` -> `b`: at least one direct or approved typed privileged lighting write path is ready
 - `status` -> `s`, such as `available`, `rgb_not_exposed`, `rgb_unsupported`, or `backend_error`
+- `last_action` -> optional `s`: stable human-readable summary of the last submitted lighting action
 - `last_error` -> optional `s`
 - `diagnostics_summary` -> `s`
 - `diagnostics_details` -> `s`
@@ -533,7 +540,13 @@ Current behavior:
 - brightness falls back to directly writable sysfs, then to `SetKeyboardBacklightBrightness(t)` on `rog-helper-privileged` only for the canonical ASUS WMI LED
 - brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
 - unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`
-- PolicyKit action `io.github.roghelper.lighting.control` is requested only after Apply and only when direct sysfs returns a permission error
+- PolicyKit action `io.github.roghelper.lighting.control` is requested only by `SetLighting`: for
+  native Aura effects, or when a direct sysfs brightness write returns a permission error
+- reading Lighting refreshes the helper capability/activation probe but never performs PolicyKit
+  authorization; `authorization=not_checked` plus `write_path_ready=true` means controls are editable
+  and Apply will authorize the operation
+- native Aura RGB readiness is independent of the optional sysfs brightness endpoint; a missing
+  brightness endpoint does not make a ready native RGB path read-only
 - the native target supports single-zone RGB only; zone requests are rejected, ARGB/per-key are
   never inferred, and a successful HID write is reported as accepted without hardware readback
 

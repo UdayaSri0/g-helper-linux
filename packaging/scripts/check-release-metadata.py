@@ -141,6 +141,22 @@ def main() -> int:
     package_common = text("packaging/scripts/package-common.sh")
     require("umask 0022" in package_common, "package payload modes must not inherit a permissive builder umask")
     require("dest_path.chmod(0o644)" in package_common, "rendered root-consumed metadata must be mode 0644")
+    require("validate_packaged_payload()" in package_common, "packaged payload validation helper missing")
+    deb_builder = text("packaging/scripts/build-deb.sh")
+    require(
+        deb_builder.count("validate_packaged_payload") == 2,
+        "Debian payload must be validated before and after package construction",
+    )
+    text("packaging/scripts/validate-package-payload.py")
+    dev_installer = text("packaging/scripts/install-dev-privileged.sh")
+    require(
+        "cargo build --locked -p rog-privileged --bin rog-helper-privileged" in dev_installer,
+        "development privileged installer must build current helper source",
+    )
+    require(
+        all(value in dev_installer for value in ("SetAuraEffect", "GetCapabilities", '!= "2"')),
+        "development privileged installer must verify the live Aura API v2 contract",
+    )
     tarball_builder = text("packaging/scripts/build-tarball.sh")
     require(
         'install_privileged_integration "$BUNDLE_ROOT" "/usr/local/libexec/rog-helper-privileged"'

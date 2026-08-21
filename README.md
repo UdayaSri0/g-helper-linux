@@ -27,7 +27,8 @@ UI / tray
   -> rog-helperd
   -> providers / system DBus (`asusd`, `supergfxd`, `UPower`)
   -> direct user-writable sysfs when safe
-  -> optional system DBus + PolicyKit -> rog-helper-privileged -> approved sysfs ABI
+  -> optional system DBus + PolicyKit -> rog-helper-privileged
+       -> approved sysfs ABI or root-only /dev/rog-helper-aura
 ```
 
 High-level responsibilities:
@@ -131,6 +132,11 @@ Current source-backed features include:
 - Session DBus API for the UI and other local clients
 - Optional typed privileged fallback with separate CPU, fan, lighting, and battery PolicyKit actions; direct/asusd/supergfxd routes remain preferred
 - ASUS Aura lighting through an exact asusd 6.3.8-6.4.0 DBus adapter or the single allow-listed G615JMR target mapping (DMI prefix `G615JM`); sysfs remains brightness-only
+- Lighting UI 2.0 with capability-driven effects, validated hex colour fields and swatches, a
+  keyboard-shaped local preview, Current/Pending state, local Reset, and dirty-only Apply;
+  authentication is requested only when Apply needs the typed privileged route
+- `rog-helper privileged-status` reports both daemon/helper compatibility and the installed
+  binary, D-Bus, systemd, PolicyKit, udev, Aura alias, descriptor, and protocol readiness
 
 See:
 
@@ -242,7 +248,7 @@ The Debian-family package installs:
 - AppStream metadata under `/usr/share/metainfo`
 - session D-Bus activation under `/usr/share/dbus-1/services`
 - the user service under `/usr/lib/systemd/user`
-- the root-owned `rog-helper-privileged` binary under `/usr/libexec`, plus its systemd, system-D-Bus, and PolicyKit integration
+- the root-owned `rog-helper-privileged` binary under `/usr/libexec`, plus its systemd, system-D-Bus, PolicyKit, and root-only Aura udev integration
 
 Remove cleanly with:
 

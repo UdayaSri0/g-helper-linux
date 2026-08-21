@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
@@ -135,39 +135,59 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
     use dbus_keys::privileged_status as keys;
     use zbus::zvariant::OwnedValue;
 
-    let connection = match zbus::Connection::session().await {
-        Ok(connection) => connection,
-        Err(_) => {
-            println!("rog-helperd: unavailable (session D-Bus could not be reached)");
-            println!("privileged helper: status unavailable through the required daemon boundary");
-            return Ok(());
-        }
+    let status: Option<HashMap<String, OwnedValue>> = match zbus::Connection::session().await {
+        Ok(connection) => match zbus::Proxy::new(
+            &connection,
+            "io.github.roghelper.Daemon",
+            "/io/github/roghelper/Daemon",
+            "io.github.roghelper.Daemon1",
+        )
+        .await
+        {
+            Ok(proxy) => proxy.call("GetPrivilegedStatus", &()).await.ok(),
+            Err(_) => None,
+        },
+        Err(_) => None,
     };
-    let proxy = match zbus::Proxy::new(
-        &connection,
-        "io.github.roghelper.Daemon",
-        "/io/github/roghelper/Daemon",
-        "io.github.roghelper.Daemon1",
-    )
-    .await
-    {
-        Ok(proxy) => proxy,
-        Err(_) => {
-            println!("rog-helperd: unavailable");
-            println!("privileged helper: status unavailable through the required daemon boundary");
-            return Ok(());
-        }
-    };
-    let status: HashMap<String, OwnedValue> = match proxy.call("GetPrivilegedStatus", &()).await {
-        Ok(status) => status,
-        Err(_) => {
-            println!("rog-helperd: unavailable or incompatible");
-            println!("privileged helper: status unavailable through the required daemon boundary");
-            return Ok(());
-        }
-    };
+    let status = status.unwrap_or_default();
+    let install = probe_privileged_installation(Path::new("/"), Path::new("/dev"));
 
-    println!("Privileged control status:");
+    println!("Privileged helper");
+    println!("-----------------");
+    println!("binary_installed: {}", install.binary_installed);
+    println!("systemd_unit_installed: {}", install.systemd_unit_installed);
+    println!(
+        "dbus_activation_installed: {}",
+        install.dbus_activation_installed
+    );
+    println!("dbus_policy_installed: {}", install.dbus_policy_installed);
+    println!(
+        "polkit_policy_installed: {}",
+        install.polkit_policy_installed
+    );
+    println!(
+        "service_reachable: {}",
+        map_bool(&status, keys::HELPER_REACHABLE).unwrap_or(false)
+    );
+    println!(
+        "api_compatible: {}",
+        map_bool(&status, keys::HELPER_COMPATIBLE).unwrap_or(false)
+    );
+    println!();
+    println!("Aura");
+    println!("----");
+    println!("udev_rule_installed: {}", install.udev_rule_installed);
+    println!("device_detected: {}", install.device_detected);
+    println!("symlink: /dev/rog-helper-aura");
+    println!("symlink_valid: {}", install.symlink_valid);
+    println!("descriptor_verified: {}", install.descriptor_verified);
+    println!(
+        "protocol: {}",
+        install.protocol.as_deref().unwrap_or("unavailable")
+    );
+    println!();
+    println!("Daemon capability status");
+    println!("------------------------");
     print_bool_status(&status, keys::HELPER_INSTALLED, "helper installed");
     print_bool_status(&status, keys::HELPER_REACHABLE, "helper reachable");
     print_bool_status(&status, keys::HELPER_COMPATIBLE, "helper compatible");
@@ -203,14 +223,85 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivilegedInstallationStatus {
+    binary_installed: bool,
+    systemd_unit_installed: bool,
+    dbus_activation_installed: bool,
+    dbus_policy_installed: bool,
+    polkit_policy_installed: bool,
+    udev_rule_installed: bool,
+    device_detected: bool,
+    symlink_valid: bool,
+    descriptor_verified: bool,
+    protocol: Option<String>,
+}
+
+fn probe_privileged_installation(root: &Path, dev_root: &Path) -> PrivilegedInstallationStatus {
+    let scan = scan_native_aura_hid();
+    let supported = scan.devices.iter().find(|device| device.protocol.is_some());
+    let aura_alias = dev_root.join("rog-helper-aura");
+    let symlink_valid = supported.is_some_and(|device| {
+        let expected = dev_root.join(&device.diagnostics.hidraw_name);
+        std::fs::canonicalize(&aura_alias).ok() == std::fs::canonicalize(expected).ok()
+            && std::fs::canonicalize(&aura_alias).is_ok()
+    });
+
+    PrivilegedInstallationStatus {
+        binary_installed: root.join("usr/libexec/rog-helper-privileged").is_file(),
+        systemd_unit_installed: any_file(
+            root,
+            &[
+                "usr/lib/systemd/system/rog-helper-privileged.service",
+                "lib/systemd/system/rog-helper-privileged.service",
+            ],
+        ),
+        dbus_activation_installed: root
+            .join("usr/share/dbus-1/system-services/io.github.roghelper.Privileged.service")
+            .is_file(),
+        dbus_policy_installed: root
+            .join("usr/share/dbus-1/system.d/io.github.roghelper.Privileged.conf")
+            .is_file(),
+        polkit_policy_installed: root
+            .join("usr/share/polkit-1/actions/io.github.roghelper.policy")
+            .is_file(),
+        udev_rule_installed: any_file(
+            root,
+            &[
+                "usr/lib/udev/rules.d/60-rog-helper-aura.rules",
+                "lib/udev/rules.d/60-rog-helper-aura.rules",
+            ],
+        ),
+        device_detected: !scan.devices.is_empty(),
+        symlink_valid,
+        descriptor_verified: supported.is_some(),
+        protocol: supported.and_then(|device| {
+            device
+                .protocol
+                .map(|protocol| protocol.as_str().to_string())
+        }),
+    }
+}
+
+fn any_file(root: &Path, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| root.join(candidate).is_file())
+}
+
+fn map_bool(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<bool> {
+    map.get(key).and_then(|value| bool::try_from(value).ok())
+}
+
 fn print_bool_status(
     map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     key: &str,
     label: &str,
 ) {
-    let value = map
-        .get(key)
-        .and_then(|value| bool::try_from(value).ok())
+    let value = map_bool(map, key)
         .map(|value| if value { "yes" } else { "no" })
         .unwrap_or("unknown");
     println!("  {label}: {value}");

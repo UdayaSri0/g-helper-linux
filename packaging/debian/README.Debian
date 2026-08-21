@@ -6,13 +6,21 @@ This package installs:
 - /usr/bin/rog-helper-ui
 - /usr/bin/rog-helperd
 - /usr/bin/rog-helper
+- /usr/libexec/rog-helper-privileged
 - a desktop launcher and hicolor icon assets
 - AppStream metadata
 - a session D-Bus activation file for io.github.roghelper.Daemon
 - a systemd --user unit at /usr/lib/systemd/user/rog-helperd.service
+- system D-Bus activation and policy for io.github.roghelper.Privileged
+- a hardened systemd system unit for the on-demand privileged helper
+- PolicyKit actions for the helper's high-level control operations
+- a root-only udev alias for the validated ASUS 0b05:19b6 Aura interface 00
 
 The desktop app can activate the daemon over the session bus on demand, so the
 package works without enabling the user unit first.
+
+The privileged helper is also activated on demand. Do not enable it as a
+persistent root service and do not run rog-helper-ui or rog-helperd with sudo.
 
 To keep the daemon running across your desktop session, enable the user unit:
 

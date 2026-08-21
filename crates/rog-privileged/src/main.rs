@@ -877,11 +877,19 @@ fn open_and_validate_aura_device() -> rog_core::RogResult<(File, (u64, u64))> {
         ));
     }
 
-    revalidate_open_aura_fd(&file, scan.board_name.as_deref().unwrap_or(""))?;
+    revalidate_open_aura_fd(
+        &file,
+        scan.board_name.as_deref().unwrap_or(""),
+        device.diagnostics.driver.as_deref(),
+    )?;
     Ok((file, (metadata.rdev(), sysfs_inode)))
 }
 
-fn revalidate_open_aura_fd(file: &File, board_name: &str) -> rog_core::RogResult<()> {
+fn revalidate_open_aura_fd(
+    file: &File,
+    board_name: &str,
+    driver: Option<&str>,
+) -> rog_core::RogResult<()> {
     let fd = file.as_raw_fd();
     let mut info = HidrawDevInfo::default();
     let mut descriptor_size: libc::c_int = 0;
@@ -931,6 +939,7 @@ fn revalidate_open_aura_fd(file: &File, board_name: &str) -> rog_core::RogResult
         vendor_id: info.vendor as u16,
         product_id: info.product as u16,
         interface_number: G615JM_AURA_USB_INTERFACE,
+        driver: driver.map(str::to_string),
         board_name: board_name.to_string(),
         report_descriptor_sha256: hash,
         output_report_payload_bytes: parse_output_report_sizes(bytes).map_err(|error| {
@@ -1205,6 +1214,55 @@ mod tests {
         assert!(parse_native_aura_request("static", "#FF0000", "", "fast", "").is_err());
         assert!(parse_native_aura_request("rainbow-cycle", "", "#0000FF", "medium", "").is_err());
         assert!(parse_native_aura_request("rainbow-wave", "", "", "medium", "clockwise").is_err());
+    }
+
+    #[test]
+    fn native_aura_request_rejects_malformed_and_injection_shaped_fields() {
+        for mode in [
+            "Static",
+            "static\0",
+            "/dev/rog-helper-aura",
+            "/dev/hidraw0",
+            "5d b3 00 00 ff 00 00",
+        ] {
+            assert!(
+                parse_native_aura_request(mode, "#FF0000", "", "", "").is_err(),
+                "mode {mode:?} must not cross the high-level Aura boundary"
+            );
+        }
+
+        for colour in [
+            "FF0000",
+            "#FFF",
+            "#FF000000",
+            "#GG0000",
+            " #FF0000",
+            "#FF0000\0",
+            "/dev/hidraw0",
+        ] {
+            assert!(
+                parse_native_aura_request("static", colour, "", "", "").is_err(),
+                "colour {colour:?} must use exact #RRGGBB form"
+            );
+            assert!(
+                parse_native_aura_request("breathe", "#FF0000", colour, "medium", "").is_err(),
+                "secondary colour {colour:?} must use exact #RRGGBB form"
+            );
+        }
+
+        for speed in ["Fast", "turbo", "fast\0", "/dev/hidraw0", "0xf5"] {
+            assert!(
+                parse_native_aura_request("pulse", "#FF0000", "", speed, "").is_err(),
+                "speed {speed:?} must not reach packet encoding"
+            );
+        }
+
+        for direction in ["Right", "clockwise", "left\0", "/dev/hidraw0", "0x01"] {
+            assert!(
+                parse_native_aura_request("rainbow-wave", "", "", "medium", direction).is_err(),
+                "direction {direction:?} must not reach packet encoding"
+            );
+        }
     }
 
     #[cfg(unix)]
