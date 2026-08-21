@@ -7,10 +7,11 @@ use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
     dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
-    LightingDiagnostics,
+    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
+use rog_providers::aura_hid::{g615jm_lighting_caps, scan_native_aura_hid};
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
@@ -234,7 +235,7 @@ async fn cmd_setup_check() -> anyhow::Result<()> {
     let lighting_probe = probe_lighting_diagnostics().await;
 
     let mut caps = DeviceCaps::unknown();
-    caps.has_aura = lighting_probe.aura.is_some();
+    caps.has_aura = lighting_probe.diagnostics.rgb_backend_detected;
     caps.has_kbd_backlight = lighting_probe.kbd_detected;
     let sysfs_writable = lighting_probe
         .kbd_backlight
@@ -475,7 +476,7 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
         caps.notes.extend(fan_caps.warnings);
     }
     caps.has_kbd_backlight = lighting_probe.kbd_detected;
-    caps.has_aura = lighting_probe.aura.is_some();
+    caps.has_aura = lighting_probe.diagnostics.rgb_backend_detected;
     let sysfs_writable = lighting_probe
         .kbd_backlight
         .as_ref()
@@ -1109,7 +1110,7 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         (None, None)
     };
 
-    let diagnostics = build_lighting_diagnostics(
+    let mut diagnostics = build_lighting_diagnostics(
         kbd_backlight.as_ref(),
         kbd_detected,
         kbd_probe_error.as_deref(),
@@ -1118,6 +1119,44 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         aura_state.as_ref(),
         aura_state_error.as_deref(),
     );
+    let native_aura_hid = scan_native_aura_hid();
+    native_aura_hid.populate_diagnostics(&mut diagnostics);
+    let native_supported = native_aura_hid
+        .devices
+        .iter()
+        .any(|device| device.protocol.is_some());
+    if aura.is_none() && native_supported {
+        let caps = g615jm_lighting_caps();
+        diagnostics.selected_backend_kind = LightingBackendKind::NativeAuraHid;
+        diagnostics.capabilities = caps.clone();
+        diagnostics.supports_rgb = true;
+        diagnostics.rgb_backend_detected = true;
+        diagnostics.rgb_backend_name = Some("native-aura-hid".to_string());
+        diagnostics.supports_modes = true;
+        diagnostics.supported_modes = caps
+            .supported_modes
+            .iter()
+            .map(LightingMode::label)
+            .collect();
+        diagnostics.supports_speed = true;
+        diagnostics.supported_speeds = caps
+            .supported_speeds
+            .iter()
+            .map(LightingSpeed::label)
+            .collect();
+        diagnostics.active_backend = "native-aura-hid".to_string();
+        diagnostics.fallback_reason = Some(
+            "Verified native Aura HID was selected for RGB/effects; sysfs remains the brightness fallback."
+                .to_string(),
+        );
+        diagnostics.unavailable_reason = None;
+        diagnostics.recommended_action = None;
+    } else if aura.is_some() && native_supported {
+        diagnostics.probe_errors.push(
+            "Verified native Aura HID was suppressed because asusd owns the preferred Aura backend."
+                .to_string(),
+        );
+    }
 
     LightingProbe {
         kbd_backlight,

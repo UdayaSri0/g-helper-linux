@@ -1,0 +1,5 @@
+# Root-only stable alias for the one ASUS Aura USB interface that ROG Helper
+# knows how to validate. Do not grant user access here; the privileged helper
+# rechecks DMI, VID/PID, interface, driver, descriptor hash, report shape and FD.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19b6", IMPORT{builtin}="usb_id"
+SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="0b05", ENV{ID_MODEL_ID}=="19b6", ENV{ID_USB_INTERFACE_NUM}=="00", SYMLINK+="rog-helper-aura"

@@ -1,0 +1,20 @@
+<!-- Captured contract shape from asusctl/asusd 6.3.8, commit
+     47bf9b134b4e702e0b5e18db7cc66839e42d9035 (MPL-2.0). Device-dependent
+     property values are intentionally omitted; only the DBus ABI is tested. -->
+<node name="/xyz/ljones/aura/19b6_3_1">
+  <interface name="xyz.ljones.Aura">
+    <method name="AllModeData">
+      <arg name="data" type="a{u(uu(yyy)(yyy)ss)}" direction="out"/>
+    </method>
+    <method name="DirectAddressingRaw">
+      <arg name="data" type="aay" direction="in"/>
+    </method>
+    <property name="DeviceType" type="u" access="read"/>
+    <property name="Brightness" type="u" access="readwrite"/>
+    <property name="SupportedBrightness" type="au" access="read"/>
+    <property name="LedMode" type="u" access="readwrite"/>
+    <property name="LedModeData" type="(uu(yyy)(yyy)ss)" access="readwrite"/>
+    <property name="SupportedBasicModes" type="au" access="read"/>
+    <property name="SupportedBasicZones" type="au" access="read"/>
+  </interface>
+</node>

@@ -138,6 +138,7 @@ pub mod caps {
 
 pub mod lighting {
     pub const BACKEND: &str = "backend";
+    pub const BACKEND_KIND: &str = "backend_kind";
     pub const DEVICE: &str = "device";
     pub const BRIGHTNESS: &str = "brightness";
     pub const MAX_BRIGHTNESS: &str = "max_brightness";
@@ -152,10 +153,19 @@ pub mod lighting {
     pub const SUPPORTS_BRIGHTNESS: &str = "supports_brightness";
     pub const SUPPORTS_MODES: &str = "supports_modes";
     pub const SUPPORTS_RGB: &str = "supports_rgb";
+    pub const SUPPORTS_ARGB: &str = "supports_argb";
+    pub const SUPPORTS_ZONES: &str = "supports_zones";
+    pub const SUPPORTS_PER_KEY: &str = "supports_per_key";
     pub const RGB_HEX: &str = "rgb_hex";
+    pub const SECONDARY_RGB_HEX: &str = "secondary_rgb_hex";
     pub const SUPPORTS_SPEED: &str = "supports_speed";
     pub const SUPPORTED_SPEEDS: &str = "supported_speeds";
+    pub const SPEED: &str = "speed";
+    pub const SUPPORTED_DIRECTIONS: &str = "supported_directions";
+    pub const DIRECTION: &str = "direction";
     pub const SUPPORTED_ZONES: &str = "supported_zones";
+    pub const ACTIVE_ZONE: &str = "active_zone";
+    pub const APPLY_OUTCOME: &str = "apply_outcome";
     pub const STATUS: &str = "status";
     pub const LAST_ERROR: &str = "last_error";
     pub const DIAGNOSTICS_SUMMARY: &str = "diagnostics_summary";

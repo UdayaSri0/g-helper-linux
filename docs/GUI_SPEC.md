@@ -233,21 +233,25 @@ Purpose:
 
 Current content:
 
-- controls first, followed by availability and recent-action status
+- device/backend and explicit RGB, ARGB/multi-zone, and per-key capability rows
+- local keyboard preview; it never writes hardware while the user edits controls
 - one read-only/unavailable capability banner
 - mode combo box only when `supports_modes` and non-empty `supported_modes` are reported
 - brightness slider only when `supports_brightness` is reported
 - RGB colour control only when `supports_rgb` is reported
+- secondary colour, speed, direction, and zone rows only when the selected mode/backend reports them
 - apply action
-- collapsed backend details containing current backend, brightness, mode, and RGB values
+- collapsed backend details containing device, backend, capabilities, brightness, mode, and RGB values
 
 Current implementation note:
 
-- an Aura backend may be preferred only when introspection matches an exact, reviewed control contract; Aura-looking names remain diagnostic-only
+- backend order is verified asusd, allow-listed native G615JMR target HID, sysfs brightness, unavailable;
+  an active asusd owner suppresses native HID
 - the sysfs keyboard backlight backend remains the brightness-only fallback
 - sysfs daemon-reported supported modes are `Off` and `Static`
-- speed and zone controls remain hidden because no verified backend currently reports them
-- future Aura mode choices, RGB, speed, and zones must come from daemon-reported backend capability data
+- the native G615JMR target is single-target RGB, not ARGB: it exposes no zones or per-key controls
+- native effect Apply may request PolicyKit and reports accepted without readback; opening the page does not authenticate
+- all mode, secondary colour, speed, direction, and zone visibility comes from daemon capability data
 - Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 

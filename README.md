@@ -37,7 +37,7 @@ High-level responsibilities:
 - `rog-providers`: DBus/sysfs/procfs integration layer
 - `rog-core`: shared domain model, validation, and policy types
 - `rog-cli`: diagnostics and probing tool
-- `rog-privileged`: on-demand root service with path-free CPU, verified fan, keyboard-brightness, and battery-threshold methods
+- `rog-privileged`: on-demand root service with path-free CPU, verified fan, keyboard-brightness, battery-threshold, and allow-listed Aura-effect methods
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime architecture.
 
@@ -130,6 +130,7 @@ Current source-backed features include:
 - Official `rog-helper` logo wired into desktop packaging, launcher metadata, tray/window icon naming, and packaging scripts
 - Session DBus API for the UI and other local clients
 - Optional typed privileged fallback with separate CPU, fan, lighting, and battery PolicyKit actions; direct/asusd/supergfxd routes remain preferred
+- ASUS Aura lighting through an exact asusd 6.3.8-6.4.0 DBus adapter or the single allow-listed G615JMR target mapping (DMI prefix `G615JM`); sysfs remains brightness-only
 
 See:
 
@@ -145,7 +146,7 @@ See:
 Important gaps in the current implementation:
 
 - Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
-- Broader Aura/RGB lighting validation across ASUS models and asusd versions
+- Broader Aura/RGB lighting validation across ASUS models and asusd versions; the native HID implementation is deliberately limited to the G615JMR target identity and has not yet been physically validated through ROG Helper
 - Live auto mode / policy automation integration
 - Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
 - Generated strongly typed external DBus payloads (the current backwards-compatible `a{sv}` API
@@ -404,7 +405,7 @@ Tagged release packaging is driven by `.github/workflows/release.yml`.
 The application can launch without all external services, but feature availability depends on what is installed and reachable:
 
 - `UPower`: expected for battery and power-source telemetry
-- `asusd`: required for ASUS platform profile and battery-limit control; Aura/RGB remains disabled until an exact lighting interface contract is verified
+- `asusd`: required for ASUS platform profile control and preferred for battery limits; Aura is accepted only for the exact 6.3.8-6.4.0 `xyz.ljones.Aura` contract
 - `supergfxd`: required for GPU mode control
 - Writable sysfs access: required for some CPU and keyboard-backlight operations
 - Tray support: depends on desktop support for StatusNotifierItem / AppIndicator integration
@@ -414,7 +415,7 @@ When these dependencies are missing or read-only, the UI is expected to degrade 
 Current release behavior to expect:
 
 - missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
-- asusd without Aura/RGB -> RGB controls stay disabled while brightness-only sysfs support remains available when present
+- asusd without the verified Aura contract -> the daemon may select the allow-listed native G615JMR target backend; otherwise RGB stays disabled while brightness-only sysfs support remains available
 - missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
 - readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
 - readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable

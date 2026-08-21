@@ -24,8 +24,8 @@ The project is split into four main runtime layers, plus a shared model layer an
    - Minimal root system service, activated on demand
    - Owns `io.github.roghelper.Privileged` on the system bus
    - Uses PolicyKit actions tied to the calling system-bus peer
-   - Exposes typed, validated CPU, fan, canonical keyboard-brightness, and standard
-     battery-threshold writes plus probes
+   - Exposes typed, validated CPU, fan, canonical keyboard-brightness, standard
+     battery-threshold, and allow-listed native Aura effect writes plus probes
    - Exposes no GPU operation: supergfxd remains the authoritative switching and safety service
 
 Shared model layer:
@@ -248,12 +248,17 @@ Current permission reality:
   missing-helper systems degrade to read-only behavior.
 
 The privileged boundary handles supported CPU controls, verified ASUS fan controls, the canonical
-ASUS WMI keyboard brightness endpoint, and one unambiguous standard Linux battery charge threshold
+ASUS WMI keyboard brightness endpoint, one unambiguous standard Linux battery charge threshold,
+and one exact G615JMR target Aura HID contract (matched by DMI prefix `G615JM`)
 only after the preferred backend/direct route is unavailable or fails with write permission.
 Battery charge limits still prefer asusd; the kernel fallback is considered only when asusd is
 unavailable or lacks the feature. Telemetry and directly writable controls stay unprivileged. The
-helper discovers fixed sysfs endpoints itself and never accepts caller-provided paths. Aura/RGB
-continues to use verified asusd system APIs and has no privileged raw-device fallback.
+helper discovers fixed endpoints itself and never accepts caller-provided paths. Aura selection is
+verified asusd 6.3.8-6.4.0 first, the allow-listed native HID protocol second, sysfs brightness
+third, then unavailable. Native Aura crosses the root boundary only as high-level
+`SetAuraEffect(mode, primary, secondary, speed, direction)` fields; no path, report ID, command ID,
+zone, or byte array is caller-controlled. A root-only udev alias is revalidated against the live
+device before each write.
 
 The control/privilege matrix makes this policy observable. GPU and profile rows report
 `external-service` access rather than implying that root access to ROG Helper would help. Battery,
@@ -297,7 +302,8 @@ The current architecture has several known limitations:
 
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
 - Fan curve support is modeled but not implemented end-to-end
-- Aura/RGB lighting depends on asusd exposing a compatible introspectable backend and still needs broad hardware validation
+- Aura/RGB lighting supports one exact asusd contract and one exact native G615JMR target contract;
+  broader hardware coverage and physical target validation remain outstanding
 - The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules
 - The UI and daemon still duplicate some presentation formatting and lower-risk leaf-row shape logic
 - Polling is simple but not especially efficient compared with a signal-driven model

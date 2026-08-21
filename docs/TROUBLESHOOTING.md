@@ -421,15 +421,18 @@ Expected current behavior:
 
 What to do:
 
-- if you want sysfs writes, create a local admin-managed permission change for the relevant LED `brightness` file
+- use a native package with `rog-helper-privileged` for the approved ASUS LED fallback, or manage a
+  local policy for another unsupported LED endpoint
 - restart `rog-helperd` after changing local policy
 
-The repository does not ship a bundled udev rule or a privileged lighting-write method for this path.
+The packaged helper exposes a typed brightness method for the canonical ASUS LED. The bundled Aura
+udev rule is separate: it creates a root-only HID alias and does not grant user access.
 
 ## Keyboard RGB / Aura Diagnostics
 
-RGB colour requires a verified Aura/keyboard lighting control contract on system DBus. An
-Aura-looking interface is reported for diagnostics but is not enough to enable writes.
+RGB colour requires either the exact asusd 6.3.8-6.4.0 Aura contract or the exact native
+G615JMR target HID identity (including its `G615JM` DMI prefix). An Aura-looking interface or similar ASUS PID is diagnostic evidence,
+not enough to enable writes.
 
 Check:
 
@@ -442,16 +445,21 @@ cargo run -p rog-cli -- lighting-diagnostics
 cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb"
 ls -la /sys/class/leds
+ls -l /dev/rog-helper-aura
 cat /sys/class/leds/asus::kbd_backlight/brightness
 cat /sys/class/leds/asus::kbd_backlight/max_brightness
 ```
 
 Expected behavior:
 
-- `has_aura: true` only when an exact verified Aura/RGB provider contract is active
+- `has_aura: true` only when an exact verified asusd or native Aura/RGB provider is selected
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
 - if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only
+- if asusd owns an ASUS daemon name, native HID is suppressed to prevent competing writes
+- native G615JMR success is `accepted_no_readback`; physically inspect the LEDs because HID state
+  cannot be read back reliably
+- the target is RGB only; ARGB, zones, and per-key controls must remain absent
 - if only sysfs is available, Diagnostics should explain that the active backend only supports brightness through `/sys/class/leds/...`
 - if write access is blocked, Diagnostics should name the brightness file permission issue
 - if a potential Aura-like interface is found but unsupported, include its exact service version, tree, and introspection output in a GitHub issue

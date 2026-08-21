@@ -65,7 +65,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
 | `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
-| `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then direct sysfs brightness, then the typed privileged ASUS keyboard-brightness fallback |
+| `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then the allow-listed G615JMR target through the typed helper, then sysfs brightness |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
 | `SetBatteryLimit` | `t` (`u64`) | `()` | Prefers asusd; otherwise uses one validated standard power-supply threshold, direct before helper |
@@ -129,7 +129,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 
 Important note:
 
-- `has_aura` is `true` only when the daemon finds an introspectable asusd Aura/keyboard lighting interface. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
+- `has_aura` is `true` only when the daemon selects a verified asusd or native Aura/RGB backend. `has_kbd_backlight` means brightness support and does not imply RGB. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
@@ -194,6 +194,7 @@ than daemon startup failures.
 - Bus name: `io.github.roghelper.Privileged`
 - Object path: `/io/github/roghelper/Privileged`
 - Interface: `io.github.roghelper.Privileged1`
+- API version: `2` (version 2 adds the path-free high-level Aura effect operation)
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
@@ -211,9 +212,16 @@ than daemon startup failures.
 | `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
 | `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
+| `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
 | `SetBatteryChargeLimit` | `t` | `t` actual value | Validates 20..=100, discovers one exact Battery threshold internally, writes, and returns readback |
 
-The helper does not expose generic file, sysfs, process, command, or shell methods. Write methods
+`SetAuraEffect` accepts no path, device number, report/command ID, zone, or bytes. The helper
+re-discovers exactly one allow-listed `0b05:19b6` interface, verifies the G615JMR target's `G615JM`
+DMI prefix,
+`asus` driver, report descriptor hash and report shape, opens only `/dev/rog-helper-aura`, and
+rechecks the open file descriptor before writing. An active asusd owner suppresses native HID.
+
+The helper does not expose generic file, sysfs, HID, USB, process, command, or shell methods. Write methods
 use specific schemas and return stable sanitized errors: `not_authorized`,
 `not_supported`, `invalid_input`, `hardware_unavailable`, `permission_denied`, `backend_failure`,
 or `unexpected`.
@@ -226,7 +234,8 @@ not accepted as write-method arguments. The shipped policy does not use retained
 
 When present, `lighting` includes:
 
-- `backend` -> `s`, for example `asusd-aura` or `sysfs-led`
+- `backend` -> `s`, for example `asusd-aura`, `native-aura-hid`, or `sysfs-led`
+- `backend_kind` -> `s`, canonical backend identifier
 - `device` -> `s`, for example `aura-dbus:<service>:<path>:<interface>` detail or the sysfs LED name
 - `brightness` -> `t`
 - `max_brightness` -> `t`
@@ -235,10 +244,17 @@ When present, `lighting` includes:
 - `supports_brightness` -> `b`
 - `supports_modes` -> `b`
 - `supports_rgb` -> `b`
+- `supports_argb`, `supports_zones`, `supports_per_key` -> `b`
 - `rgb_hex` -> optional `s` in `#RRGGBB` form
+- `secondary_rgb_hex` -> optional `s` in `#RRGGBB` form
 - `supports_speed` -> `b`
 - `supported_speeds` -> `as`
+- `speed` -> optional `s`
+- `supported_directions` -> `as`
+- `direction` -> optional `s`
 - `supported_zones` -> `as`
+- `active_zone` -> optional `s`
+- `apply_outcome` -> optional `s`: `verified`, `accepted_no_readback`, or a failure/forward-compatible value
 - `can_set` / `writable` -> `b`
 - `direct_writable` / `privileged_writable` -> `b`
 - `authorization_required` -> `b`
@@ -504,16 +520,41 @@ Current accepted keys:
 - `brightness` -> integer
 - `mode` -> string
 - `rgb_hex` -> optional string
-- `speed` and `zone` are reserved capability keys and return `NotSupported` until a verified backend contract is active
+- `secondary_rgb_hex` -> optional string
+- `speed` -> optional string
+- `direction` -> optional string
+- `zone` -> optional string
 
 Current behavior:
 
 - verified asusd Aura operations are preferred whenever that API exposes the requested control
+- when asusd is unavailable, the exact G615JMR target backend routes effect fields through
+  privileged API v2 `SetAuraEffect`; active asusd ownership suppresses native HID
 - brightness falls back to directly writable sysfs, then to `SetKeyboardBacklightBrightness(t)` on `rog-helper-privileged` only for the canonical ASUS WMI LED
 - brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
 - unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`
 - PolicyKit action `io.github.roghelper.lighting.control` is requested only after Apply and only when direct sysfs returns a permission error
-- RGB never uses the privileged helper; without a verified asusd Aura contract it remains unsupported
+- the native target supports single-zone RGB only; zone requests are rejected, ARGB/per-key are
+  never inferred, and a successful HID write is reported as accepted without hardware readback
+
+### Verified external asusd Aura contract
+
+ROG Helper enables the DBus backend only for this complete asusd 6.3.8-6.4.0 shape:
+
+- owned service `xyz.ljones.Asusd`
+- object returned by the root ObjectManager below `/xyz/ljones/aura/`
+- interface `xyz.ljones.Aura`
+- required read/write `LedModeData` property with signature `(uu(yyy)(yyy)ss)`
+- required read/write `LedMode` property with signature `u`
+- required read-only `SupportedBasicModes` and `SupportedBasicZones`, each `au`
+- required `AllModeData() -> a{u(uu(yyy)(yyy)ss)}` and `DirectAddressingRaw(aay) -> ()` ABI signatures
+- optional read/write `Brightness u` and optional read-only `SupportedBrightness au`
+
+Unknown services, paths, interfaces, signatures, or access modes stay diagnostic-only.
+`DirectAddressingRaw(aay)` is required only as a contract fingerprint and is never called; writes
+use structured `LedModeData`. The ABI was compared with current upstream ASUS
+Linux/asusctl HEAD [`1c456fa3`](https://gitlab.com/asus-linux/asusctl/-/commit/1c456fa3), licensed
+MPL-2.0; the local adapter is independently implemented.
 
 ## `SetProfile`
 

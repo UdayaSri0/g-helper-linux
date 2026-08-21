@@ -44,10 +44,12 @@ GTK UI -> session DBus -> rog-helperd -> system DBus -> rog-helper-privileged
 Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
 a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan,
-keyboard-brightness, and standard battery-threshold operations. Lighting privilege is limited to
-the canonical ASUS WMI keyboard LED. Battery privilege is limited to one unambiguous
+keyboard-brightness, native Aura-effect, and standard battery-threshold operations. Privileged API
+v2 adds only the high-level `SetAuraEffect` operation for the exact G615JMR target contract.
+Battery privilege is limited to one unambiguous
 `type=Battery` power-supply device exposing the documented `charge_control_end_threshold` ABI. It
-does not expose RGB, HID, USB, GPU, caller-selected paths, or generic system writes.
+does not expose generic HID/USB writes, caller-selected paths, raw bytes, report IDs, command IDs,
+zones, GPU operations, or generic system writes.
 
 The helper has no generic file, sysfs, command, program, argument, or shell API. Its methods
 accept a narrowly defined domain operation, validate it, select a fixed endpoint internally,
@@ -182,6 +184,21 @@ Current effect of failure:
 - current backend remains visible
 - UI shows the control as read-only or reports a write failure
 
+### ASUS Aura RGB
+
+Priority and permission behavior:
+
+- the exact asusd 6.3.8-6.4.0 Aura contract is preferred and follows asusd's system-service policy
+- otherwise, the exact G615JMR target HID contract may use the lighting PolicyKit action
+- the UI and session daemon remain unprivileged; authorization is requested only when Apply invokes
+  the native write
+- the packaged udev rule creates root-only `/dev/rog-helper-aura`; it does not add `MODE`, `GROUP`,
+  `TAG+=uaccess`, or an ACL
+- the helper revalidates the alias and opened device against DMI, `0b05:19b6`, interface `00`, the
+  `asus` driver, descriptor hash, and 64-byte report contract before writing
+- a running ASUS daemon suppresses native HID to prevent competing owners
+- no reliable hardware effect readback exists, so a completed write is reported as accepted without readback
+
 ### Battery charge-limit fallback
 
 Backend:
@@ -215,7 +232,7 @@ direct-user-write state, fallback suitability, risk, and implementation decision
 | Battery telemetry | `UPower` + power-supply sysfs | No | UPower for part of telemetry | Read-only | No | Low | Always unprivileged |
 | Battery charge limit | `asusd`, then standard power-supply threshold | Sometimes | Prefer `asusd` | Yes when kernel attribute permits | Yes only for one validated standard threshold | Medium | Never replace working asusd; validate 20..=100 and return readback |
 | Keyboard brightness | verified asusd, LED sysfs, approved ASUS LED helper | Sometimes | Prefer `asusd` | Preferred | Yes for canonical approved LED only | Low | No caller path and no generic lighting write |
-| Aura/RGB/modes | verified asusd DBus contract | External service policy | Yes, `asusd` | No raw-device route | No | High | No generic root USB/HID access; unsupported when no verified contract exists |
+| Aura/RGB/modes | verified asusd, then allow-listed G615JMR target HID | External service policy or PolicyKit | Prefer `asusd` | No direct user hidraw access | Yes, only the path-free high-level Aura effect operation | High | Suppress HID when asusd owns Aura; revalidate a root-only alias; never accept paths or bytes |
 | Fan RPM | hwmon | No | No | Read-only | No | Low | Telemetry remains unprivileged |
 | Fan curve/Auto | verified ASUS WMI hwmon ABI | Sometimes | No | Preferred when permitted | Yes only for verified endpoints | High | Reject generic PWM/RPM-target guesses; preserve Auto restore safety |
 | Fan manual percent/RPM target/boost | generic hwmon candidates only | Not authorized | No | Deliberately unused | No | High | Compatibility methods return unsupported; no privileged method exists |
@@ -225,8 +242,8 @@ direct-user-write state, fallback suitability, risk, and implementation decision
 
 ## Sysfs Write Limitations
 
-The repository ships typed PolicyKit fallbacks for narrowly approved CPU, fan, keyboard LED, and
-battery-threshold writes. Existing direct provider behavior remains the first choice; the helper is
+The repository ships typed PolicyKit fallbacks for narrowly approved CPU, fan, keyboard LED,
+native Aura, and battery-threshold writes. Existing direct/provider behavior remains the first choice; the helper is
 called only after a supported operation fails for write permission.
 
 That means:
@@ -234,7 +251,8 @@ That means:
 - keyboard brightness and a standard battery threshold may be readable but not directly writable
 - CPU controls may require administrator authorization when direct writes are blocked
 - behavior depends on the current distro, kernel, udev rules, and file ownership
-- the app does not change ownership, modes, udev rules, or sysfs permissions
+- the app does not change ownership, modes, or sysfs permissions; native packages install one
+  root-only target-specific Aura alias rule
 
 This is expected behavior in the current design.
 
@@ -281,11 +299,9 @@ This is the intended current behavior and should be preserved when adding new ba
 
 ## What the Repository Does Not Currently Provide
 
-The repository does not currently include:
-
-- bundled udev rules
-- a custom permission broker
-- privileged RGB/HID/USB, GPU, or generic sysfs write methods
+The repository does not provide a custom permission broker, generic privileged HID/USB or sysfs
+writes, or a GPU helper method. Its one bundled Aura udev rule is an exact root-only alias, not a
+permission grant to the desktop user.
 
 `rog-helper-privileged` is a narrowly scoped root service, not a privileged replacement for the
 session daemon. It exits after an idle timeout and is optional on unsupported distributions.
@@ -306,8 +322,9 @@ On supervised ASUS hardware, verify the detected `max_brightness` and test the e
 at `0`, the minimum visible level (`1` on the canonical three-level ASUS WMI LED), a middle level,
 and the reported maximum. After every write, confirm the daemon reports the same readback and the UI
 continues normal operation. Repeat with direct sysfs access, with the helper installed, with PolicyKit
-denied/cancelled, and with the helper unavailable. RGB must remain disabled unless the verified asusd
-Aura API reports it writable.
+denied/cancelled, and with the helper unavailable. RGB must remain disabled unless a verified asusd
+or exact native Aura backend reports it. Native RGB needs separate supervised physical validation;
+an `accepted_no_readback` result is not confirmation by itself.
 
 When documenting a new feature, always note:
 
