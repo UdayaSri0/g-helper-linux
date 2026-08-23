@@ -30,8 +30,8 @@ For each page, it lists:
 
 - performance profile quick actions
 - GPU mode quick action
-- battery charge-limit apply action
-- keyboard backlight brightness apply action
+- battery charge-limit draft with Reset and Apply; the Dashboard and Battery page share one staged value
+- keyboard backlight brightness draft with Reset and Apply; daemon refreshes do not replace a pending selection
 - keyboard and pointer navigation from CPU, GPU, Battery, Cooling, and Memory cards to their detailed pages
 
 ### Capability dependencies

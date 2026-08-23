@@ -68,6 +68,11 @@ The current UI behavior is polling-based:
 
 This matches the current daemon polling model and is the expected behavior unless the architecture changes.
 
+For controls with an explicit Apply button, polling updates the displayed current/backend state
+without replacing a dirty local selection. Apply reads the stored draft rather than widget focus
+or the current widget value; Reset discards that draft. A submitted draft remains visible until a
+matching daemon report confirms it, and failed applies keep the draft available for retry.
+
 ## Current Pages
 
 ### Dashboard

@@ -220,6 +220,8 @@ struct SharedUiState {
     profile: Option<String>,
     gpu_mode: Option<String>,
     battery_limit: Option<u8>,
+    battery_limit_edit: EditableDraft<u8>,
+    keyboard_brightness_edit: EditableDraft<u64>,
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -276,6 +278,8 @@ impl Default for SharedUiState {
             profile: None,
             gpu_mode: None,
             battery_limit: None,
+            battery_limit_edit: EditableDraft::default(),
+            keyboard_brightness_edit: EditableDraft::default(),
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -305,6 +309,66 @@ impl Default for SharedUiState {
             show_gpu_page: false,
             quit: false,
         }
+    }
+}
+
+/// Separates daemon-reported values from an edit staged in the UI.
+///
+/// A report is always retained, but it only replaces the editor when there is
+/// no local change (or when it confirms the value currently being applied).
+#[derive(Debug, Clone)]
+struct EditableDraft<T> {
+    reported: Option<T>,
+    draft: Option<T>,
+    applying: Option<T>,
+}
+
+impl<T> Default for EditableDraft<T> {
+    fn default() -> Self {
+        Self {
+            reported: None,
+            draft: None,
+            applying: None,
+        }
+    }
+}
+
+impl<T: Clone + PartialEq> EditableDraft<T> {
+    fn is_dirty(&self) -> bool {
+        self.draft != self.reported
+    }
+
+    fn update_reported(&mut self, reported: Option<T>) {
+        self.reported = reported;
+        if self.applying.is_some() && self.applying.as_ref() == self.reported.as_ref() {
+            self.applying = None;
+            self.draft = self.reported.clone();
+        } else if self.draft.is_none() || !self.is_dirty() {
+            self.draft = self.reported.clone();
+        }
+    }
+
+    fn set_user_draft(&mut self, value: T) {
+        self.draft = Some(value);
+    }
+
+    fn begin_apply(&mut self) -> Option<T> {
+        let value = self.draft.clone()?;
+        if self.is_dirty() && self.applying.is_none() {
+            self.applying = Some(value.clone());
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn apply_failed(&mut self) {
+        self.applying = None;
+    }
+
+    fn reset(&mut self) {
+        self.applying = None;
+        self.draft = self.reported.clone();
     }
 }
 
@@ -1281,6 +1345,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         });
     }
 
+    let battery_edit_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let keyboard_brightness_edit_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
     let charge_limit_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
     style_spin_control(&charge_limit_spin, 5);
@@ -1291,19 +1357,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     style_apply_button(&charge_apply_button);
     charge_apply_button.set_size_request(82, -1);
     charge_apply_button.set_sensitive(false);
+    let charge_reset_button = gtk::Button::with_label("Reset");
+    charge_reset_button.set_sensitive(false);
     style_inline_control_box(&charge_limit_box);
     charge_limit_box.append(&charge_limit_spin);
+    charge_limit_box.append(&charge_reset_button);
     charge_limit_box.append(&charge_apply_button);
     charge_limit_box.set_halign(gtk::Align::Start);
     let charge_limit_row = DashboardControlTile::new("Charge Limit", &charge_limit_box);
     {
         let shared = shared.clone();
-        let charge_limit_spin = charge_limit_spin.clone();
         charge_apply_button.connect_clicked(move |_| {
-            let limit = charge_limit_spin.value().round().clamp(0.0, 100.0) as u8;
             if let Ok(mut st) = shared.lock() {
-                st.pending_battery_limit = Some(limit);
-                st.action_error = None;
+                if let Some(limit) = st.battery_limit_edit.begin_apply() {
+                    st.pending_battery_limit = Some(limit);
+                    st.action_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = battery_edit_syncing.clone();
+        charge_limit_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.battery_limit_edit
+                        .set_user_draft(spin.value().round().clamp(50.0, 100.0) as u8);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        charge_reset_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.battery_limit_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -1317,8 +1409,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     style_apply_button(&kbd_apply_button);
     kbd_apply_button.set_size_request(82, -1);
     kbd_apply_button.set_sensitive(false);
+    let kbd_reset_button = gtk::Button::with_label("Reset");
+    kbd_reset_button.set_sensitive(false);
     style_inline_control_box(&kbd_control_box);
     kbd_control_box.append(&kbd_brightness_spin);
+    kbd_control_box.append(&kbd_reset_button);
     kbd_control_box.append(&kbd_apply_button);
 
     kbd_control_box.set_halign(gtk::Align::Start);
@@ -1326,20 +1421,43 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let kbd_brightness_spin = kbd_brightness_spin.clone();
         kbd_apply_button.connect_clicked(move |_| {
-            let desired_brightness = kbd_brightness_spin.value().round().max(0.0) as u64;
             if let Ok(mut st) = shared.lock() {
-                st.pending_lighting = Some(PendingLighting {
-                    brightness: Some(desired_brightness),
-                    mode: None,
-                    rgb_hex: None,
-                    secondary_rgb_hex: None,
-                    speed: None,
-                    direction: None,
-                    zone: None,
-                });
-                st.lighting_error = None;
+                if let Some(desired_brightness) = st.keyboard_brightness_edit.begin_apply() {
+                    st.pending_lighting = Some(PendingLighting {
+                        brightness: Some(desired_brightness),
+                        mode: None,
+                        rgb_hex: None,
+                        secondary_rgb_hex: None,
+                        speed: None,
+                        direction: None,
+                        zone: None,
+                    });
+                    st.lighting_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = keyboard_brightness_edit_syncing.clone();
+        kbd_brightness_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.keyboard_brightness_edit
+                        .set_user_draft(spin.value().round().max(0.0) as u64);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        kbd_reset_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.keyboard_brightness_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -1756,7 +1874,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
-
     cpu_page.append(&cpu_quick_group);
 
     let cpu_policy_group = adw::PreferencesGroup::builder()
@@ -1930,8 +2047,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let battery_charge_apply = gtk::Button::with_label("Apply");
     style_apply_button(&battery_charge_apply);
     battery_charge_apply.set_sensitive(false);
+    let battery_charge_reset = gtk::Button::with_label("Reset");
+    battery_charge_reset.set_sensitive(false);
     style_inline_control_box(&battery_charge_box);
     battery_charge_box.append(&battery_charge_spin);
+    battery_charge_box.append(&battery_charge_reset);
     battery_charge_box.append(&battery_charge_apply);
     let battery_charge_row = adw::ActionRow::builder()
         .title("Charge Limit")
@@ -1943,12 +2063,35 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     battery_page.append(&battery_charge_group);
     {
         let shared = shared.clone();
-        let battery_charge_spin = battery_charge_spin.clone();
         battery_charge_apply.connect_clicked(move |_| {
-            let limit = battery_charge_spin.value().round().clamp(0.0, 100.0) as u8;
             if let Ok(mut st) = shared.lock() {
-                st.pending_battery_limit = Some(limit);
-                st.action_error = None;
+                if let Some(limit) = st.battery_limit_edit.begin_apply() {
+                    st.pending_battery_limit = Some(limit);
+                    st.action_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = battery_edit_syncing.clone();
+        battery_charge_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.battery_limit_edit
+                        .set_user_draft(spin.value().round().clamp(50.0, 100.0) as u8);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        battery_charge_reset.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.battery_limit_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -3570,13 +3713,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let draft = lighting_draft.clone();
         apply_lighting.connect_clicked(move |_| {
             if let Ok(mut st) = shared.lock() {
-                let Some(lighting) = st.lighting.as_ref() else {
+                let Some(lighting) = st.lighting.clone() else {
                     return;
                 };
                 let Some(draft) = draft.borrow().clone() else {
                     return;
                 };
-                st.pending_lighting = Some(draft.to_pending(lighting));
+                st.pending_lighting = Some(draft.to_pending(&lighting));
+                if lighting.supports_brightness {
+                    let _ = st.keyboard_brightness_edit.begin_apply();
+                }
                 st.lighting_apply_in_progress = true;
                 st.lighting_error = None;
                 st.mark_render_dirty();
@@ -3678,6 +3824,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if !syncing.get() {
                 if let Some(draft) = draft.borrow_mut().as_mut() {
                     draft.brightness = scale.value().round().max(0.0) as u64;
+                }
+                if let Ok(mut state) = shared.lock() {
+                    state
+                        .keyboard_brightness_edit
+                        .set_user_draft(scale.value().round().max(0.0) as u64);
                 }
                 mark_ui_render_dirty(&shared);
             }
@@ -4436,6 +4587,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             profile,
             gpu_mode,
             battery_limit,
+            battery_limit_edit,
+            keyboard_brightness_edit,
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4486,6 +4639,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.profile.clone(),
                 st.gpu_mode.clone(),
                 st.battery_limit,
+                st.battery_limit_edit.clone(),
+                st.keyboard_brightness_edit.clone(),
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -6308,10 +6463,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
         charge_limit_row.set_visible(true);
         if caps.charge_limit_access.is_available() {
-            charge_limit_spin.set_sensitive(true);
-            charge_apply_button.set_sensitive(true);
-            battery_charge_spin.set_sensitive(true);
-            battery_charge_apply.set_sensitive(true);
+            let selected_limit = battery_limit_edit.draft.or(battery_limit);
+            let battery_applying = battery_limit_edit.applying.is_some();
+            battery_edit_syncing.set(true);
+            if let Some(limit) = selected_limit {
+                charge_limit_spin.set_value(limit as f64);
+                battery_charge_spin.set_value(limit as f64);
+            }
+            battery_edit_syncing.set(false);
+            let battery_dirty = battery_limit_edit.is_dirty();
+            charge_limit_spin.set_sensitive(!battery_applying);
+            battery_charge_spin.set_sensitive(!battery_applying);
+            charge_apply_button.set_sensitive(battery_dirty && !battery_applying);
+            battery_charge_apply.set_sensitive(battery_dirty && !battery_applying);
+            charge_reset_button.set_sensitive(battery_dirty && !battery_applying);
+            battery_charge_reset.set_sensitive(battery_dirty && !battery_applying);
             let battery_authorization_required = caps.battery_limit_backend == "power_supply_sysfs"
                 && caps.battery_limit_privileged_write
                 && caps.battery_limit_authorization != "authorized";
@@ -6326,14 +6492,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Apply"
             });
             if let Some(limit) = battery_limit {
-                if !charge_limit_spin.has_focus() {
-                    charge_limit_spin.set_value(limit as f64);
-                }
-                if !battery_charge_spin.has_focus() {
-                    battery_charge_spin.set_value(limit as f64);
-                }
-                charge_limit_row.set_subtitle(&format!("Current: {limit}%"));
-                battery_charge_row.set_subtitle(&format!("Current limit: {limit}%"));
+                let detail = selected_limit
+                    .filter(|selected| *selected != limit)
+                    .map(|selected| format!("Current: {limit}% · Pending: {selected}%"))
+                    .unwrap_or_else(|| format!("Current: {limit}%"));
+                charge_limit_row.set_subtitle(&detail);
+                battery_charge_row.set_subtitle(&detail.replace("Current:", "Current limit:"));
             } else if charge_limit_read_failed.is_some() {
                 charge_limit_row.set_subtitle(
                     "Charge limit is detected, but the current value could not be read.",
@@ -6348,8 +6512,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             charge_limit_spin.set_sensitive(false);
             charge_apply_button.set_sensitive(false);
+            charge_reset_button.set_sensitive(false);
             battery_charge_spin.set_sensitive(false);
             battery_charge_apply.set_sensitive(false);
+            battery_charge_reset.set_sensitive(false);
             charge_limit_row.set_subtitle(&dashboard_control_subtitle(
                 &caps.charge_limit_access,
                 "Set desired limit and apply",
@@ -6376,12 +6542,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         if has_kbd_backlight {
             if let Some(ref l) = lighting {
                 kbd_brightness_spin.set_range(0.0, l.max_brightness as f64);
-                if !kbd_brightness_spin.has_focus() {
-                    kbd_brightness_spin.set_value(l.brightness as f64);
-                }
+                let selected_brightness = keyboard_brightness_edit.draft.unwrap_or(l.brightness);
+                keyboard_brightness_edit_syncing.set(true);
+                kbd_brightness_spin.set_value(selected_brightness as f64);
+                keyboard_brightness_edit_syncing.set(false);
                 let can_set_brightness = l.can_set && l.supports_brightness;
-                kbd_brightness_spin.set_sensitive(can_set_brightness);
-                kbd_apply_button.set_sensitive(can_set_brightness);
+                let brightness_dirty = keyboard_brightness_edit.is_dirty();
+                let brightness_applying = keyboard_brightness_edit.applying.is_some();
+                kbd_brightness_spin.set_sensitive(can_set_brightness && !brightness_applying);
+                kbd_apply_button
+                    .set_sensitive(can_set_brightness && brightness_dirty && !brightness_applying);
+                kbd_reset_button.set_sensitive(brightness_dirty && !brightness_applying);
                 if l.authorization_required {
                     kbd_backlight_row.set_subtitle(
                         "Administrator access required to change keyboard lighting. Apply opens the PolicyKit prompt.",
@@ -6395,6 +6566,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 kbd_brightness_spin.set_sensitive(false);
                 kbd_apply_button.set_sensitive(false);
+                kbd_reset_button.set_sensitive(false);
                 kbd_backlight_row
                     .set_subtitle(&feature_control_subtitle(&caps.kbd_backlight_access, ""));
             }
@@ -6423,10 +6595,24 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
             let draft_is_clean =
                 lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
-            let should_sync_draft = identity_changed
+            let draft_matches_reported = lighting_draft
+                .borrow()
+                .as_ref()
+                .is_some_and(|draft| draft == &LightingDraft::from_info(l));
+            let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
+            if dashboard_brightness_dirty {
+                if let (Some(brightness), Some(draft)) = (
+                    keyboard_brightness_edit.draft,
+                    lighting_draft.borrow_mut().as_mut(),
+                ) {
+                    draft.brightness = brightness;
+                }
+            }
+            let should_sync_draft = dashboard_brightness_dirty
+                || identity_changed
                 || lighting_baseline.borrow().is_none()
-                || successful_apply
-                || draft_is_clean;
+                || draft_is_clean
+                || draft_matches_reported;
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -6548,7 +6734,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = speeds.clone();
                 }
-                select_combo_value(&speed_combo, &speeds, l.speed.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.speed.clone())
+                    .or_else(|| l.speed.clone());
+                select_combo_value(&speed_combo, &speeds, selected.as_deref());
             }
 
             let directions = l.supported_directions.clone();
@@ -6565,7 +6756,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = directions.clone();
                 }
-                select_combo_value(&direction_combo, &directions, l.direction.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.direction.clone())
+                    .or_else(|| l.direction.clone());
+                select_combo_value(&direction_combo, &directions, selected.as_deref());
             }
 
             let zones = l.supported_zones.clone();
@@ -6581,14 +6777,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = zones.clone();
                 }
-                select_combo_value(&zone_combo, &zones, l.active_zone.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.zone.clone())
+                    .or_else(|| l.active_zone.clone());
+                select_combo_value(&zone_combo, &zones, selected.as_deref());
             }
             let has_visible_controls =
                 l.supports_brightness || (l.supports_modes && !modes.is_empty()) || l.supports_rgb;
             lighting_controls_group.set_visible(has_visible_controls);
             apply_row.set_visible(can_set && has_visible_controls);
             if should_sync_draft {
-                let value = if successful_apply && !identity_changed {
+                let value = if dashboard_brightness_dirty {
                     lighting_draft
                         .borrow()
                         .clone()
@@ -6608,9 +6809,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     &direction_combo,
                     &zone_combo,
                 );
-                *lighting_baseline.borrow_mut() = Some(value.clone());
-                *lighting_draft.borrow_mut() = Some(value);
-                *lighting_draft_identity.borrow_mut() = Some(reported_identity);
+                if !dashboard_brightness_dirty {
+                    *lighting_baseline.borrow_mut() = Some(value.clone());
+                    *lighting_draft.borrow_mut() = Some(value);
+                    *lighting_draft_identity.borrow_mut() = Some(reported_identity);
+                }
                 lighting_preview.queue_draw();
             }
             let dirty = lighting_draft.borrow().as_ref() != lighting_baseline.borrow().as_ref();
@@ -6928,9 +7131,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_battery_limit.take());
                 if let Some(limit) = pending_battery_limit {
-                    if let Err(e) = apply_battery_limit(limit).await {
-                        if let Ok(mut st) = shared.lock() {
-                            st.action_error = Some(e);
+                    match apply_battery_limit(limit).await {
+                        Ok(()) => {
+                            // Keep the draft until a later daemon poll reports this exact value.
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.battery_limit_edit.apply_failed();
+                                st.action_error = Some(e);
+                                st.mark_render_dirty();
+                            }
                         }
                     }
                 }
@@ -6982,6 +7192,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
                                 st.lighting_apply_in_progress = false;
+                                st.keyboard_brightness_edit.apply_failed();
                                 st.lighting_error = Some(e.clone());
                                 st.pending_toast =
                                     Some((friendly_lighting_error(&e), true));
@@ -7192,6 +7403,13 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.profile = profile;
                             st.gpu_mode = gpu_mode;
                             st.battery_limit = battery_limit;
+                            st.battery_limit_edit.update_reported(battery_limit);
+                            st.keyboard_brightness_edit.update_reported(
+                                lighting
+                                    .as_ref()
+                                    .filter(|info| info.supports_brightness)
+                                    .map(|info| info.brightness),
+                            );
                             st.lighting = lighting;
                             st.fan_state = fan_state;
                             st.daemon_error = None;
@@ -13795,5 +14013,89 @@ mod tests {
 
         assert!(entry.contains("Type=Application"));
         assert!(entry.contains(&format!("Exec={APP_BINARY_NAME} {START_MINIMIZED_ARG}")));
+    }
+
+    #[test]
+    fn editable_draft_poll_never_overwrites_dirty_battery_selection() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        edit.update_reported(Some(80));
+
+        assert_eq!(edit.reported, Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert!(edit.is_dirty());
+    }
+
+    #[test]
+    fn editable_draft_survives_focus_loss_equivalent_and_apply_uses_draft() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+
+        // Focus is deliberately not an input to the state machine.
+        assert_eq!(edit.begin_apply(), Some(60));
+        assert_eq!(edit.draft, Some(60));
+        assert_eq!(edit.applying, Some(60));
+    }
+
+    #[test]
+    fn editable_draft_failed_apply_preserves_selection_for_retry() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        let _ = edit.begin_apply();
+        edit.apply_failed();
+
+        assert_eq!(edit.reported, Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert!(edit.is_dirty());
+        assert_eq!(edit.begin_apply(), Some(60));
+    }
+
+    #[test]
+    fn editable_draft_waits_for_matching_report_before_committing_apply() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        assert_eq!(edit.begin_apply(), Some(60));
+        edit.update_reported(Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert_eq!(edit.applying, Some(60));
+
+        edit.update_reported(Some(60));
+        assert_eq!(edit.reported, Some(60));
+        assert_eq!(edit.draft, Some(60));
+        assert!(!edit.is_dirty());
+        assert_eq!(edit.applying, None);
+    }
+
+    #[test]
+    fn editable_draft_reset_discards_pending_change() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        edit.reset();
+        assert_eq!(edit.draft, Some(80));
+        assert!(!edit.is_dirty());
+    }
+
+    #[test]
+    fn keyboard_brightness_draft_has_the_same_poll_protection() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(3_u64));
+        edit.set_user_draft(1);
+        edit.update_reported(Some(3));
+        assert_eq!(edit.draft, Some(1));
+        assert!(edit.is_dirty());
+    }
+
+    #[test]
+    fn clean_programmatic_sync_does_not_create_a_draft() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.update_reported(Some(80));
+        assert_eq!(edit.draft, Some(80));
+        assert!(!edit.is_dirty());
     }
 }
