@@ -208,9 +208,10 @@ Deliberate exceptions:
 - Full UID 0 remains necessary for compatibility until supported kernels and drivers have a tested,
   narrower capability contract.
 - Because `ProtectKernelTunables` must remain disabled, a memory-safety or logic vulnerability in
-  the root process has more sysfs reach than its typed API. Rust memory safety, the absence of
-  `unsafe` in the helper, the syscall/sandbox controls, and strict endpoint validation reduce but
-  do not erase that consequence.
+  the root process has more sysfs reach than its typed API. The helper contains a narrowly scoped,
+  audited `unsafe` FFI boundary for HID `ioctl`, `poll`, and `write`; Rust memory safety elsewhere,
+  the syscall/sandbox controls, and strict endpoint validation reduce but do not erase that
+  consequence.
 - Real PolicyKit-agent behavior and every supported hardware ABI still require manual distro/device
   testing before release.
 

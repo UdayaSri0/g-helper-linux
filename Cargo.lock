@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "rog-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "rog-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "thiserror",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "rog-daemon"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "rog-privileged"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "rog-providers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures-util",
  "regex",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "rog-ui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "glib-build-tools",

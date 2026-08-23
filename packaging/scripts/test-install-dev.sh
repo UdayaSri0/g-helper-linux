@@ -11,12 +11,14 @@ CALLS="$TEST_ROOT/calls"
 mkdir -p "$FAKE_REPO/packaging/scripts" "$MOCK_BIN"
 cp "$SCRIPT_DIR/install-dev.sh" "$FAKE_REPO/packaging/scripts/install-dev.sh"
 cp "$SCRIPT_DIR/../../Cargo.toml" "$FAKE_REPO/Cargo.toml"
+VERSION="$(python3 -c 'from pathlib import Path; import sys, tomllib; print(tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["workspace"]["package"]["version"])' "$FAKE_REPO/Cargo.toml")"
+export VERSION
 
 cat >"$FAKE_REPO/packaging/scripts/build-deb.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p "$1"
-: >"$1/rog-helper_0.3.0_amd64.deb"
+: >"$1/rog-helper_${VERSION}_amd64.deb"
 printf 'build-deb <%s>\n' "$1" >>"$CALLS"
 EOF
 chmod 0755 "$FAKE_REPO/packaging/scripts/build-deb.sh"
@@ -37,7 +39,7 @@ make_mock dpkg 'echo amd64'
 make_mock dpkg-deb '
 case "${3:-}" in
   Package) echo rog-helper ;;
-  Version) echo 0.3.0 ;;
+  Version) echo "$VERSION" ;;
   Architecture) echo amd64 ;;
   *) exit 2 ;;
 esac'
@@ -53,7 +55,7 @@ printf "rog-helper" >>"$CALLS"; printf " <%s>" "$@" >>"$CALLS"; printf "\n" >>"$
 PATH="$MOCK_BIN:/usr/bin:/bin" CALLS="$CALLS" \
   "$FAKE_REPO/packaging/scripts/install-dev.sh" >/dev/null
 
-package="$FAKE_REPO/dist/rog-helper_0.3.0_amd64.deb"
+package="$FAKE_REPO/dist/rog-helper_${VERSION}_amd64.deb"
 grep -Fqx "sudo <apt> <install> <$package>" "$CALLS"
 [[ "$(grep -c '^sudo ' "$CALLS")" -eq 1 ]]
 grep -Fqx "systemctl <--user> <daemon-reload>" "$CALLS"

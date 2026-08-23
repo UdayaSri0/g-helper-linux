@@ -185,7 +185,7 @@ Notes:
 - direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
 - verify release assets with the published SHA256 file before installing them
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
-- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.3.0`, the correct release tag is `v0.3.0`
+- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.3.1`, the correct release tag is `v0.3.1`
 
 ## Optional Desktop Launcher Install
 
@@ -315,7 +315,7 @@ This installs from the current repository checkout through the bundled
 Notes:
 
 - the `PKGBUILD` auto-detects the repository root when run from `packaging/arch`
-- the committed `.SRCINFO` is generated against the future upstream `v0.3.0` tag
+- the committed `.SRCINFO` is generated against the upstream `v0.3.1` tag
 - the same packaging defaults to the upstream tagged Git source when moved into
   an AUR repository
 - the Arch package does not auto-enable the user service; enable it manually
