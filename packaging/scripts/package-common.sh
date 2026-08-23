@@ -140,11 +140,20 @@ from pathlib import Path
 import sys
 
 src, dest, exec_path = sys.argv[1:4]
-text = Path(src).read_text()
-text = text.replace("rog-helperd", exec_path)
+lines = Path(src).read_text().splitlines(keepends=True)
+rendered = []
+for line in lines:
+    key, separator, value = line.partition("=")
+    if separator and key in {"Exec", "ExecStart"}:
+        command = value.rstrip("\r\n")
+        newline = value[len(command):]
+        if command == "rog-helperd" or command.startswith("rog-helperd "):
+            command = exec_path + command[len("rog-helperd"):]
+        line = f"{key}={command}{newline}"
+    rendered.append(line)
 target = Path(dest)
 target.parent.mkdir(parents=True, exist_ok=True)
-target.write_text(text)
+target.write_text("".join(rendered))
 target.chmod(0o644)
 PY
 }
@@ -298,7 +307,9 @@ write_debian_control() {
   local dest="$1"
   local arch="$2"
   local depends="$3"
-  local installed_size="$4"
+  local recommends="$4"
+  local suggests="$5"
+  local installed_size="$6"
   render_template_file \
     "$DEBIAN_DIR/control.in" \
     "$dest" \
@@ -309,6 +320,8 @@ write_debian_control() {
     "HOMEPAGE=$(package_repository)" \
     "INSTALLED_SIZE=$installed_size" \
     "DEPENDS=$depends" \
+    "RECOMMENDS=$recommends" \
+    "SUGGESTS=$suggests" \
     "SUMMARY=$(package_summary)" \
     "DESCRIPTION=$(package_description_lines)"
 }
@@ -366,6 +379,54 @@ EOF
   )"
   rm -rf "$workdir"
   printf '%s\n' "$output"
+}
+
+# dpkg-shlibdeps only sees ELF linkage. These packages provide the runtime
+# services used by the installed D-Bus activation files, systemd units,
+# PolicyKit policy, and udev rule. Keep these unversioned: the package is meant
+# to work across supported Debian, Ubuntu, and Linux Mint releases, while
+# dpkg-shlibdeps remains responsible for precise shared-library versions.
+debian_explicit_depends() {
+  printf '%s\n' 'dbus, dbus-user-session, policykit-1, systemd, udev'
+}
+
+debian_runtime_recommends() {
+  # The desktop remains launchable without application/icon cache refreshes,
+  # and the maintainer scripts deliberately treat both tools as optional.
+  printf '%s\n' 'desktop-file-utils, gtk-update-icon-cache'
+}
+
+debian_runtime_suggests() {
+  # These providers extend hardware coverage but are not needed for native
+  # Aura HID, the UI, the daemon, or the privileged helper.
+  printf '%s\n' 'asusd, pciutils, supergfxd, upower'
+}
+
+merge_debian_relationships() {
+  python3 - "$@" <<'PY'
+import re
+import sys
+
+clauses = []
+seen_packages = set()
+package_name = re.compile(r"^\s*([a-z0-9][a-z0-9+.-]*)", re.IGNORECASE)
+
+for relationship in sys.argv[1:]:
+    for clause in relationship.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        names = {
+            match.group(1).lower()
+            for alternative in clause.split("|")
+            if (match := package_name.match(alternative))
+        }
+        if names and names.isdisjoint(seen_packages):
+            clauses.append(clause)
+            seen_packages.update(names)
+
+print(", ".join(clauses))
+PY
 }
 
 write_sha256sums() {

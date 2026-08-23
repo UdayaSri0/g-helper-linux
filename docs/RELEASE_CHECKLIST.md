@@ -2,10 +2,12 @@
 
 Use this checklist before calling the repository release-ready.
 
-Latest evidence-based walkthrough: [RELEASE_READINESS_AUDIT.md](RELEASE_READINESS_AUDIT.md).
+Latest evidence-based walkthrough: [releases/v0.3.1-readiness.md](releases/v0.3.1-readiness.md).
 Unchecked items remain unverified even when the audit records partial automated coverage.
 
-Stable release decision: the release owner approved `v0.3.0` on 2026-08-15. Unchecked installed-runtime, cross-distro, and real-hardware items remain explicit known limitations and must not be presented as validated support.
+`v0.3.1` is not release-ready until its readiness record contains a passing final-candidate
+validation run. Unchecked installed-runtime, cross-distro, and real-hardware items remain
+explicit known limitations and must not be presented as validated support.
 
 ## Documentation
 
@@ -48,7 +50,8 @@ Current repository note:
 
 ## Service and Packaging Files
 
-- [ ] `packaging/systemd-user/rog-helperd.service` reviewed
+- [ ] `packaging/systemd-user/rog-helperd.service` reviewed; it is `Type=dbus`, owns only
+  `io.github.roghelper.Daemon`, and uses the packaged unprivileged daemon
 - [ ] `packaging/systemd-system/rog-helper-privileged.service` reviewed against `PRIVILEGED_SECURITY_REVIEW.md`
 - [ ] root-only `packaging/udev/60-rog-helper-aura.rules` and helper `DeviceAllow`/`BindPaths` reviewed; confirm no user access mode/group/uaccess tag is added
 - [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
@@ -58,7 +61,8 @@ Current repository note:
 - [ ] `rog-helper privileged-status` confirms helper API compatibility plus udev rule, exact Aura
   descriptor/protocol, and a valid `/dev/rog-helper-aura` alias on the target
 - [ ] `packaging/desktop/rog-helper.desktop` reviewed
-- [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed
+- [ ] `packaging/dbus-session/io.github.roghelper.Daemon.service` reviewed; `Exec` is the
+  unprivileged daemon fallback and `SystemdService` names only `rog-helperd.service`
 - [ ] `packaging/metainfo/io.github.roghelper.UI.metainfo.xml` reviewed
 - [ ] `packaging/arch/PKGBUILD` reviewed
 - [ ] `packaging/arch/.SRCINFO` reviewed

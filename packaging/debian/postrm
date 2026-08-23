@@ -3,6 +3,8 @@ set -e
 
 case "${1:-}" in
     remove|purge)
+        # The unit remains loaded while active even after its package-owned
+        # file is removed, so stop only this helper and let dpkg remove files.
         if command -v systemctl >/dev/null 2>&1; then
             systemctl stop rog-helper-privileged.service >/dev/null 2>&1 || true
         fi
@@ -17,16 +19,15 @@ case "${1:-}" in
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -q /usr/share/icons/hicolor || true
         fi
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload || true
+        fi
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=hidraw --action=change || true
+            udevadm settle --timeout=10 || true
+        fi
         ;;
 esac
-
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload || true
-fi
-if command -v udevadm >/dev/null 2>&1; then
-    udevadm control --reload-rules || true
-    udevadm trigger --subsystem-match=hidraw --action=change || true
-    udevadm settle --timeout=10 || true
-fi
 
 exit 0

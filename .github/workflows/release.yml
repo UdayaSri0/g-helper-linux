@@ -36,6 +36,7 @@ jobs:
             build-essential pkg-config curl \
             libgtk-4-dev libadwaita-1-dev \
             appstream desktop-file-utils dpkg-dev python3-pil \
+            systemd udev \
             file findutils libgdk-pixbuf-2.0-dev libgdk-pixbuf2.0-bin \
             libgirepository1.0-dev \
             libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
@@ -73,6 +74,15 @@ jobs:
 
       - name: Build Release Assets
         run: ROG_HELPER_BUILD_APPIMAGE=0 ROG_HELPER_BUILD_RPM=0 packaging/scripts/build-release-assets.sh dist
+
+      - name: Validate Final Debian Package
+        run: |
+          packages=(dist/rog-helper_*.deb)
+          [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
+          packaging/scripts/test-install-dev.sh
+          packaging/scripts/test-debian-maintainer-scripts.sh
+          packaging/scripts/check-deb-package.sh "${packages[0]}"
+          packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
 
       - name: Verify AppImage Host Tools
         run: packaging/scripts/build-appimage.sh --check-deps

@@ -1,8 +1,8 @@
 # Privileged Architecture Security Review
 
-This review covers the `Dev` implementation after the CPU, fan, keyboard-lighting, and battery
-privilege migration. It is a source and packaging audit, not a claim of hardware certification.
-No UI or session-daemon process runs as root.
+This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura lighting, and
+battery privilege migration. It is a source and packaging audit, not a claim of hardware
+certification. No UI or session-daemon process runs as root.
 
 ## 1. Trust boundary
 
@@ -54,6 +54,7 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
+| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
 | `SetBatteryChargeLimit` | percentage | `battery.control` | One exact standard battery threshold |
 
 There is no generic filesystem-write, process-execution, GPU, PCI, kernel-module, ACPI, USB, HID,
@@ -81,7 +82,10 @@ broad `io.github.roghelper.system.configure` action was removed during this revi
   whose `name`, hardware labels, point layout, and canonical `device` identity resolve to
   `asus-nb-wmi`.
 - Lighting: `brightness` and `max_brightness` under the canonical
-  `asus::kbd_backlight` ASUS WMI LED.
+  `asus::kbd_backlight` ASUS WMI LED. Native Aura writes use only the root-owned
+  `/dev/rog-helper-aura` alias, after revalidating DMI, USB VID/PID, interface number, kernel
+  driver, HID descriptor hash/report shape, canonical device identity, and the opened file
+  descriptor. The caller cannot provide a path or raw report bytes.
 - Battery: `type` and `charge_control_end_threshold` under one unambiguous power-supply device
   reporting exact `type=Battery`.
 - Fail-safe state: root-owned `/run/rog-helper/fan-control-active` in a mode `0700` systemd runtime
@@ -123,7 +127,9 @@ Enabled directives include `NoNewPrivileges`, `PrivateTmp`, `PrivateDevices`, `P
 `RestrictAddressFamilies=AF_UNIX`, `RestrictNamespaces`, `RestrictSUIDSGID`, `RestrictRealtime`,
 `LockPersonality`, `MemoryDenyWriteExecute`, native syscall architecture,
 `SystemCallFilter=@system-service`, `UMask=0077`, and a mode `0700` runtime directory. Only the
-approved sysfs trees are declared in `ReadWritePaths`.
+approved sysfs trees are declared in `ReadWritePaths`. `PrivateDevices=yes` remains enabled; only
+the optional root-only Aura alias is introduced into the private device namespace with
+`BindPaths=-/dev/rog-helper-aura` and admitted by the matching narrow `DeviceAllow` entry.
 
 `Restart=on-failure` restores the service after a crash or kill. On restart, normal shutdown, or
 idle exit, an armed fan marker causes an Auto reset attempt. A temporarily missing fan backend does
@@ -157,6 +163,7 @@ Deliberate exceptions:
 - fan partial-write recovery, process death, idle exit, and restart recovery
 - root process environment and command execution
 - systemd sandbox and writable-path exceptions
+- exact root-only Aura udev alias, private-device bind, and device-cgroup allow-list
 - Debian, RPM, Arch, tarball, system-D-Bus, systemd, and PolicyKit install metadata and modes
 - operation without the helper and preference for asusd/supergfxd/direct writes
 
@@ -178,7 +185,11 @@ Deliberate exceptions:
     online to retry Auto recovery when a fan backend temporarily disappears.
 12. Made package payload modes independent of the builder umask; rendered systemd/D-Bus metadata
     is explicitly `0644` and the root-owned helper remains `0755`.
-13. Removed PATH lookup from portable privileged activation by fixing the documented `/usr/local`
+13. Bound only `/dev/rog-helper-aura` into the helper's private device namespace and retained a
+    root-only udev alias with no `MODE`, `GROUP`, or `uaccess` grant.
+14. Routed session D-Bus activation through the packaged `Type=dbus` user service while retaining
+    the standard unprivileged `Exec` fallback.
+15. Removed PATH lookup from portable privileged activation by fixing the documented `/usr/local`
     tarball helper path to `/usr/local/libexec/rog-helper-privileged`.
 
 ## 9. Remaining risks
@@ -197,9 +208,10 @@ Deliberate exceptions:
 - Full UID 0 remains necessary for compatibility until supported kernels and drivers have a tested,
   narrower capability contract.
 - Because `ProtectKernelTunables` must remain disabled, a memory-safety or logic vulnerability in
-  the root process has more sysfs reach than its typed API. Rust memory safety, the absence of
-  `unsafe` in the helper, the syscall/sandbox controls, and strict endpoint validation reduce but
-  do not erase that consequence.
+  the root process has more sysfs reach than its typed API. The helper contains a narrowly scoped,
+  audited `unsafe` FFI boundary for HID `ioctl`, `poll`, and `write`; Rust memory safety elsewhere,
+  the syscall/sandbox controls, and strict endpoint validation reduce but do not erase that
+  consequence.
 - Real PolicyKit-agent behavior and every supported hardware ABI still require manual distro/device
   testing before release.
 

@@ -9,6 +9,13 @@ pub const CHARGE_LIMIT_ACCESS_PREFIX: &str = "charge_limit_access";
 pub const GPU_MODE_ACCESS_PREFIX: &str = "gpu_mode_access";
 pub const KBD_BACKLIGHT_ACCESS_PREFIX: &str = "kbd_backlight_access";
 
+/// Session-daemon API contract implemented by this workspace release.
+///
+/// This is intentionally separate from the configuration and privileged-helper
+/// versions: the UI uses it to detect an older process left running after a
+/// package upgrade.
+pub const DAEMON_API_VERSION: u32 = 1;
+
 pub const FEATURE_ACCESS_STATUS_SUFFIX: &str = "_status";
 pub const FEATURE_ACCESS_REASON_SUFFIX: &str = "_reason";
 
@@ -308,6 +315,11 @@ pub mod setup {
     pub const CHECKED_AT_MS: &str = "checked_at_ms";
 }
 
+pub mod daemon_info {
+    pub const API_VERSION: &str = "api_version";
+    pub const PACKAGE_VERSION: &str = "package_version";
+}
+
 pub mod privileged_status {
     pub const SYSTEM_BUS_CONNECTED: &str = "system_bus_connected";
     pub const HELPER_INSTALLED: &str = "privileged_helper_installed";
@@ -341,6 +353,8 @@ mod tests {
         assert_eq!(telemetry::MEM_TOP_PROCESS_ROWS, "mem_top_processes_rows");
         assert_eq!(cpu_caps::CONTROL_ACCESS, CPU_CONTROL_ACCESS_KEY);
         assert_eq!(lighting::RGB_HEX, "rgb_hex");
+        assert_eq!(daemon_info::API_VERSION, "api_version");
+        assert_eq!(DAEMON_API_VERSION, 1);
         assert_eq!(fan_curves::DUTY_PERCENT_COMPAT, "duty_percent");
         assert_eq!(
             privileged_status::HELPER_INSTALLED,

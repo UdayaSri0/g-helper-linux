@@ -97,6 +97,12 @@ These are held in-memory behind `RwLock`s in `crates/rog-daemon/src/main.rs`.
 
 The UI keeps a cached mirror of daemon state in `SharedUiState` inside `crates/rog-ui/src/main.rs`. It is not authoritative and is refreshed continuously from the daemon.
 
+For edit-then-Apply controls, the UI additionally keeps an explicit local draft beside that
+reported mirror. Periodic daemon refreshes update the authoritative reported value but never
+overwrite a dirty user draft. Apply submits the stored draft, retains it while confirmation is
+pending, and becomes clean only when a later daemon report confirms the submitted value. Reset
+discards the local draft and restores the latest reported value.
+
 Persistent configuration is a versioned `AppConfig` model in `rog-core`. The canonical path is
 `$XDG_CONFIG_HOME/rog-helper/config.toml`, falling back to
 `$HOME/.config/rog-helper/config.toml`. The daemon loads it, owns the in-memory authoritative copy,

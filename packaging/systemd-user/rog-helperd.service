@@ -3,7 +3,8 @@ Description=rog-helper daemon (user)
 After=default.target
 
 [Service]
-Type=simple
+Type=dbus
+BusName=io.github.roghelper.Daemon
 ExecStart=rog-helperd
 Restart=on-failure
 RestartSec=1

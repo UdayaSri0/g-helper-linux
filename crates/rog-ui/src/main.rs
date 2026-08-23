@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -68,6 +69,7 @@ const ICON_ABOUT: &str = "rog-about-symbolic";
     default_path = "/io/github/roghelper/Daemon"
 )]
 trait Daemon1 {
+    fn get_daemon_info(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_configuration(&self) -> zbus::Result<String>;
     fn set_configuration(&self, contents: &str) -> zbus::Result<()>;
     fn reset_configuration(&self) -> zbus::Result<String>;
@@ -209,12 +211,25 @@ struct SharedUiState {
     caps_text: String,
     setup_status: SetupStatus,
     privileged_status: Option<PrivilegedStatus>,
+    daemon_identity: DaemonIdentity,
     pending_setup_refresh: bool,
     setup_refreshing: bool,
+    pending_daemon_restart: bool,
+    daemon_restart_in_progress: bool,
     warnings: Vec<String>,
     profile: Option<String>,
     gpu_mode: Option<String>,
     battery_limit: Option<u8>,
+    battery_limit_edit: EditableDraft<u8>,
+    keyboard_brightness_edit: EditableDraft<u64>,
+    cpu_turbo_edit: EditableDraft<bool>,
+    cpu_power_mode_edit: EditableDraft<String>,
+    cpu_freq_limits_edit: EditableDraft<(Option<u32>, Option<u32>)>,
+    cpu_governor_edit: EditableDraft<String>,
+    cpu_epp_edit: EditableDraft<String>,
+    profile_edit: EditableDraft<String>,
+    gpu_mode_edit: EditableDraft<String>,
+    fan_sync_edit: EditableDraft<bool>,
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -262,12 +277,25 @@ impl Default for SharedUiState {
             caps_text: String::new(),
             setup_status: SetupStatus::unknown(),
             privileged_status: None,
+            daemon_identity: DaemonIdentity::checking(),
             pending_setup_refresh: true,
             setup_refreshing: false,
+            pending_daemon_restart: false,
+            daemon_restart_in_progress: false,
             warnings: Vec::new(),
             profile: None,
             gpu_mode: None,
             battery_limit: None,
+            battery_limit_edit: EditableDraft::default(),
+            keyboard_brightness_edit: EditableDraft::default(),
+            cpu_turbo_edit: EditableDraft::default(),
+            cpu_power_mode_edit: EditableDraft::default(),
+            cpu_freq_limits_edit: EditableDraft::default(),
+            cpu_governor_edit: EditableDraft::default(),
+            cpu_epp_edit: EditableDraft::default(),
+            profile_edit: EditableDraft::default(),
+            gpu_mode_edit: EditableDraft::default(),
+            fan_sync_edit: EditableDraft::default(),
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -297,6 +325,148 @@ impl Default for SharedUiState {
             show_gpu_page: false,
             quit: false,
         }
+    }
+}
+
+/// Separates daemon-reported values from an edit staged in the UI.
+///
+/// A report is always retained, but it only replaces the editor when there is
+/// no local change (or when it confirms the value currently being applied).
+#[derive(Debug, Clone)]
+struct EditableDraft<T> {
+    reported: Option<T>,
+    draft: Option<T>,
+    applying: Option<T>,
+}
+
+impl<T> Default for EditableDraft<T> {
+    fn default() -> Self {
+        Self {
+            reported: None,
+            draft: None,
+            applying: None,
+        }
+    }
+}
+
+impl<T: Clone + PartialEq> EditableDraft<T> {
+    fn is_dirty(&self) -> bool {
+        self.draft != self.reported
+    }
+
+    fn update_reported(&mut self, reported: Option<T>) {
+        self.reported = reported;
+        if self.applying.is_some() && self.applying.as_ref() == self.reported.as_ref() {
+            self.applying = None;
+            self.draft = self.reported.clone();
+        } else if self.draft.is_none() || !self.is_dirty() {
+            self.draft = self.reported.clone();
+        }
+    }
+
+    fn set_user_draft(&mut self, value: T) {
+        self.draft = Some(value);
+    }
+
+    fn begin_apply(&mut self) -> Option<T> {
+        let value = self.draft.clone()?;
+        if self.is_dirty() && self.applying.is_none() {
+            self.applying = Some(value.clone());
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn apply_failed(&mut self) {
+        self.applying = None;
+    }
+
+    fn reset(&mut self) {
+        self.applying = None;
+        self.draft = self.reported.clone();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonIdentity {
+    api_version: Option<u32>,
+    package_version: Option<String>,
+    connected: bool,
+    compatible: bool,
+    detail: String,
+}
+
+impl DaemonIdentity {
+    fn checking() -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: false,
+            compatible: false,
+            detail: "Checking the session service identity…".to_string(),
+        }
+    }
+
+    fn legacy(error: &str) -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: true,
+            compatible: false,
+            detail: format!(
+                "The connected session service does not expose this release's identity API ({error})."
+            ),
+        }
+    }
+
+    fn unreachable(error: &str) -> Self {
+        Self {
+            api_version: None,
+            package_version: None,
+            connected: false,
+            compatible: false,
+            detail: format!("The session service could not be reached ({error})."),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.connected && !self.compatible
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallationHealth {
+    Checking,
+    Ready,
+    StaleDaemon,
+    NeedsAttention,
+}
+
+fn installation_health(
+    daemon: &DaemonIdentity,
+    privileged: Option<&PrivilegedStatus>,
+) -> InstallationHealth {
+    if daemon.detail.starts_with("Checking") || privileged.is_none() {
+        return InstallationHealth::Checking;
+    }
+    if !daemon.compatible {
+        return if daemon.is_stale() {
+            InstallationHealth::StaleDaemon
+        } else {
+            InstallationHealth::NeedsAttention
+        };
+    }
+    let privileged = privileged.expect("checked above");
+    if privileged.system_bus_connected
+        && privileged.privileged_helper_installed
+        && privileged.privileged_helper_reachable
+        && privileged.privileged_helper_compatible
+        && privileged.polkit_available
+    {
+        InstallationHealth::Ready
+    } else {
+        InstallationHealth::NeedsAttention
     }
 }
 
@@ -513,6 +683,20 @@ impl LightingDraft {
             zone: info.supports_zones.then(|| self.zone.clone()).flatten(),
         }
     }
+}
+
+fn should_sync_lighting_draft(
+    baseline: Option<&LightingDraft>,
+    draft: Option<&LightingDraft>,
+    reported: &LightingDraft,
+    identity_changed: bool,
+    dashboard_brightness_dirty: bool,
+) -> bool {
+    dashboard_brightness_dirty
+        || identity_changed
+        || baseline.is_none()
+        || draft == baseline
+        || draft.is_some_and(|draft| draft == reported)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1109,6 +1293,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     secondary_title.set_xalign(0.0);
     secondary_title.add_css_class("title-3");
 
+    let control_draft_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     style_linked_toggle_row(&profile_buttons);
     let profile_quiet = gtk::ToggleButton::with_label("Quiet");
@@ -1126,37 +1311,46 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_quiet.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Silent".to_string());
                 st.pending_profile = Some("Silent".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_balanced.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Balanced".to_string());
                 st.pending_profile = Some("Balanced".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_turbo.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Turbo".to_string());
                 st.pending_profile = Some("Turbo".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -1176,21 +1370,38 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_mode_row = DashboardControlTile::new("GPU Mode", &gpu_control_box);
     {
         let shared = shared.clone();
-        let gpu_mode_dropdown = gpu_mode_dropdown.clone();
         gpu_apply_button.connect_clicked(move |_| {
-            let Some(item) = gpu_mode_dropdown.selected_item() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(mode) = st.gpu_mode_edit.begin_apply() {
+                    st.pending_gpu_mode = Some(mode);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_mode_dropdown.connect_selected_notify(move |dropdown| {
+            if syncing.get() {
+                return;
+            }
+            let Some(item) = dropdown.selected_item() else {
                 return;
             };
             let Ok(item) = item.downcast::<gtk::StringObject>() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_gpu_mode = Some(item.string().to_string());
+                st.gpu_mode_edit.set_user_draft(item.string().to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
 
+    let battery_edit_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let keyboard_brightness_edit_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
     let charge_limit_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let charge_limit_spin = gtk::SpinButton::with_range(50.0, 100.0, 5.0);
     style_spin_control(&charge_limit_spin, 5);
@@ -1201,19 +1412,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     style_apply_button(&charge_apply_button);
     charge_apply_button.set_size_request(82, -1);
     charge_apply_button.set_sensitive(false);
+    let charge_reset_button = gtk::Button::with_label("Reset");
+    charge_reset_button.set_sensitive(false);
     style_inline_control_box(&charge_limit_box);
     charge_limit_box.append(&charge_limit_spin);
+    charge_limit_box.append(&charge_reset_button);
     charge_limit_box.append(&charge_apply_button);
     charge_limit_box.set_halign(gtk::Align::Start);
     let charge_limit_row = DashboardControlTile::new("Charge Limit", &charge_limit_box);
     {
         let shared = shared.clone();
-        let charge_limit_spin = charge_limit_spin.clone();
         charge_apply_button.connect_clicked(move |_| {
-            let limit = charge_limit_spin.value().round().clamp(0.0, 100.0) as u8;
             if let Ok(mut st) = shared.lock() {
-                st.pending_battery_limit = Some(limit);
-                st.action_error = None;
+                if let Some(limit) = st.battery_limit_edit.begin_apply() {
+                    st.pending_battery_limit = Some(limit);
+                    st.action_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = battery_edit_syncing.clone();
+        charge_limit_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.battery_limit_edit
+                        .set_user_draft(spin.value().round().clamp(50.0, 100.0) as u8);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        charge_reset_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.battery_limit_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -1227,8 +1464,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     style_apply_button(&kbd_apply_button);
     kbd_apply_button.set_size_request(82, -1);
     kbd_apply_button.set_sensitive(false);
+    let kbd_reset_button = gtk::Button::with_label("Reset");
+    kbd_reset_button.set_sensitive(false);
     style_inline_control_box(&kbd_control_box);
     kbd_control_box.append(&kbd_brightness_spin);
+    kbd_control_box.append(&kbd_reset_button);
     kbd_control_box.append(&kbd_apply_button);
 
     kbd_control_box.set_halign(gtk::Align::Start);
@@ -1236,20 +1476,43 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let kbd_brightness_spin = kbd_brightness_spin.clone();
         kbd_apply_button.connect_clicked(move |_| {
-            let desired_brightness = kbd_brightness_spin.value().round().max(0.0) as u64;
             if let Ok(mut st) = shared.lock() {
-                st.pending_lighting = Some(PendingLighting {
-                    brightness: Some(desired_brightness),
-                    mode: None,
-                    rgb_hex: None,
-                    secondary_rgb_hex: None,
-                    speed: None,
-                    direction: None,
-                    zone: None,
-                });
-                st.lighting_error = None;
+                if let Some(desired_brightness) = st.keyboard_brightness_edit.begin_apply() {
+                    st.pending_lighting = Some(PendingLighting {
+                        brightness: Some(desired_brightness),
+                        mode: None,
+                        rgb_hex: None,
+                        secondary_rgb_hex: None,
+                        speed: None,
+                        direction: None,
+                        zone: None,
+                    });
+                    st.lighting_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = keyboard_brightness_edit_syncing.clone();
+        kbd_brightness_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.keyboard_brightness_edit
+                        .set_user_draft(spin.value().round().max(0.0) as u64);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        kbd_reset_button.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.keyboard_brightness_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -1616,6 +1879,53 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        cpu_turbo_switch.connect_state_set(move |_, enabled| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_turbo_edit.set_user_draft(enabled);
+                    st.mark_render_dirty();
+                }
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    for (button, mode) in [
+        (cpu_power_quiet.clone(), "Quiet"),
+        (cpu_power_balanced.clone(), "Balanced"),
+        (cpu_power_perf.clone(), "Performance"),
+    ] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        button.connect_toggled(move |button| {
+            if !syncing.get() && button.is_active() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_power_mode_edit.set_user_draft(mode.to_string());
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    for scale in [cpu_min_scale.clone(), cpu_max_scale.clone()] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        let cpu_min_scale = cpu_min_scale.clone();
+        let cpu_max_scale = cpu_max_scale.clone();
+        scale.connect_value_changed(move |_| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_freq_limits_edit.set_user_draft((
+                        Some(cpu_min_scale.value().round().max(0.0) as u32),
+                        Some(cpu_max_scale.value().round().max(0.0) as u32),
+                    ));
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+
+    {
+        let shared = shared.clone();
         let cpu_turbo_switch = cpu_turbo_switch.clone();
         let cpu_min_scale = cpu_min_scale.clone();
         let cpu_max_scale = cpu_max_scale.clone();
@@ -1630,33 +1940,54 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or_else(CpuCaps::unknown);
 
             if caps.control_actionable(CpuControlKind::Boost) {
-                actions.push(PendingCpuAction::Turbo(cpu_turbo_switch.is_active()));
+                let turbo = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| {
+                        let _ = st.cpu_turbo_edit.begin_apply();
+                        st.cpu_turbo_edit.draft
+                    })
+                    .unwrap_or_else(|| cpu_turbo_switch.is_active());
+                actions.push(PendingCpuAction::Turbo(turbo));
             }
 
-            let mode = if cpu_power_quiet.is_active() {
-                "Quiet"
-            } else if cpu_power_balanced.is_active() {
-                "Balanced"
-            } else {
-                "Performance"
-            };
+            let mode = shared
+                .lock()
+                .ok()
+                .and_then(|mut st| {
+                    let _ = st.cpu_power_mode_edit.begin_apply();
+                    st.cpu_power_mode_edit.draft.clone()
+                })
+                .unwrap_or_else(|| {
+                    if cpu_power_quiet.is_active() {
+                        "Quiet".to_string()
+                    } else if cpu_power_balanced.is_active() {
+                        "Balanced".to_string()
+                    } else {
+                        "Performance".to_string()
+                    }
+                });
             if caps.control_actionable(CpuControlKind::PowerMode) {
-                actions.push(PendingCpuAction::PowerMode(mode.to_string()));
+                actions.push(PendingCpuAction::PowerMode(mode));
             }
 
             if caps.control_actionable(CpuControlKind::FreqLimits)
                 && (caps.has_min_freq_limit || caps.has_max_freq_limit)
             {
-                let min_mhz = if caps.has_min_freq_limit {
-                    Some(cpu_min_scale.value().round().max(0.0) as u32)
-                } else {
-                    None
-                };
-                let max_mhz = if caps.has_max_freq_limit {
-                    Some(cpu_max_scale.value().round().max(0.0) as u32)
-                } else {
-                    None
-                };
+                let (draft_min, draft_max) = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| {
+                        let _ = st.cpu_freq_limits_edit.begin_apply();
+                        st.cpu_freq_limits_edit.draft.unwrap_or((None, None))
+                    })
+                    .unwrap_or((None, None));
+                let min_mhz = caps.has_min_freq_limit.then_some(
+                    draft_min.unwrap_or_else(|| cpu_min_scale.value().round().max(0.0) as u32),
+                );
+                let max_mhz = caps.has_max_freq_limit.then_some(
+                    draft_max.unwrap_or_else(|| cpu_max_scale.value().round().max(0.0) as u32),
+                );
                 actions.push(PendingCpuAction::FreqLimits { min_mhz, max_mhz });
             }
 
@@ -1666,7 +1997,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
-
     cpu_page.append(&cpu_quick_group);
 
     let cpu_policy_group = adw::PreferencesGroup::builder()
@@ -1717,6 +2047,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_apply_policy_row.set_activatable(false);
     cpu_policy_group.add(&cpu_apply_policy_row);
 
+    for (combo, is_governor) in [
+        (cpu_governor_combo.clone(), true),
+        (cpu_epp_combo.clone(), false),
+    ] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(value) = combo.active_id() else {
+                return;
+            };
+            if let Ok(mut st) = shared.lock() {
+                if is_governor {
+                    st.cpu_governor_edit.set_user_draft(value.to_string());
+                } else {
+                    st.cpu_epp_edit.set_user_draft(value.to_string());
+                }
+                st.mark_render_dirty();
+            }
+        });
+    }
+
     {
         let shared = shared.clone();
         let cpu_governor_combo = cpu_governor_combo.clone();
@@ -1729,15 +2083,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or_else(CpuCaps::unknown);
             if let Ok(mut st) = shared.lock() {
                 if caps.control_actionable(CpuControlKind::Governor) {
-                    if let Some(gov) = cpu_governor_combo.active_id() {
-                        st.pending_cpu_actions
-                            .push(PendingCpuAction::Governor(gov.to_string()));
+                    let gov = st
+                        .cpu_governor_edit
+                        .begin_apply()
+                        .or_else(|| st.cpu_governor_edit.draft.clone());
+                    if let Some(gov) =
+                        gov.or_else(|| cpu_governor_combo.active_id().map(|v| v.to_string()))
+                    {
+                        st.pending_cpu_actions.push(PendingCpuAction::Governor(gov));
                     }
                 }
                 if caps.control_actionable(CpuControlKind::Epp) {
-                    if let Some(epp) = cpu_epp_combo.active_id() {
-                        st.pending_cpu_actions
-                            .push(PendingCpuAction::Epp(epp.to_string()));
+                    let epp = st
+                        .cpu_epp_edit
+                        .begin_apply()
+                        .or_else(|| st.cpu_epp_edit.draft.clone());
+                    if let Some(epp) =
+                        epp.or_else(|| cpu_epp_combo.active_id().map(|v| v.to_string()))
+                    {
+                        st.pending_cpu_actions.push(PendingCpuAction::Epp(epp));
                     }
                 }
                 st.action_error = None;
@@ -1840,8 +2204,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let battery_charge_apply = gtk::Button::with_label("Apply");
     style_apply_button(&battery_charge_apply);
     battery_charge_apply.set_sensitive(false);
+    let battery_charge_reset = gtk::Button::with_label("Reset");
+    battery_charge_reset.set_sensitive(false);
     style_inline_control_box(&battery_charge_box);
     battery_charge_box.append(&battery_charge_spin);
+    battery_charge_box.append(&battery_charge_reset);
     battery_charge_box.append(&battery_charge_apply);
     let battery_charge_row = adw::ActionRow::builder()
         .title("Charge Limit")
@@ -1853,12 +2220,35 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     battery_page.append(&battery_charge_group);
     {
         let shared = shared.clone();
-        let battery_charge_spin = battery_charge_spin.clone();
         battery_charge_apply.connect_clicked(move |_| {
-            let limit = battery_charge_spin.value().round().clamp(0.0, 100.0) as u8;
             if let Ok(mut st) = shared.lock() {
-                st.pending_battery_limit = Some(limit);
-                st.action_error = None;
+                if let Some(limit) = st.battery_limit_edit.begin_apply() {
+                    st.pending_battery_limit = Some(limit);
+                    st.action_error = None;
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = battery_edit_syncing.clone();
+        battery_charge_spin.connect_value_changed(move |spin| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.battery_limit_edit
+                        .set_user_draft(spin.value().round().clamp(50.0, 100.0) as u8);
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        battery_charge_reset.connect_clicked(move |_| {
+            if let Ok(mut st) = shared.lock() {
+                st.battery_limit_edit.reset();
+                st.mark_render_dirty();
             }
         });
     }
@@ -2172,14 +2562,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let gpu_page_profile_combo = gpu_page_profile_combo.clone();
         gpu_page_profile_apply.connect_clicked(move |_| {
-            let Some(profile) = gpu_page_profile_combo.active_id() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(profile) = st.profile_edit.begin_apply() {
+                    st.pending_profile = Some(profile);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_page_profile_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(profile) = combo.active_id() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_profile = Some(profile.to_string());
+                st.profile_edit.set_user_draft(profile.to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -2204,14 +2609,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let gpu_page_mode_combo = gpu_page_mode_combo.clone();
         gpu_page_mode_apply.connect_clicked(move |_| {
-            let Some(mode) = gpu_page_mode_combo.active_id() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(mode) = st.gpu_mode_edit.begin_apply() {
+                    st.pending_gpu_mode = Some(mode);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_page_mode_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(mode) = combo.active_id() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_gpu_mode = Some(mode.to_string());
+                st.gpu_mode_edit.set_user_draft(mode.to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -2247,12 +2667,41 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_safety_banner.set_revealed(true);
     setup_root.append(&setup_safety_banner);
 
+    let setup_installation_group = adw::PreferencesGroup::builder()
+        .title("Installation")
+        .description(
+            "Core package and service health; optional providers are reported separately below.",
+        )
+        .build();
+    let (setup_installation_row, setup_installation_value) =
+        setup_pref_row(&setup_installation_group, "System Integration");
+    setup_root.append(&setup_installation_group);
+
     let setup_session_group = adw::PreferencesGroup::builder()
         .title("Session Daemon")
         .description("The unprivileged session service used by the desktop application.")
         .build();
     let (setup_daemon_row, setup_daemon_value) =
         setup_pref_row(&setup_session_group, "rog-helperd");
+    let restart_daemon_button = gtk::Button::with_label("Restart Service");
+    restart_daemon_button.set_tooltip_text(Some(
+        "Restart rog-helperd in this user session and reconnect through D-Bus activation.",
+    ));
+    restart_daemon_button.set_visible(false);
+    setup_daemon_row.add_suffix(&restart_daemon_button);
+    {
+        let shared = shared.clone();
+        restart_daemon_button.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            if let Ok(mut state) = shared.lock() {
+                if state.daemon_identity.is_stale() {
+                    state.pending_daemon_restart = true;
+                    state.daemon_restart_in_progress = true;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
     setup_root.append(&setup_session_group);
 
     let setup_administrator_group = adw::PreferencesGroup::builder()
@@ -2274,8 +2723,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_root.append(&setup_administrator_group);
 
     let setup_services_group = adw::PreferencesGroup::builder()
-        .title("Control Services")
-        .description("A live API check is required; a binary alone is not considered ready.")
+        .title("Optional Providers")
+        .description("These integrations enable particular features; a missing optional provider does not make the ROG Helper installation unhealthy.")
         .build();
     let (setup_asusd_row, setup_asusd_value) = setup_pref_row(&setup_services_group, "asusd");
     let (setup_supergfxd_row, setup_supergfxd_value) =
@@ -2334,7 +2783,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     setup_issues_group.add(&setup_issues_row);
     setup_root.append(&setup_issues_group);
 
-    let refresh_setup_button = gtk::Button::with_label("Refresh checks");
+    let refresh_setup_button = gtk::Button::with_label("Recheck Installation");
     refresh_setup_button.add_css_class("suggested-action");
     {
         let shared = shared.clone();
@@ -3451,13 +3900,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let draft = lighting_draft.clone();
         apply_lighting.connect_clicked(move |_| {
             if let Ok(mut st) = shared.lock() {
-                let Some(lighting) = st.lighting.as_ref() else {
+                let Some(lighting) = st.lighting.clone() else {
                     return;
                 };
                 let Some(draft) = draft.borrow().clone() else {
                     return;
                 };
-                st.pending_lighting = Some(draft.to_pending(lighting));
+                st.pending_lighting = Some(draft.to_pending(&lighting));
+                if lighting.supports_brightness {
+                    let _ = st.keyboard_brightness_edit.begin_apply();
+                }
                 st.lighting_apply_in_progress = true;
                 st.lighting_error = None;
                 st.mark_render_dirty();
@@ -3559,6 +4011,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             if !syncing.get() {
                 if let Some(draft) = draft.borrow_mut().as_mut() {
                     draft.brightness = scale.value().round().max(0.0) as u64;
+                }
+                if let Ok(mut state) = shared.lock() {
+                    state
+                        .keyboard_brightness_edit
+                        .set_user_draft(scale.value().round().max(0.0) as u64);
                 }
                 mark_ui_render_dirty(&shared);
             }
@@ -3817,8 +4274,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 return glib::Propagation::Stop;
             }
             if let Ok(mut st) = shared.lock() {
-                st.pending_fan_action = Some(PendingFanAction::Sync(enabled));
+                st.fan_sync_edit.set_user_draft(enabled);
+                if let Some(enabled) = st.fan_sync_edit.begin_apply() {
+                    st.pending_fan_action = Some(PendingFanAction::Sync(enabled));
+                }
                 st.action_error = None;
+                st.mark_render_dirty();
             }
             glib::Propagation::Proceed
         });
@@ -4310,11 +4771,23 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             caps_text,
             setup_status,
             privileged_status,
+            daemon_identity,
             setup_refreshing,
+            daemon_restart_in_progress,
             warnings,
             profile,
             gpu_mode,
             battery_limit,
+            battery_limit_edit,
+            keyboard_brightness_edit,
+            cpu_turbo_edit,
+            cpu_power_mode_edit,
+            cpu_freq_limits_edit,
+            cpu_governor_edit,
+            cpu_epp_edit,
+            profile_edit,
+            gpu_mode_edit,
+            fan_sync_edit,
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4358,11 +4831,23 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.caps_text.clone(),
                 st.setup_status.clone(),
                 st.privileged_status.clone(),
+                st.daemon_identity.clone(),
                 st.setup_refreshing,
+                st.daemon_restart_in_progress,
                 st.warnings.clone(),
                 st.profile.clone(),
                 st.gpu_mode.clone(),
                 st.battery_limit,
+                st.battery_limit_edit.clone(),
+                st.keyboard_brightness_edit.clone(),
+                st.cpu_turbo_edit.clone(),
+                st.cpu_power_mode_edit.clone(),
+                st.cpu_freq_limits_edit.clone(),
+                st.cpu_governor_edit.clone(),
+                st.cpu_epp_edit.clone(),
+                st.profile_edit.clone(),
+                st.gpu_mode_edit.clone(),
+                st.fan_sync_edit.clone(),
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -4467,6 +4952,34 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         connection_status.remove_css_class("disconnected");
         let state_received = telemetry.is_some();
 
+        let install_health = installation_health(&daemon_identity, privileged_status.as_ref());
+        match install_health {
+            InstallationHealth::Checking => {
+                setup_installation_value.set_text("Checking");
+                setup_installation_row.set_subtitle(
+                    "Reading the session and privileged service identities without requesting authorization.",
+                );
+            }
+            InstallationHealth::Ready => {
+                setup_installation_value.set_text("Ready");
+                setup_installation_row.set_subtitle(
+                    "The session daemon, system D-Bus helper, and PolicyKit integration match this application release.",
+                );
+            }
+            InstallationHealth::StaleDaemon => {
+                setup_installation_value.set_text("Service restart needed");
+                setup_installation_row.set_subtitle(
+                    "ROG Helper was updated, but this user session is still connected to an older service process.",
+                );
+            }
+            InstallationHealth::NeedsAttention => {
+                setup_installation_value.set_text("Needs attention");
+                setup_installation_row.set_subtitle(
+                    "One or more required package integrations are unavailable. Optional providers do not affect this result.",
+                );
+            }
+        }
+
         update_setup_dependency_row(
             &setup_status,
             DependencyKind::RogHelperd,
@@ -4523,11 +5036,37 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &caps,
             &administrator_access_rows,
         );
+        if daemon_identity.compatible {
+            setup_daemon_value.set_text("Connected");
+            setup_daemon_row.set_subtitle(&format!(
+                "Session API v{} · service {} · UI {}",
+                daemon_identity.api_version.unwrap_or_default(),
+                daemon_identity
+                    .package_version
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                env!("CARGO_PKG_VERSION")
+            ));
+        } else if daemon_identity.is_stale() {
+            setup_daemon_value.set_text("Restart needed");
+            setup_daemon_row.set_subtitle(&daemon_identity.detail);
+        } else if !daemon_identity.connected {
+            setup_daemon_value.set_text("Unavailable");
+            setup_daemon_row.set_subtitle(&daemon_identity.detail);
+        }
+        restart_daemon_button.set_visible(daemon_identity.is_stale());
+        restart_daemon_button
+            .set_sensitive(daemon_identity.is_stale() && !daemon_restart_in_progress);
+        restart_daemon_button.set_label(if daemon_restart_in_progress {
+            "Restarting…"
+        } else {
+            "Restart Service"
+        });
         refresh_setup_button.set_sensitive(!setup_refreshing);
         refresh_setup_button.set_label(if setup_refreshing {
-            "Refreshing…"
+            "Rechecking…"
         } else {
-            "Refresh checks"
+            "Recheck Installation"
         });
         setup_advanced_buffer.set_text(&setup_status.to_report_text(true));
         if setup_status.issues.is_empty() {
@@ -4897,8 +5436,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or("No fan action applied in this session."),
         );
         fan_sync_switch.set_sensitive(fan_state.caps.has_fan_sync_control);
-        if fan_sync_switch.is_active() != fan_state.sync_enabled {
-            fan_sync_switch.set_active(fan_state.sync_enabled);
+        let fan_sync_enabled = fan_sync_edit.draft.unwrap_or(fan_state.sync_enabled);
+        if fan_sync_switch.is_active() != fan_sync_enabled {
+            fan_sync_switch.set_active(fan_sync_enabled);
         }
         let manual_available = fan_state.caps.has_fan_manual_percent;
         let fan_authorization_required = fan_state
@@ -5569,10 +6109,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             };
 
             cpu_turbo_switch.set_sensitive(turbo_writable);
-            if let Some(v) = cpu_data.turbo_boost_enabled {
-                if !cpu_turbo_switch.has_focus() {
-                    cpu_turbo_switch.set_active(v);
-                }
+            if let Some(v) = cpu_turbo_edit.draft {
+                control_draft_syncing.set(true);
+                cpu_turbo_switch.set_active(v);
+                control_draft_syncing.set(false);
             }
             cpu_turbo_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
@@ -5620,29 +6160,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Maximum frequency limits are not supported on this system.",
             ));
             cpu_apply_row.set_subtitle(&cpu_quick_apply_subtitle(&cpu_caps));
-            if let Some(v) = cpu_data.min_freq_mhz {
-                if !cpu_min_scale.has_focus() {
+            if let Some((min_mhz, max_mhz)) = cpu_freq_limits_edit.draft {
+                control_draft_syncing.set(true);
+                if let Some(v) = min_mhz {
                     cpu_min_scale.set_value(v as f64);
                 }
-            }
-            if let Some(v) = cpu_data.max_freq_mhz {
-                if !cpu_max_scale.has_focus() {
+                if let Some(v) = max_mhz {
                     cpu_max_scale.set_value(v as f64);
                 }
+                control_draft_syncing.set(false);
             }
 
-            let power_mode_hint = cpu_data
-                .epp
-                .as_deref()
-                .map(normalize_label)
-                .unwrap_or_default();
-            if power_mode_hint.contains("power") {
-                cpu_power_quiet.set_active(true);
-            } else if power_mode_hint.contains("perform") {
-                cpu_power_perf.set_active(true);
-            } else {
-                cpu_power_balanced.set_active(true);
+            control_draft_syncing.set(true);
+            match cpu_power_mode_edit.draft.as_deref() {
+                Some("Quiet") => {
+                    cpu_power_quiet.set_active(true);
+                }
+                Some("Performance") => {
+                    cpu_power_perf.set_active(true);
+                }
+                _ => {
+                    cpu_power_balanced.set_active(true);
+                }
             }
+            control_draft_syncing.set(false);
 
             cpu_governor_combo.set_sensitive(governor_writable && cpu_caps.has_governor);
             cpu_epp_combo.set_sensitive(epp_writable && cpu_caps.has_epp);
@@ -5691,16 +6232,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     *last = cpu_caps.epp_choices.clone();
                 }
             }
-            if let Some(ref gov) = cpu_data.governor {
-                if !cpu_governor_combo.has_focus() {
-                    cpu_governor_combo.set_active_id(Some(gov));
-                }
+            control_draft_syncing.set(true);
+            if let Some(ref gov) = cpu_governor_edit.draft {
+                cpu_governor_combo.set_active_id(Some(gov));
             }
-            if let Some(ref epp) = cpu_data.epp {
-                if !cpu_epp_combo.has_focus() {
-                    cpu_epp_combo.set_active_id(Some(epp));
-                }
+            if let Some(ref epp) = cpu_epp_edit.draft {
+                cpu_epp_combo.set_active_id(Some(epp));
             }
+            control_draft_syncing.set(false);
 
             cpu_read_only_banner.set_revealed(cpu_has_access_issue(&cpu_caps));
             cpu_read_only_banner.set_title(&cpu_banner_title(&cpu_caps));
@@ -5919,6 +6458,19 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_banner.set_revealed(true);
             warning_area.set_visible(true);
             open_diagnostics_button.set_visible(false);
+        } else if daemon_identity.is_stale() {
+            warning_banner.remove_css_class("warning-info");
+            warning_banner.remove_css_class("warning-error");
+            warning_banner.add_css_class("warning-warning");
+            warning_banner.set_title("ROG Helper was updated");
+            warning_banner.set_button_label(Some("Open Setup"));
+            warning_subtitle.set_text(
+                "The session service is still running an older version. Restart it from Setup & Access; no reboot or administrator access is required.",
+            );
+            warning_subtitle.set_visible(true);
+            warning_banner.set_revealed(true);
+            warning_area.set_visible(true);
+            open_diagnostics_button.set_visible(false);
         } else if setup_status.control_issue_count() > 0 {
             warning_banner.remove_css_class("warning-info");
             warning_banner.remove_css_class("warning-error");
@@ -5967,7 +6519,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         gpu_page_profile_combo.set_sensitive(caps.profile_access.is_available());
         gpu_page_profile_apply.set_sensitive(caps.profile_access.is_available());
         if caps.profile_access.is_available() {
-            if let Some(current) = profile.as_deref() {
+            if let Some(current) = profile_edit.draft.as_deref().or(profile.as_deref()) {
+                control_draft_syncing.set(true);
                 if profile_name_is(current, "silent") {
                     profile_quiet.set_active(true);
                 } else if profile_name_is(current, "balanced") {
@@ -5981,17 +6534,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_page_current_profile.set_text(current);
                 gpu_page_profile_card.set_value(current);
                 gpu_page_profile_card.set_status_chip(Some("Available"));
-                if !gpu_page_profile_combo.has_focus() {
-                    if profile_name_is(current, "silent") {
-                        gpu_page_profile_combo.set_active_id(Some("Silent"));
-                    } else if profile_name_is(current, "balanced") {
-                        gpu_page_profile_combo.set_active_id(Some("Balanced"));
-                    } else if profile_name_is(current, "turbo")
-                        || profile_name_is(current, "performance")
-                    {
-                        gpu_page_profile_combo.set_active_id(Some("Turbo"));
-                    }
+                if profile_name_is(current, "silent") {
+                    gpu_page_profile_combo.set_active_id(Some("Silent"));
+                } else if profile_name_is(current, "balanced") {
+                    gpu_page_profile_combo.set_active_id(Some("Balanced"));
+                } else if profile_name_is(current, "turbo")
+                    || profile_name_is(current, "performance")
+                {
+                    gpu_page_profile_combo.set_active_id(Some("Turbo"));
                 }
+                control_draft_syncing.set(false);
                 profile_row.set_subtitle(&format!("Current: {current}"));
             } else if profile_read_failed.is_some() {
                 profile_row
@@ -6050,7 +6602,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         if caps.gpu_mode_access.is_available() {
             gpu_mode_dropdown.set_sensitive(true);
             gpu_apply_button.set_sensitive(true);
-            if let Some(current) = gpu_mode.as_deref() {
+            if let Some(current) = gpu_mode_edit.draft.as_deref().or(gpu_mode.as_deref()) {
+                control_draft_syncing.set(true);
                 if let Some(index) = gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
                 {
                     gpu_mode_dropdown.set_selected(index as u32);
@@ -6058,13 +6611,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_mode_row.set_subtitle(&format!("Current: {current}"));
                 gpu_page_mode_card.set_value(current);
                 gpu_page_mode_card.set_status_chip(Some("Available"));
-                if !gpu_page_mode_combo.has_focus() {
-                    if let Some(index) =
-                        gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
-                    {
-                        gpu_page_mode_combo.set_active_id(Some(&caps.gpu_supported_modes[index]));
-                    }
+                if let Some(index) = gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
+                {
+                    gpu_page_mode_combo.set_active_id(Some(&caps.gpu_supported_modes[index]));
                 }
+                control_draft_syncing.set(false);
             } else if gpu_mode_read_failed.is_some() {
                 gpu_mode_row
                     .set_subtitle("GPU mode is detected, but the current value could not be read.");
@@ -6118,10 +6669,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
         charge_limit_row.set_visible(true);
         if caps.charge_limit_access.is_available() {
-            charge_limit_spin.set_sensitive(true);
-            charge_apply_button.set_sensitive(true);
-            battery_charge_spin.set_sensitive(true);
-            battery_charge_apply.set_sensitive(true);
+            let selected_limit = battery_limit_edit.draft.or(battery_limit);
+            let battery_applying = battery_limit_edit.applying.is_some();
+            battery_edit_syncing.set(true);
+            if let Some(limit) = selected_limit {
+                charge_limit_spin.set_value(limit as f64);
+                battery_charge_spin.set_value(limit as f64);
+            }
+            battery_edit_syncing.set(false);
+            let battery_dirty = battery_limit_edit.is_dirty();
+            charge_limit_spin.set_sensitive(!battery_applying);
+            battery_charge_spin.set_sensitive(!battery_applying);
+            charge_apply_button.set_sensitive(battery_dirty && !battery_applying);
+            battery_charge_apply.set_sensitive(battery_dirty && !battery_applying);
+            charge_reset_button.set_sensitive(battery_dirty && !battery_applying);
+            battery_charge_reset.set_sensitive(battery_dirty && !battery_applying);
             let battery_authorization_required = caps.battery_limit_backend == "power_supply_sysfs"
                 && caps.battery_limit_privileged_write
                 && caps.battery_limit_authorization != "authorized";
@@ -6136,14 +6698,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Apply"
             });
             if let Some(limit) = battery_limit {
-                if !charge_limit_spin.has_focus() {
-                    charge_limit_spin.set_value(limit as f64);
-                }
-                if !battery_charge_spin.has_focus() {
-                    battery_charge_spin.set_value(limit as f64);
-                }
-                charge_limit_row.set_subtitle(&format!("Current: {limit}%"));
-                battery_charge_row.set_subtitle(&format!("Current limit: {limit}%"));
+                let detail = selected_limit
+                    .filter(|selected| *selected != limit)
+                    .map(|selected| format!("Current: {limit}% · Pending: {selected}%"))
+                    .unwrap_or_else(|| format!("Current: {limit}%"));
+                charge_limit_row.set_subtitle(&detail);
+                battery_charge_row.set_subtitle(&detail.replace("Current:", "Current limit:"));
             } else if charge_limit_read_failed.is_some() {
                 charge_limit_row.set_subtitle(
                     "Charge limit is detected, but the current value could not be read.",
@@ -6158,8 +6718,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             charge_limit_spin.set_sensitive(false);
             charge_apply_button.set_sensitive(false);
+            charge_reset_button.set_sensitive(false);
             battery_charge_spin.set_sensitive(false);
             battery_charge_apply.set_sensitive(false);
+            battery_charge_reset.set_sensitive(false);
             charge_limit_row.set_subtitle(&dashboard_control_subtitle(
                 &caps.charge_limit_access,
                 "Set desired limit and apply",
@@ -6186,12 +6748,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         if has_kbd_backlight {
             if let Some(ref l) = lighting {
                 kbd_brightness_spin.set_range(0.0, l.max_brightness as f64);
-                if !kbd_brightness_spin.has_focus() {
-                    kbd_brightness_spin.set_value(l.brightness as f64);
-                }
+                let selected_brightness = keyboard_brightness_edit.draft.unwrap_or(l.brightness);
+                keyboard_brightness_edit_syncing.set(true);
+                kbd_brightness_spin.set_value(selected_brightness as f64);
+                keyboard_brightness_edit_syncing.set(false);
                 let can_set_brightness = l.can_set && l.supports_brightness;
-                kbd_brightness_spin.set_sensitive(can_set_brightness);
-                kbd_apply_button.set_sensitive(can_set_brightness);
+                let brightness_dirty = keyboard_brightness_edit.is_dirty();
+                let brightness_applying = keyboard_brightness_edit.applying.is_some();
+                kbd_brightness_spin.set_sensitive(can_set_brightness && !brightness_applying);
+                kbd_apply_button
+                    .set_sensitive(can_set_brightness && brightness_dirty && !brightness_applying);
+                kbd_reset_button.set_sensitive(brightness_dirty && !brightness_applying);
                 if l.authorization_required {
                     kbd_backlight_row.set_subtitle(
                         "Administrator access required to change keyboard lighting. Apply opens the PolicyKit prompt.",
@@ -6205,6 +6772,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 kbd_brightness_spin.set_sensitive(false);
                 kbd_apply_button.set_sensitive(false);
+                kbd_reset_button.set_sensitive(false);
                 kbd_backlight_row
                     .set_subtitle(&feature_control_subtitle(&caps.kbd_backlight_access, ""));
             }
@@ -6231,12 +6799,23 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let reported_identity = LightingControlIdentity::from(l);
             let identity_changed =
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
-            let draft_is_clean =
-                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
-            let should_sync_draft = identity_changed
-                || lighting_baseline.borrow().is_none()
-                || successful_apply
-                || draft_is_clean;
+            let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
+            if dashboard_brightness_dirty {
+                if let (Some(brightness), Some(draft)) = (
+                    keyboard_brightness_edit.draft,
+                    lighting_draft.borrow_mut().as_mut(),
+                ) {
+                    draft.brightness = brightness;
+                }
+            }
+            let reported_draft = LightingDraft::from_info(l);
+            let should_sync_draft = should_sync_lighting_draft(
+                lighting_baseline.borrow().as_ref(),
+                lighting_draft.borrow().as_ref(),
+                &reported_draft,
+                identity_changed,
+                dashboard_brightness_dirty,
+            );
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -6358,7 +6937,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = speeds.clone();
                 }
-                select_combo_value(&speed_combo, &speeds, l.speed.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.speed.clone())
+                    .or_else(|| l.speed.clone());
+                select_combo_value(&speed_combo, &speeds, selected.as_deref());
             }
 
             let directions = l.supported_directions.clone();
@@ -6375,7 +6959,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = directions.clone();
                 }
-                select_combo_value(&direction_combo, &directions, l.direction.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.direction.clone())
+                    .or_else(|| l.direction.clone());
+                select_combo_value(&direction_combo, &directions, selected.as_deref());
             }
 
             let zones = l.supported_zones.clone();
@@ -6391,20 +6980,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     }
                     *last = zones.clone();
                 }
-                select_combo_value(&zone_combo, &zones, l.active_zone.as_deref());
+                let selected = lighting_draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.zone.clone())
+                    .or_else(|| l.active_zone.clone());
+                select_combo_value(&zone_combo, &zones, selected.as_deref());
             }
             let has_visible_controls =
                 l.supports_brightness || (l.supports_modes && !modes.is_empty()) || l.supports_rgb;
             lighting_controls_group.set_visible(has_visible_controls);
             apply_row.set_visible(can_set && has_visible_controls);
             if should_sync_draft {
-                let value = if successful_apply && !identity_changed {
+                let value = if dashboard_brightness_dirty {
                     lighting_draft
                         .borrow()
                         .clone()
                         .unwrap_or_else(|| LightingDraft::from_info(l))
                 } else {
-                    LightingDraft::from_info(l)
+                    reported_draft
                 };
                 set_lighting_controls_from_draft(
                     &value,
@@ -6418,9 +7012,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     &direction_combo,
                     &zone_combo,
                 );
-                *lighting_baseline.borrow_mut() = Some(value.clone());
-                *lighting_draft.borrow_mut() = Some(value);
-                *lighting_draft_identity.borrow_mut() = Some(reported_identity);
+                if !dashboard_brightness_dirty {
+                    *lighting_baseline.borrow_mut() = Some(value.clone());
+                    *lighting_draft.borrow_mut() = Some(value);
+                    *lighting_draft_identity.borrow_mut() = Some(reported_identity);
+                }
                 lighting_preview.queue_draw();
             }
             let dirty = lighting_draft.borrow().as_ref() != lighting_baseline.borrow().as_ref();
@@ -6709,6 +7305,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                 if let Some(profile) = pending_profile {
                     if let Err(e) = apply_profile(profile).await {
                         if let Ok(mut st) = shared.lock() {
+                            st.profile_edit.apply_failed();
                             st.action_error = Some(e);
                         }
                     }
@@ -6727,6 +7324,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                st.gpu_mode_edit.apply_failed();
                                 st.action_error = Some(e);
                             }
                         }
@@ -6738,9 +7336,16 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_battery_limit.take());
                 if let Some(limit) = pending_battery_limit {
-                    if let Err(e) = apply_battery_limit(limit).await {
-                        if let Ok(mut st) = shared.lock() {
-                            st.action_error = Some(e);
+                    match apply_battery_limit(limit).await {
+                        Ok(()) => {
+                            // Keep the draft until a later daemon poll reports this exact value.
+                        }
+                        Err(e) => {
+                            if let Ok(mut st) = shared.lock() {
+                                st.battery_limit_edit.apply_failed();
+                                st.action_error = Some(e);
+                                st.mark_render_dirty();
+                            }
                         }
                     }
                 }
@@ -6761,6 +7366,11 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                st.cpu_turbo_edit.apply_failed();
+                                st.cpu_power_mode_edit.apply_failed();
+                                st.cpu_freq_limits_edit.apply_failed();
+                                st.cpu_governor_edit.apply_failed();
+                                st.cpu_epp_edit.apply_failed();
                                 st.action_error = Some(e.clone());
                                 st.pending_toast = Some((e, true));
                             }
@@ -6792,6 +7402,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
                                 st.lighting_apply_in_progress = false;
+                                st.keyboard_brightness_edit.apply_failed();
                                 st.lighting_error = Some(e.clone());
                                 st.pending_toast =
                                     Some((friendly_lighting_error(&e), true));
@@ -6806,6 +7417,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_fan_action.take());
                 if let Some(action) = pending_fan_action {
+                    let sync_action = matches!(action, PendingFanAction::Sync(_));
                     match apply_fan_action(action).await {
                         Ok(()) => {
                             if let Ok(mut st) = shared.lock() {
@@ -6815,8 +7427,12 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                if sync_action {
+                                    st.fan_sync_edit.apply_failed();
+                                }
                                 st.action_error = Some(e.clone());
                                 st.pending_toast = Some((e, true));
+                                st.mark_render_dirty();
                             }
                         }
                     }
@@ -6919,6 +7535,36 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     }
                 }
 
+                let pending_daemon_restart = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_daemon_restart))
+                    .unwrap_or(false);
+                if pending_daemon_restart {
+                    match restart_current_user_daemon().await {
+                        Ok(()) => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            if let Ok(mut state) = shared.lock() {
+                                state.daemon_restart_in_progress = false;
+                                state.daemon_identity = DaemonIdentity::checking();
+                                state.pending_setup_refresh = true;
+                                state.pending_toast = Some((
+                                    "Session service restarted for this user.".to_string(),
+                                    false,
+                                ));
+                                state.mark_render_dirty();
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.daemon_restart_in_progress = false;
+                                state.pending_toast = Some((error, true));
+                                state.mark_render_dirty();
+                            }
+                        }
+                    }
+                }
+
                 match fetch_state().await {
                     Ok((
                         t,
@@ -6969,10 +7615,36 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.caps = caps;
                             st.caps_text = caps_text;
                             st.warnings = warnings;
-                            st.profile = profile;
-                            st.gpu_mode = gpu_mode;
+                            st.profile = profile.clone();
+                            st.gpu_mode = gpu_mode.clone();
+                            st.profile_edit.update_reported(profile);
+                            st.gpu_mode_edit.update_reported(gpu_mode);
                             st.battery_limit = battery_limit;
+                            st.battery_limit_edit.update_reported(battery_limit);
+                            st.keyboard_brightness_edit.update_reported(
+                                lighting
+                                    .as_ref()
+                                    .filter(|info| info.supports_brightness)
+                                    .map(|info| info.brightness),
+                            );
+                            st.cpu_turbo_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.turbo_boost_enabled),
+                            );
+                            st.cpu_power_mode_edit.update_reported(
+                                cpu.as_ref().map(|data| cpu_power_preset_from_epp(data.epp.as_deref())),
+                            );
+                            st.cpu_freq_limits_edit.update_reported(cpu.as_ref().map(|data| {
+                                (data.min_freq_mhz, data.max_freq_mhz)
+                            }));
+                            st.cpu_governor_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.governor.clone()),
+                            );
+                            st.cpu_epp_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.epp.clone()),
+                            );
                             st.lighting = lighting;
+                            st.fan_sync_edit
+                                .update_reported(Some(fan_state.sync_enabled));
                             st.fan_state = fan_state;
                             st.daemon_error = None;
                             st.mark_render_dirty();
@@ -6998,12 +7670,24 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         state.setup_refreshing = true;
                         state.mark_render_dirty();
                     }
-                    let (setup_result, privileged_result) =
-                        tokio::join!(fetch_setup_status(), fetch_privileged_status());
+                    let (setup_result, privileged_result, identity_result) = tokio::join!(
+                        fetch_setup_status(),
+                        fetch_privileged_status(),
+                        fetch_daemon_identity()
+                    );
                     if let Ok(mut state) = shared.lock() {
                         state.privileged_status = Some(privileged_result.unwrap_or_else(|_| {
                             PrivilegedStatus::unavailable(false, false)
                         }));
+                        state.daemon_identity = match identity_result {
+                            Ok(identity) => identity,
+                            Err(ref error)
+                                if setup_result.is_ok() || state.daemon_error.is_none() =>
+                            {
+                                DaemonIdentity::legacy(error)
+                            }
+                            Err(ref error) => DaemonIdentity::unreachable(error),
+                        };
                     }
                     match setup_result {
                         Ok(status) => {
@@ -7039,6 +7723,115 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
             }
         });
     });
+}
+
+async fn restart_current_user_daemon() -> Result<(), String> {
+    tokio::task::spawn_blocking(terminate_legacy_current_user_daemons)
+        .await
+        .map_err(|error| {
+            format!("Unable to inspect the current user's session service: {error}")
+        })??;
+
+    let status = tokio::task::spawn_blocking(|| current_user_daemon_restart_command().status())
+        .await
+        .map_err(|error| format!("Unable to run the current-user service restart: {error}"))?
+        .map_err(|error| format!("Unable to start systemctl for this user: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "The current-user service restart failed with {status}. No administrator command was attempted."
+        ))
+    }
+}
+
+fn terminate_legacy_current_user_daemons() -> Result<(), String> {
+    let current_uid = fs::metadata("/proc/self")
+        .map_err(|error| format!("Unable to identify the current user: {error}"))?
+        .uid();
+    let mut pids = Vec::new();
+    let processes = fs::read_dir("/proc")
+        .map_err(|error| format!("Unable to inspect running processes: {error}"))?;
+
+    for entry in processes.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id()
+            || entry.metadata().map(|metadata| metadata.uid()).ok() != Some(current_uid)
+        {
+            continue;
+        }
+        let comm_matches = fs::read_to_string(entry.path().join("comm"))
+            .is_ok_and(|comm| comm.trim() == "rog-helperd");
+        let executable_matches = fs::read_link(entry.path().join("exe"))
+            .ok()
+            .as_deref()
+            .is_some_and(is_rog_helper_daemon_executable);
+        if comm_matches && executable_matches {
+            pids.push(pid);
+        }
+    }
+
+    let Some(mut command) = current_user_daemon_terminate_command(&pids) else {
+        return Ok(());
+    };
+    let status = command
+        .status()
+        .map_err(|error| format!("Unable to terminate the old session service: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "The old current-user session service could not be stopped ({status})."
+        ))
+    }
+}
+
+fn is_rog_helper_daemon_executable(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "rog-helperd" || name == "rog-helperd (deleted)")
+}
+
+fn current_user_daemon_terminate_command(pids: &[u32]) -> Option<Command> {
+    if pids.is_empty() {
+        return None;
+    }
+    let mut command = Command::new("/bin/kill");
+    command.arg("-TERM");
+    command.args(pids.iter().map(u32::to_string));
+    Some(command)
+}
+
+fn current_user_daemon_restart_command() -> Command {
+    let mut command = Command::new("systemctl");
+    command.args([
+        "--user",
+        "--no-ask-password",
+        "restart",
+        "rog-helperd.service",
+    ]);
+    command
+}
+
+async fn fetch_daemon_identity() -> Result<DaemonIdentity, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    let map = proxy
+        .get_daemon_info()
+        .await
+        .map_err(|error| format!("daemon GetDaemonInfo failed: {error}"))?;
+    Ok(daemon_identity_from_dbus(&map, env!("CARGO_PKG_VERSION")))
 }
 
 async fn fetch_setup_status() -> Result<SetupStatus, String> {
@@ -10916,6 +11709,17 @@ fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
     }
 }
 
+fn cpu_power_preset_from_epp(epp: Option<&str>) -> String {
+    let epp = epp.map(normalize_label).unwrap_or_default();
+    if epp.contains("power") {
+        "Quiet".to_string()
+    } else if epp.contains("perform") {
+        "Performance".to_string()
+    } else {
+        "Balanced".to_string()
+    }
+}
+
 fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
     let writable_controls = [
         CpuControlKind::Boost,
@@ -11671,6 +12475,44 @@ fn privileged_status_from_dbus(map: &HashMap<String, OwnedValue>) -> PrivilegedS
         authorization_backend: text(keys::AUTHORIZATION_BACKEND),
         authorization_state: AuthorizationState::parse(&text(keys::AUTHORIZATION_STATE)),
         privileged_categories_available: categories,
+    }
+}
+
+fn daemon_identity_from_dbus(
+    map: &HashMap<String, OwnedValue>,
+    expected_package_version: &str,
+) -> DaemonIdentity {
+    let api_version = map
+        .get(dbus_keys::daemon_info::API_VERSION)
+        .and_then(u64_from_value)
+        .and_then(|value| u32::try_from(value).ok());
+    let package_version = dbus_decode::string(map, dbus_keys::daemon_info::PACKAGE_VERSION);
+    let compatible = api_version == Some(dbus_keys::DAEMON_API_VERSION)
+        && package_version.as_deref() == Some(expected_package_version);
+    let detail = if compatible {
+        format!(
+            "Session API v{} and service version {} match this application.",
+            dbus_keys::DAEMON_API_VERSION,
+            expected_package_version
+        )
+    } else {
+        format!(
+            "ROG Helper was updated, but the running session service reports API {} and version {} (expected API {} and version {}).",
+            api_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            package_version.as_deref().unwrap_or("unknown"),
+            dbus_keys::DAEMON_API_VERSION,
+            expected_package_version
+        )
+    };
+
+    DaemonIdentity {
+        api_version,
+        package_version,
+        connected: true,
+        compatible,
+        detail,
     }
 }
 
@@ -12624,6 +13466,95 @@ mod tests {
     }
 
     #[test]
+    fn daemon_identity_requires_matching_api_and_package_version() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        map.insert(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.3.0".to_string()),
+        );
+
+        let matching = daemon_identity_from_dbus(&map, "0.3.0");
+        assert!(matching.connected);
+        assert!(matching.compatible);
+        assert!(!matching.is_stale());
+
+        let stale = daemon_identity_from_dbus(&map, "0.4.0");
+        assert!(stale.connected);
+        assert!(!stale.compatible);
+        assert!(stale.is_stale());
+        assert!(stale.detail.contains("Restart") || stale.detail.contains("running session"));
+    }
+
+    #[test]
+    fn installation_health_excludes_optional_provider_availability() {
+        let daemon = DaemonIdentity {
+            api_version: Some(dbus_keys::DAEMON_API_VERSION),
+            package_version: Some("0.3.0".to_string()),
+            connected: true,
+            compatible: true,
+            detail: "ready".to_string(),
+        };
+        let mut privileged = PrivilegedStatus::unavailable(true, true);
+        privileged.system_bus_connected = true;
+        privileged.privileged_helper_installed = true;
+        privileged.privileged_helper_reachable = true;
+        privileged.privileged_helper_compatible = true;
+        privileged.polkit_available = true;
+
+        assert_eq!(
+            installation_health(&daemon, Some(&privileged)),
+            InstallationHealth::Ready
+        );
+    }
+
+    #[test]
+    fn daemon_restart_command_is_fixed_and_current_user_only() {
+        let command = current_user_daemon_restart_command();
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "--user",
+                "--no-ask-password",
+                "restart",
+                "rog-helperd.service"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_daemon_termination_is_exact_and_current_user_only() {
+        assert!(is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helperd"
+        )));
+        assert!(is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helperd (deleted)"
+        )));
+        assert!(!is_rog_helper_daemon_executable(Path::new(
+            "/usr/bin/rog-helper-ui"
+        )));
+
+        let command = current_user_daemon_terminate_command(&[123, 456])
+            .expect("non-empty PID list should produce a command");
+        assert_eq!(command.get_program(), "/bin/kill");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["-TERM", "123", "456"]
+        );
+        assert!(current_user_daemon_terminate_command(&[]).is_none());
+    }
+
+    #[test]
     fn reusable_access_states_distinguish_backend_permission_and_hardware() {
         assert_eq!(
             feature_access_ui_state(&FeatureAvailability::new(
@@ -12981,6 +13912,45 @@ mod tests {
     }
 
     #[test]
+    fn lighting_draft_stale_poll_preserves_every_staged_control() {
+        let baseline = LightingDraft {
+            brightness: 1,
+            mode: "Static".to_string(),
+            rgb_hex: "#112233".to_string(),
+            secondary_rgb_hex: "#445566".to_string(),
+            speed: Some("Medium".to_string()),
+            direction: Some("Left".to_string()),
+            zone: Some("Keyboard".to_string()),
+        };
+        let staged = LightingDraft {
+            brightness: 3,
+            mode: "Rainbow Wave".to_string(),
+            rgb_hex: "#FF0000".to_string(),
+            secondary_rgb_hex: "#00FF00".to_string(),
+            speed: Some("Fast".to_string()),
+            direction: Some("Right".to_string()),
+            zone: Some("Logo".to_string()),
+        };
+
+        assert!(!should_sync_lighting_draft(
+            Some(&baseline),
+            Some(&staged),
+            &baseline,
+            false,
+            false,
+        ));
+
+        let after_stale_poll = staged.clone();
+        assert_eq!(after_stale_poll.brightness, 3);
+        assert_eq!(after_stale_poll.mode, "Rainbow Wave");
+        assert_eq!(after_stale_poll.rgb_hex, "#FF0000");
+        assert_eq!(after_stale_poll.secondary_rgb_hex, "#00FF00");
+        assert_eq!(after_stale_poll.speed.as_deref(), Some("Fast"));
+        assert_eq!(after_stale_poll.direction.as_deref(), Some("Right"));
+        assert_eq!(after_stale_poll.zone.as_deref(), Some("Logo"));
+    }
+
+    #[test]
     fn lighting_readiness_explains_each_privileged_gate() {
         let base_map = || {
             let mut map = HashMap::new();
@@ -13327,5 +14297,154 @@ mod tests {
 
         assert!(entry.contains("Type=Application"));
         assert!(entry.contains(&format!("Exec={APP_BINARY_NAME} {START_MINIMIZED_ARG}")));
+    }
+
+    #[test]
+    fn editable_draft_poll_never_overwrites_dirty_battery_selection() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        edit.update_reported(Some(80));
+
+        assert_eq!(edit.reported, Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert!(edit.is_dirty());
+    }
+
+    #[test]
+    fn editable_draft_survives_focus_loss_equivalent_and_apply_uses_draft() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+
+        // Focus is deliberately not an input to the state machine.
+        assert_eq!(edit.begin_apply(), Some(60));
+        assert_eq!(edit.draft, Some(60));
+        assert_eq!(edit.applying, Some(60));
+    }
+
+    #[test]
+    fn editable_draft_failed_apply_preserves_selection_for_retry() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        let _ = edit.begin_apply();
+        edit.apply_failed();
+
+        assert_eq!(edit.reported, Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert!(edit.is_dirty());
+        assert_eq!(edit.begin_apply(), Some(60));
+    }
+
+    #[test]
+    fn editable_draft_waits_for_matching_report_before_committing_apply() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        assert_eq!(edit.begin_apply(), Some(60));
+        edit.update_reported(Some(80));
+        assert_eq!(edit.draft, Some(60));
+        assert_eq!(edit.applying, Some(60));
+
+        edit.update_reported(Some(60));
+        assert_eq!(edit.reported, Some(60));
+        assert_eq!(edit.draft, Some(60));
+        assert!(!edit.is_dirty());
+        assert_eq!(edit.applying, None);
+    }
+
+    #[test]
+    fn fan_sync_draft_survives_stale_poll_while_apply_is_pending() {
+        let mut sync = EditableDraft::default();
+        sync.update_reported(Some(false));
+        sync.set_user_draft(true);
+        assert_eq!(sync.begin_apply(), Some(true));
+
+        sync.update_reported(Some(false));
+        assert_eq!(sync.draft, Some(true));
+        assert_eq!(sync.applying, Some(true));
+
+        sync.update_reported(Some(true));
+        assert_eq!(sync.draft, Some(true));
+        assert_eq!(sync.applying, None);
+    }
+
+    #[test]
+    fn editable_draft_reset_discards_pending_change() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.set_user_draft(60);
+        edit.reset();
+        assert_eq!(edit.draft, Some(80));
+        assert!(!edit.is_dirty());
+    }
+
+    #[test]
+    fn keyboard_brightness_draft_has_the_same_poll_protection() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(3_u64));
+        edit.set_user_draft(1);
+        edit.update_reported(Some(3));
+        assert_eq!(edit.draft, Some(1));
+        assert!(edit.is_dirty());
+    }
+
+    #[test]
+    fn cpu_quick_control_drafts_survive_poll_after_focus_loss() {
+        let mut turbo = EditableDraft::default();
+        let mut preset = EditableDraft::default();
+        let mut limits = EditableDraft::default();
+        turbo.update_reported(Some(true));
+        preset.update_reported(Some("Balanced".to_string()));
+        limits.update_reported(Some((Some(800_u32), Some(4200_u32))));
+
+        turbo.set_user_draft(false);
+        preset.set_user_draft("Performance".to_string());
+        limits.set_user_draft((Some(1200), Some(3600)));
+
+        turbo.update_reported(Some(true));
+        preset.update_reported(Some("Balanced".to_string()));
+        limits.update_reported(Some((Some(800), Some(4200))));
+
+        assert_eq!(turbo.draft, Some(false));
+        assert_eq!(preset.draft.as_deref(), Some("Performance"));
+        assert_eq!(limits.draft, Some((Some(1200), Some(3600))));
+    }
+
+    #[test]
+    fn cpu_policy_and_gpu_page_drafts_survive_poll_after_focus_loss() {
+        let mut governor = EditableDraft::default();
+        let mut epp = EditableDraft::default();
+        let mut profile = EditableDraft::default();
+        let mut gpu_mode = EditableDraft::default();
+        governor.update_reported(Some("powersave".to_string()));
+        epp.update_reported(Some("balance_power".to_string()));
+        profile.update_reported(Some("Balanced".to_string()));
+        gpu_mode.update_reported(Some("Hybrid".to_string()));
+
+        governor.set_user_draft("performance".to_string());
+        epp.set_user_draft("performance".to_string());
+        profile.set_user_draft("Turbo".to_string());
+        gpu_mode.set_user_draft("Integrated".to_string());
+
+        governor.update_reported(Some("powersave".to_string()));
+        epp.update_reported(Some("balance_power".to_string()));
+        profile.update_reported(Some("Balanced".to_string()));
+        gpu_mode.update_reported(Some("Hybrid".to_string()));
+
+        assert_eq!(governor.begin_apply().as_deref(), Some("performance"));
+        assert_eq!(epp.begin_apply().as_deref(), Some("performance"));
+        assert_eq!(profile.begin_apply().as_deref(), Some("Turbo"));
+        assert_eq!(gpu_mode.begin_apply().as_deref(), Some("Integrated"));
+    }
+
+    #[test]
+    fn clean_programmatic_sync_does_not_create_a_draft() {
+        let mut edit = EditableDraft::default();
+        edit.update_reported(Some(80_u8));
+        edit.update_reported(Some(80));
+        assert_eq!(edit.draft, Some(80));
+        assert!(!edit.is_dirty());
     }
 }
