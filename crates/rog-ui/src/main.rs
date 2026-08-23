@@ -222,6 +222,14 @@ struct SharedUiState {
     battery_limit: Option<u8>,
     battery_limit_edit: EditableDraft<u8>,
     keyboard_brightness_edit: EditableDraft<u64>,
+    cpu_turbo_edit: EditableDraft<bool>,
+    cpu_power_mode_edit: EditableDraft<String>,
+    cpu_freq_limits_edit: EditableDraft<(Option<u32>, Option<u32>)>,
+    cpu_governor_edit: EditableDraft<String>,
+    cpu_epp_edit: EditableDraft<String>,
+    profile_edit: EditableDraft<String>,
+    gpu_mode_edit: EditableDraft<String>,
+    fan_sync_edit: EditableDraft<bool>,
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -280,6 +288,14 @@ impl Default for SharedUiState {
             battery_limit: None,
             battery_limit_edit: EditableDraft::default(),
             keyboard_brightness_edit: EditableDraft::default(),
+            cpu_turbo_edit: EditableDraft::default(),
+            cpu_power_mode_edit: EditableDraft::default(),
+            cpu_freq_limits_edit: EditableDraft::default(),
+            cpu_governor_edit: EditableDraft::default(),
+            cpu_epp_edit: EditableDraft::default(),
+            profile_edit: EditableDraft::default(),
+            gpu_mode_edit: EditableDraft::default(),
+            fan_sync_edit: EditableDraft::default(),
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -667,6 +683,20 @@ impl LightingDraft {
             zone: info.supports_zones.then(|| self.zone.clone()).flatten(),
         }
     }
+}
+
+fn should_sync_lighting_draft(
+    baseline: Option<&LightingDraft>,
+    draft: Option<&LightingDraft>,
+    reported: &LightingDraft,
+    identity_changed: bool,
+    dashboard_brightness_dirty: bool,
+) -> bool {
+    dashboard_brightness_dirty
+        || identity_changed
+        || baseline.is_none()
+        || draft == baseline
+        || draft.is_some_and(|draft| draft == reported)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1263,6 +1293,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     secondary_title.set_xalign(0.0);
     secondary_title.add_css_class("title-3");
 
+    let control_draft_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
     let profile_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     style_linked_toggle_row(&profile_buttons);
     let profile_quiet = gtk::ToggleButton::with_label("Quiet");
@@ -1280,37 +1311,46 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_quiet.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Silent".to_string());
                 st.pending_profile = Some("Silent".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_balanced.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Balanced".to_string());
                 st.pending_profile = Some("Balanced".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
         profile_turbo.connect_toggled(move |btn| {
-            if !btn.is_active() {
+            if syncing.get() || !btn.is_active() {
                 return;
             }
             if let Ok(mut st) = shared.lock() {
+                st.profile_edit.set_user_draft("Turbo".to_string());
                 st.pending_profile = Some("Turbo".to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -1330,17 +1370,32 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let gpu_mode_row = DashboardControlTile::new("GPU Mode", &gpu_control_box);
     {
         let shared = shared.clone();
-        let gpu_mode_dropdown = gpu_mode_dropdown.clone();
         gpu_apply_button.connect_clicked(move |_| {
-            let Some(item) = gpu_mode_dropdown.selected_item() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(mode) = st.gpu_mode_edit.begin_apply() {
+                    st.pending_gpu_mode = Some(mode);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_mode_dropdown.connect_selected_notify(move |dropdown| {
+            if syncing.get() {
+                return;
+            }
+            let Some(item) = dropdown.selected_item() else {
                 return;
             };
             let Ok(item) = item.downcast::<gtk::StringObject>() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_gpu_mode = Some(item.string().to_string());
+                st.gpu_mode_edit.set_user_draft(item.string().to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -1824,6 +1879,53 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        cpu_turbo_switch.connect_state_set(move |_, enabled| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_turbo_edit.set_user_draft(enabled);
+                    st.mark_render_dirty();
+                }
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    for (button, mode) in [
+        (cpu_power_quiet.clone(), "Quiet"),
+        (cpu_power_balanced.clone(), "Balanced"),
+        (cpu_power_perf.clone(), "Performance"),
+    ] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        button.connect_toggled(move |button| {
+            if !syncing.get() && button.is_active() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_power_mode_edit.set_user_draft(mode.to_string());
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+    for scale in [cpu_min_scale.clone(), cpu_max_scale.clone()] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        let cpu_min_scale = cpu_min_scale.clone();
+        let cpu_max_scale = cpu_max_scale.clone();
+        scale.connect_value_changed(move |_| {
+            if !syncing.get() {
+                if let Ok(mut st) = shared.lock() {
+                    st.cpu_freq_limits_edit.set_user_draft((
+                        Some(cpu_min_scale.value().round().max(0.0) as u32),
+                        Some(cpu_max_scale.value().round().max(0.0) as u32),
+                    ));
+                    st.mark_render_dirty();
+                }
+            }
+        });
+    }
+
+    {
+        let shared = shared.clone();
         let cpu_turbo_switch = cpu_turbo_switch.clone();
         let cpu_min_scale = cpu_min_scale.clone();
         let cpu_max_scale = cpu_max_scale.clone();
@@ -1838,33 +1940,54 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or_else(CpuCaps::unknown);
 
             if caps.control_actionable(CpuControlKind::Boost) {
-                actions.push(PendingCpuAction::Turbo(cpu_turbo_switch.is_active()));
+                let turbo = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| {
+                        let _ = st.cpu_turbo_edit.begin_apply();
+                        st.cpu_turbo_edit.draft
+                    })
+                    .unwrap_or_else(|| cpu_turbo_switch.is_active());
+                actions.push(PendingCpuAction::Turbo(turbo));
             }
 
-            let mode = if cpu_power_quiet.is_active() {
-                "Quiet"
-            } else if cpu_power_balanced.is_active() {
-                "Balanced"
-            } else {
-                "Performance"
-            };
+            let mode = shared
+                .lock()
+                .ok()
+                .and_then(|mut st| {
+                    let _ = st.cpu_power_mode_edit.begin_apply();
+                    st.cpu_power_mode_edit.draft.clone()
+                })
+                .unwrap_or_else(|| {
+                    if cpu_power_quiet.is_active() {
+                        "Quiet".to_string()
+                    } else if cpu_power_balanced.is_active() {
+                        "Balanced".to_string()
+                    } else {
+                        "Performance".to_string()
+                    }
+                });
             if caps.control_actionable(CpuControlKind::PowerMode) {
-                actions.push(PendingCpuAction::PowerMode(mode.to_string()));
+                actions.push(PendingCpuAction::PowerMode(mode));
             }
 
             if caps.control_actionable(CpuControlKind::FreqLimits)
                 && (caps.has_min_freq_limit || caps.has_max_freq_limit)
             {
-                let min_mhz = if caps.has_min_freq_limit {
-                    Some(cpu_min_scale.value().round().max(0.0) as u32)
-                } else {
-                    None
-                };
-                let max_mhz = if caps.has_max_freq_limit {
-                    Some(cpu_max_scale.value().round().max(0.0) as u32)
-                } else {
-                    None
-                };
+                let (draft_min, draft_max) = shared
+                    .lock()
+                    .ok()
+                    .map(|mut st| {
+                        let _ = st.cpu_freq_limits_edit.begin_apply();
+                        st.cpu_freq_limits_edit.draft.unwrap_or((None, None))
+                    })
+                    .unwrap_or((None, None));
+                let min_mhz = caps.has_min_freq_limit.then_some(
+                    draft_min.unwrap_or_else(|| cpu_min_scale.value().round().max(0.0) as u32),
+                );
+                let max_mhz = caps.has_max_freq_limit.then_some(
+                    draft_max.unwrap_or_else(|| cpu_max_scale.value().round().max(0.0) as u32),
+                );
                 actions.push(PendingCpuAction::FreqLimits { min_mhz, max_mhz });
             }
 
@@ -1924,6 +2047,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     cpu_apply_policy_row.set_activatable(false);
     cpu_policy_group.add(&cpu_apply_policy_row);
 
+    for (combo, is_governor) in [
+        (cpu_governor_combo.clone(), true),
+        (cpu_epp_combo.clone(), false),
+    ] {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(value) = combo.active_id() else {
+                return;
+            };
+            if let Ok(mut st) = shared.lock() {
+                if is_governor {
+                    st.cpu_governor_edit.set_user_draft(value.to_string());
+                } else {
+                    st.cpu_epp_edit.set_user_draft(value.to_string());
+                }
+                st.mark_render_dirty();
+            }
+        });
+    }
+
     {
         let shared = shared.clone();
         let cpu_governor_combo = cpu_governor_combo.clone();
@@ -1936,15 +2083,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or_else(CpuCaps::unknown);
             if let Ok(mut st) = shared.lock() {
                 if caps.control_actionable(CpuControlKind::Governor) {
-                    if let Some(gov) = cpu_governor_combo.active_id() {
-                        st.pending_cpu_actions
-                            .push(PendingCpuAction::Governor(gov.to_string()));
+                    let gov = st
+                        .cpu_governor_edit
+                        .begin_apply()
+                        .or_else(|| st.cpu_governor_edit.draft.clone());
+                    if let Some(gov) =
+                        gov.or_else(|| cpu_governor_combo.active_id().map(|v| v.to_string()))
+                    {
+                        st.pending_cpu_actions.push(PendingCpuAction::Governor(gov));
                     }
                 }
                 if caps.control_actionable(CpuControlKind::Epp) {
-                    if let Some(epp) = cpu_epp_combo.active_id() {
-                        st.pending_cpu_actions
-                            .push(PendingCpuAction::Epp(epp.to_string()));
+                    let epp = st
+                        .cpu_epp_edit
+                        .begin_apply()
+                        .or_else(|| st.cpu_epp_edit.draft.clone());
+                    if let Some(epp) =
+                        epp.or_else(|| cpu_epp_combo.active_id().map(|v| v.to_string()))
+                    {
+                        st.pending_cpu_actions.push(PendingCpuAction::Epp(epp));
                     }
                 }
                 st.action_error = None;
@@ -2405,14 +2562,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let gpu_page_profile_combo = gpu_page_profile_combo.clone();
         gpu_page_profile_apply.connect_clicked(move |_| {
-            let Some(profile) = gpu_page_profile_combo.active_id() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(profile) = st.profile_edit.begin_apply() {
+                    st.pending_profile = Some(profile);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_page_profile_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(profile) = combo.active_id() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_profile = Some(profile.to_string());
+                st.profile_edit.set_user_draft(profile.to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -2437,14 +2609,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
-        let gpu_page_mode_combo = gpu_page_mode_combo.clone();
         gpu_page_mode_apply.connect_clicked(move |_| {
-            let Some(mode) = gpu_page_mode_combo.active_id() else {
+            if let Ok(mut st) = shared.lock() {
+                if let Some(mode) = st.gpu_mode_edit.begin_apply() {
+                    st.pending_gpu_mode = Some(mode);
+                }
+                st.action_error = None;
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = control_draft_syncing.clone();
+        gpu_page_mode_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(mode) = combo.active_id() else {
                 return;
             };
             if let Ok(mut st) = shared.lock() {
-                st.pending_gpu_mode = Some(mode.to_string());
+                st.gpu_mode_edit.set_user_draft(mode.to_string());
                 st.action_error = None;
+                st.mark_render_dirty();
             }
         });
     }
@@ -4087,8 +4274,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 return glib::Propagation::Stop;
             }
             if let Ok(mut st) = shared.lock() {
-                st.pending_fan_action = Some(PendingFanAction::Sync(enabled));
+                st.fan_sync_edit.set_user_draft(enabled);
+                if let Some(enabled) = st.fan_sync_edit.begin_apply() {
+                    st.pending_fan_action = Some(PendingFanAction::Sync(enabled));
+                }
                 st.action_error = None;
+                st.mark_render_dirty();
             }
             glib::Propagation::Proceed
         });
@@ -4589,6 +4780,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             battery_limit,
             battery_limit_edit,
             keyboard_brightness_edit,
+            cpu_turbo_edit,
+            cpu_power_mode_edit,
+            cpu_freq_limits_edit,
+            cpu_governor_edit,
+            cpu_epp_edit,
+            profile_edit,
+            gpu_mode_edit,
+            fan_sync_edit,
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4641,6 +4840,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.battery_limit,
                 st.battery_limit_edit.clone(),
                 st.keyboard_brightness_edit.clone(),
+                st.cpu_turbo_edit.clone(),
+                st.cpu_power_mode_edit.clone(),
+                st.cpu_freq_limits_edit.clone(),
+                st.cpu_governor_edit.clone(),
+                st.cpu_epp_edit.clone(),
+                st.profile_edit.clone(),
+                st.gpu_mode_edit.clone(),
+                st.fan_sync_edit.clone(),
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -5229,8 +5436,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .unwrap_or("No fan action applied in this session."),
         );
         fan_sync_switch.set_sensitive(fan_state.caps.has_fan_sync_control);
-        if fan_sync_switch.is_active() != fan_state.sync_enabled {
-            fan_sync_switch.set_active(fan_state.sync_enabled);
+        let fan_sync_enabled = fan_sync_edit.draft.unwrap_or(fan_state.sync_enabled);
+        if fan_sync_switch.is_active() != fan_sync_enabled {
+            fan_sync_switch.set_active(fan_sync_enabled);
         }
         let manual_available = fan_state.caps.has_fan_manual_percent;
         let fan_authorization_required = fan_state
@@ -5901,10 +6109,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             };
 
             cpu_turbo_switch.set_sensitive(turbo_writable);
-            if let Some(v) = cpu_data.turbo_boost_enabled {
-                if !cpu_turbo_switch.has_focus() {
-                    cpu_turbo_switch.set_active(v);
-                }
+            if let Some(v) = cpu_turbo_edit.draft {
+                control_draft_syncing.set(true);
+                cpu_turbo_switch.set_active(v);
+                control_draft_syncing.set(false);
             }
             cpu_turbo_row.set_subtitle(&cpu_control_subtitle(
                 &cpu_caps,
@@ -5952,29 +6160,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 "Maximum frequency limits are not supported on this system.",
             ));
             cpu_apply_row.set_subtitle(&cpu_quick_apply_subtitle(&cpu_caps));
-            if let Some(v) = cpu_data.min_freq_mhz {
-                if !cpu_min_scale.has_focus() {
+            if let Some((min_mhz, max_mhz)) = cpu_freq_limits_edit.draft {
+                control_draft_syncing.set(true);
+                if let Some(v) = min_mhz {
                     cpu_min_scale.set_value(v as f64);
                 }
-            }
-            if let Some(v) = cpu_data.max_freq_mhz {
-                if !cpu_max_scale.has_focus() {
+                if let Some(v) = max_mhz {
                     cpu_max_scale.set_value(v as f64);
                 }
+                control_draft_syncing.set(false);
             }
 
-            let power_mode_hint = cpu_data
-                .epp
-                .as_deref()
-                .map(normalize_label)
-                .unwrap_or_default();
-            if power_mode_hint.contains("power") {
-                cpu_power_quiet.set_active(true);
-            } else if power_mode_hint.contains("perform") {
-                cpu_power_perf.set_active(true);
-            } else {
-                cpu_power_balanced.set_active(true);
+            control_draft_syncing.set(true);
+            match cpu_power_mode_edit.draft.as_deref() {
+                Some("Quiet") => {
+                    cpu_power_quiet.set_active(true);
+                }
+                Some("Performance") => {
+                    cpu_power_perf.set_active(true);
+                }
+                _ => {
+                    cpu_power_balanced.set_active(true);
+                }
             }
+            control_draft_syncing.set(false);
 
             cpu_governor_combo.set_sensitive(governor_writable && cpu_caps.has_governor);
             cpu_epp_combo.set_sensitive(epp_writable && cpu_caps.has_epp);
@@ -6023,16 +6232,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     *last = cpu_caps.epp_choices.clone();
                 }
             }
-            if let Some(ref gov) = cpu_data.governor {
-                if !cpu_governor_combo.has_focus() {
-                    cpu_governor_combo.set_active_id(Some(gov));
-                }
+            control_draft_syncing.set(true);
+            if let Some(ref gov) = cpu_governor_edit.draft {
+                cpu_governor_combo.set_active_id(Some(gov));
             }
-            if let Some(ref epp) = cpu_data.epp {
-                if !cpu_epp_combo.has_focus() {
-                    cpu_epp_combo.set_active_id(Some(epp));
-                }
+            if let Some(ref epp) = cpu_epp_edit.draft {
+                cpu_epp_combo.set_active_id(Some(epp));
             }
+            control_draft_syncing.set(false);
 
             cpu_read_only_banner.set_revealed(cpu_has_access_issue(&cpu_caps));
             cpu_read_only_banner.set_title(&cpu_banner_title(&cpu_caps));
@@ -6312,7 +6519,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         gpu_page_profile_combo.set_sensitive(caps.profile_access.is_available());
         gpu_page_profile_apply.set_sensitive(caps.profile_access.is_available());
         if caps.profile_access.is_available() {
-            if let Some(current) = profile.as_deref() {
+            if let Some(current) = profile_edit.draft.as_deref().or(profile.as_deref()) {
+                control_draft_syncing.set(true);
                 if profile_name_is(current, "silent") {
                     profile_quiet.set_active(true);
                 } else if profile_name_is(current, "balanced") {
@@ -6326,17 +6534,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_page_current_profile.set_text(current);
                 gpu_page_profile_card.set_value(current);
                 gpu_page_profile_card.set_status_chip(Some("Available"));
-                if !gpu_page_profile_combo.has_focus() {
-                    if profile_name_is(current, "silent") {
-                        gpu_page_profile_combo.set_active_id(Some("Silent"));
-                    } else if profile_name_is(current, "balanced") {
-                        gpu_page_profile_combo.set_active_id(Some("Balanced"));
-                    } else if profile_name_is(current, "turbo")
-                        || profile_name_is(current, "performance")
-                    {
-                        gpu_page_profile_combo.set_active_id(Some("Turbo"));
-                    }
+                if profile_name_is(current, "silent") {
+                    gpu_page_profile_combo.set_active_id(Some("Silent"));
+                } else if profile_name_is(current, "balanced") {
+                    gpu_page_profile_combo.set_active_id(Some("Balanced"));
+                } else if profile_name_is(current, "turbo")
+                    || profile_name_is(current, "performance")
+                {
+                    gpu_page_profile_combo.set_active_id(Some("Turbo"));
                 }
+                control_draft_syncing.set(false);
                 profile_row.set_subtitle(&format!("Current: {current}"));
             } else if profile_read_failed.is_some() {
                 profile_row
@@ -6395,7 +6602,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         if caps.gpu_mode_access.is_available() {
             gpu_mode_dropdown.set_sensitive(true);
             gpu_apply_button.set_sensitive(true);
-            if let Some(current) = gpu_mode.as_deref() {
+            if let Some(current) = gpu_mode_edit.draft.as_deref().or(gpu_mode.as_deref()) {
+                control_draft_syncing.set(true);
                 if let Some(index) = gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
                 {
                     gpu_mode_dropdown.set_selected(index as u32);
@@ -6403,13 +6611,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 gpu_mode_row.set_subtitle(&format!("Current: {current}"));
                 gpu_page_mode_card.set_value(current);
                 gpu_page_mode_card.set_status_chip(Some("Available"));
-                if !gpu_page_mode_combo.has_focus() {
-                    if let Some(index) =
-                        gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
-                    {
-                        gpu_page_mode_combo.set_active_id(Some(&caps.gpu_supported_modes[index]));
-                    }
+                if let Some(index) = gpu_mode_index_in_supported(current, &caps.gpu_supported_modes)
+                {
+                    gpu_page_mode_combo.set_active_id(Some(&caps.gpu_supported_modes[index]));
                 }
+                control_draft_syncing.set(false);
             } else if gpu_mode_read_failed.is_some() {
                 gpu_mode_row
                     .set_subtitle("GPU mode is detected, but the current value could not be read.");
@@ -6593,12 +6799,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let reported_identity = LightingControlIdentity::from(l);
             let identity_changed =
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
-            let draft_is_clean =
-                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
-            let draft_matches_reported = lighting_draft
-                .borrow()
-                .as_ref()
-                .is_some_and(|draft| draft == &LightingDraft::from_info(l));
             let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
             if dashboard_brightness_dirty {
                 if let (Some(brightness), Some(draft)) = (
@@ -6608,11 +6808,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     draft.brightness = brightness;
                 }
             }
-            let should_sync_draft = dashboard_brightness_dirty
-                || identity_changed
-                || lighting_baseline.borrow().is_none()
-                || draft_is_clean
-                || draft_matches_reported;
+            let reported_draft = LightingDraft::from_info(l);
+            let should_sync_draft = should_sync_lighting_draft(
+                lighting_baseline.borrow().as_ref(),
+                lighting_draft.borrow().as_ref(),
+                &reported_draft,
+                identity_changed,
+                dashboard_brightness_dirty,
+            );
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -6795,7 +6998,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                         .clone()
                         .unwrap_or_else(|| LightingDraft::from_info(l))
                 } else {
-                    LightingDraft::from_info(l)
+                    reported_draft
                 };
                 set_lighting_controls_from_draft(
                     &value,
@@ -7102,6 +7305,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                 if let Some(profile) = pending_profile {
                     if let Err(e) = apply_profile(profile).await {
                         if let Ok(mut st) = shared.lock() {
+                            st.profile_edit.apply_failed();
                             st.action_error = Some(e);
                         }
                     }
@@ -7120,6 +7324,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                st.gpu_mode_edit.apply_failed();
                                 st.action_error = Some(e);
                             }
                         }
@@ -7161,6 +7366,11 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                st.cpu_turbo_edit.apply_failed();
+                                st.cpu_power_mode_edit.apply_failed();
+                                st.cpu_freq_limits_edit.apply_failed();
+                                st.cpu_governor_edit.apply_failed();
+                                st.cpu_epp_edit.apply_failed();
                                 st.action_error = Some(e.clone());
                                 st.pending_toast = Some((e, true));
                             }
@@ -7207,6 +7417,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_fan_action.take());
                 if let Some(action) = pending_fan_action {
+                    let sync_action = matches!(action, PendingFanAction::Sync(_));
                     match apply_fan_action(action).await {
                         Ok(()) => {
                             if let Ok(mut st) = shared.lock() {
@@ -7216,8 +7427,12 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
+                                if sync_action {
+                                    st.fan_sync_edit.apply_failed();
+                                }
                                 st.action_error = Some(e.clone());
                                 st.pending_toast = Some((e, true));
+                                st.mark_render_dirty();
                             }
                         }
                     }
@@ -7400,8 +7615,10 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.caps = caps;
                             st.caps_text = caps_text;
                             st.warnings = warnings;
-                            st.profile = profile;
-                            st.gpu_mode = gpu_mode;
+                            st.profile = profile.clone();
+                            st.gpu_mode = gpu_mode.clone();
+                            st.profile_edit.update_reported(profile);
+                            st.gpu_mode_edit.update_reported(gpu_mode);
                             st.battery_limit = battery_limit;
                             st.battery_limit_edit.update_reported(battery_limit);
                             st.keyboard_brightness_edit.update_reported(
@@ -7410,7 +7627,24 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     .filter(|info| info.supports_brightness)
                                     .map(|info| info.brightness),
                             );
+                            st.cpu_turbo_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.turbo_boost_enabled),
+                            );
+                            st.cpu_power_mode_edit.update_reported(
+                                cpu.as_ref().map(|data| cpu_power_preset_from_epp(data.epp.as_deref())),
+                            );
+                            st.cpu_freq_limits_edit.update_reported(cpu.as_ref().map(|data| {
+                                (data.min_freq_mhz, data.max_freq_mhz)
+                            }));
+                            st.cpu_governor_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.governor.clone()),
+                            );
+                            st.cpu_epp_edit.update_reported(
+                                cpu.as_ref().and_then(|data| data.epp.clone()),
+                            );
                             st.lighting = lighting;
+                            st.fan_sync_edit
+                                .update_reported(Some(fan_state.sync_enabled));
                             st.fan_state = fan_state;
                             st.daemon_error = None;
                             st.mark_render_dirty();
@@ -11475,6 +11709,17 @@ fn cpu_power_preset_summary(cpu: &CpuTelemetry) -> String {
     }
 }
 
+fn cpu_power_preset_from_epp(epp: Option<&str>) -> String {
+    let epp = epp.map(normalize_label).unwrap_or_default();
+    if epp.contains("power") {
+        "Quiet".to_string()
+    } else if epp.contains("perform") {
+        "Performance".to_string()
+    } else {
+        "Balanced".to_string()
+    }
+}
+
 fn cpu_quick_apply_subtitle(caps: &CpuCaps) -> String {
     let writable_controls = [
         CpuControlKind::Boost,
@@ -13667,6 +13912,45 @@ mod tests {
     }
 
     #[test]
+    fn lighting_draft_stale_poll_preserves_every_staged_control() {
+        let baseline = LightingDraft {
+            brightness: 1,
+            mode: "Static".to_string(),
+            rgb_hex: "#112233".to_string(),
+            secondary_rgb_hex: "#445566".to_string(),
+            speed: Some("Medium".to_string()),
+            direction: Some("Left".to_string()),
+            zone: Some("Keyboard".to_string()),
+        };
+        let staged = LightingDraft {
+            brightness: 3,
+            mode: "Rainbow Wave".to_string(),
+            rgb_hex: "#FF0000".to_string(),
+            secondary_rgb_hex: "#00FF00".to_string(),
+            speed: Some("Fast".to_string()),
+            direction: Some("Right".to_string()),
+            zone: Some("Logo".to_string()),
+        };
+
+        assert!(!should_sync_lighting_draft(
+            Some(&baseline),
+            Some(&staged),
+            &baseline,
+            false,
+            false,
+        ));
+
+        let after_stale_poll = staged.clone();
+        assert_eq!(after_stale_poll.brightness, 3);
+        assert_eq!(after_stale_poll.mode, "Rainbow Wave");
+        assert_eq!(after_stale_poll.rgb_hex, "#FF0000");
+        assert_eq!(after_stale_poll.secondary_rgb_hex, "#00FF00");
+        assert_eq!(after_stale_poll.speed.as_deref(), Some("Fast"));
+        assert_eq!(after_stale_poll.direction.as_deref(), Some("Right"));
+        assert_eq!(after_stale_poll.zone.as_deref(), Some("Logo"));
+    }
+
+    #[test]
     fn lighting_readiness_explains_each_privileged_gate() {
         let base_map = || {
             let mut map = HashMap::new();
@@ -14071,6 +14355,22 @@ mod tests {
     }
 
     #[test]
+    fn fan_sync_draft_survives_stale_poll_while_apply_is_pending() {
+        let mut sync = EditableDraft::default();
+        sync.update_reported(Some(false));
+        sync.set_user_draft(true);
+        assert_eq!(sync.begin_apply(), Some(true));
+
+        sync.update_reported(Some(false));
+        assert_eq!(sync.draft, Some(true));
+        assert_eq!(sync.applying, Some(true));
+
+        sync.update_reported(Some(true));
+        assert_eq!(sync.draft, Some(true));
+        assert_eq!(sync.applying, None);
+    }
+
+    #[test]
     fn editable_draft_reset_discards_pending_change() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));
@@ -14088,6 +14388,55 @@ mod tests {
         edit.update_reported(Some(3));
         assert_eq!(edit.draft, Some(1));
         assert!(edit.is_dirty());
+    }
+
+    #[test]
+    fn cpu_quick_control_drafts_survive_poll_after_focus_loss() {
+        let mut turbo = EditableDraft::default();
+        let mut preset = EditableDraft::default();
+        let mut limits = EditableDraft::default();
+        turbo.update_reported(Some(true));
+        preset.update_reported(Some("Balanced".to_string()));
+        limits.update_reported(Some((Some(800_u32), Some(4200_u32))));
+
+        turbo.set_user_draft(false);
+        preset.set_user_draft("Performance".to_string());
+        limits.set_user_draft((Some(1200), Some(3600)));
+
+        turbo.update_reported(Some(true));
+        preset.update_reported(Some("Balanced".to_string()));
+        limits.update_reported(Some((Some(800), Some(4200))));
+
+        assert_eq!(turbo.draft, Some(false));
+        assert_eq!(preset.draft.as_deref(), Some("Performance"));
+        assert_eq!(limits.draft, Some((Some(1200), Some(3600))));
+    }
+
+    #[test]
+    fn cpu_policy_and_gpu_page_drafts_survive_poll_after_focus_loss() {
+        let mut governor = EditableDraft::default();
+        let mut epp = EditableDraft::default();
+        let mut profile = EditableDraft::default();
+        let mut gpu_mode = EditableDraft::default();
+        governor.update_reported(Some("powersave".to_string()));
+        epp.update_reported(Some("balance_power".to_string()));
+        profile.update_reported(Some("Balanced".to_string()));
+        gpu_mode.update_reported(Some("Hybrid".to_string()));
+
+        governor.set_user_draft("performance".to_string());
+        epp.set_user_draft("performance".to_string());
+        profile.set_user_draft("Turbo".to_string());
+        gpu_mode.set_user_draft("Integrated".to_string());
+
+        governor.update_reported(Some("powersave".to_string()));
+        epp.update_reported(Some("balance_power".to_string()));
+        profile.update_reported(Some("Balanced".to_string()));
+        gpu_mode.update_reported(Some("Hybrid".to_string()));
+
+        assert_eq!(governor.begin_apply().as_deref(), Some("performance"));
+        assert_eq!(epp.begin_apply().as_deref(), Some("performance"));
+        assert_eq!(profile.begin_apply().as_deref(), Some("Turbo"));
+        assert_eq!(gpu_mode.begin_apply().as_deref(), Some("Integrated"));
     }
 
     #[test]
