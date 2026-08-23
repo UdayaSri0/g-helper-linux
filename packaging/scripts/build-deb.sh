@@ -32,11 +32,20 @@ install_privileged_integration "$STAGE_ROOT/usr" "/usr/libexec/rog-helper-privil
 install_license_docs "$STAGE_ROOT/usr"
 install_debian_doc_files "$STAGE_ROOT/usr"
 
-DEPENDS="$(debian_runtime_depends "$STAGE_ROOT" || printf 'libc6')"
+ELF_DEPENDS="$(debian_runtime_depends "$STAGE_ROOT" || printf 'libc6')"
+DEPENDS="$(merge_debian_relationships "$ELF_DEPENDS" "$(debian_explicit_depends)")"
+RECOMMENDS="$(debian_runtime_recommends)"
+SUGGESTS="$(debian_runtime_suggests)"
 
 INSTALLED_SIZE="$(du -sk "$STAGE_ROOT/usr" | cut -f1)"
 mkdir -p "$STAGE_ROOT/DEBIAN"
-write_debian_control "$STAGE_ROOT/DEBIAN/control" "$ARCH" "$DEPENDS" "$INSTALLED_SIZE"
+write_debian_control \
+  "$STAGE_ROOT/DEBIAN/control" \
+  "$ARCH" \
+  "$DEPENDS" \
+  "$RECOMMENDS" \
+  "$SUGGESTS" \
+  "$INSTALLED_SIZE"
 
 install -Dm0755 "$REPO_ROOT/packaging/debian/postinst" "$STAGE_ROOT/DEBIAN/postinst"
 install -Dm0755 "$REPO_ROOT/packaging/debian/postrm" "$STAGE_ROOT/DEBIAN/postrm"

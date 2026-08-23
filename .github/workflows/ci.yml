@@ -24,6 +24,7 @@ jobs:
             build-essential pkg-config \
             libgtk-4-dev libadwaita-1-dev \
             appstream desktop-file-utils dpkg-dev python3-pil \
+            systemd udev \
             flatpak flatpak-builder jq \
             file findutils libgdk-pixbuf-2.0-dev libgirepository1.0-dev \
             libglib2.0-dev-bin librsvg2-dev patchelf squashfs-tools
@@ -40,12 +41,24 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      - name: Packaging Script Tests
+        run: |
+          packaging/scripts/test-install-dev.sh
+          packaging/scripts/test-debian-maintainer-scripts.sh
+
       - name: Package Foundations
         run: |
           ROG_HELPER_BUILD_APPIMAGE=0 \
           ROG_HELPER_BUILD_RPM=0 \
           packaging/scripts/build-release-assets.sh dist/ci
           packaging/scripts/stage-apt-repo.sh dist/ci dist/ci/apt-repo-preview
+
+      - name: Validate Final Debian Package
+        run: |
+          packages=(dist/ci/rog-helper_*.deb)
+          [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
+          packaging/scripts/check-deb-package.sh "${packages[0]}"
+          packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
 
       - name: Validate Flatpak Manifest
         run: packaging/scripts/build-flatpak.sh --check

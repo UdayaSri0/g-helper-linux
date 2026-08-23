@@ -268,6 +268,23 @@ an unresolved token such as `@PRIVILEGED_EXEC@`. Re-run the same check directly:
 python3 packaging/scripts/validate-package-payload.py dist/rog-helper_<version>_<arch>.deb
 ```
 
+Exercise package-owned filesystem behavior for a clean install, reinstall,
+upgrade, remove, and purge without changing the host package database:
+
+```bash
+packaging/scripts/test-deb-lifecycle.py dist/rog-helper_<version>_<arch>.deb
+```
+
+By default the upgrade test uses a deterministic stale API-v1 privileged-helper
+fixture. Pass `--previous /path/to/older.deb` to test replacement of a real
+previous package instead. The test runs entirely below a temporary root, never
+executes package binaries or maintainer scripts, and verifies that unowned user
+configuration and administrator-created files survive both remove and purge.
+Run `packaging/scripts/test-debian-maintainer-scripts.sh` separately to exercise
+maintainer-script service and udev behavior with mocked commands. A disposable
+VM/container is still required to validate APT dependency resolution and real
+systemd, D-Bus, PolicyKit, and udev integration.
+
 Requirements:
 
 - `dpkg-deb`
@@ -454,7 +471,10 @@ Important note:
 - Fedora RPMs render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Arch packages render the installed unit with an absolute `ExecStart=/usr/bin/rog-helperd`.
 - Flatpak installs only a session D-Bus activation file for `/app/bin/rog-helperd`; it does not install the host user-service unit.
-- Release packages also install `io.github.roghelper.Daemon.service`, so opening the desktop app can activate the daemon on the session bus even when the user service is not yet enabled.
+- Release packages also install `io.github.roghelper.Daemon.service`. Its
+  `SystemdService=rog-helperd.service` entry lets a session-bus request activate the packaged
+  `Type=dbus` user unit even when it is not enabled. `Exec=` remains as the standard D-Bus
+  fallback on sessions that do not delegate activation to systemd.
 
 ## Runtime Dependency Notes
 

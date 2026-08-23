@@ -1,3 +1,4 @@
 [D-BUS Service]
 Name=io.github.roghelper.Daemon
 Exec=rog-helperd
+SystemdService=rog-helperd.service

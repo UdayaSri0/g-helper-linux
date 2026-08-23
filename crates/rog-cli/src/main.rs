@@ -135,6 +135,7 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
     use dbus_keys::privileged_status as keys;
     use zbus::zvariant::OwnedValue;
 
+    let mut daemon_info = HashMap::new();
     let status: Option<HashMap<String, OwnedValue>> = match zbus::Connection::session().await {
         Ok(connection) => match zbus::Proxy::new(
             &connection,
@@ -144,16 +145,71 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
         )
         .await
         {
-            Ok(proxy) => proxy.call("GetPrivilegedStatus", &()).await.ok(),
+            Ok(proxy) => {
+                daemon_info = proxy.call("GetDaemonInfo", &()).await.unwrap_or_default();
+                proxy.call("GetPrivilegedStatus", &()).await.ok()
+            }
             Err(_) => None,
         },
         Err(_) => None,
     };
     let status = status.unwrap_or_default();
     let install = probe_privileged_installation(Path::new("/"), Path::new("/dev"));
+    let daemon_reachable = !status.is_empty();
+    let daemon_api = map_u64(&daemon_info, dbus_keys::daemon_info::API_VERSION);
+    let daemon_version = map_string(&daemon_info, dbus_keys::daemon_info::PACKAGE_VERSION);
+    let daemon_compatible = daemon_api == Some(u64::from(dbus_keys::DAEMON_API_VERSION))
+        && daemon_version.as_deref() == Some(env!("CARGO_PKG_VERSION"));
+    let helper_reachable = map_bool(&status, keys::HELPER_REACHABLE).unwrap_or(false);
+    let helper_compatible = map_bool(&status, keys::HELPER_COMPATIBLE).unwrap_or(false);
+    let polkit_available = map_bool(&status, keys::POLKIT_AVAILABLE).unwrap_or(false);
+    let categories = status
+        .get(keys::CATEGORIES_AVAILABLE)
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
 
-    println!("Privileged helper");
-    println!("-----------------");
+    println!("ROG Helper Installation Status");
+    println!("==============================");
+    println!();
+    println!("Application");
+    println!("-----------");
+    println!("UI binary: {}", installed_word(install.ui_binary_installed));
+    println!(
+        "daemon binary: {}",
+        installed_word(install.daemon_binary_installed)
+    );
+    println!("CLI: {}", installed_word(install.cli_binary_installed));
+    println!();
+    println!("Session service");
+    println!("---------------");
+    println!(
+        "DBus activation: {}",
+        installed_word(install.session_dbus_activation_installed)
+    );
+    println!(
+        "systemd user unit: {}",
+        installed_word(install.user_systemd_unit_installed)
+    );
+    println!("daemon reachable: {}", yes_no(daemon_reachable));
+    println!(
+        "API: {}",
+        if daemon_compatible {
+            "compatible"
+        } else if daemon_reachable {
+            "incompatible (restart the user service after upgrading)"
+        } else {
+            "unavailable"
+        }
+    );
+    println!(
+        "daemon package version: {}",
+        daemon_version.as_deref().unwrap_or("unavailable")
+    );
+    println!();
+
+    println!("Privileged integration");
+    println!("-----------------------");
     println!("binary_installed: {}", install.binary_installed);
     println!("systemd_unit_installed: {}", install.systemd_unit_installed);
     println!(
@@ -165,14 +221,8 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
         "polkit_policy_installed: {}",
         install.polkit_policy_installed
     );
-    println!(
-        "service_reachable: {}",
-        map_bool(&status, keys::HELPER_REACHABLE).unwrap_or(false)
-    );
-    println!(
-        "api_compatible: {}",
-        map_bool(&status, keys::HELPER_COMPATIBLE).unwrap_or(false)
-    );
+    println!("service_reachable: {}", helper_reachable);
+    println!("api_compatible: {}", helper_compatible);
     println!();
     println!("Aura");
     println!("----");
@@ -181,6 +231,21 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
     println!("symlink: /dev/rog-helper-aura");
     println!("symlink_valid: {}", install.symlink_valid);
     println!("descriptor_verified: {}", install.descriptor_verified);
+    println!(
+        "RGB control path: {}",
+        if install.device_detected
+            && install.symlink_valid
+            && install.descriptor_verified
+            && helper_compatible
+            && categories.iter().any(|category| category == "lighting")
+        {
+            "ready"
+        } else if install.device_detected {
+            "not ready"
+        } else {
+            "not applicable (supported hardware not detected)"
+        }
+    );
     println!(
         "protocol: {}",
         install.protocol.as_deref().unwrap_or("unavailable")
@@ -207,11 +272,6 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
         "  authorization state: {}",
         map_string(&status, keys::AUTHORIZATION_STATE).unwrap_or_else(|| "unavailable".to_string())
     );
-    let categories = status
-        .get(keys::CATEGORIES_AVAILABLE)
-        .cloned()
-        .and_then(|value| Vec::<String>::try_from(value).ok())
-        .unwrap_or_default();
     println!(
         "  privileged categories available: {}",
         if categories.is_empty() {
@@ -220,11 +280,52 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
             categories.join(", ")
         }
     );
+    println!();
+    println!("Optional providers");
+    println!("------------------");
+    println!("asusd: {}", optional_provider_status(&["asusd", "asusctl"]));
+    println!(
+        "supergfxd: {}",
+        optional_provider_status(&["supergfxd", "supergfxctl"])
+    );
+    println!();
+    println!("Overall");
+    println!("-------");
+    let application_ready = install.ui_binary_installed
+        && install.daemon_binary_installed
+        && install.cli_binary_installed;
+    let session_ready = install.session_dbus_activation_installed
+        && install.user_systemd_unit_installed
+        && daemon_reachable
+        && daemon_compatible;
+    let privileged_ready = install.binary_installed
+        && install.systemd_unit_installed
+        && install.dbus_activation_installed
+        && install.dbus_policy_installed
+        && install.polkit_policy_installed
+        && install.udev_rule_installed
+        && helper_reachable
+        && helper_compatible
+        && polkit_available;
+    let aura_ready = !install.device_detected
+        || (install.symlink_valid
+            && install.descriptor_verified
+            && categories.iter().any(|category| category == "lighting"));
+    let ready = application_ready && session_ready && privileged_ready && aura_ready;
+    println!("{}", if ready { "READY" } else { "NEEDS ATTENTION" });
+    if !ready {
+        anyhow::bail!("ROG Helper installation is not ready; review the failed checks above");
+    }
     Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivilegedInstallationStatus {
+    ui_binary_installed: bool,
+    daemon_binary_installed: bool,
+    cli_binary_installed: bool,
+    session_dbus_activation_installed: bool,
+    user_systemd_unit_installed: bool,
     binary_installed: bool,
     systemd_unit_installed: bool,
     dbus_activation_installed: bool,
@@ -248,6 +349,19 @@ fn probe_privileged_installation(root: &Path, dev_root: &Path) -> PrivilegedInst
     });
 
     PrivilegedInstallationStatus {
+        ui_binary_installed: root.join("usr/bin/rog-helper-ui").is_file(),
+        daemon_binary_installed: root.join("usr/bin/rog-helperd").is_file(),
+        cli_binary_installed: root.join("usr/bin/rog-helper").is_file(),
+        session_dbus_activation_installed: root
+            .join("usr/share/dbus-1/services/io.github.roghelper.Daemon.service")
+            .is_file(),
+        user_systemd_unit_installed: any_file(
+            root,
+            &[
+                "usr/lib/systemd/user/rog-helperd.service",
+                "lib/systemd/user/rog-helperd.service",
+            ],
+        ),
         binary_installed: root.join("usr/libexec/rog-helper-privileged").is_file(),
         systemd_unit_installed: any_file(
             root,
@@ -294,6 +408,43 @@ fn map_bool(
     key: &str,
 ) -> Option<bool> {
     map.get(key).and_then(|value| bool::try_from(value).ok())
+}
+
+fn map_u64(
+    map: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<u64> {
+    map.get(key).and_then(|value| u64::try_from(value).ok())
+}
+
+fn installed_word(installed: bool) -> &'static str {
+    if installed {
+        "installed"
+    } else {
+        "missing"
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn optional_provider_status(names: &[&str]) -> &'static str {
+    if names.iter().any(|name| binary_on_path(name)) {
+        "installed (optional)"
+    } else {
+        "not installed (optional)"
+    }
+}
+
+fn binary_on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(name).is_file())
+    })
 }
 
 fn print_bool_status(

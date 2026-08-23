@@ -51,6 +51,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
+| `GetDaemonInfo` | none | `a{sv}` | Read-only daemon API/package identity used to detect a stale user-session process after upgrade |
 | `GetConfiguration` | none | `s` | Returns normalized versioned TOML |
 | `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
 | `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
@@ -82,6 +83,14 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
 | `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
+
+### `GetDaemonInfo` Response
+
+The identity map contains `api_version` (`t`) and `package_version` (`s`). The UI compares both
+with its compiled contract before presenting the installation as ready. If an older but responsive
+daemon does not implement this method, or either value differs, Setup & Access offers a
+current-user `Restart Service` action. That action uses the user systemd manager; it does not run as
+root, request PolicyKit authorization, or replace session D-Bus activation.
 
 ## `GetCaps` Response
 
