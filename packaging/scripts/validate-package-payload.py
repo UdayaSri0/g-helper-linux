@@ -157,6 +157,8 @@ def run_validator(command: list[str], description: str) -> None:
         fail(f"{description} failed: {details}")
 
 
+<<<<<<< HEAD
+=======
 def validate_systemd_units(privileged_unit: Path, user_unit: Path) -> None:
     """Parse packaged units without resolving their staged absolute executables.
 
@@ -184,6 +186,7 @@ def validate_systemd_units(privileged_unit: Path, user_unit: Path) -> None:
         )
 
 
+>>>>>>> origin/main
 def validate(root: Path, privileged_only: bool) -> None:
     if privileged_only:
         expected = {
@@ -355,6 +358,22 @@ def validate(root: Path, privileged_only: bool) -> None:
                 "AppStream validation",
             ),
             (
+<<<<<<< HEAD
+                "systemd-analyze",
+                [
+                    "systemd-analyze",
+                    "verify",
+                    str(
+                        root
+                        / "usr/lib/systemd/system/rog-helper-privileged.service"
+                    ),
+                    str(root / "usr/lib/systemd/user/rog-helperd.service"),
+                ],
+                "systemd unit validation",
+            ),
+            (
+=======
+>>>>>>> origin/main
                 "udevadm",
                 [
                     "udevadm",
@@ -367,10 +386,13 @@ def validate(root: Path, privileged_only: bool) -> None:
         for executable, command, description in external_checks:
             if shutil.which(executable):
                 run_validator(command, description)
+<<<<<<< HEAD
+=======
         validate_systemd_units(
             root / "usr/lib/systemd/system/rog-helper-privileged.service",
             root / "usr/lib/systemd/user/rog-helperd.service",
         )
+>>>>>>> origin/main
 
     policy_path = root / "usr/share/polkit-1/actions/io.github.roghelper.policy"
     policy = ET.parse(policy_path).getroot()

@@ -222,6 +222,8 @@ struct SharedUiState {
     battery_limit: Option<u8>,
     battery_limit_edit: EditableDraft<u8>,
     keyboard_brightness_edit: EditableDraft<u64>,
+<<<<<<< HEAD
+=======
     cpu_turbo_edit: EditableDraft<bool>,
     cpu_power_mode_edit: EditableDraft<String>,
     cpu_freq_limits_edit: EditableDraft<(Option<u32>, Option<u32>)>,
@@ -230,6 +232,7 @@ struct SharedUiState {
     profile_edit: EditableDraft<String>,
     gpu_mode_edit: EditableDraft<String>,
     fan_sync_edit: EditableDraft<bool>,
+>>>>>>> origin/main
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -288,6 +291,8 @@ impl Default for SharedUiState {
             battery_limit: None,
             battery_limit_edit: EditableDraft::default(),
             keyboard_brightness_edit: EditableDraft::default(),
+<<<<<<< HEAD
+=======
             cpu_turbo_edit: EditableDraft::default(),
             cpu_power_mode_edit: EditableDraft::default(),
             cpu_freq_limits_edit: EditableDraft::default(),
@@ -296,6 +301,7 @@ impl Default for SharedUiState {
             profile_edit: EditableDraft::default(),
             gpu_mode_edit: EditableDraft::default(),
             fan_sync_edit: EditableDraft::default(),
+>>>>>>> origin/main
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -4780,6 +4786,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             battery_limit,
             battery_limit_edit,
             keyboard_brightness_edit,
+<<<<<<< HEAD
+=======
             cpu_turbo_edit,
             cpu_power_mode_edit,
             cpu_freq_limits_edit,
@@ -4788,6 +4796,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             profile_edit,
             gpu_mode_edit,
             fan_sync_edit,
+>>>>>>> origin/main
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4840,6 +4849,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.battery_limit,
                 st.battery_limit_edit.clone(),
                 st.keyboard_brightness_edit.clone(),
+<<<<<<< HEAD
+=======
                 st.cpu_turbo_edit.clone(),
                 st.cpu_power_mode_edit.clone(),
                 st.cpu_freq_limits_edit.clone(),
@@ -4848,6 +4859,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.profile_edit.clone(),
                 st.gpu_mode_edit.clone(),
                 st.fan_sync_edit.clone(),
+>>>>>>> origin/main
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -6799,6 +6811,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let reported_identity = LightingControlIdentity::from(l);
             let identity_changed =
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
+<<<<<<< HEAD
+            let draft_is_clean =
+                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
+            let draft_matches_reported = lighting_draft
+                .borrow()
+                .as_ref()
+                .is_some_and(|draft| draft == &LightingDraft::from_info(l));
+=======
+>>>>>>> origin/main
             let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
             if dashboard_brightness_dirty {
                 if let (Some(brightness), Some(draft)) = (
@@ -6808,6 +6829,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     draft.brightness = brightness;
                 }
             }
+<<<<<<< HEAD
+            let should_sync_draft = dashboard_brightness_dirty
+                || identity_changed
+                || lighting_baseline.borrow().is_none()
+                || draft_is_clean
+                || draft_matches_reported;
+=======
             let reported_draft = LightingDraft::from_info(l);
             let should_sync_draft = should_sync_lighting_draft(
                 lighting_baseline.borrow().as_ref(),
@@ -6816,6 +6844,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 identity_changed,
                 dashboard_brightness_dirty,
             );
+>>>>>>> origin/main
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -7627,6 +7656,8 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     .filter(|info| info.supports_brightness)
                                     .map(|info| info.brightness),
                             );
+<<<<<<< HEAD
+=======
                             st.cpu_turbo_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.turbo_boost_enabled),
                             );
@@ -7642,6 +7673,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.cpu_epp_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.epp.clone()),
                             );
+>>>>>>> origin/main
                             st.lighting = lighting;
                             st.fan_sync_edit
                                 .update_reported(Some(fan_state.sync_enabled));
@@ -14355,6 +14387,8 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
+=======
     fn fan_sync_draft_survives_stale_poll_while_apply_is_pending() {
         let mut sync = EditableDraft::default();
         sync.update_reported(Some(false));
@@ -14371,6 +14405,7 @@ mod tests {
     }
 
     #[test]
+>>>>>>> origin/main
     fn editable_draft_reset_discards_pending_change() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));
@@ -14391,6 +14426,8 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
+=======
     fn cpu_quick_control_drafts_survive_poll_after_focus_loss() {
         let mut turbo = EditableDraft::default();
         let mut preset = EditableDraft::default();
@@ -14440,6 +14477,7 @@ mod tests {
     }
 
     #[test]
+>>>>>>> origin/main
     fn clean_programmatic_sync_does_not_create_a_draft() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));

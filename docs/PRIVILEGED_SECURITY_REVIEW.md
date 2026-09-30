@@ -1,8 +1,14 @@
 # Privileged Architecture Security Review
 
+<<<<<<< HEAD
+This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura lighting, and
+battery privilege migration. It is a source and packaging audit, not a claim of hardware
+certification. No UI or session-daemon process runs as root.
+=======
 This review covers commit `0145a261dcbfe57bea452c3256d3b8caef49ff0b` (v0.3.1 baseline) after
 the CPU, fan, keyboard/Aura lighting, and battery privilege migration. It is a source and packaging
 audit, not a claim of hardware certification. No UI or session-daemon process runs as root.
+>>>>>>> origin/main
 
 ## 1. Trust boundary
 
@@ -55,7 +61,11 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
+<<<<<<< HEAD
+| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
+=======
 | `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
+>>>>>>> origin/main
 | `SetBatteryChargeLimit` | percentage | `battery.control` | One exact standard battery threshold |
 
 There is no generic filesystem-write, process-execution, GPU, PCI, kernel-module, ACPI, USB, HID,

@@ -232,8 +232,13 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 Direct `.deb` install:
 
 ```bash
+<<<<<<< HEAD
+sha256sum -c rog-helper-0.3.0-SHA256SUMS.txt --ignore-missing
+sudo apt install ./rog-helper_0.3.0_amd64.deb
+=======
 sha256sum -c rog-helper-0.3.1-SHA256SUMS.txt --ignore-missing
 sudo apt install ./rog-helper_0.3.1_amd64.deb
+>>>>>>> origin/main
 rog-helper privileged-status
 ```
 
