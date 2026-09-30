@@ -4,3 +4,5 @@
 # Editors
 .vscode/
 .idea/
+
+/dist/

@@ -2,10 +2,12 @@
 
 Use this checklist before calling the repository release-ready.
 
-Latest evidence-based walkthrough: [RELEASE_READINESS_AUDIT.md](RELEASE_READINESS_AUDIT.md).
+Latest evidence-based walkthrough: [releases/v0.3.1-readiness.md](releases/v0.3.1-readiness.md).
 Unchecked items remain unverified even when the audit records partial automated coverage.
 
-Stable release decision: the release owner approved `v0.3.0` on 2026-08-15. Unchecked installed-runtime, cross-distro, and real-hardware items remain explicit known limitations and must not be presented as validated support.
+`v0.3.1` is not release-ready until its readiness record contains a passing final-candidate
+validation run. Unchecked installed-runtime, cross-distro, and real-hardware items remain
+explicit known limitations and must not be presented as validated support.
 
 ## Documentation
 

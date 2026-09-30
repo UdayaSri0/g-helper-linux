@@ -29,6 +29,7 @@ File: `crates/rog-providers/src/asusd.rs`
   - only profile and charge-limit coverage are implemented
   - Aura / RGB discovery and verified contract routing are implemented separately
   - fan curve support is modeled in the daemon/API, but this provider does not write ASUS fan curves until an asusd curve interface is discoverable and tested
+  - current fan-curve writes use the separately verified ASUS WMI `hwmon` backend, not `asusd`
   - if asusd is present without a fan-curve interface, fan curves are reported as unsupported rather than broken
   - interface compatibility across `asusd` versions is still a live concern
 
@@ -350,7 +351,8 @@ File: `crates/rog-providers/src/traits.rs`
   - none directly
 - Current limitations
   - trait surface is broader than current backend coverage
-  - `FanProvider`, `LightingProvider`, and `TelemetryProvider` are not matched by full current runtime implementations
+  - the traits remain broader than current backend coverage; `FanProvider` has a runtime
+    implementation for the narrow ASUS WMI curve/Auto subset, not for generic duty or RPM targets
 
 ## Summary
 

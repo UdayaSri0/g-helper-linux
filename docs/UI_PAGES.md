@@ -370,11 +370,13 @@ Current page. The internal page identifier remains `fans` for compatibility.
 - operating MHz display in the CPU/GPU gauge cards when telemetry is available
 - animated fan rotors in the hero dashboard, scaled from live RPM telemetry, limited to 20 FPS, paused while unmapped, and reduced with GTK's animation setting
 - capability warning banner
-- sync toggle when multiple controllable fans exist
-- manual percentage slider when writable PWM support is confirmed
-- 5/10/15 minute boost actions when manual percentage support exists
+- sync toggle is modeled and may be capability-enabled for multiple curve-controllable fans, but it
+  does not synchronize curve application and is non-operational without a verified manual-percent backend
+- manual percentage slider remains disabled because generic PWM support is deliberately withheld
+- 5/10/15 minute boost actions remain disabled because no verified manual-percent backend exists
 - Return to Auto action
-- disabled fan-curve preview when curve support is unavailable
+- a fixed conservative eight-point preview/apply flow when the verified ASUS WMI curve backend is
+  available; the preview is disabled when curve support is unavailable
 - individual fan cards with RPM, backend, read-only/controllable badges, endpoint details, notes, and warnings
 - copyable fan diagnostics with IDs, RPM, percentages, endpoints, notes, and warnings
 - collapsed diagnostics section by default

@@ -102,13 +102,17 @@ behavior remains the final safety boundary.
 9. Kill and restart the helper with its marker armed; confirm startup restoration.
 10. Exercise malformed curves and simulate an unavailable endpoint; confirm Auto is attempted and no
     incomplete curve is enabled.
+11. Suspend and resume with a supervised custom curve, then confirm ownership and Auto restoration.
+12. Change the firmware/platform profile while a curve is active and confirm the driver/firmware
+    ownership transition is safe and accurately reported.
 
 ## References
 
 - [Linux hwmon sysfs interface](https://docs.kernel.org/hwmon/sysfs-interface.html)
-- [Current Linux `asus-wmi.c` source](https://codebrowser.dev/linux/linux/drivers/platform/x86/asus-wmi.c.html)
+- [Linux `asus-wmi.c` at reviewed commit `551c722f4080`](https://github.com/torvalds/linux/blob/551c722f40809618230001baccf219193e22fc5a/drivers/platform/x86/asus-wmi.c)
 - [Original ASUS custom fan-curve driver patch discussion](https://lkml.iu.edu/hypermail/linux/kernel/2109.0/03504.html)
 
 **FAN WRITES IMPLEMENTED: NARROWLY.** Only verified ASUS WMI eight-point curves and Auto/reset are
 implemented. Generic PWM, manual percent, RPM target, software curves, sync, and boost remain
-unsupported. Hardware testing is required before release.
+unsupported. Hardware testing is required before claiming hardware-validated fan support or making
+fan curves a dependency of persistent profiles or automation.

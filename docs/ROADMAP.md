@@ -36,10 +36,10 @@ The following features are present in the current codebase.
   single-target RGB protocol
 - fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - dynamic 0..N fan telemetry
-  - writable hwmon manual percentage control when confirmed
-  - optional RPM target when `fanN_target` is writable
-  - sync mode and time-limited boost
-  - Auto/BIOS restore path
+  - verified ASUS WMI eight-point curves with direct or typed privileged writes
+  - Auto/BIOS restore and root-owned recovery marker
+  - generic manual percentage, RPM-target, and boost writes deliberately unsupported
+  - sync state/API/UI present, but not operational for the verified curve backend
 - CPU telemetry and generic Linux CPU controls
 - memory, swap, PSI, zram, and top-process telemetry
 
@@ -159,23 +159,24 @@ Still evolving:
 - broader install validation
 - broader cross-distro AppImage runtime validation
 
-## Planned or Missing
+## Planned, Missing, or Pending Validation
 
-These are not implemented end-to-end in the current repository.
+These areas are missing, incomplete, or implemented narrowly but still blocked on validation.
 
 ### Fan curves
 
-Partially implemented:
+Implemented narrowly in code:
 
-- core safety validation
-- daemon DBus API surface
-- capability-driven UI diagnostics
+- exact ASUS WMI CPU/GPU/Mid mapping and eight-point validation
+- staged writes, per-value readback, enable-last behavior, Auto rollback, and typed PolicyKit fallback
+- capability-driven Cooling UI with a fixed conservative preview/apply flow
 
 Still missing:
 
-- verified asusd fan-curve backend
-- generic hwmon curve writes, because curve point file formats are hardware-specific
-- graphical curve editor beyond the current API/diagnostic surface
+- supervised physical validation of apply, rollback, helper recovery, suspend/resume, and firmware ownership
+- editable and persistent per-fan curves
+- profile-linked curves and safe multi-fan semantics
+- an independently verified asusd curve contract; generic hwmon formats remain unsupported
 
 ### Auto mode and policy automation
 
@@ -235,15 +236,20 @@ Current state:
 
 - the daemon uses string-keyed `a{sv}` payloads
 
+### Linux-native convenience controls
+
+Research-only and currently missing:
+
+- display refresh discovery/control through an explicit DRM, Wayland, or compositor contract
+- global hotkeys that invoke existing semantic daemon actions
+- keyboard timeout control through a verified Linux backend
+
 ## Priorities
 
-The most useful next technical priorities, based on current implementation status, are:
-
-1. Fan curves
-2. Auto mode / policy integration
-3. Broader Aura / RGB hardware validation
-4. Stronger typed daemon/UI contract
-5. Packaging and release readiness
+The dependency-ordered priorities are maintained in
+[IMPLEMENTATION_PRIORITY.md](IMPLEMENTATION_PRIORITY.md): validate the existing narrow hardware
+contracts first, then add durable profiles and automation, then Linux-native convenience features,
+and only then broaden device coverage.
 
 ## Suggested Labels
 

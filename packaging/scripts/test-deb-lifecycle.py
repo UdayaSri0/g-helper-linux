@@ -17,6 +17,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+<<<<<<< HEAD
+=======
+import tomllib
+>>>>>>> origin/main
 
 
 REQUIRED_INTEGRATION = (
@@ -31,6 +35,16 @@ REQUIRED_INTEGRATION = (
 )
 
 
+<<<<<<< HEAD
+=======
+def current_deb_path() -> Path:
+    root = Path(__file__).resolve().parents[2]
+    cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    version = cargo["workspace"]["package"]["version"]
+    return root / "dist" / f"rog-helper_{version}_amd64.deb"
+
+
+>>>>>>> origin/main
 class TestFailure(RuntimeError):
     pass
 
@@ -246,8 +260,13 @@ def parse_args() -> argparse.Namespace:
         "deb",
         nargs="?",
         type=Path,
+<<<<<<< HEAD
         default=Path("dist/rog-helper_0.3.0_amd64.deb"),
         help="current package to test (default: dist/rog-helper_0.3.0_amd64.deb)",
+=======
+        default=current_deb_path(),
+        help="current package to test (default: dist/rog-helper_<workspace-version>_amd64.deb)",
+>>>>>>> origin/main
     )
     parser.add_argument(
         "--previous",

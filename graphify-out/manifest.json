@@ -5,12 +5,20 @@
     "semantic_hash": ""
   },
   "crates/rog-cli/src/main.rs": {
+<<<<<<< HEAD
     "mtime": 1787309424.823341,
+=======
+    "mtime": 1787469663.1168933,
+>>>>>>> origin/main
     "ast_hash": "354066001fa515d2424c49d5e57eaf29",
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
+<<<<<<< HEAD
     "mtime": 1787308834.771626,
+=======
+    "mtime": 1787469663.1168933,
+>>>>>>> origin/main
     "ast_hash": "1e4530370966b2cfd870b8fe27d9f123",
     "semantic_hash": ""
   },
@@ -35,7 +43,11 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
+<<<<<<< HEAD
     "mtime": 1787308942.3606281,
+=======
+    "mtime": 1787469663.1168933,
+>>>>>>> origin/main
     "ast_hash": "74a2ad6f0c2926170b2032f8a1ccda8f",
     "semantic_hash": ""
   },
@@ -120,8 +132,13 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
+<<<<<<< HEAD
     "mtime": 1787311546.778288,
     "ast_hash": "dd4fcca5e2be6b235c80d79f005cbb2a",
+=======
+    "mtime": 1787470278.8914583,
+    "ast_hash": "d6f76cffb34945a0d89c6fd6e91e369c",
+>>>>>>> origin/main
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -130,12 +147,20 @@
     "semantic_hash": ""
   },
   "packaging/debian/postinst": {
+<<<<<<< HEAD
     "mtime": 1787308657.6161087,
+=======
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "0cba40af37f9d4f8fcbc432dccbc3d36",
     "semantic_hash": ""
   },
   "packaging/debian/postrm": {
+<<<<<<< HEAD
     "mtime": 1787308657.6181087,
+=======
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "76332ac4117054404a565be32c172f6c",
     "semantic_hash": ""
   },
@@ -155,7 +180,11 @@
     "semantic_hash": ""
   },
   "packaging/scripts/build-deb.sh": {
+<<<<<<< HEAD
     "mtime": 1787308698.138936,
+=======
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "4b8f040bff35fe4d46b93cb493fd43aa",
     "semantic_hash": ""
   },
@@ -185,7 +214,11 @@
     "semantic_hash": ""
   },
   "packaging/scripts/package-common.sh": {
+<<<<<<< HEAD
     "mtime": 1787308873.6416047,
+=======
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "850fa781fcc8562e1b8accec1012a800",
     "semantic_hash": ""
   },
@@ -200,12 +233,20 @@
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
+<<<<<<< HEAD
     "mtime": 1787309334.4798684,
+=======
+    "mtime": 1787469663.1168933,
+>>>>>>> origin/main
     "ast_hash": "f35c2facdb9051cf40aee5187733e53e",
     "semantic_hash": ""
   },
   ".github/workflows/release.yml": {
+<<<<<<< HEAD
     "mtime": 1787309334.4818685,
+=======
+    "mtime": 1787469663.1168933,
+>>>>>>> origin/main
     "ast_hash": "b47e36e38547e051e2975850756bcfa3",
     "semantic_hash": ""
   },
@@ -215,22 +256,40 @@
     "semantic_hash": ""
   },
   "README.md": {
+<<<<<<< HEAD
     "mtime": 1787309447.5234673,
     "ast_hash": "031f98b63bc1b23f0fdb902a7696cf75",
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
     "mtime": 1787311480.7699895,
+=======
+    "mtime": 1787469782.7748652,
+    "ast_hash": "37c379775c845ebeb892873bf9840dfb",
+    "semantic_hash": ""
+  },
+  "docs/ARCHITECTURE.md": {
+    "mtime": 1787469663.1658967,
+>>>>>>> origin/main
     "ast_hash": "d1a1c0fed2580ab916538ce5a00a400f",
     "semantic_hash": ""
   },
   "docs/BUILD.md": {
+<<<<<<< HEAD
     "mtime": 1787309010.3657205,
     "ast_hash": "814e55342b79bd5493400a4085c0a056",
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
     "mtime": 1787309008.408717,
+=======
+    "mtime": 1787469782.7748652,
+    "ast_hash": "4c2caaf4c7bfd3eeba19c8ce04eccf71",
+    "semantic_hash": ""
+  },
+  "docs/DBUS_API.md": {
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "08720ec01d37bbb5ceba81df46e1a4cf",
     "semantic_hash": ""
   },
@@ -250,7 +309,11 @@
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
+<<<<<<< HEAD
     "mtime": 1787311480.7719886,
+=======
+    "mtime": 1787469663.1658967,
+>>>>>>> origin/main
     "ast_hash": "f0f876c2a309e89d6d09e1e07e039243",
     "semantic_hash": ""
   },
@@ -280,8 +343,13 @@
     "semantic_hash": ""
   },
   "docs/RELEASE_CHECKLIST.md": {
+<<<<<<< HEAD
     "mtime": 1787308723.6868474,
     "ast_hash": "103d4b2b192e43dcb7907e56bd30c79c",
+=======
+    "mtime": 1787469843.9638076,
+    "ast_hash": "d7af212c6fae0128e6545c4ba0736661",
+>>>>>>> origin/main
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
@@ -295,7 +363,11 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
+<<<<<<< HEAD
     "mtime": 1787311480.772988,
+=======
+    "mtime": 1787469663.1658967,
+>>>>>>> origin/main
     "ast_hash": "f2996c8e6374ed63ff0b23ce92a0f641",
     "semantic_hash": ""
   },
@@ -325,8 +397,8 @@
     "semantic_hash": ""
   },
   "docs/releases/unreleased.md": {
-    "mtime": 1787303958.7845237,
-    "ast_hash": "452bd1e347d4b6e8fea2e959ebcc76ed",
+    "mtime": 1787469843.9648077,
+    "ast_hash": "159ec5a1b6db76044b924ec8cdfc0ffd",
     "semantic_hash": ""
   },
   "docs/releases/v0.2.0.md": {
@@ -350,8 +422,8 @@
     "semantic_hash": ""
   },
   "packaging/arch/README.AUR.md": {
-    "mtime": 1787306553.3109782,
-    "ast_hash": "1cf1fd42f5ebfb843454ecec2b81b560",
+    "mtime": 1787469782.7748652,
+    "ast_hash": "727789e9a0704b4e7f4ef3f3c3b1fba2",
     "semantic_hash": ""
   },
   "packaging/flatpak/README.md": {
@@ -425,42 +497,74 @@
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/128x128/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.5143917,
+=======
+    "mtime": 1787470936.5533597,
+>>>>>>> origin/main
     "ast_hash": "56ecae861787018c814956b7e07d8292",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/16x16/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.3005266,
+=======
+    "mtime": 1787470936.5115418,
+>>>>>>> origin/main
     "ast_hash": "a62793dbd609e4a572691dce52b9fbb5",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/24x24/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.3343904,
+=======
+    "mtime": 1787470936.5184205,
+>>>>>>> origin/main
     "ast_hash": "3c297002191a546e019b459779d25595",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/256x256/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.6373925,
+=======
+    "mtime": 1787470936.5783596,
+>>>>>>> origin/main
     "ast_hash": "382eb00bfcf7ebe1e2d4dc1a5301388b",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/32x32/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.3693907,
+=======
+    "mtime": 1787470936.5256011,
+>>>>>>> origin/main
     "ast_hash": "19052b1a2d5bbd23a5309beda3f7e846",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/48x48/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.408391,
+=======
+    "mtime": 1787470936.5323598,
+>>>>>>> origin/main
     "ast_hash": "973a7adab2b09f57e1df973ea5e6dc3a",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/512x512/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309752.0178232,
+=======
+    "mtime": 1787470936.6523597,
+>>>>>>> origin/main
     "ast_hash": "c350868b8a994a9dfb1325764a70e6a8",
     "semantic_hash": ""
   },
   "packaging/desktop/icons/hicolor/64x64/apps/rog-helper.png": {
+<<<<<<< HEAD
     "mtime": 1787309751.4523911,
+=======
+    "mtime": 1787470936.5421615,
+>>>>>>> origin/main
     "ast_hash": "dff3006c393b15f92f97731b64513655",
     "semantic_hash": ""
   },
@@ -525,7 +629,11 @@
     "semantic_hash": ""
   },
   "packaging/scripts/check-release-metadata.py": {
+<<<<<<< HEAD
     "mtime": 1787308673.9200344,
+=======
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "fdf1fae13b79a3667ca6fd692b00dc15",
     "semantic_hash": ""
   },
@@ -560,8 +668,13 @@
     "semantic_hash": ""
   },
   "docs/PRIVILEGED_SECURITY_REVIEW.md": {
+<<<<<<< HEAD
     "mtime": 1787308817.4926443,
     "ast_hash": "ea20df5f5b8009a8c59fdef0c4412280",
+=======
+    "mtime": 1787469782.775865,
+    "ast_hash": "9a8850c4ee763f23932cf093521fc27a",
+>>>>>>> origin/main
     "semantic_hash": ""
   },
   "crates/rog-providers/src/aura_hid.rs": {
@@ -580,6 +693,7 @@
     "semantic_hash": ""
   },
   "packaging/scripts/validate-package-payload.py": {
+<<<<<<< HEAD
     "mtime": 1787309360.9330013,
     "ast_hash": "dced344eac2e393f411a0ddb512e89d7",
     "semantic_hash": ""
@@ -596,10 +710,19 @@
   },
   "packaging/scripts/check-deb-package.sh": {
     "mtime": 1787309167.313151,
+=======
+    "mtime": 1787470929.1053665,
+    "ast_hash": "83f6dc9950c1ea7927b9437931e7a9c3",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/check-deb-package.sh": {
+    "mtime": 1787469663.1188934,
+>>>>>>> origin/main
     "ast_hash": "785a50430703564f51d7174e294a2330",
     "semantic_hash": ""
   },
   "packaging/scripts/install-dev.sh": {
+<<<<<<< HEAD
     "mtime": 1787309167.3141508,
     "ast_hash": "f7279df20a453a1cfbc3c51fa47a78cc",
     "semantic_hash": ""
@@ -612,6 +735,40 @@
   "docs/DEVELOPER_INSTALL.md": {
     "mtime": 1787309167.315151,
     "ast_hash": "5b67390bfc6afc26dda45da7cb171291",
+=======
+    "mtime": 1787469663.1188934,
+    "ast_hash": "f7279df20a453a1cfbc3c51fa47a78cc",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-deb-lifecycle.py": {
+    "mtime": 1787469782.775865,
+    "ast_hash": "e250bd92756a033f0e639ff1a3a38804",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-debian-maintainer-scripts.sh": {
+    "mtime": 1787469663.1188934,
+    "ast_hash": "934020f94ef87670794d669c18656031",
+    "semantic_hash": ""
+  },
+  "packaging/scripts/test-install-dev.sh": {
+    "mtime": 1787470112.6584265,
+    "ast_hash": "9e8d9856de1382be2414c04eb80882aa",
+    "semantic_hash": ""
+  },
+  "docs/DEVELOPER_INSTALL.md": {
+    "mtime": 1787469663.1188934,
+    "ast_hash": "5b67390bfc6afc26dda45da7cb171291",
+    "semantic_hash": ""
+  },
+  "docs/releases/v0.3.1-readiness.md": {
+    "mtime": 1787469843.9658077,
+    "ast_hash": "8cbcf4a0a3f55417f3a4eca7159bf052",
+    "semantic_hash": ""
+  },
+  "docs/releases/v0.3.1.md": {
+    "mtime": 1787469843.9648077,
+    "ast_hash": "f955892594fb79b5e73a217190070909",
+>>>>>>> origin/main
     "semantic_hash": ""
   }
 }

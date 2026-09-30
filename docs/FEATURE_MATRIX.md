@@ -20,8 +20,8 @@ This matrix reflects the current implementation in the repository today. It is b
 | Fan RPM telemetry | `hwmon` | Read | Implemented | Best-effort dynamic 0..N detection; Cooling shows bounded mapped-only RPM animation, circular temperature gauges, individual cards, and collapsed diagnostics while keeping read-only fans visible |
 | Fan manual percent control | generic hwmon candidates only | Write | Unsupported | Generic PWM candidates remain diagnostic-only; writable file permissions alone never authorize a write |
 | Fan RPM target | generic `hwmon` candidates only | Write | Unsupported | `fanN_target` candidates remain diagnostic-only until a separately reviewed backend contract exists |
-| Fan curves | verified ASUS WMI hwmon ABI | Read + Write | Backend-dependent | Direct writes are preferred; typed helper fallback is allowed only for complete validated ASUS WMI curve endpoints |
-| Sync fan control | daemon fan state | Write | Implemented when possible | Available when more than one controllable fan is detected; read-only fans remain visible |
+| Fan curves | verified ASUS WMI hwmon ABI | Diagnostic read + Write | Backend-dependent | Complete layouts are discovered read-only; current curve values are not exposed through the runtime API. Direct writes are preferred; typed helper fallback is allowed only for complete validated ASUS WMI curve endpoints |
+| Sync fan control | daemon/UI state only | Write | Partially implemented | State, API, UI, and persistence exist, but sync currently affects only manual-percent routing; the verified curve backend does not implement synchronized curve application and generic manual percent is disabled |
 | Boost mode | no verified backend | Write | Unsupported | Generic manual-duty writes are deliberately disabled, so boost is not advertised |
 | CPU telemetry | `cpu` + `hwmon` + RAPL when available | Read | Implemented | Includes usage, temperature, clocks, package power, cached 60-second filled history/sparkline presentation, physical-core/logical-thread counts, and per-logical-CPU state |
 | CPU controls | `cpu` sysfs backend + privileged fallback | Read + Write | Implemented | Direct writes are preferred; only permission-blocked supported controls fall back to the helper, with validation and readback |
@@ -32,12 +32,16 @@ This matrix reflects the current implementation in the repository today. It is b
 | About page | `rog-ui` | Read | Implemented | Leads with packaged identity/icon and version, uses Cargo metadata with fallbacks, and shows maintainer info, source/support links, and release-status text |
 | Manual update check / best-effort update flow | `rog-ui` + GitHub Releases API | Read + Best-effort Write | Implemented | Manual only; never requires sudo or distro package manager access; in-place replacement is limited to matching user-local direct-binary installs and otherwise falls back to opening the latest release page |
 | Tray menu | `rog-ui` + `ksni` | Read + Write | Implemented | Depends on desktop support for StatusNotifierItem / AppIndicator |
-| Settings page | `rog-ui` + daemon configuration API | Read + Write | Implemented | Lifecycle, dashboard visibility/compactness, inert control preferences, automation policy, and confirmed reset |
+| Settings page | `rog-ui` + daemon configuration API | Read + Write | Implemented | Lifecycle, dashboard visibility/compactness, inert control preferences, automation status/explanation, and confirmed reset; there is no policy editor |
 | Persistent configuration | `rog-core` + `rog-daemon` | Read + Write | Implemented | Versioned XDG `config.toml`, legacy `ui.toml` migration, field-level fallback, unknown-field tolerance, validation, and atomic replacement |
 | UI lifecycle preferences | `rog-ui` + daemon config/XDG autostart | Read + Write | Implemented | Close behavior, launch-on-login, start-minimized-to-tray, and the close-to-tray hint now live on Settings |
 | Remembered hardware/control preferences | `rog-daemon` config | Read + Write | Implemented, inert | Preferred charge limit, last manual profile, and fan-sync preference are saved but never applied at boot/login |
 | Auto mode / policy automation | `rog-core` policy types only | Read + Write | Missing at runtime | Policy model exists, but daemon does not currently run it |
 | Persistent fan curves and automation rules | None in current runtime | Read + Write | Missing | No durable fan-curve or auto-policy runtime yet |
+| Named hardware profiles / presets | None | Read + Write | Missing | The saved last profile and charge-limit values are inert suggestions, not transactional multi-control profiles |
+| Display refresh control | None | Read + Write | Missing | Requires Linux-native DRM/Wayland/compositor discovery and a separately verified write contract |
+| Global hotkeys | None | Write | Missing | Tray actions exist, but no global shortcut or input integration is implemented |
+| Keyboard timeout | None | Read + Write | Missing | Research-only until a verified Linux backend exists |
 
 ## Notes
 
