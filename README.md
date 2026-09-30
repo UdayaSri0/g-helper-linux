@@ -113,15 +113,17 @@ Current source-backed features include:
   - structured diagnostics for `available`, `unsupported`, `missing_backend`, `permission_denied`, and `temporarily_unavailable` write states
 - GPU mode read/write through `supergfxd`
 - ASUS performance profile read/write through `asusd`
-- ASUS battery charge limit read/write through `asusd`
-- Keyboard backlight brightness read/write through sysfs when permissions allow
+- ASUS battery charge limit read/write through `asusd`, then the exact standard
+  `power_supply` threshold ABI when available
+- Keyboard backlight brightness through verified asusd, direct sysfs, or the typed privileged
+  fallback for the canonical ASUS keyboard LED
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
 - Dedicated Setup & Access UI plus `rog-helper setup-check`, backed by live API verification and read-only permission probes
 - Fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - polished RPM monitoring dashboard with animated fan rotors, larger CPU/GPU gauges, and best-effort operating MHz display
   - best-effort dynamic RPM telemetry for 0..N fans
   - verified eight-point ASUS WMI fan curves with direct or PolicyKit-gated writes
-  - Auto/BIOS restore and curve sync when the exact ASUS device identity and channel mapping are confirmed
+  - Auto/BIOS restore when the exact ASUS device identity and channel mapping are confirmed
   - generic PWM, RPM-target, and boost candidates remain disabled even when a file appears writable
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
@@ -154,7 +156,8 @@ Important gaps in the current implementation:
 - Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions; the native HID implementation is deliberately limited to the G615JMR target identity and has not yet been physically validated through ROG Helper
 - Live auto mode / policy automation integration
-- Persistent hardware/control configuration and saved automation rules beyond the current UI lifecycle preferences
+- Named hardware profiles, durable fan curves, saved automation rules, and automatic application;
+  the current control preferences are deliberately inert
 - Generated strongly typed external DBus payloads (the current backwards-compatible `a{sv}` API
   now shares internal key constants and decoding semantics)
 - Complete tested hardware support matrix
@@ -424,7 +427,8 @@ When these dependencies are missing or read-only, the UI is expected to degrade 
 
 Current release behavior to expect:
 
-- missing `asusd` -> profile and charge-limit controls stay visible but explain that `asusd` is required
+- missing `asusd` -> profile control explains that `asusd` is required; charge-limit control may
+  remain available through one exact standard `power_supply` threshold
 - asusd without the verified Aura contract -> the daemon may select the allow-listed native G615JMR target backend; otherwise RGB stays disabled while brightness-only sysfs support remains available
 - missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
 - readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
@@ -455,6 +459,8 @@ Developer docs:
 - [docs/DBUS_API.md](docs/DBUS_API.md)
 - [docs/DBUS_NOTES.md](docs/DBUS_NOTES.md)
 - [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)
+- [docs/GHELPER_REFERENCE_AUDIT.md](docs/GHELPER_REFERENCE_AUDIT.md)
+- [docs/IMPLEMENTATION_PRIORITY.md](docs/IMPLEMENTATION_PRIORITY.md)
 - [docs/GUI_SPEC.md](docs/GUI_SPEC.md)
 - [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

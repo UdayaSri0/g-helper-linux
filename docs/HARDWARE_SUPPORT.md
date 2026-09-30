@@ -63,11 +63,11 @@ The scenarios below are the minimum release hardware checks that still need real
 | fan count `1` | Untested | none |
 | fan count `2` | Untested | none |
 | fan count `3+` | Untested | none |
-| fan manual percent works | Untested | none |
-| fan RPM target works | Untested | none |
+| fan manual percent works | Deliberately unsupported; no verified backend | not applicable |
+| fan RPM target works | Deliberately unsupported; no verified backend | not applicable |
 | fan curve works | Untested | none |
-| fan sync mode works | Untested | none |
-| fan boost mode works | Untested | none |
+| fan sync mode works | Partially modeled; non-operational on current verified backend | none |
+| fan boost mode works | Deliberately unsupported; depends on unsupported manual percent | not applicable |
 | fan restore Auto works | Untested | none |
 | hybrid CPU with physical cores != logical threads | Untested | none |
 | tray visibility across desktop environments | Untested | none |
@@ -173,11 +173,7 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan manual percent writable | `fan-caps` reports `has_fan_manual_percent: true` | Fans page enables percentage controls after acknowledgement; daemon applies through hwmon and Auto remains available | `fans`, `fan-caps`, Fans screenshot, before/after RPM |
-| fan RPM target writable | `fan-caps` reports `has_fan_manual_rpm_target: true` | RPM target is available only for fans exposing writable `fanN_target` | `fans`, `fan-caps`, endpoint `ls -l` |
 | fan curve backend available | `fan-caps` reports `has_fan_curves: true` | curve apply validates safe high-temperature points and rejects dangerous curves | `fan-caps`, DBus/API result, Fans screenshot |
-| fan sync mode | more than one controllable fan is detected | sync applies only to controllable fans and keeps read-only fan telemetry visible | `fans`, Fans screenshot before/after |
-| fan boost mode | `has_fan_boost: true` | boost runs at 100% for a selected duration, then restores Auto/BIOS mode | `fans`, Fans screenshot, after-timeout confirmation |
 | fan restore Auto | any controllable fan backend | Return to Auto returns control to firmware/backend automatic mode | `fans`, Fans screenshot before/after |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 
@@ -188,11 +184,11 @@ Include these fields in each machine record when fan testing is relevant:
 - fan count detected
 - labels detected
 - RPM reading works
-- manual percent works
-- RPM target works
+- manual percent status (currently deliberately unsupported)
+- RPM target status (currently deliberately unsupported)
 - fan curve works
-- sync mode works
-- boost mode works
+- sync status (currently modeled but non-operational)
+- boost status (currently deliberately unsupported)
 - restore Auto works
 - backend used
 - notes/warnings

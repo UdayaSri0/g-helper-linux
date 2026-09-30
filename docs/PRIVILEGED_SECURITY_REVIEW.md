@@ -1,8 +1,8 @@
 # Privileged Architecture Security Review
 
-This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura lighting, and
-battery privilege migration. It is a source and packaging audit, not a claim of hardware
-certification. No UI or session-daemon process runs as root.
+This review covers commit `0145a261dcbfe57bea452c3256d3b8caef49ff0b` (v0.3.1 baseline) after
+the CPU, fan, keyboard/Aura lighting, and battery privilege migration. It is a source and packaging
+audit, not a claim of hardware certification. No UI or session-daemon process runs as root.
 
 ## 1. Trust boundary
 
@@ -27,7 +27,8 @@ system bus ── peer credentials ──> rog-helper-privileged
                          re-discover + validate fixed kernel ABI
                                       |
                                       v
-                   approved CPU / ASUS fan / ASUS LED / battery sysfs
+             approved CPU / ASUS fan / ASUS LED / battery sysfs
+                  or root-only `/dev/rog-helper-aura`
 ```
 
 The UI and daemon are untrusted with respect to root. The system bus supplies the helper's direct
@@ -54,7 +55,7 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
-| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
+| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
 | `SetBatteryChargeLimit` | percentage | `battery.control` | One exact standard battery threshold |
 
 There is no generic filesystem-write, process-execution, GPU, PCI, kernel-module, ACPI, USB, HID,
@@ -66,7 +67,7 @@ environment, or arbitrary-byte privileged method.
 |---|---|---|
 | `io.github.roghelper.cpu.control` | all CPU writes | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.fans.control` | ASUS fan curve/Auto writes | any: no; inactive/active: `auth_admin` |
-| `io.github.roghelper.lighting.control` | keyboard brightness fallback | any: no; inactive/active: `auth_admin` |
+| `io.github.roghelper.lighting.control` | keyboard brightness fallback and allow-listed native Aura effect | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.battery.control` | standard threshold fallback | any: no; inactive/active: `auth_admin` |
 
 Actions are separate by category and are fixed in each write method. `auth_admin_keep` is not used,
@@ -111,7 +112,9 @@ No external command is executed by `rog-helper-privileged`.
 - Battery limits use the shared `20..=100` contract. Multiple devices (including one hot-plugged
   after discovery), non-batteries, unexpected types, final symlinks, canonical escapes,
   disappearing endpoints, and failed readback are rejected.
-- CPU, fan, lighting, and battery writes require readback before success is returned.
+- Supported CPU, fan, keyboard-brightness, and battery sysfs writes require readback before success
+  is returned. Native Aura HID has no state readback and reports accepted-without-readback; physical
+  LED observation is required for hardware validation.
 - Parameters are validated before PolicyKit where possible and are validated again at write time.
 
 Sysfs class directories legitimately contain kernel-owned ancestor symlinks. Those are allowed only
@@ -249,5 +252,5 @@ in this source review.
 
 ## 12. Change accounting
 
-Use `git diff --stat` from the reviewed `Dev` worktree. Generated `graphify-out` changes should be
+Use `git diff --stat` from the reviewed v0.3.1 baseline worktree. Generated `graphify-out` changes should be
 reported separately from product and packaging changes.

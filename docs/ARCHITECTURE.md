@@ -314,7 +314,8 @@ wire format. See [DBUS_API.md](DBUS_API.md) for the public API and
 The current architecture has several known limitations:
 
 - Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
-- Fan curve support is modeled but not implemented end-to-end
+- ASUS WMI eight-point fan curves are implemented end-to-end in code for the exact verified ABI,
+  but physical apply/recovery validation and persistent editable curves remain outstanding
 - Aura/RGB lighting supports one exact asusd contract and one exact native G615JMR target contract;
   broader hardware coverage and physical target validation remain outstanding
 - The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules

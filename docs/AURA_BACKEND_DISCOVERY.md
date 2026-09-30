@@ -5,7 +5,7 @@ Target: ASUS ROG Strix G16 `G615JMR_G615JMR`
 
 ## Result
 
-ROG Helper now contains two narrow, verified Aura adapters:
+ROG Helper now contains two narrow, contract-verified and fixture-tested Aura adapters:
 
 1. the current `xyz.ljones.Asusd` Aura DBus ABI used by asusd 6.3.8 through 6.4.0;
 2. a native HID adapter for the exact G615JMR target identity recorded below. The matcher uses the
