@@ -36,6 +36,7 @@ Implication:
 | Modes encoded | Static, Breathe, Rainbow Cycle, Rainbow Wave, Pulse |
 | Backend priority | verified asusd -> verified native HID -> sysfs brightness -> unavailable |
 | Readback | No reliable hardware effect-state readback; accepted writes are not physical confirmation |
+| Validation record | None committed; diagnostics reports `Physical target validation recorded: no` |
 | Physical Apply observed | **No** |
 
 The 2026-08-21 installed-target audit verified the physical identity and descriptor again, but the
@@ -45,6 +46,12 @@ Current source requires helper API v2 and validates the complete packaged payloa
 
 This record describes the implementation allow-list and existing read-only discovery evidence. It
 does not satisfy the validation requirements below and must not be advertised as working hardware.
+
+The developer-only `lighting-test --safe-sequence` command provides a fixed, supervised checklist.
+Its default invocation is preflight-only and performs no write. Even with the exact confirmation flag,
+PolicyKit success or `accepted_no_readback` is not a validation result: a human must record each Static
+colour, Breathe pair, Rainbow Cycle, four Rainbow Wave directions, Pulse, and final Static restore as
+`observed`, `not observed`, or `uncertain`. Only a dated committed record may change this table.
 
 ## Untested / Not Yet Validated
 

@@ -461,6 +461,28 @@ cat /sys/class/leds/asus::kbd_backlight/brightness
 cat /sys/class/leds/asus::kbd_backlight/max_brightness
 ```
 
+For the exact G615JMR target, first run the supervised sequence as a write-free preflight:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence
+```
+
+It prints the planned effects and `NO HARDWARE WRITE PERFORMED`. Only while physically supervising
+the keyboard, and only after every readiness field passes, use the explicit confirmation:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence --confirm-g615jmr-physical-write
+```
+
+The command refuses descriptor/interface/driver/DMI mismatch, zero or multiple verified candidates,
+active asusd ownership, helper/API mismatch, a missing lighting category or PolicyKit service, and a
+missing/mismatched `/dev/rog-helper-aura` alias. Do not bypass a refusal by changing hidraw permissions,
+stopping ownership checks, or sending raw reports. `accepted_no_readback` means only that the typed
+request returned successfully; record visible behavior separately. If interrupted, verify the final
+Static state—the command attempts a neutral Static-white restore but cannot read back physical state.
+Copy `lighting-diagnostics` plus the human checklist into an issue; it contains no USB serial or raw
+physical sysfs path.
+
 Expected behavior:
 
 - `has_aura: true` only when an exact verified asusd or native Aura/RGB provider is selected

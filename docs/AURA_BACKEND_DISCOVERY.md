@@ -73,6 +73,37 @@ HEAD [`1c456fa3`](https://gitlab.com/asus-linux/asusctl/-/commit/1c456fa3)
 independently implemented compatible encoder and DBus adapter; it does not copy upstream source or
 add a heavy runtime dependency. The captured asusd 6.3.8 ABI fixture records only interface shape.
 
+The Prompt 02 comparison was repeated against asusctl commit
+[`28b456de`](https://github.com/OpenGamingCollective/asusctl/commit/28b456dec2969e293e0d8eae7a8face629ec4be2)
+(`rog-aura/src/builtin_modes.rs`, `rog-aura/src/usb.rs`, `asusd/src/aura_laptop/mod.rs`, and
+`rog-aura/data/aura_support.ron`). Windows G-Helper was consulted only as a GPL-3.0 behavioral
+reference at commit
+[`54c5bd00`](https://github.com/seerge/g-helper/commit/54c5bd00da82e20a0361228e5758f692b3b9560b)
+(`app/USB/Aura.cs` and `app/USB/AsusHid.cs`); no code was copied or translated. Public G615JMR
+identity and Static-sequence observations are recorded in
+[G-Helper discussion #4513](https://github.com/seerge/g-helper/discussions/4513).
+
+### Built-in effect packet comparison
+
+The fixed effect report is 64 bytes. The meaningful prefix and zero padding are:
+
+| Offset | Meaning | Local encoding | Independent evidence / decision |
+| ---: | --- | --- | --- |
+| 0 | report ID | `5d` | asusctl, G-Helper, and target logs agree |
+| 1 | effect command | `b3` | all sources agree |
+| 2 | zone | `00` | whole target only; no zones are exposed locally |
+| 3 | mode | Static `00`, Breathe `01`, Cycle `02`, Wave `03`, Pulse `0a` | asusctl independently agrees |
+| 4..6 | primary RGB | requested RGB or zero when the mode has no colour | independently agreed field layout |
+| 7 | speed | Slow `e1`, Medium `eb`, Fast `f5` | asusctl independently agrees |
+| 8 | direction | Right `00`, Left `01`, Up `02`, Down `03` | only exposed for Rainbow Wave; physical target behavior remains unvalidated |
+| 9 | effect/random/control flag | `00` | asusctl fixes this byte at zero. G-Helper uses other values in some cases, but that GPL-only observation has no independent G615JMR evidence, so bytes were not changed |
+| 10..12 | secondary RGB | requested only for Breathe; otherwise zero | independently agreed field layout |
+| 13..63 | reserved/padding | zero | asusd pads to the descriptor-sized 64-byte report |
+
+The following reports remain `5d b5` plus zeros (SET), then `5d b4` plus zeros (APPLY). All three
+implementations use EFFECT -> SET -> APPLY. No packet byte changed during this review. In particular,
+the byte-9 investigation is documented uncertainty rather than a reason to adopt GPL-derived behavior.
+
 ## Implemented safety boundary
 
 The DBus provider uses `org.freedesktop.DBus.ObjectManager` at `/`, accepts only service
@@ -106,6 +137,13 @@ installed/reachable/compatible, PolicyKit availability, lighting category availa
 write-path readiness. `not_checked` authorization is an editable state; it is not read-only and
 does not authenticate until Apply.
 
+`rog-helper lighting-diagnostics` performs these checks without a hardware write. Its copy-friendly
+report includes DMI, redacted canonical USB/interface identity and hashed physical identity,
+descriptor length/hash, report shape, every candidate rejection reason, asusd ownership and verified
+ABI (and explicitly states when its version is not exposed), selected backend, helper API version and
+compatibility, PolicyKit/lighting-category availability, alias identity, consolidated write readiness,
+and the physical-validation-record flag.
+
 ## Provider hierarchy
 
 Selection is:
@@ -129,6 +167,28 @@ the supported speed/direction combinations, secondary colour for Breathe, Policy
 success, duplicate suppression, asusd conflict suppression, helper absence, and failure behavior.
 Because the HID protocol has no reliable effect-state readback, observation of the physical LEDs is
 required; `accepted_no_readback` is not proof of a lighting change.
+
+The supervised developer flow is dry-run by default:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence
+```
+
+After reviewing the exact identity, ownership, helper, alias, and PolicyKit preflight, a human may
+explicitly run the fixed sequence with:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence --confirm-g615jmr-physical-write
+```
+
+It refuses identity ambiguity/mismatch, active ASUS-daemon ownership, helper/API/category failure,
+missing PolicyKit, or alias mismatch. It sends only high-level `SetLighting` requests through the
+session daemon, waits between effects, labels every successful call `accepted_no_readback`, prints a
+human observation checklist, and attempts a neutral Static-white restore even after an intermediate
+failure. Native state has no readback, so restoring a prior unknown physical state cannot be promised.
+The command never edits this support record. A committed validation record must include date, kernel,
+BIOS, package and commit, identity hashes, each requested effect/direction, transport acceptance,
+human observation, and final restore observation.
 
 For a different ASUS device or asusd contract, first collect read-only evidence:
 

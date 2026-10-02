@@ -1017,25 +1017,50 @@ impl RogHelperDaemon {
                     .map(LightingMode::from_backend_label)
                     .or_else(|| previous.as_ref().map(|request| request.mode.clone()))
                     .unwrap_or(LightingMode::Static);
+                let caps = g615jm_lighting_caps();
+                let supports = |modes: &[LightingMode]| {
+                    modes
+                        .iter()
+                        .any(|candidate| candidate.same_user_mode(&requested_mode))
+                };
                 let request = LightingApplyRequest {
-                    mode: requested_mode,
-                    primary_rgb: rgb
-                        .or_else(|| previous.as_ref().and_then(|request| request.primary_rgb)),
-                    secondary_rgb: secondary_rgb
-                        .or_else(|| previous.as_ref().and_then(|request| request.secondary_rgb)),
+                    primary_rgb: supports(&caps.modes_requiring_primary_rgb)
+                        .then(|| {
+                            rgb.or_else(|| {
+                                previous.as_ref().and_then(|request| request.primary_rgb)
+                            })
+                        })
+                        .flatten(),
+                    secondary_rgb: supports(&caps.modes_supporting_secondary_rgb)
+                        .then(|| {
+                            secondary_rgb.or_else(|| {
+                                previous.as_ref().and_then(|request| request.secondary_rgb)
+                            })
+                        })
+                        .flatten(),
                     brightness: None,
-                    speed: speed
-                        .or_else(|| previous.as_ref().and_then(|request| request.speed.clone())),
-                    direction: direction.or_else(|| {
-                        previous
-                            .as_ref()
-                            .and_then(|request| request.direction.clone())
-                    }),
+                    speed: supports(&caps.modes_supporting_speed)
+                        .then(|| {
+                            speed.or_else(|| {
+                                previous.as_ref().and_then(|request| request.speed.clone())
+                            })
+                        })
+                        .flatten(),
+                    direction: supports(&caps.modes_supporting_direction)
+                        .then(|| {
+                            direction.or_else(|| {
+                                previous
+                                    .as_ref()
+                                    .and_then(|request| request.direction.clone())
+                            })
+                        })
+                        .flatten(),
                     zone: None,
                     apply_to_all: false,
+                    mode: requested_mode,
                 };
                 request
-                    .validate_against(&g615jm_lighting_caps())
+                    .validate_against(&caps)
                     .map_err(map_rog_error_to_fdo)?;
                 let applied = match privileged_client::set_aura_effect(&request).await {
                     Ok(applied) => applied,
@@ -1370,10 +1395,12 @@ async fn main() -> anyhow::Result<()> {
             }
         };
     let native_aura_hid = scan_native_aura_hid();
-    let native_aura_supported = native_aura_hid
+    let native_aura_identity_supported = native_aura_hid
         .devices
         .iter()
         .any(|device| device.protocol.is_some());
+    let native_aura_supported =
+        native_aura_identity_supported && !aura_probe_diagnostics.service_detected;
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
         Ok(v) => (v, None),
         Err(e) => {
@@ -1480,8 +1507,8 @@ async fn main() -> anyhow::Result<()> {
     native_aura_hid.populate_diagnostics(&mut startup_lighting_diagnostics);
     apply_native_hid_diagnostics_selection(
         &mut startup_lighting_diagnostics,
-        aura.is_some(),
-        native_aura_supported,
+        aura_probe_diagnostics.service_detected,
+        native_aura_identity_supported,
     );
     caps.notes.push(startup_lighting_diagnostics.summary_line());
     if let Some(warning) = &startup_lighting_diagnostics.permission_warning {
@@ -4545,19 +4572,21 @@ impl RogHelperDaemon {
         self.native_aura_hid.populate_diagnostics(&mut diagnostics);
         apply_native_hid_diagnostics_selection(
             &mut diagnostics,
-            self.aura.is_some(),
-            self.native_aura_hid_supported(),
+            self.aura_probe_diagnostics.service_detected,
+            self.native_aura_hid_identity_supported(),
         );
         diagnostics
     }
 
     fn native_aura_hid_supported(&self) -> bool {
-        self.aura.is_none()
-            && self
-                .native_aura_hid
-                .devices
-                .iter()
-                .any(|device| device.protocol.is_some())
+        !self.aura_probe_diagnostics.service_detected && self.native_aura_hid_identity_supported()
+    }
+
+    fn native_aura_hid_identity_supported(&self) -> bool {
+        self.native_aura_hid
+            .devices
+            .iter()
+            .any(|device| device.protocol.is_some())
     }
 
     fn native_hid_lighting_state(&self) -> LightingState {

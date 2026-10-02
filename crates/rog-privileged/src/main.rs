@@ -54,6 +54,35 @@ struct NativeAuraControlState {
     last_attempt: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuraWriteDecision {
+    Duplicate,
+    RateLimited,
+    Proceed,
+}
+
+impl NativeAuraControlState {
+    fn decide(
+        &self,
+        request: &LightingApplyRequest,
+        generation: (u64, u64),
+        now: Instant,
+    ) -> AuraWriteDecision {
+        if self.last_request.as_ref() == Some(request)
+            && self.last_device_generation == Some(generation)
+        {
+            return AuraWriteDecision::Duplicate;
+        }
+        if self
+            .last_attempt
+            .is_some_and(|attempt| now.saturating_duration_since(attempt) < AURA_MIN_WRITE_INTERVAL)
+        {
+            return AuraWriteDecision::RateLimited;
+        }
+        AuraWriteDecision::Proceed
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PrivilegedService {
     last_activity: Arc<Mutex<Instant>>,
@@ -365,21 +394,18 @@ impl PrivilegedService {
         reject_if_asusd_owned(connection).await?;
         let (file, generation) = open_and_validate_aura_device().map_err(map_lighting_error)?;
 
-        if state.last_request.as_ref() == Some(&request)
-            && state.last_device_generation == Some(generation)
-        {
-            return Ok(false);
+        let now = Instant::now();
+        match state.decide(&request, generation, now) {
+            AuraWriteDecision::Duplicate => return Ok(false),
+            AuraWriteDecision::RateLimited => {
+                return Err(map_lighting_error(RogError::TemporarilyUnavailable(
+                    "Aura lighting requests are limited to one distinct update every 250 ms"
+                        .to_string(),
+                )))
+            }
+            AuraWriteDecision::Proceed => {}
         }
-        if state
-            .last_attempt
-            .is_some_and(|attempt| attempt.elapsed() < AURA_MIN_WRITE_INTERVAL)
-        {
-            return Err(map_lighting_error(RogError::TemporarilyUnavailable(
-                "Aura lighting requests are limited to one distinct update every 250 ms"
-                    .to_string(),
-            )));
-        }
-        state.last_attempt = Some(Instant::now());
+        state.last_attempt = Some(now);
 
         let operation_started = Instant::now();
         for report in reports.ordered() {
@@ -774,12 +800,7 @@ fn require_single_supported_aura_device() -> rog_core::RogResult<()> {
         .iter()
         .filter(|device| device.protocol.is_some())
         .collect::<Vec<_>>();
-    if supported.len() != 1 {
-        return Err(RogError::NotSupported(format!(
-            "native Aura requires exactly one verified G615JM HID interface; found {}",
-            supported.len()
-        )));
-    }
+    validate_supported_aura_count(supported.len())?;
     if supported[0].diagnostics.driver.as_deref() != Some("asus") {
         return Err(RogError::NotSupported(
             "the verified Aura HID interface is not bound to the expected ASUS HID driver"
@@ -787,6 +808,16 @@ fn require_single_supported_aura_device() -> rog_core::RogResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_supported_aura_count(count: usize) -> rog_core::RogResult<()> {
+    if count == 1 {
+        Ok(())
+    } else {
+        Err(RogError::NotSupported(format!(
+            "native Aura requires exactly one verified G615JM HID interface; found {count}"
+        )))
+    }
 }
 
 #[repr(C)]
@@ -1263,6 +1294,50 @@ mod tests {
                 "direction {direction:?} must not reach packet encoding"
             );
         }
+    }
+
+    #[test]
+    fn native_aura_requires_exactly_one_supported_target() {
+        assert!(validate_supported_aura_count(0).is_err());
+        assert!(validate_supported_aura_count(1).is_ok());
+        assert!(validate_supported_aura_count(2).is_err());
+    }
+
+    #[test]
+    fn native_aura_duplicate_and_rate_limit_decisions_are_deterministic() {
+        let request = parse_native_aura_request("static", "#FFFFFF", "", "", "")
+            .expect("valid static request");
+        let other = parse_native_aura_request("static", "#FF0000", "", "", "")
+            .expect("valid static request");
+        let start = Instant::now();
+        let mut state = NativeAuraControlState {
+            last_request: Some(request.clone()),
+            last_device_generation: Some((1, 2)),
+            last_attempt: Some(start),
+        };
+
+        assert_eq!(
+            state.decide(&request, (1, 2), start + Duration::from_millis(1)),
+            AuraWriteDecision::Duplicate
+        );
+        assert_eq!(
+            state.decide(&request, (3, 4), start + Duration::from_millis(1)),
+            AuraWriteDecision::RateLimited
+        );
+        assert_eq!(
+            state.decide(&other, (1, 2), start + Duration::from_millis(249)),
+            AuraWriteDecision::RateLimited
+        );
+        assert_eq!(
+            state.decide(&other, (1, 2), start + Duration::from_millis(250)),
+            AuraWriteDecision::Proceed
+        );
+
+        state.last_attempt = None;
+        assert_eq!(
+            state.decide(&request, (9, 9), start),
+            AuraWriteDecision::Proceed
+        );
     }
 
     #[cfg(unix)]

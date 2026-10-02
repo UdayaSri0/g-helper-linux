@@ -1195,6 +1195,8 @@ pub struct LightingState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LightingHidDeviceDiagnostics {
     pub hidraw_name: String,
+    #[serde(default)]
+    pub canonical_device_identity: Option<String>,
     pub vendor_id: Option<String>,
     pub product_id: Option<String>,
     pub interface_number: Option<String>,
@@ -1202,6 +1204,8 @@ pub struct LightingHidDeviceDiagnostics {
     pub product_name: Option<String>,
     pub driver: Option<String>,
     pub report_descriptor_sha256: Option<String>,
+    #[serde(default)]
+    pub report_descriptor_bytes: Option<u32>,
     pub output_report_payload_bytes: Option<u32>,
     pub output_report_total_bytes: Option<u32>,
     pub device_node_mode: Option<u32>,
@@ -1284,6 +1288,10 @@ pub struct LightingDiagnostics {
     pub asusd_zone_methods_detected: Vec<String>,
     pub asusd_zone_properties_detected: Vec<String>,
     pub asusd_verified_aura_interface: bool,
+    #[serde(default)]
+    pub asusd_version: Option<String>,
+    #[serde(default)]
+    pub asusd_abi: Option<String>,
 
     #[serde(default)]
     pub native_aura_hid_detected: bool,
@@ -1293,6 +1301,25 @@ pub struct LightingDiagnostics {
     pub dmi_board_name: Option<String>,
     #[serde(default)]
     pub native_aura_hid_devices: Vec<LightingHidDeviceDiagnostics>,
+
+    #[serde(default)]
+    pub helper_api_version: Option<u32>,
+    #[serde(default)]
+    pub helper_expected_api_version: Option<u32>,
+    #[serde(default)]
+    pub helper_compatible: bool,
+    #[serde(default)]
+    pub helper_lighting_category_available: bool,
+    #[serde(default)]
+    pub polkit_available: bool,
+    #[serde(default)]
+    pub aura_alias_present: bool,
+    #[serde(default)]
+    pub aura_alias_matches_selected_device: bool,
+    #[serde(default)]
+    pub native_write_readiness: String,
+    #[serde(default)]
+    pub physical_validation_recorded: bool,
 
     pub active_backend: String,
     pub fallback_reason: Option<String>,
@@ -1354,10 +1381,21 @@ impl LightingDiagnostics {
             asusd_zone_methods_detected: Vec::new(),
             asusd_zone_properties_detected: Vec::new(),
             asusd_verified_aura_interface: false,
+            asusd_version: None,
+            asusd_abi: None,
             native_aura_hid_detected: false,
             native_aura_hid_supported: false,
             dmi_board_name: None,
             native_aura_hid_devices: Vec::new(),
+            helper_api_version: None,
+            helper_expected_api_version: None,
+            helper_compatible: false,
+            helper_lighting_category_available: false,
+            polkit_available: false,
+            aura_alias_present: false,
+            aura_alias_matches_selected_device: false,
+            native_write_readiness: "not_evaluated".to_string(),
+            physical_validation_recorded: false,
             active_backend: "none".to_string(),
             fallback_reason: None,
             unavailable_reason: None,
@@ -1625,6 +1663,14 @@ impl LightingDiagnostics {
             "- Verified Aura contract: {}",
             yes_no(self.asusd_verified_aura_interface)
         ));
+        lines.push(format!(
+            "- asusd version: {}",
+            opt_text(self.asusd_version.as_deref())
+        ));
+        lines.push(format!(
+            "- asusd ABI: {}",
+            opt_text(self.asusd_abi.as_deref())
+        ));
         lines.push(format!("- Probe errors: {}", list_text(&self.probe_errors)));
 
         lines.push(String::new());
@@ -1641,11 +1687,27 @@ impl LightingDiagnostics {
             "- Verified native protocol: {}",
             yes_no(self.native_aura_hid_supported)
         ));
+        lines.push(format!(
+            "- ASUS HID candidates: {} (verified: {})",
+            self.native_aura_hid_devices.len(),
+            self.native_aura_hid_devices
+                .iter()
+                .filter(|device| device.supported)
+                .count()
+        ));
         if self.native_aura_hid_devices.is_empty() {
             lines.push("- Devices: none".to_string());
         } else {
             for device in &self.native_aura_hid_devices {
                 lines.push(format!("- Device: {}", device.hidraw_name));
+                lines.push(format!(
+                    "  Canonical identity: {}",
+                    opt_text(device.canonical_device_identity.as_deref())
+                ));
+                lines.push(format!(
+                    "  Physical identity SHA-256: {}",
+                    opt_text(device.physical_path_sha256.as_deref())
+                ));
                 lines.push(format!(
                     "  Product: {} / {}",
                     opt_text(device.manufacturer.as_deref()),
@@ -1670,6 +1732,10 @@ impl LightingDiagnostics {
                     opt_text(device.report_descriptor_sha256.as_deref())
                 ));
                 lines.push(format!(
+                    "  Descriptor length: {} bytes",
+                    opt_u32(device.report_descriptor_bytes)
+                ));
+                lines.push(format!(
                     "  Output report: payload={} total={}",
                     opt_u32(device.output_report_payload_bytes),
                     opt_u32(device.output_report_total_bytes)
@@ -1691,6 +1757,42 @@ impl LightingDiagnostics {
                 }
             }
         }
+
+        lines.push(String::new());
+        lines.push("Native Aura Write Readiness (read-only checks):".to_string());
+        lines.push(format!(
+            "- Helper API: detected={}, expected={}",
+            opt_u32(self.helper_api_version),
+            opt_u32(self.helper_expected_api_version)
+        ));
+        lines.push(format!(
+            "- Helper compatible: {}",
+            yes_no(self.helper_compatible)
+        ));
+        lines.push(format!(
+            "- PolicyKit available: {}",
+            yes_no(self.polkit_available)
+        ));
+        lines.push(format!(
+            "- Lighting category available: {}",
+            yes_no(self.helper_lighting_category_available)
+        ));
+        lines.push(format!(
+            "- /dev/rog-helper-aura present: {}",
+            yes_no(self.aura_alias_present)
+        ));
+        lines.push(format!(
+            "- Alias matches verified device: {}",
+            yes_no(self.aura_alias_matches_selected_device)
+        ));
+        lines.push(format!(
+            "- Write readiness: {}",
+            self.native_write_readiness
+        ));
+        lines.push(format!(
+            "- Physical target validation recorded: {}",
+            yes_no(self.physical_validation_recorded)
+        ));
 
         lines.push(String::new());
         lines.push("Decision:".to_string());
@@ -3336,6 +3438,58 @@ status = "available"
         let report = diagnostics.to_report_text();
         assert!(report.contains("Potential Aura interfaces"));
         assert!(report.contains("does not yet implement this interface"));
+    }
+
+    #[test]
+    fn lighting_diagnostics_reports_redacted_native_identity_and_readiness() {
+        let mut diagnostics = LightingDiagnostics::unknown();
+        diagnostics.dmi_board_name = Some("G615JMR_G615JMR".to_string());
+        diagnostics.native_aura_hid_detected = true;
+        diagnostics.native_aura_hid_supported = true;
+        diagnostics.native_aura_hid_devices = vec![
+            LightingHidDeviceDiagnostics {
+                hidraw_name: "hidraw7".to_string(),
+                canonical_device_identity: Some("usb:0b05:19b6:if00".to_string()),
+                vendor_id: Some("0b05".to_string()),
+                product_id: Some("19b6".to_string()),
+                interface_number: Some("00".to_string()),
+                driver: Some("asus".to_string()),
+                report_descriptor_sha256: Some("ab".repeat(32)),
+                report_descriptor_bytes: Some(184),
+                output_report_payload_bytes: Some(63),
+                output_report_total_bytes: Some(64),
+                physical_path_sha256: Some("cd".repeat(32)),
+                protocol_family: Some("asus-g615jm-laptop-aura-64".to_string()),
+                supported: true,
+                ..LightingHidDeviceDiagnostics::default()
+            },
+            LightingHidDeviceDiagnostics {
+                hidraw_name: "hidraw8".to_string(),
+                canonical_device_identity: Some("usb:0b05:19b6:if01".to_string()),
+                rejection_reasons: vec![
+                    "USB interface 01 is not the verified interface 00".to_string()
+                ],
+                ..LightingHidDeviceDiagnostics::default()
+            },
+        ];
+        diagnostics.helper_api_version = Some(2);
+        diagnostics.helper_expected_api_version = Some(2);
+        diagnostics.helper_compatible = true;
+        diagnostics.helper_lighting_category_available = true;
+        diagnostics.polkit_available = true;
+        diagnostics.aura_alias_present = true;
+        diagnostics.aura_alias_matches_selected_device = true;
+        diagnostics.native_write_readiness = "ready_for_supervised_write".to_string();
+
+        let report = diagnostics.to_report_text();
+        assert!(report.contains("usb:0b05:19b6:if00"));
+        assert!(report.contains("Descriptor length: 184 bytes"));
+        assert!(report.contains("Helper API: detected=2, expected=2"));
+        assert!(report.contains("Write readiness: ready_for_supervised_write"));
+        assert!(report.contains("Physical target validation recorded: no"));
+        assert!(report.contains("ASUS HID candidates: 2 (verified: 1)"));
+        assert!(report.contains("Rejected because: USB interface 01"));
+        assert!(!report.contains("/sys/devices/"));
     }
 
     #[test]

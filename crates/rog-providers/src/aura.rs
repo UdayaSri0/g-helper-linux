@@ -40,6 +40,14 @@ pub enum AsusdAuraContract {
     V6_3_8ToV6_4_0,
 }
 
+impl AsusdAuraContract {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::V6_3_8ToV6_4_0 => "xyz.ljones.Aura ABI verified for asusd 6.3.8-6.4.0",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsusdAuraSpeed {
     Low,

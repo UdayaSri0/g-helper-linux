@@ -7,11 +7,14 @@ use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
     dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
-    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed,
+    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed, PRIVILEGED_API_VERSION,
+    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
-use rog_providers::aura_hid::{g615jm_lighting_caps, scan_native_aura_hid};
+use rog_providers::aura_hid::{
+    g615jm_lighting_caps, scan_native_aura_hid, G615JM_PHYSICAL_VALIDATION_RECORDED,
+};
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
@@ -80,6 +83,15 @@ enum Cmd {
     Lighting,
     /// Print keyboard lighting and RGB/Aura diagnostics only.
     LightingDiagnostics,
+    /// Supervised, exact-target Aura physical-validation preparation/sequence.
+    LightingTest {
+        /// Print and, only with the exact confirmation flag, run the fixed safe sequence.
+        #[arg(long)]
+        safe_sequence: bool,
+        /// Confirm a supervised physical write to the exact G615JMR target.
+        #[arg(long)]
+        confirm_g615jmr_physical_write: bool,
+    },
     /// Print a read-only Markdown record for hardware validation.
     HardwareReport,
     /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
@@ -124,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Fans => cmd_fans().await?,
         Cmd::FanCaps => cmd_fan_caps().await?,
         Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
+        Cmd::LightingTest {
+            safe_sequence,
+            confirm_g615jmr_physical_write,
+        } => cmd_lighting_test(safe_sequence, confirm_g615jmr_physical_write).await?,
         Cmd::HardwareReport => cmd_hardware_report().await?,
         Cmd::PrivilegedStatus => cmd_privileged_status().await?,
     }
@@ -1306,6 +1322,234 @@ async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SafeAuraStep {
+    label: &'static str,
+    mode: &'static str,
+    primary: Option<&'static str>,
+    secondary: Option<&'static str>,
+    speed: Option<&'static str>,
+    direction: Option<&'static str>,
+}
+
+fn safe_aura_sequence() -> Vec<SafeAuraStep> {
+    vec![
+        SafeAuraStep {
+            label: "Static red",
+            mode: "static",
+            primary: Some("#FF0000"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static green",
+            mode: "static",
+            primary: Some("#00FF00"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static blue",
+            mode: "static",
+            primary: Some("#0000FF"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static white",
+            mode: "static",
+            primary: Some("#FFFFFF"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Breathe red + blue",
+            mode: "breathe",
+            primary: Some("#FF0000"),
+            secondary: Some("#0000FF"),
+            speed: Some("medium"),
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Rainbow Cycle",
+            mode: "rainbow-cycle",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave right",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("right"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave left",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("left"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave up",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("up"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave down",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("down"),
+        },
+        SafeAuraStep {
+            label: "Pulse white",
+            mode: "pulse",
+            primary: Some("#FFFFFF"),
+            secondary: None,
+            speed: Some("medium"),
+            direction: None,
+        },
+    ]
+}
+
+fn safe_restore_step() -> SafeAuraStep {
+    SafeAuraStep {
+        label: "Restore neutral Static white",
+        mode: "static",
+        primary: Some("#FFFFFF"),
+        secondary: None,
+        speed: None,
+        direction: None,
+    }
+}
+
+fn safe_step_to_dbus(step: &SafeAuraStep) -> HashMap<String, zbus::zvariant::OwnedValue> {
+    use zbus::zvariant::{OwnedValue, Value};
+
+    fn owned(value: &'static str) -> OwnedValue {
+        OwnedValue::try_from(Value::from(value)).expect("static string converts to OwnedValue")
+    }
+
+    let mut request = HashMap::new();
+    request.insert("mode".to_string(), owned(step.mode));
+    if let Some(value) = step.primary {
+        request.insert("rgb_hex".to_string(), owned(value));
+    }
+    if let Some(value) = step.secondary {
+        request.insert("secondary_rgb_hex".to_string(), owned(value));
+    }
+    if let Some(value) = step.speed {
+        request.insert("speed".to_string(), owned(value));
+    }
+    if let Some(value) = step.direction {
+        request.insert("direction".to_string(), owned(value));
+    }
+    request
+}
+
+async fn cmd_lighting_test(safe_sequence: bool, confirmed: bool) -> anyhow::Result<()> {
+    use anyhow::bail;
+    use std::time::Duration;
+    use zbus::Proxy;
+
+    if !safe_sequence {
+        bail!("lighting-test requires --safe-sequence; no hardware write was performed");
+    }
+
+    let probe = probe_lighting_diagnostics().await;
+    println!("{}", probe.diagnostics.to_report_text());
+    println!();
+    println!("Supervised G615JMR sequence plan");
+    println!("================================");
+    for (index, step) in safe_aura_sequence().iter().enumerate() {
+        println!("{}. {}", index + 1, step.label);
+    }
+    println!("12. {}", safe_restore_step().label);
+    println!();
+    println!("Each accepted request has no hardware readback. A human must observe and record every result.");
+
+    if !confirmed {
+        println!("NO HARDWARE WRITE PERFORMED.");
+        println!("After reviewing the identity and readiness above, rerun with --confirm-g615jmr-physical-write while supervising the keyboard.");
+        return Ok(());
+    }
+    if probe.diagnostics.selected_backend_kind != LightingBackendKind::NativeAuraHid
+        || probe.diagnostics.native_write_readiness != "ready_for_supervised_write"
+    {
+        bail!(
+            "refusing physical validation: selected backend is '{}' and native readiness is '{}'; no hardware write was performed",
+            probe.diagnostics.active_backend,
+            probe.diagnostics.native_write_readiness
+        );
+    }
+
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to the session D-Bus")?;
+    let proxy = Proxy::new(
+        &connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    .context("connect to rog-helperd")?;
+
+    let steps = safe_aura_sequence();
+    let mut failure = None;
+    for step in &steps {
+        println!("Requesting {}...", step.label);
+        let result: zbus::Result<()> = proxy.call("SetLighting", &(safe_step_to_dbus(step),)).await;
+        match result {
+            Ok(()) => {
+                println!("  accepted_no_readback — record observed / not observed / uncertain")
+            }
+            Err(error) => {
+                failure = Some(anyhow::anyhow!("{} failed: {error}", step.label));
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    println!("Restoring neutral Static white...");
+    let restore = safe_restore_step();
+    let restore_result: zbus::Result<()> = proxy
+        .call("SetLighting", &(safe_step_to_dbus(&restore),))
+        .await;
+    match &restore_result {
+        Ok(()) => println!("  restore accepted_no_readback — confirm the visible Static state"),
+        Err(error) => eprintln!("  restore failed: {error}"),
+    }
+
+    println!();
+    println!("Human checklist (copy into the validation record):");
+    for step in &steps {
+        println!("- {}: observed / not observed / uncertain", step.label);
+    }
+    println!("- {}: observed / not observed / uncertain", restore.label);
+    println!("This command does not mark the target physically validated.");
+
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    restore_result.context("neutral Static restore was not accepted")?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct LightingProbe {
     kbd_backlight: Option<KbdBacklightSysfs>,
@@ -1367,7 +1611,7 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         .devices
         .iter()
         .any(|device| device.protocol.is_some());
-    if aura.is_none() && native_supported {
+    if !aura_probe.service_detected && native_supported {
         let caps = g615jm_lighting_caps();
         diagnostics.selected_backend_kind = LightingBackendKind::NativeAuraHid;
         diagnostics.capabilities = caps.clone();
@@ -1393,12 +1637,14 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         );
         diagnostics.unavailable_reason = None;
         diagnostics.recommended_action = None;
-    } else if aura.is_some() && native_supported {
+    } else if aura_probe.service_detected && native_supported {
         diagnostics.probe_errors.push(
-            "Verified native Aura HID was suppressed because asusd owns the preferred Aura backend."
+            "Verified native Aura HID was suppressed because an ASUS daemon owns a protected DBus name."
                 .to_string(),
         );
     }
+
+    enrich_native_aura_readiness(&mut diagnostics).await;
 
     LightingProbe {
         kbd_backlight,
@@ -1408,6 +1654,117 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         aura_probe_error,
         aura_notes,
         diagnostics,
+    }
+}
+
+async fn enrich_native_aura_readiness(diagnostics: &mut LightingDiagnostics) {
+    use dbus_keys::privileged_status as keys;
+
+    let install = probe_privileged_installation(Path::new("/"), Path::new("/dev"));
+    let (status, helper_api_version) = probe_lighting_helper_status().await;
+    let categories = status
+        .get(keys::CATEGORIES_AVAILABLE)
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
+    let supported_count = diagnostics
+        .native_aura_hid_devices
+        .iter()
+        .filter(|device| device.supported)
+        .count();
+
+    diagnostics.helper_api_version = helper_api_version;
+    diagnostics.helper_expected_api_version = Some(PRIVILEGED_API_VERSION);
+    diagnostics.helper_compatible = map_bool(&status, keys::HELPER_COMPATIBLE).unwrap_or(false)
+        && helper_api_version == Some(PRIVILEGED_API_VERSION);
+    diagnostics.helper_lighting_category_available =
+        categories.iter().any(|category| category == "lighting");
+    diagnostics.polkit_available = map_bool(&status, keys::POLKIT_AVAILABLE).unwrap_or(false);
+    diagnostics.aura_alias_present = Path::new("/dev/rog-helper-aura").exists();
+    diagnostics.aura_alias_matches_selected_device = install.symlink_valid;
+    diagnostics.physical_validation_recorded = G615JM_PHYSICAL_VALIDATION_RECORDED;
+    diagnostics.native_write_readiness = native_aura_readiness_reason(
+        supported_count,
+        diagnostics.asusd_service_detected,
+        diagnostics.helper_compatible,
+        diagnostics.helper_lighting_category_available,
+        diagnostics.polkit_available,
+        diagnostics.aura_alias_present,
+        diagnostics.aura_alias_matches_selected_device,
+    )
+    .to_string();
+}
+
+async fn probe_lighting_helper_status() -> (HashMap<String, zbus::zvariant::OwnedValue>, Option<u32>)
+{
+    use zbus::Proxy;
+
+    let status = match zbus::Connection::session().await {
+        Ok(connection) => match Proxy::new(
+            &connection,
+            "io.github.roghelper.Daemon",
+            "/io/github/roghelper/Daemon",
+            "io.github.roghelper.Daemon1",
+        )
+        .await
+        {
+            Ok(proxy) => proxy
+                .call("GetPrivilegedStatus", &())
+                .await
+                .unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        },
+        Err(_) => HashMap::new(),
+    };
+    let helper_api = match zbus::Connection::system().await {
+        Ok(connection) => match Proxy::new(
+            &connection,
+            PRIVILEGED_DBUS_NAME,
+            PRIVILEGED_DBUS_PATH,
+            PRIVILEGED_DBUS_INTERFACE,
+        )
+        .await
+        {
+            Ok(proxy) => proxy
+                .call::<_, _, (u32, Vec<String>)>("GetCapabilities", &())
+                .await
+                .ok()
+                .map(|(version, _)| version),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    (status, helper_api)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_aura_readiness_reason(
+    supported_count: usize,
+    asusd_owned: bool,
+    helper_compatible: bool,
+    lighting_category: bool,
+    polkit_available: bool,
+    alias_present: bool,
+    alias_matches: bool,
+) -> &'static str {
+    if supported_count == 0 {
+        "identity_mismatch"
+    } else if supported_count > 1 {
+        "ambiguous_candidates"
+    } else if asusd_owned {
+        "suppressed_by_asusd_owner"
+    } else if !helper_compatible {
+        "helper_incompatible_or_unreachable"
+    } else if !lighting_category {
+        "lighting_category_missing"
+    } else if !polkit_available {
+        "polkit_missing"
+    } else if !alias_present {
+        "aura_alias_missing"
+    } else if !alias_matches {
+        "aura_alias_mismatch"
+    } else {
+        "ready_for_supervised_write"
     }
 }
 
@@ -1553,6 +1910,83 @@ mod tests {
     fn privileged_status_is_a_first_class_cli_command() {
         let cli = Cli::try_parse_from(["rog-helper", "privileged-status"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::PrivilegedStatus));
+    }
+
+    #[test]
+    fn lighting_test_requires_an_explicit_exact_target_confirmation_flag() {
+        let cli = Cli::try_parse_from(["rog-helper", "lighting-test", "--safe-sequence"])
+            .expect("dry-run form parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::LightingTest {
+                safe_sequence: true,
+                confirm_g615jmr_physical_write: false
+            }
+        ));
+    }
+
+    #[test]
+    fn safe_sequence_is_fixed_high_level_and_ends_with_a_separate_restore() {
+        let steps = safe_aura_sequence();
+        assert_eq!(steps.len(), 11);
+        assert_eq!(steps[0].label, "Static red");
+        assert_eq!(steps[4].secondary, Some("#0000FF"));
+        assert_eq!(
+            steps
+                .iter()
+                .filter_map(|step| step.direction)
+                .collect::<Vec<_>>(),
+            vec!["right", "left", "up", "down"]
+        );
+        let restore = safe_restore_step();
+        assert_eq!(restore.mode, "static");
+        for step in steps.iter().chain(std::iter::once(&restore)) {
+            let request = safe_step_to_dbus(step);
+            assert!(request.keys().all(|key| matches!(
+                key.as_str(),
+                "mode" | "rgb_hex" | "secondary_rgb_hex" | "speed" | "direction"
+            )));
+        }
+    }
+
+    #[test]
+    fn native_readiness_fails_closed_in_priority_order() {
+        assert_eq!(
+            native_aura_readiness_reason(0, false, true, true, true, true, true),
+            "identity_mismatch"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(2, false, true, true, true, true, true),
+            "ambiguous_candidates"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, true, true, true, true, true, true),
+            "suppressed_by_asusd_owner"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, false, true, true, true, true),
+            "helper_incompatible_or_unreachable"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, false, true, true, true),
+            "lighting_category_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, false, true, true),
+            "polkit_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, false, false),
+            "aura_alias_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, true, false),
+            "aura_alias_mismatch"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, true, true),
+            "ready_for_supervised_write"
+        );
     }
 
     #[test]

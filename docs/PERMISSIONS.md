@@ -71,6 +71,13 @@ Helper does not intentionally retain authorization for later writes.
 The complete root method/resource inventory, filesystem checks, hardening decisions, and residual
 risks are recorded in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
 
+The developer-only `rog-helper lighting-test --safe-sequence` flow creates no new privilege route.
+It is a read-only preflight unless the exact G615JMR confirmation flag is supplied, and then sends a
+fixed list of semantic requests to the existing session-daemon `SetLighting` method. Only the daemon
+may call the typed helper, and the existing `io.github.roghelper.lighting.control` PolicyKit action,
+identity/ownership checks, root-only alias, duplicate suppression, rate limit, and fixed report encoder
+remain authoritative.
+
 ## Current Permission Boundaries
 
 The actual permission model depends on the backend in use.
