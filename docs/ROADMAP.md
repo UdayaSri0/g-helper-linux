@@ -169,11 +169,19 @@ Implemented narrowly in code:
 
 - exact ASUS WMI CPU/GPU/Mid mapping and eight-point validation
 - staged writes, per-value readback, enable-last behavior, Auto rollback, and typed PolicyKit fallback
-- capability-driven Cooling UI with a fixed conservative preview/apply flow
+- capability-driven Cooling UI with raw-preserving Import Current, explicit draft provenance,
+  eight-point Quiet/Balanced/Performance drafts, Reset Draft, Apply, and separate Restore Auto
+
+Research outcome:
+
+- fan hysteresis remains unsupported because current mainline Linux and asusctl/asusd expose no
+  verified ASUS hysteresis ABI; no proprietary Windows method or software thermal loop is used
 
 Still missing:
 
 - supervised physical validation of apply, rollback, helper recovery, suspend/resume, and firmware ownership
+- complete recovery-marker startup/residency/shutdown lifecycle tests; deterministic injected
+  readback-mismatch, partial-write, and rollback-failure coverage is implemented
 - editable and persistent per-fan curves
 - profile-linked curves and safe multi-fan semantics
 - an independently verified asusd curve contract; generic hwmon formats remain unsupported

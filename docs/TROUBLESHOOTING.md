@@ -329,13 +329,32 @@ cargo run -p rog-cli -- dbus --filter "asus|rog" --service xyz.ljones.Asusd --pa
 
 Some laptops accept a software fan value briefly and then firmware policy takes over. Use Auto/BIOS mode if fan behavior is inconsistent, and include `fans`, `fan-caps`, and hwmon path output in hardware validation notes.
 
+## Import Current, Reset Draft, and Restore Auto
+
+**Import Current** reads the verified eight-point curve into the preview. It does not write, enable
+a curve, or request PolicyKit. The displayed source is the current firmware/backend data, not a
+claim that it is the immutable ASUS factory default. **Reset Draft** only returns the local preview
+to the Balanced application preset. **Restore Auto** is the separate hardware action that returns
+the verified channel(s) to firmware/profile control.
+
+Quiet, Balanced, and Performance are ordinary ROG Helper drafts and must not be interpreted as ASUS
+platform modes. All eight points remain visible before Apply.
+
+## Fan Hysteresis Is Unavailable
+
+The current Linux `asus-wmi` driver and asusctl/asusd expose no verified ASUS hysteresis interface.
+ROG Helper therefore shows no enabled hysteresis control, does not call the proprietary Windows
+firmware method, and does not run a software loop that competes with firmware.
+
 ## Fan Labels Unknown
 
 If `fan*_label` is missing, the app uses `Fan 1`, `Fan 2`, and so on. It does not guess CPU/GPU mapping from position alone.
 
 ## Boost Failed or Restored Auto
 
-Boost requires writable manual percentage support. It is always time-limited. If temperatures become unavailable or a critical temperature is observed during manual control, the daemon attempts to restore Auto/BIOS mode and records a warning.
+Boost is currently unsupported because the verified ASUS WMI backend has no manual-percentage
+contract; the compatibility method rejects the request. A future boost backend would have to be
+time-limited and restore Auto on telemetry loss or critical temperature.
 
 Typical signs:
 
@@ -488,7 +507,8 @@ Expected behavior:
 - `has_aura: true` only when an exact verified asusd or native Aura/RGB provider is selected
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
-- helper API v1 is intentionally incompatible with native Aura; current control requires API v2
+- helper API v1 is intentionally incompatible with native Aura; current packages require API v3
+  (Aura was added in v2 and marker-gated fan recovery in v3)
   and `SetAuraEffect`, plus the root-only `/dev/rog-helper-aura` alias
 - `authorization=not_checked` with a ready write path enables local editing; only Apply may prompt
 - if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only

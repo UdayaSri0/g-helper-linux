@@ -60,6 +60,7 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanAuto` | empty/all or fixed `asus-wmi:{cpu,gpu,mid}` ID | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
+| `RecoverFansIfArmed` | none | `fans.control`, non-interactive | Auto only for exact IDs in the root-owned marker; never prompts |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
 <<<<<<< HEAD
 | `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
@@ -144,9 +145,17 @@ approved sysfs trees are declared in `ReadWritePaths`. `PrivateDevices=yes` rema
 the optional root-only Aura alias is introduced into the private device namespace with
 `BindPaths=-/dev/rog-helper-aura` and admitted by the matching narrow `DeviceAllow` entry.
 
-`Restart=on-failure` restores the service after a crash or kill. On restart, normal shutdown, or
-idle exit, an armed fan marker causes an Auto reset attempt. A temporarily missing fan backend does
-not trap the service in a restart loop: the marker is retained and idle exit is deferred for retry.
+`Restart=on-failure` restores the service after a crash or kill. On restart or normal shutdown, an
+armed fan marker causes an Auto reset attempt. The helper remains resident while the marker is armed
+instead of taking its normal idle exit. `RuntimeDirectoryPreserve=yes` retains the root-owned marker
+across restart and stop/start cycles. Marker replacement uses a same-directory temporary regular
+file, `sync_all`, atomic rename, and directory sync. The marker records exact semantic fan IDs;
+recovery leaves that exact set armed if any recorded channel is missing or fails Auto.
+
+API v3 exposes `RecoverFansIfArmed`, which performs the `fans.control` PolicyKit check with user
+interaction disabled. It never opens an authentication prompt and only an already-authorized caller
+can ask it to consume the root-owned marker and return those allow-listed channels to Auto. It cannot
+enable custom control.
 
 Deliberate exceptions:
 
@@ -194,8 +203,9 @@ Deliberate exceptions:
 8. Added service crash restart and a private runtime directory for fan fail-safe recovery.
 9. Prevented the root service from taking logging configuration from its process environment.
 10. Added CPU readback, battery hot-plug ambiguity revalidation, and symlink-safe fan-marker writes.
-11. Prevented a targeted fan reset from clearing the global recovery marker and kept the helper
-    online to retry Auto recovery when a fan backend temporarily disappears.
+11. Made the recovery marker track exact semantic fan IDs; targeted `SetFanAuto` disarms only its
+    successful target, while fail-safe recovery clears only after every recorded target succeeds,
+    retains the complete set on incomplete recovery, and keeps the helper resident while armed.
 12. Made package payload modes independent of the builder umask; rendered systemd/D-Bus metadata
     is explicitly `0644` and the root-owned helper remains `0755`.
 13. Bound only `/dev/rog-helper-aura` into the helper's private device namespace and retained a
@@ -259,6 +269,12 @@ behavior. Real root/helper kill during a fan transaction, PolicyKit-agent absenc
 success/cancellation/denial, UI kill, and physical-hardware disappearance still require supervised
 manual testing on a packaged target before release. They were not simulated with unsafe host writes
 in this source review.
+
+Prompt 03 added negative fan-mapping fixtures and raw-preserving, non-writing current-curve
+readback coverage. Deterministic tests now cover enable-last ordering, an injected nth-write/readback
+failure, the Auto rollback attempt, and surfacing rollback failure. The complete recovery-marker
+startup/residency/shutdown lifecycle remains outstanding. The implementation retains marker state
+when recovery is not proven; these statements are not a claim of completed physical validation.
 
 ## 12. Change accounting
 

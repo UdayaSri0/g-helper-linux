@@ -1,6 +1,6 @@
 # Fan-control backend discovery
 
-Date: 2026-08-13
+Date: 2026-10-02
 
 This report records a read-only investigation on the target ASUS laptop. No sysfs value was written,
 no DBus setter was called, no module was changed, and no permission was modified.
@@ -48,7 +48,7 @@ ASUS kernel interface, not sufficient evidence for a safe application write cont
 - `fan_curve_readable=true`
 - `fan_curve_writable=true` only when the verified direct or privileged route is available
 - `has_fan_curves=true` only for safely mapped ASUS WMI channels with the complete eight-point ABI
-- manual percentage, RPM target, sync control, and boost remain false; individual Auto/curve
+- manual percentage, RPM target, operational sync control, and boost remain false; individual Auto/curve
   control is true only for the verified labelled channels
 
 Generic `pwmN`, `pwmN_enable`, and `fanN_target` discovery remains diagnostic-only. Manual percent,
@@ -66,11 +66,33 @@ factory-default/Auto command. Auto and reset use the verified driver command dir
 failures fall back to `rog-helper-privileged` and PolicyKit action
 `io.github.roghelper.fans.control`; telemetry does not contact PolicyKit.
 
-The helper records active custom control in `/run/rog-helper/fan-control-active`. If the helper is
-restarted after an interruption, reaches its idle timeout, or shuts down cleanly, it restores every
-currently verified channel to Auto before clearing the marker. A hard failure that prevents both
-the kernel and the restarted helper from running cannot be recovered in-process; firmware reboot
-behavior remains the final safety boundary.
+Current curve reading is now exposed through `GetFanState` and `GetFanCurves`. It uses the same exact
+identity and eight-pair gate, preserves each raw `0..=255` PWM value, reports the converted percentage
+and enable mode, and performs no write or authorization request. Its `backend_current` provenance
+means only that the values came from current backend readback; it does not claim factory authorship
+or ownership. The Cooling page can copy this data into a local draft with **Import Current**. That
+operation is distinct from **Restore Auto**, which uses the driver's command `3`; an imported curve
+is not labelled as a factory default.
+
+Quiet, Balanced, and Performance are conservative application-provided draft templates, not ASUS
+factory modes. Selecting one only updates the local eight-point preview. Apply still uses the shared
+validator and no preset is automatically written. Reset Draft returns the local preview to Balanced
+without touching hardware.
+
+The helper records active custom control in `/run/rog-helper/fan-control-active`. Marker replacement
+is atomic and durably synced, and the marker records the exact semantic channel IDs. While it remains
+armed, the helper stays resident instead of taking its normal idle exit. On startup after a crash or
+kill, or during clean SIGINT/SIGTERM shutdown, it attempts every recorded channel and clears the
+marker only after the complete recorded set returns to Auto. A missing or failed channel leaves the
+exact marker set armed for retry. `RuntimeDirectoryPreserve=yes` retains that state across service
+restart and stop/start cycles.
+
+Automatic daemon safety restoration tries direct Auto first, then the helper's marker-gated recovery
+method. Recovery performs the `io.github.roghelper.fans.control` PolicyKit check without allowing
+user interaction: it never opens a prompt and succeeds only when the caller is already authorized.
+It cannot enable a curve or act without a root-owned marker. A hard failure that prevents both the
+kernel and the restarted helper from running cannot be recovered in-process; firmware reboot behavior
+remains the final safety boundary.
 
 ## Safety validation and remaining hardware work
 
@@ -83,33 +105,48 @@ behavior remains the final safety boundary.
 - The UI distinguishes direct, authorization-required, authorization-denied, helper-missing,
   unsafe/read-only, telemetry-only, and unsupported states. Curve Apply is enabled only when an
   actionable route exists.
-- Filesystem tests cover complete/incomplete layouts, trusted IDs, point-count rejection, direct
-  success, readback conversion, Auto reset, fallback preference, authorization denial, and helper
-  unavailability.
+- Filesystem tests cover complete/incomplete and extra-point layouts, label and canonical-device
+  mismatch, trusted IDs, raw-preserving read-only import, point-count rejection, direct success,
+  readback conversion, Auto reset, fallback preference, authorization denial, helper unavailability,
+  enable-last ordering, injected mid-transaction failure, readback mismatch, and rollback failure.
+  Complete recovery-marker startup/idle/shutdown lifecycle coverage remains follow-up test work.
 - Remaining hardware work is the supervised matrix below, especially real sysfs rollback behavior,
   helper interruption, suspend/resume, and firmware ownership interactions.
 
+## Hysteresis research outcome
+
+Fan hysteresis is **unsupported**. Mainline Linux at commit `ce1e0223d8ad` exposes no ASUS
+hysteresis attribute or device ID, and asusctl/asusd at commit `28b456dec296` has no hysteresis API.
+The generic hwmon documentation's optional `*_temp_hyst` vocabulary is not implemented by
+`asus-wmi`. Windows G-Helper's proprietary firmware behavior was reviewed only as a UX reference;
+its GPL implementation and firmware method were not copied or routed through the helper. Software
+hysteresis was also rejected because it would fight firmware with a new active thermal controller.
+
 ## Manual hardware validation still required
 
-1. Confirm RPM-only telemetry with the helper stopped.
-2. Install/start the helper and confirm diagnostics change to authorization-required.
-3. Apply the conservative eight-point preview curve while thermally supervised.
-4. Verify all eight point readbacks and the enabled state.
-5. Return the selected fan to Auto and confirm firmware control resumes.
-6. Deny and cancel separate PolicyKit prompts; confirm values remain unchanged and telemetry lives.
-7. Stop and restart the daemon while a curve is active; confirm the helper remains the safety owner.
-8. Stop the helper cleanly while a curve is active; confirm Auto restoration.
-9. Kill and restart the helper with its marker armed; confirm startup restoration.
-10. Exercise malformed curves and simulate an unavailable endpoint; confirm Auto is attempted and no
-    incomplete curve is enabled.
-11. Suspend and resume with a supervised custom curve, then confirm ownership and Auto restoration.
-12. Change the firmware/platform profile while a curve is active and confirm the driver/firmware
-    ownership transition is safe and accurately reported.
+1. Stop the privileged helper and confirm RPM telemetry plus current-curve import remain readable.
+2. Start the helper and confirm helper readiness is reported without an authorization prompt.
+3. Confirm permission-blocked verified channels report `authorization_required`.
+4. Apply one conservative eight-point draft while thermally supervised; do not stress the machine.
+5. Record all eight temperature/PWM readbacks, raw and percentage values, and enabled state.
+6. Use Restore Auto and confirm firmware/profile-controlled behavior resumes.
+7. Cancel and deny separate PolicyKit prompts; confirm values remain unchanged and telemetry lives.
+8. Restart the user daemon with a curve active; confirm the helper remains the safety owner.
+9. Stop the helper cleanly with a curve active; confirm all-channel Auto and marker removal.
+10. Kill and restart the helper with its marker armed; confirm startup recovery and marker removal.
+11. Suspend and resume with a supervised curve; confirm ownership and successful Auto restoration.
+12. Simulate backend disappearance during a staged transaction; confirm no partial curve is enabled,
+    rollback failure is surfaced, and the marker remains armed when full recovery is unproven.
+13. Change the firmware/platform profile while a curve is active and confirm the ownership transition
+    is safe and accurately reported.
 
 ## References
 
 - [Linux hwmon sysfs interface](https://docs.kernel.org/hwmon/sysfs-interface.html)
 - [Linux `asus-wmi.c` at reviewed commit `551c722f4080`](https://github.com/torvalds/linux/blob/551c722f40809618230001baccf219193e22fc5a/drivers/platform/x86/asus-wmi.c)
+- [Linux `asus-wmi.c` hysteresis audit at `ce1e0223d8ad`](https://github.com/torvalds/linux/blob/ce1e0223d8ad4211275c82a17ed6d43ab81e13d9/drivers/platform/x86/asus-wmi.c)
+- [asusctl/asusd fan curves at `28b456dec296`](https://github.com/OpenGamingCollective/asusctl/tree/28b456dec2969e293e0d8eae7a8face629ec4be2/rog-profiles)
+- [Windows G-Helper behavioral reference at `54c5bd00da82`](https://github.com/seerge/g-helper/tree/54c5bd00da82e20a0361228e5758f692b3b9560b/app)
 - [Original ASUS custom fan-curve driver patch discussion](https://lkml.iu.edu/hypermail/linux/kernel/2109.0/03504.html)
 
 **FAN WRITES IMPLEMENTED: NARROWLY.** Only verified ASUS WMI eight-point curves and Auto/reset are

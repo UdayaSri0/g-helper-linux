@@ -1,8 +1,10 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,8 +20,9 @@ use rog_core::{
     parse_legacy_ui_config, validate_config, AppConfig, AuthorizationState, BatteryState,
     CloseBehavior, ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess,
     CpuControlKind, CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
-    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanInfo,
-    FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
+    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanCurve,
+    FanCurvePreset, FanCurveReadback, FanDomain, FanInfo, FanMappingConfidence, FanPoint, FanState,
+    FanTelemetry, FeatureAccessState, FeatureAvailability,
     GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource,
     PrivilegedCategory, PrivilegedStatus, RgbColor, SetupIssue, SetupSeverity, SetupStatus,
     TelemetrySnapshot, TopProcessMem,
@@ -4467,10 +4470,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     curve_status.set_wrap(true);
     curve_status.add_css_class("dim-label");
     let curve_preview = CurvePreview::new();
+    let curve_target_fan = Rc::new(RefCell::new(None::<String>));
+    let curve_source = gtk::Label::new(Some("Draft source: Balanced preset"));
+    curve_source.set_xalign(0.0);
+    curve_source.add_css_class("dim-label");
+    let curve_points = gtk::Label::new(Some(&fan_curve_points_text(&curve_preview.points())));
+    curve_points.set_xalign(0.0);
+    curve_points.set_wrap(true);
+    curve_points.add_css_class("monospace");
+    let curve_presets = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let curve_quiet = gtk::Button::with_label("Quiet");
+    let curve_balanced = gtk::Button::with_label("Balanced");
+    let curve_performance = gtk::Button::with_label("Performance");
+    let curve_import = gtk::Button::with_label("Import Current");
+    for button in [
+        &curve_quiet,
+        &curve_balanced,
+        &curve_performance,
+        &curve_import,
+    ] {
+        style_apply_button(button);
+        button.set_sensitive(false);
+        curve_presets.append(button);
+    }
     let curve_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     curve_actions.set_halign(gtk::Align::End);
     let curve_apply = gtk::Button::with_label("Apply curve");
-    let curve_reset = gtk::Button::with_label("Reset to Auto");
+    let curve_reset = gtk::Button::with_label("Reset Draft");
     for button in [&curve_apply, &curve_reset] {
         style_apply_button(button);
         button.set_sensitive(false);
@@ -4481,20 +4507,38 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     }
     curve_card.append(&curve_title);
     curve_card.append(&curve_status);
+    curve_card.append(&curve_source);
+    curve_card.append(&curve_presets);
     curve_card.append(curve_preview.widget());
+    curve_card.append(&curve_points);
     curve_card.append(&curve_actions);
     fans_root.append(&curve_card);
     {
         let shared = shared.clone();
         let preview = curve_preview.clone();
+        let target_fan = curve_target_fan.clone();
         curve_apply.connect_clicked(move |_| {
             if let Ok(mut state) = shared.lock() {
-                let fan_id = state
-                    .fan_state
-                    .fans
-                    .iter()
-                    .find(|fan| fan.supports_curve && fan.controllable)
-                    .map(|fan| fan.id.clone());
+                let imported_target = target_fan.borrow().clone();
+                let fan_id = if let Some(imported_target) = imported_target {
+                    state
+                        .fan_state
+                        .fans
+                        .iter()
+                        .find(|fan| {
+                            fan.id == imported_target
+                                && fan.supports_curve
+                                && fan.controllable
+                        })
+                        .map(|fan| fan.id.clone())
+                } else {
+                    state
+                        .fan_state
+                        .fans
+                        .iter()
+                        .find(|fan| fan.supports_curve && fan.controllable)
+                        .map(|fan| fan.id.clone())
+                };
                 if let Some(fan_id) = fan_id {
                     state.pending_fan_action = Some(PendingFanAction::Curve {
                         fan_id,
@@ -4505,15 +4549,70 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
+    for (button, name) in [
+        (curve_quiet.clone(), "quiet"),
+        (curve_balanced.clone(), "balanced"),
+        (curve_performance.clone(), "performance"),
+    ] {
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        button.connect_clicked(move |_| {
+            let points = fan_curve_preset(name);
+            preview.set_points(points.clone());
+            *target_fan.borrow_mut() = None;
+            source.set_text(&format!("Draft source: {} preset", fan_preset_label(name)));
+            points_label.set_text(&fan_curve_points_text(&points));
+        });
+    }
     {
         let shared = shared.clone();
-        curve_reset.connect_clicked(move |_| {
-            if let Ok(mut state) = shared.lock() {
-                state.pending_fan_action = Some(PendingFanAction::Auto {
-                    fan_id: String::new(),
-                });
-                state.action_error = None;
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        curve_import.connect_clicked(move |_| {
+            let imported = shared.lock().ok().and_then(|state| {
+                state
+                    .fan_state
+                    .fans
+                    .iter()
+                    .find_map(|fan| fan.curve_readback.as_ref().map(|curve| (fan.id.clone(), curve)))
+                    .map(|(fan_id, curve)| {
+                        (
+                            fan_id,
+                            curve.enable_mode,
+                            curve
+                                .curve
+                                .points
+                                .iter()
+                                .map(|point| (point.temp_c, point.duty_percent))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+            });
+            if let Some((fan_id, enable_mode, points)) = imported {
+                preview.set_points(points.clone());
+                *target_fan.borrow_mut() = Some(fan_id.clone());
+                source.set_text(&format!(
+                    "Draft source: current backend curve ({fan_id}, enable mode {enable_mode}); importing did not write hardware"
+                ));
+                points_label.set_text(&fan_curve_points_text(&points));
             }
+        });
+    }
+    {
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        curve_reset.connect_clicked(move |_| {
+            let points = fan_curve_preset("balanced");
+            preview.set_points(points.clone());
+            *target_fan.borrow_mut() = None;
+            source.set_text("Draft source: Balanced preset (draft reset only; hardware unchanged)");
+            points_label.set_text(&fan_curve_points_text(&points));
         });
     }
 
@@ -5476,6 +5575,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
         curve_preview.set_enabled(fan_state.caps.fan_curve_writable);
+        for button in [&curve_quiet, &curve_balanced, &curve_performance] {
+            button.set_sensitive(fan_state.caps.fan_curve_writable);
+        }
+        curve_import.set_sensitive(
+            fan_state
+                .fans
+                .iter()
+                .any(|fan| fan.curve_readback.is_some()),
+        );
         curve_apply.set_sensitive(fan_state.caps.fan_curve_writable);
         curve_apply.set_label(if fan_authorization_required {
             "Unlock & Apply curve"
@@ -12154,8 +12262,14 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
             .unwrap_or_default()
     }
 
+    let id = s(&map, dbus_keys::FAN_INFO_ID_KEY)?;
+    let curve_readback = map
+        .get(dbus_keys::FAN_INFO_CURVE_READBACK_KEY)
+        .cloned()
+        .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
+        .and_then(|curve| fan_curve_readback_from_dbus(&id, curve));
     Some(FanInfo {
-        id: s(&map, dbus_keys::FAN_INFO_ID_KEY)?,
+        id,
         index: u32v(&map, dbus_keys::FAN_INFO_INDEX_KEY).unwrap_or(0),
         label: s(&map, dbus_keys::FAN_INFO_LABEL_KEY)?,
         mapping_confidence: s(&map, dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY)
@@ -12178,10 +12292,56 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
         supports_curve: b(&map, dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY),
         supports_auto: b(&map, dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY),
+        curve_readback,
+        rollback_available: b(&map, dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY),
         backend: s(&map, dbus_keys::FAN_INFO_BACKEND_KEY).unwrap_or_else(|| "unknown".to_string()),
         endpoints: vec_string(&map, dbus_keys::FAN_INFO_ENDPOINTS_KEY),
         notes: vec_string(&map, dbus_keys::FAN_INFO_NOTES_KEY),
         warnings: vec_string(&map, dbus_keys::FAN_INFO_WARNINGS_KEY),
+    })
+}
+
+fn fan_curve_readback_from_dbus(
+    fan_id: &str,
+    map: HashMap<String, OwnedValue>,
+) -> Option<FanCurveReadback> {
+    let enable_mode = map
+        .get(dbus_keys::fan_curves::ENABLE_MODE)
+        .and_then(u64_from_value)
+        .and_then(|value| u8::try_from(value).ok())?;
+    let raw_pwm = map
+        .get(dbus_keys::fan_curves::RAW_PWM)
+        .cloned()
+        .and_then(|value| Vec::<u8>::try_from(value).ok())?;
+    let rows = map
+        .get(dbus_keys::fan_curves::POINTS)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())?;
+    let points = rows
+        .into_iter()
+        .map(|row| {
+            Some(FanPoint {
+                temp_c: row
+                    .get(dbus_keys::fan_curves::TEMP_C)
+                    .and_then(u64_from_value)
+                    .and_then(|value| u8::try_from(value).ok())?,
+                duty_percent: row
+                    .get(dbus_keys::fan_curves::SPEED_PERCENT)
+                    .and_then(u64_from_value)
+                    .and_then(|value| u8::try_from(value).ok())?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if points.len() != 8 || raw_pwm.len() != 8 {
+        return None;
+    }
+    Some(FanCurveReadback {
+        curve: FanCurve {
+            domain: FanDomain::Other(fan_id.to_string()),
+            points,
+        },
+        raw_pwm,
+        enable_mode,
     })
 }
 
@@ -12812,6 +12972,36 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
     lines.join("\n")
 }
 
+fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
+    let preset = match name {
+        "quiet" => FanCurvePreset::Quiet,
+        "performance" => FanCurvePreset::Performance,
+        _ => FanCurvePreset::Balanced,
+    };
+    preset
+        .points()
+        .into_iter()
+        .map(|point| (point.temp_c, point.duty_percent))
+        .collect()
+}
+
+fn fan_preset_label(name: &str) -> &'static str {
+    match name {
+        "quiet" => FanCurvePreset::Quiet.label(),
+        "performance" => FanCurvePreset::Performance.label(),
+        _ => FanCurvePreset::Balanced.label(),
+    }
+}
+
+fn fan_curve_points_text(points: &[(u8, u8)]) -> String {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (temp_c, duty))| format!("{}: {temp_c}C / {duty}%", index + 1))
+        .collect::<Vec<_>>()
+        .join("   ")
+}
+
 fn fan_state_diagnostics_text(state: &FanState) -> String {
     let mut lines = Vec::new();
     lines.push("Fan Control Diagnostics".to_string());
@@ -12881,6 +13071,24 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
             fan.supports_curve,
             fan.supports_auto
         ));
+        lines.push(format!(
+            "  direct_write: {}; helper_ready: {}; authorization: {}; rollback_available: {}",
+            fan.direct_write, fan.privileged_write, fan.authorization, fan.rollback_available
+        ));
+        if let Some(readback) = &fan.curve_readback {
+            lines.push(format!(
+                "  current_curve: source=backend_current, enable_mode={}, points={}",
+                readback.enable_mode,
+                readback
+                    .curve
+                    .points
+                    .iter()
+                    .zip(&readback.raw_pwm)
+                    .map(|(point, raw)| format!("{}C/{}%[raw={raw}]", point.temp_c, point.duty_percent))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         lines.push(format!(
             "  rpm_readable: {}; pwm_endpoint_verified: {}; direct_write: {}; privileged_write: {}; authorization: {}; access: {}",
             fan.rpm_readable,

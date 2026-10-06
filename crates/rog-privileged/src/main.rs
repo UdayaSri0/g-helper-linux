@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use rog_core::{
     require_authorized, validate_polkit_action, CpuControlRequest, CpuPowerMode, FanCurve,
-    FanCurvePolicy, FanDomain, FanPoint, LightingApplyRequest, LightingDirection, LightingMode,
-    LightingSpeed, PrivilegedCapabilities, PrivilegedError, PrivilegedErrorCode, RgbColor,
-    RogError, POLKIT_ACTION_BATTERY_CONTROL, POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_FANS_CONTROL,
-    POLKIT_ACTION_LIGHTING_CONTROL, PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME,
-    PRIVILEGED_DBUS_PATH,
+    FanCurvePolicy, FanDomain, FanInfo, FanPoint, LightingApplyRequest, LightingDirection,
+    LightingMode, LightingSpeed, PrivilegedCapabilities, PrivilegedError, PrivilegedErrorCode,
+    RgbColor, RogError, POLKIT_ACTION_BATTERY_CONTROL, POLKIT_ACTION_CPU_CONTROL,
+    POLKIT_ACTION_FANS_CONTROL, POLKIT_ACTION_FANS_RECOVER, POLKIT_ACTION_LIGHTING_CONTROL,
+    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::aura_hid::{
     encode_g615jm_effect, match_g615jm, parse_output_report_sizes, scan_native_aura_hid,
@@ -38,6 +38,7 @@ const POLKIT_NAME: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 const FAN_SAFETY_MARKER: &str = "/run/rog-helper/fan-control-active";
+const LEGACY_FAN_SAFETY_MARKER_ENTRY: &str = "asus-wmi-curve";
 const AURA_DEVICE_ALIAS: &str = "/dev/rog-helper-aura";
 const AURA_MIN_WRITE_INTERVAL: Duration = Duration::from_millis(250);
 const AURA_REPORT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -263,12 +264,13 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
-        self.fans.set_fan_auto(target).map_err(map_fan_error)?;
-        // The marker covers all fan channels. A targeted reset cannot prove
-        // that another channel is no longer using a custom curve, so only an
-        // all-channel reset may disarm crash recovery.
-        if target.is_none() {
-            self.clear_fan_safety_marker().map_err(map_fan_error)?;
+        if let Some(fan_id) = target {
+            self.fans
+                .set_fan_auto(Some(fan_id))
+                .map_err(map_fan_error)?;
+            self.disarm_fan_channel(fan_id).map_err(map_fan_error)?;
+        } else {
+            self.reset_all_fans_to_auto().map_err(map_fan_error)?;
         }
         Ok(())
     }
@@ -308,11 +310,12 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
-        self.mark_fan_control_active().map_err(map_fan_error)?;
+        self.mark_fan_control_active(fan_id)
+            .map_err(map_fan_error)?;
         if let Err(error) = self.fans.set_fan_curve(fan_id, curve) {
-            if self.fans.set_fan_auto(None).is_ok() {
-                let _ = self.clear_fan_safety_marker();
-            }
+            // Recovery uses the exact marker set. If any armed channel is
+            // absent or fails to reset, the marker remains for a later retry.
+            let _ = self.restore_fans_if_armed();
             return Err(map_fan_error(error));
         }
         Ok(())
@@ -335,8 +338,20 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
-        self.fans.set_fan_auto(None).map_err(map_fan_error)?;
-        self.clear_fan_safety_marker().map_err(map_fan_error)
+        self.reset_all_fans_to_auto().map_err(map_fan_error)
+    }
+
+    /// Fail-safe recovery never opens an authentication prompt and can only
+    /// return channels recorded in this helper's root-owned marker to Auto.
+    /// The caller must nevertheless already be authorized by PolicyKit.
+    async fn recover_fans_if_armed(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<()> {
+        self.authorize_fans_noninteractive(connection, &header)
+            .await?;
+        self.restore_fans_if_armed().map_err(map_fan_error)
     }
 
     async fn set_keyboard_backlight_brightness(
@@ -506,15 +521,47 @@ impl PrivilegedService {
         let authorized = check_polkit_authorization(
             connection,
             sender.as_str(),
-            POLKIT_ACTION_FANS_CONTROL,
+            POLKIT_ACTION_FANS_RECOVER,
             true,
         )
         .await?;
         require_authorized(authorized).map_err(map_privileged_error)
     }
 
-    fn mark_fan_control_active(&self) -> rog_core::RogResult<()> {
-        write_fan_safety_marker(&self.fan_safety_marker)
+    async fn authorize_fans_noninteractive(
+        &self,
+        connection: &Connection,
+        header: &Header<'_>,
+    ) -> fdo::Result<()> {
+        self.touch();
+        let sender = header.sender().ok_or_else(|| {
+            map_privileged_error(PrivilegedError::new(
+                PrivilegedErrorCode::Unexpected,
+                "D-Bus caller identity is unavailable",
+            ))
+        })?;
+        let authorized = check_polkit_authorization(
+            connection,
+            sender.as_str(),
+            POLKIT_ACTION_FANS_CONTROL,
+            false,
+        )
+        .await?;
+        require_authorized(authorized).map_err(map_privileged_error)
+    }
+
+    fn mark_fan_control_active(&self, fan_id: &str) -> rog_core::RogResult<()> {
+        write_fan_safety_marker(&self.fan_safety_marker, fan_id)
+    }
+
+    fn disarm_fan_channel(&self, fan_id: &str) -> rog_core::RogResult<()> {
+        let mut armed = read_fan_safety_marker(&self.fan_safety_marker)?;
+        armed.retain(|id| id != fan_id);
+        if armed.is_empty() {
+            self.clear_fan_safety_marker()
+        } else {
+            write_fan_safety_marker_ids(&self.fan_safety_marker, &armed)
+        }
     }
 
     fn clear_fan_safety_marker(&self) -> rog_core::RogResult<()> {
@@ -524,6 +571,27 @@ impl PrivilegedService {
             Err(_) => Err(RogError::Unexpected(
                 "could not clear the fan fail-safe marker".to_string(),
             )),
+        }
+    }
+
+    fn fan_safety_marker_exists(&self) -> rog_core::RogResult<bool> {
+        match fs::symlink_metadata(&self.fan_safety_marker) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+            Ok(_) => Err(RogError::Unexpected(
+                "fan fail-safe marker has an unexpected file type".to_string(),
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(RogError::Unexpected(
+                "fan fail-safe marker metadata is unavailable".to_string(),
+            )),
+        }
+    }
+
+    fn reset_all_fans_to_auto(&self) -> rog_core::RogResult<()> {
+        if self.fan_safety_marker_exists()? {
+            self.restore_fans_if_armed()
+        } else {
+            self.fans.set_fan_auto(None)
         }
     }
 
@@ -542,7 +610,30 @@ impl PrivilegedService {
                 ));
             }
         }
-        self.fans.set_fan_auto(None)?;
+        let armed = read_fan_safety_marker(&self.fan_safety_marker)?;
+        if armed.is_empty() {
+            return Err(RogError::Unexpected(
+                "fan fail-safe marker contains no valid armed channels".to_string(),
+            ));
+        }
+        if armed.iter().any(|id| id == LEGACY_FAN_SAFETY_MARKER_ENTRY) {
+            self.fans.set_fan_auto(None)?;
+            return self.clear_fan_safety_marker();
+        }
+        let available = self.fans.list_fans()?;
+        validate_armed_fans_available(&armed, &available)?;
+        let mut failures = Vec::new();
+        for fan_id in &armed {
+            if let Err(error) = self.fans.set_fan_auto(Some(fan_id)) {
+                failures.push(format!("{fan_id}: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(RogError::Unexpected(format!(
+                "fan fail-safe recovery failed for {}",
+                failures.join("; ")
+            )));
+        }
         self.clear_fan_safety_marker()
     }
 
@@ -572,7 +663,35 @@ impl PrivilegedService {
     }
 }
 
-fn write_fan_safety_marker(path: &std::path::Path) -> rog_core::RogResult<()> {
+fn write_fan_safety_marker(path: &std::path::Path, fan_id: &str) -> rog_core::RogResult<()> {
+    if !is_safe_fan_id(fan_id) {
+        return Err(RogError::InvalidInput(
+            "fan fail-safe marker rejected an unsafe fan id".to_string(),
+        ));
+    }
+    let mut armed = read_fan_safety_marker(path)?;
+    if !armed.iter().any(|id| id == fan_id) {
+        armed.push(fan_id.to_string());
+    }
+    write_fan_safety_marker_ids(path, &armed)
+}
+
+fn write_fan_safety_marker_ids(
+    path: &std::path::Path,
+    armed: &[String],
+) -> rog_core::RogResult<()> {
+    let mut armed = armed.to_vec();
+    armed.sort();
+    armed.dedup();
+    if armed.is_empty()
+        || armed
+            .iter()
+            .any(|id| !is_safe_fan_id(id) && id != LEGACY_FAN_SAFETY_MARKER_ENTRY)
+    {
+        return Err(RogError::InvalidInput(
+            "fan fail-safe marker requires approved semantic fan ids".to_string(),
+        ));
+    }
     let parent = path.parent().ok_or_else(|| {
         RogError::Unexpected("fan fail-safe marker has no parent directory".to_string())
     })?;
@@ -585,8 +704,6 @@ fn write_fan_safety_marker(path: &std::path::Path) -> rog_core::RogResult<()> {
         ));
     }
 
-    let mut options = OpenOptions::new();
-    options.write(true).truncate(true);
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() => {}
         Ok(_) => {
@@ -594,21 +711,95 @@ fn write_fan_safety_marker(path: &std::path::Path) -> rog_core::RogResult<()> {
                 "fan fail-safe marker has an unexpected file type".to_string(),
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            options.create_new(true);
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => {
             return Err(RogError::Unexpected(
                 "fan fail-safe marker metadata is unavailable".to_string(),
             ));
         }
     }
-    let mut marker = options
-        .open(path)
+    let temporary = parent.join(format!(".fan-control-active.tmp-{}", std::process::id()));
+    let mut marker = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
         .map_err(|_| RogError::Unexpected("could not arm the fan fail-safe marker".to_string()))?;
-    marker
-        .write_all(b"asus-wmi-curve\n")
-        .map_err(|_| RogError::Unexpected("could not arm the fan fail-safe marker".to_string()))
+    if marker
+        .write_all(format!("{}\n", armed.join("\n")).as_bytes())
+        .and_then(|()| marker.sync_all())
+        .is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+        return Err(RogError::Unexpected(
+            "could not durably arm the fan fail-safe marker".to_string(),
+        ));
+    }
+    drop(marker);
+    if fs::rename(&temporary, path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(RogError::Unexpected(
+            "could not atomically install the fan fail-safe marker".to_string(),
+        ));
+    }
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| RogError::Unexpected("could not sync the fan fail-safe marker".to_string()))
+}
+
+fn read_fan_safety_marker(path: &std::path::Path) -> rog_core::RogResult<Vec<String>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(RogError::Unexpected(
+                "fan fail-safe marker has an unexpected file type".to_string(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            return Err(RogError::Unexpected(
+                "fan fail-safe marker metadata is unavailable".to_string(),
+            ));
+        }
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|_| RogError::Unexpected("could not read the fan fail-safe marker".to_string()))?;
+    let armed = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if armed
+        .iter()
+        .any(|id| !is_safe_fan_id(id) && id != LEGACY_FAN_SAFETY_MARKER_ENTRY)
+    {
+        return Err(RogError::Unexpected(
+            "fan fail-safe marker contains an unsafe fan id".to_string(),
+        ));
+    }
+    Ok(armed)
+}
+
+fn is_safe_fan_id(fan_id: &str) -> bool {
+    matches!(fan_id, "asus-wmi:cpu" | "asus-wmi:gpu" | "asus-wmi:mid")
+}
+
+fn validate_armed_fans_available(
+    armed: &[String],
+    available: &[FanInfo],
+) -> rog_core::RogResult<()> {
+    for fan_id in armed {
+        if !available
+            .iter()
+            .any(|fan| fan.id == *fan_id && fan.supports_auto && fan.pwm_endpoint_verified)
+        {
+            return Err(RogError::TemporarilyUnavailable(format!(
+                "armed fan channel {fan_id} is not currently available for Auto recovery"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn fan_domain(fan_id: &str) -> fdo::Result<FanDomain> {
@@ -1177,16 +1368,25 @@ async fn main() -> anyhow::Result<()> {
     let mut idle_check = interval(Duration::from_secs(15));
     loop {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
+            signal = shutdown_signal() => {
                 signal.context("listen for shutdown signal")?;
                 break;
             }
             _ = idle_check.tick() => {
                 if idle_service.idle_for() >= IDLE_TIMEOUT {
-                    if let Err(error) = idle_service.restore_fans_if_armed() {
-                        warn!("could not restore fans before idle exit; keeping helper online to retry: {error}");
-                        idle_service.touch();
-                        continue;
+                    match idle_service.fan_safety_marker_exists() {
+                        Ok(true) => {
+                            // Stay resident while this helper owns an active
+                            // curve so a clean stop can always restore Auto.
+                            idle_service.touch();
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            warn!("could not verify the fan recovery marker; keeping helper online: {error}");
+                            idle_service.touch();
+                            continue;
+                        }
                     }
                     info!("privileged helper idle timeout reached; exiting");
                     break;
@@ -1199,6 +1399,16 @@ async fn main() -> anyhow::Result<()> {
     }
     drop(connection);
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -1228,6 +1438,7 @@ mod tests {
         assert!(validate_polkit_action(POLKIT_ACTION_CPU_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_BATTERY_CONTROL).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_FANS_CONTROL).is_ok());
+        assert!(validate_polkit_action(POLKIT_ACTION_FANS_RECOVER).is_ok());
         assert!(validate_polkit_action(POLKIT_ACTION_LIGHTING_CONTROL).is_ok());
         assert!(validate_polkit_action("io.github.roghelper.system.configure").is_err());
     }
@@ -1360,11 +1571,82 @@ mod tests {
         let marker = root.join("fan-control-active");
         symlink(&outside, &marker).expect("marker symlink");
 
-        assert!(write_fan_safety_marker(&marker).is_err());
+        assert!(write_fan_safety_marker(&marker, "asus-wmi:cpu").is_err());
         assert_eq!(
             fs::read_to_string(&outside).expect("outside read"),
             "unchanged\n"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fan_safety_marker_tracks_exact_semantic_channels() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "rog-helper-marker-channels-test-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("fan-control-active");
+
+        write_fan_safety_marker(&marker, "asus-wmi:gpu").unwrap();
+        write_fan_safety_marker(&marker, "asus-wmi:cpu").unwrap();
+        write_fan_safety_marker(&marker, "asus-wmi:gpu").unwrap();
+
+        assert_eq!(
+            read_fan_safety_marker(&marker).unwrap(),
+            vec!["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()]
+        );
+        assert!(write_fan_safety_marker(&marker, "hwmon0:fan1").is_err());
+        assert_eq!(
+            read_fan_safety_marker(&marker).unwrap(),
+            vec!["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn armed_channel_validation_rejects_a_missing_channel() {
+        let available = vec![FanInfo {
+            id: "asus-wmi:cpu".to_string(),
+            index: 1,
+            label: "CPU Fan".to_string(),
+            mapping_confidence: rog_core::FanMappingConfidence::HardwareLabel,
+            current_rpm: Some(2_000),
+            min_rpm: None,
+            max_rpm: None,
+            current_percent: None,
+            rpm_readable: true,
+            pwm_endpoint_verified: true,
+            direct_write: false,
+            privileged_write: true,
+            authorization: "authorized".to_string(),
+            access_state: "writable_via_helper".to_string(),
+            controllable: true,
+            supports_manual_percent: false,
+            supports_manual_rpm_target: false,
+            supports_curve: true,
+            supports_auto: true,
+            curve_readback: None,
+            rollback_available: true,
+            backend: "asus-wmi-curve".to_string(),
+            endpoints: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+        }];
+
+        assert!(validate_armed_fans_available(&["asus-wmi:cpu".to_string()], &available).is_ok());
+        let error = validate_armed_fans_available(
+            &["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()],
+            &available,
+        )
+        .expect_err("missing armed GPU must retain recovery state");
+        assert!(matches!(error, RogError::TemporarilyUnavailable(_)));
     }
 }

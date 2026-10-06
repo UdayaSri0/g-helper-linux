@@ -249,6 +249,18 @@ impl CurvePreview {
     pub fn points(&self) -> Vec<(u8, u8)> {
         self.state.borrow().points.clone()
     }
+
+    pub fn set_points(&self, points: Vec<(u8, u8)>) {
+        let mut state = self.state.borrow_mut();
+        if state.points == points {
+            return;
+        }
+        state.points = points;
+        drop(state);
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
+    }
 }
 
 fn draw_fan_rotor(ctx: &Context, width: f64, height: f64, state: &FanRotorState) {

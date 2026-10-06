@@ -36,6 +36,16 @@
     </defaults>
   </action>
 
+  <action id="io.github.roghelper.fans.recover">
+    <description>Return marker-owned fan curves to firmware control</description>
+    <message>ROG Helper is returning marker-owned fan curves to firmware control</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <action id="io.github.roghelper.lighting.control">
     <description>Control supported lighting settings with ROG Helper</description>
     <message>Authentication is required to change supported lighting settings</message>

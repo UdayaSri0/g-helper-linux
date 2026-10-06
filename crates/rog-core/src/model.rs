@@ -184,6 +184,78 @@ pub struct FanCurve {
     pub points: Vec<FanPoint>,
 }
 
+/// A read-only snapshot of the curve currently exposed by a verified backend.
+///
+/// `raw_pwm` preserves the kernel ABI values so diagnostics never lose
+/// information during the 0..=255 to percentage conversion.  Importing this
+/// snapshot is a UI draft operation; it does not imply that the values are a
+/// factory default or write anything back to hardware.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanCurveReadback {
+    pub curve: FanCurve,
+    pub raw_pwm: Vec<u8>,
+    pub enable_mode: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FanCurvePreset {
+    Quiet,
+    Balanced,
+    Performance,
+}
+
+impl FanCurvePreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Quiet => "Quiet",
+            Self::Balanced => "Balanced",
+            Self::Performance => "Performance",
+        }
+    }
+
+    pub fn points(self) -> Vec<FanPoint> {
+        let values = match self {
+            Self::Quiet => [
+                (35, 10),
+                (45, 15),
+                (55, 25),
+                (65, 40),
+                (75, 55),
+                (85, 70),
+                (90, 90),
+                (95, 100),
+            ],
+            Self::Balanced => [
+                (35, 15),
+                (45, 25),
+                (55, 35),
+                (65, 50),
+                (75, 70),
+                (85, 90),
+                (90, 100),
+                (95, 100),
+            ],
+            Self::Performance => [
+                (35, 30),
+                (45, 40),
+                (55, 50),
+                (65, 60),
+                (75, 75),
+                (85, 85),
+                (90, 95),
+                (95, 100),
+            ],
+        };
+        values
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanInfo {
     pub id: String,
@@ -212,6 +284,10 @@ pub struct FanInfo {
     pub supports_manual_rpm_target: bool,
     pub supports_curve: bool,
     pub supports_auto: bool,
+    #[serde(default)]
+    pub curve_readback: Option<FanCurveReadback>,
+    #[serde(default)]
+    pub rollback_available: bool,
     pub backend: String,
     pub endpoints: Vec<String>,
     pub notes: Vec<String>,
@@ -244,6 +320,8 @@ impl FanInfo {
             supports_manual_rpm_target: false,
             supports_curve: false,
             supports_auto: false,
+            curve_readback: None,
+            rollback_available: false,
             backend: "hwmon-read-only".to_string(),
             endpoints: vec![telemetry.input_path.clone()],
             notes: Vec::new(),
@@ -369,7 +447,10 @@ impl FanCaps {
             has_fan_manual_percent,
             has_fan_manual_rpm_target,
             has_individual_fan_control: controllable_count > 0,
-            has_fan_sync_control: controllable_count > 1,
+            // The current daemon sync route applies only to manual-percent
+            // requests. Multiple curve-capable channels alone do not make
+            // synchronized curve application operational.
+            has_fan_sync_control: controllable_count > 1 && has_fan_manual_percent,
             has_fan_boost: has_fan_manual_percent,
             fan_count: fans.len() as u32,
             fan_mapping_confidence,
@@ -3094,6 +3175,114 @@ mod tests {
     }
 
     #[test]
+    fn fan_curve_rejects_decreasing_duty_and_equal_temperature() {
+        let decreasing = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 40,
+                    duty_percent: 50,
+                },
+                FanPoint {
+                    temp_c: 50,
+                    duty_percent: 40,
+                },
+            ],
+        };
+        let equal_temp = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                FanPoint {
+                    temp_c: 50,
+                    duty_percent: 40,
+                },
+                FanPoint {
+                    temp_c: 50,
+                    duty_percent: 50,
+                },
+            ],
+        };
+        assert!(decreasing.validate_safe(FanCurvePolicy::default()).is_err());
+        assert!(equal_temp.validate_safe(FanCurvePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn asus_curve_policy_requires_exactly_eight_points() {
+        let policy = FanCurvePolicy {
+            exact_point_count: Some(8),
+            ..Default::default()
+        };
+        for count in [7, 9] {
+            let curve = FanCurve {
+                domain: FanDomain::Cpu,
+                points: (0..count)
+                    .map(|index| FanPoint {
+                        temp_c: 35 + index as u8 * 5,
+                        duty_percent: 20 + index as u8 * 5,
+                    })
+                    .collect(),
+            };
+            assert!(curve.validate_safe(policy).is_err());
+        }
+    }
+
+    #[test]
+    fn high_temperature_floors_accept_boundaries_and_reject_below() {
+        for (temp_c, minimum) in [(85, 70), (90, 90), (95, 100)] {
+            let accepted = FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![FanPoint {
+                    temp_c,
+                    duty_percent: minimum,
+                }],
+            };
+            let rejected = FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![FanPoint {
+                    temp_c,
+                    duty_percent: minimum - 1,
+                }],
+            };
+            assert!(accepted.validate_safe(FanCurvePolicy::default()).is_ok());
+            assert!(rejected.validate_safe(FanCurvePolicy::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn conservative_presets_are_eight_point_safe_drafts() {
+        let policy = FanCurvePolicy {
+            exact_point_count: Some(8),
+            ..Default::default()
+        };
+        for preset in [
+            FanCurvePreset::Quiet,
+            FanCurvePreset::Balanced,
+            FanCurvePreset::Performance,
+        ] {
+            let curve = FanCurve {
+                domain: FanDomain::Cpu,
+                points: preset.points(),
+            };
+            assert_eq!(curve.points.len(), 8);
+            assert!(curve.validate_safe(policy).is_ok(), "{}", preset.label());
+        }
+    }
+
+    #[test]
+    fn multiple_curve_only_fans_do_not_advertise_sync_or_boost() {
+        let mut cpu = test_controllable_fan();
+        cpu.id = "asus-wmi:cpu".to_string();
+        cpu.supports_manual_percent = false;
+        cpu.supports_curve = true;
+        let mut gpu = cpu.clone();
+        gpu.id = "asus-wmi:gpu".to_string();
+        let caps = FanCaps::from_fans(&[cpu, gpu]);
+        assert!(caps.has_fan_curves);
+        assert!(!caps.has_fan_sync_control);
+        assert!(!caps.has_fan_boost);
+    }
+
+    #[test]
     fn out_of_range_percent_request_is_rejected() {
         let fan = test_controllable_fan();
         let request = FanControlRequest {
@@ -3158,6 +3347,8 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: false,
             supports_auto: true,
+            curve_readback: None,
+            rollback_available: true,
             backend: "test".to_string(),
             endpoints: Vec::new(),
             notes: Vec::new(),

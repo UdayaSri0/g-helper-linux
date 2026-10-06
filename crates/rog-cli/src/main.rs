@@ -1302,6 +1302,31 @@ fn print_fan_info(fan: &FanInfo) {
     println!("    rpm_target: {}", fan.supports_manual_rpm_target);
     println!("    curve: {}", fan.supports_curve);
     println!("    auto_restore: {}", fan.supports_auto);
+    println!("    direct_write_ready: {}", fan.direct_write);
+    println!("    helper_write_ready: {}", fan.privileged_write);
+    println!("    authorization: {}", fan.authorization);
+    println!("    access_state: {}", fan.access_state);
+    println!("    rollback_available: {}", fan.rollback_available);
+    if let Some(readback) = &fan.curve_readback {
+        println!("    current_curve_source: backend_current");
+        println!("    enable_mode: {}", readback.enable_mode);
+        println!("    current_curve_points:");
+        for (index, (point, raw_pwm)) in readback
+            .curve
+            .points
+            .iter()
+            .zip(&readback.raw_pwm)
+            .enumerate()
+        {
+            println!(
+                "      {}: {}C / {}% / raw_pwm={}",
+                index + 1,
+                point.temp_c,
+                point.duty_percent,
+                raw_pwm
+            );
+        }
+    }
     if !fan.endpoints.is_empty() {
         println!("    endpoints:");
         for endpoint in &fan.endpoints {

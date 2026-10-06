@@ -379,11 +379,14 @@ Cooling is the user-facing name of the existing internal `fans` page and backend
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support
-- exposes sync mode only when more than one controllable fan is detected
+- exposes sync mode only when more than one controllable fan and a verified manual-percent backend
+  are detected; multiple curve-only fans never advertise sync
 - exposes time-limited full-speed boost buttons for 5, 10, and 15 minutes when boost is supported
 - always exposes Return to Auto for controllable fans
 - asks for explicit acknowledgement before first manual fan control
-- shows a disabled safe-curve preview when curves are unsupported
+- shows a disabled safe-curve preview when curves are unsupported; on the verified backend it offers
+  local Quiet/Balanced/Performance drafts, read-only Import Current, explicit draft provenance,
+  Reset Draft, validated Apply, and a separate Return to Auto action
 - keeps raw diagnostics collapsed by default while preserving Copy fan diagnostics
 - keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
 - never writes directly to sysfs or hardware from the UI

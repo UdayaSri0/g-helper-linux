@@ -183,6 +183,10 @@ pub async fn reset_fans_to_auto() -> Result<(), PrivilegedError> {
     call_fan("ResetFansToAuto", &()).await
 }
 
+pub async fn recover_fans_if_armed() -> Result<(), PrivilegedError> {
+    call_fan("RecoverFansIfArmed", &()).await
+}
+
 pub async fn set_keyboard_backlight_brightness(level: u32) -> Result<(), PrivilegedError> {
     let connection = Connection::system()
         .await

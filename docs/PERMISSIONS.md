@@ -45,7 +45,10 @@ Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
 a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan,
 keyboard-brightness, native Aura-effect, and standard battery-threshold operations. Privileged API
-v2 adds only the high-level `SetAuraEffect` operation for the exact G615JMR target contract.
+v3 is current; v2 introduced the high-level `SetAuraEffect` operation for the exact G615JMR target
+contract, and v3 adds marker-gated fan Auto recovery. `RecoverFansIfArmed` still performs the fan
+PolicyKit check, but disables user interaction: it never prompts and succeeds only for an
+already-authorized caller. It can only restore exact semantic IDs recorded in the root-owned marker.
 Battery privilege is limited to one unambiguous
 `type=Battery` power-supply device exposing the documented `charge_control_end_threshold` ABI. It
 does not expose generic HID/USB writes, caller-selected paths, raw bytes, report IDs, command IDs,

@@ -192,7 +192,7 @@ def validate_current_package(package: Package) -> None:
             raise TestFailure(f"current package does not own /{relative}")
     helper = package.tree / "usr/libexec/rog-helper-privileged"
     if b"SetAuraEffect" not in helper.read_bytes():
-        raise TestFailure("current privileged helper does not expose API-v2 SetAuraEffect")
+        raise TestFailure("current API-v3 privileged helper does not expose SetAuraEffect (introduced in v2)")
 
 
 def exercise(current: Package, previous: Package | None, root: Path, work: Path) -> None:

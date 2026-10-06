@@ -6,17 +6,19 @@ pub const PRIVILEGED_DBUS_NAME: &str = "io.github.roghelper.Privileged";
 pub const PRIVILEGED_DBUS_PATH: &str = "/io/github/roghelper/Privileged";
 pub const PRIVILEGED_DBUS_INTERFACE: &str = "io.github.roghelper.Privileged1";
 /// Version 2 adds the path-free, high-level native Aura effect operation.
-pub const PRIVILEGED_API_VERSION: u32 = 2;
+pub const PRIVILEGED_API_VERSION: u32 = 3;
 
 pub const POLKIT_ACTION_CPU_CONTROL: &str = "io.github.roghelper.cpu.control";
 pub const POLKIT_ACTION_BATTERY_CONTROL: &str = "io.github.roghelper.battery.control";
 pub const POLKIT_ACTION_FANS_CONTROL: &str = "io.github.roghelper.fans.control";
+pub const POLKIT_ACTION_FANS_RECOVER: &str = "io.github.roghelper.fans.recover";
 pub const POLKIT_ACTION_LIGHTING_CONTROL: &str = "io.github.roghelper.lighting.control";
 
-pub const POLKIT_ACTIONS: [&str; 4] = [
+pub const POLKIT_ACTIONS: [&str; 5] = [
     POLKIT_ACTION_CPU_CONTROL,
     POLKIT_ACTION_BATTERY_CONTROL,
     POLKIT_ACTION_FANS_CONTROL,
+    POLKIT_ACTION_FANS_RECOVER,
     POLKIT_ACTION_LIGHTING_CONTROL,
 ];
 

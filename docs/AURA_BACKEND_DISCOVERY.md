@@ -29,9 +29,9 @@ the repository evidence.
 
 An installed-target audit on 2026-08-21 found why the then-installed UI remained read-only despite
 this discovery: the installed helper exposed privileged API v1 without `SetAuraEffect`, while the
-current daemon requires API v2, and that package lacked both `60-rog-helper-aura.rules` and
+current daemon requires API v3, and that package lacked both `60-rog-helper-aura.rules` and
 `/dev/rog-helper-aura`. D-Bus activation and the lighting PolicyKit action were present. Current
-source packaging includes and validates the API-v2 helper, narrow udev rule, D-Bus/systemd files,
+source packaging includes and validates the current API-v3 helper, narrow udev rule, D-Bus/systemd files,
 PolicyKit policy, and sandbox device allow-list; reinstalling current source/package is required to
 replace an older installed payload.
 
@@ -124,8 +124,8 @@ captured upstream fixture but is not used by the local adapter. Wrong names, pat
 or signatures remain diagnostic-only.
 
 The native path is similarly closed. The udev rule creates `/dev/rog-helper-aura` without changing
-the root-owned hidraw permissions. Privileged API v2 exposes only
-`SetAuraEffect(mode, primary, secondary, speed, direction)`. It accepts no device path, raw bytes,
+the root-owned hidraw permissions. Current privileged API v3 retains the high-level Aura method
+introduced in v2: `SetAuraEffect(mode, primary, secondary, speed, direction)`. It accepts no device path, raw bytes,
 report ID, command ID, or zone. Immediately before a write the helper rechecks DMI, VID/PID,
 interface discovery, driver, device number, open-file identity, descriptor hash, report shape, and
 that exactly one supported target exists. It sends one fixed three-report effect/set/apply sequence,

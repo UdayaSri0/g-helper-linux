@@ -13,7 +13,7 @@ hardware evidence where a physical effect has no reliable readback.
 P0 source truth and target validation
 ├── documentation/support taxonomy
 ├── fan-sync capability correction
-├── installed helper API-v2/package readiness
+├── installed helper API-v3/package readiness
 ├── G615JMR Aura physical validation
 └── ASUS WMI fan/Auto/recovery validation
      │
@@ -76,7 +76,7 @@ Acceptance gate:
 
 ### P0.3 Validate installed privileged integration
 
-- Install the current API-v2 helper and current systemd, system-D-Bus, PolicyKit, and udev payload on
+- Install the current API-v3 helper and current systemd, system-D-Bus, PolicyKit, and udev payload on
   the target through a normal package/development-install path.
 - Confirm diagnostics distinguish missing, unreachable, incompatible, denied, cancelled, and
   unsupported states.
@@ -242,6 +242,6 @@ Acceptance gate:
 
 ## Recommended next stage
 
-Execute P0.2 through P0.5: correct the fan-sync capability mismatch, validate the installed API-v2
+Execute P0.2 through P0.5: correct the fan-sync capability mismatch, validate the installed API-v3
 integration, then perform the separately supervised Aura and ASUS WMI fan matrices. Persistent
 profiles and automation should wait for those gates rather than guessing at hardware behavior.

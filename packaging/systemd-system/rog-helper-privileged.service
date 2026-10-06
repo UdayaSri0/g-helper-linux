@@ -24,6 +24,7 @@ ProtectKernelTunables=no
 ReadWritePaths=/sys/devices/system/cpu /sys/class/hwmon -/sys/class/leds -/sys/class/power_supply -/sys/devices/platform/asus-nb-wmi
 RuntimeDirectory=rog-helper
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectKernelLogs=yes

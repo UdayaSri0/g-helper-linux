@@ -169,8 +169,11 @@ def main() -> int:
         "development privileged installer must build current helper source",
     )
     require(
-        all(value in dev_installer for value in ("SetAuraEffect", "GetCapabilities", '!= "2"')),
-        "development privileged installer must verify the live Aura API v2 contract",
+        all(
+            value in dev_installer
+            for value in ("SetAuraEffect", "RecoverFansIfArmed", "GetCapabilities", '!= "3"')
+        ),
+        "development privileged installer must verify the live privileged API v3 contract",
     )
     tarball_builder = text("packaging/scripts/build-tarball.sh")
     require(

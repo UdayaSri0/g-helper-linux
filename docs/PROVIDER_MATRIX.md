@@ -153,13 +153,18 @@ File: `crates/rog-providers/src/hwmon.rs`
   - raw `fan*_label` files are optional; when missing, the daemon/UI fall back to `Fan 1`, `Fan 2`, and so on
   - a detected fan input may still have no current RPM value, which is surfaced as unavailable rather than dropped from diagnostics
   - `pwmN`, `pwmN_enable`, and `fanN_target` are diagnostic candidates only; existence or writable file permissions do not establish safe hardware semantics
-  - the ASUS WMI `asus_custom_fan_curve` hwmon device is probed read-only for complete `pwmN_auto_pointM_{temp,pwm}` pairs and enable values
+  - ASUS WMI candidates are diagnosed read-only, but control and current-curve import require the
+    exact eight-pair layout, expected enable mode, canonical-device relationship, and labelled mapping
+  - verified current curves preserve raw PWM values and expose consistently rounded percentages;
+    reading never uses the privileged helper
   - a complete readable and validated ASUS WMI curve ABI can enable direct or typed privileged writes
   - generic hwmon fan writes remain withheld; only the exact ASUS WMI curve layout, ranges,
     fan/channel mapping, permissions, and firmware Auto restore contract may enable control
   - permission-denied and candidate paths remain diagnostics, not fatal startup errors
   - current priority is: verified directly writable ASUS WMI, typed helper for its permission denial,
     read-only telemetry/curve discovery, then unsupported diagnostics
+  - no verified ASUS hysteresis backend exists; application presets are UI drafts, and saved curves
+    remain outside this provider
 
 ## `cpu`
 

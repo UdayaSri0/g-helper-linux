@@ -65,7 +65,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetPrivilegedStatus` | none | `a{sv}` | Bounded optional-helper, compatibility, PolicyKit, authorization, and category diagnostics |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
-| `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
+| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves only for exactly verified ASUS WMI channels; never prompts or writes |
 | `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then the allow-listed G615JMR target through the typed helper, then sysfs brightness |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
@@ -80,9 +80,9 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
 | `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
 | `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
-| `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
-| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
-| `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
+| `SetFanSync` | `b` | `()` | Compatibility state only; not advertised on the current curve-only backend |
+| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Compatibility method; currently rejects because no verified manual-percent backend exists |
+| `ResetFansToAuto` | none | `()` | Requests all verified ASUS WMI channels return to Auto and reports any failure |
 
 ### `GetDaemonInfo` Response
 
@@ -203,7 +203,8 @@ than daemon startup failures.
 - Bus name: `io.github.roghelper.Privileged`
 - Object path: `/io/github/roghelper/Privileged`
 - Interface: `io.github.roghelper.Privileged1`
-- API version: `2` (version 2 adds the path-free high-level Aura effect operation)
+- API version: `3` (version 2 added path-free Aura effects; version 3 adds marker-gated fan Auto
+  recovery with a non-interactive PolicyKit check)
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
@@ -220,9 +221,15 @@ than daemon startup failures.
 | `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
 | `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
 | `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
+| `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: requires the caller to pass a non-interactive `fans.control` PolicyKit check, acts solely on root-owned armed semantic IDs, and can only restore Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 | `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
 | `SetBatteryChargeLimit` | `t` | `t` actual value | Validates 20..=100, discovers one exact Battery threshold internally, writes, and returns readback |
+
+Fan recovery marker replacement is atomic and durably synced. The helper remains resident while the
+marker is armed, `RuntimeDirectoryPreserve=yes` retains it across service restart and stop/start, and
+recovery clears it only after every recorded channel reaches Auto. If any channel is absent or fails,
+the exact recorded set remains armed for a later retry.
 
 `SetAuraEffect` accepts no path, device number, report/command ID, zone, or bytes. The helper
 re-discovers exactly one allow-listed `0b05:19b6` interface, verifies the G615JMR target's `G615JM`
@@ -319,10 +326,21 @@ Each fan map includes:
 - `supports_manual_rpm_target`
 - `supports_curve`
 - `supports_auto`
+- optional `curve_readback`, containing `source=backend_current`, `enable_mode`, eight converted
+  `points`, and eight lossless `raw_pwm` values
+- `rollback_available`
 - `backend`
 - `endpoints`, `notes`, `warnings`
 
 Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no verified backend is active. Candidate generic hwmon files never authorize a write.
+
+`GetFanCurves` returns `supported`, `reason`, and `curves`. Each curve row contains `fan_id`,
+`source`, `enable_mode`, `raw_pwm`, and `points`. The read uses no privileged method. Import Current
+is a UI draft operation; Reset Draft is local, while Restore Auto is the typed hardware action.
+`backend_current` identifies the readback origin only; it does not claim that firmware authored the
+curve or that the values are immutable factory defaults.
+Presets and hysteresis are not DBus hardware concepts: presets are local drafts and hysteresis is
+unsupported because there is no verified Linux ASUS ABI.
 
 ## `GetTelemetry` Response
 
@@ -544,8 +562,9 @@ Current accepted keys:
 Current behavior:
 
 - verified asusd Aura operations are preferred whenever that API exposes the requested control
-- when asusd is unavailable, the exact G615JMR target backend routes effect fields through
-  privileged API v2 `SetAuraEffect`; active asusd ownership suppresses native HID
+- when asusd is unavailable, the exact G615JMR target backend routes effect fields through the
+  current privileged API v3 `SetAuraEffect` method introduced in v2; active asusd ownership
+  suppresses native HID
 - brightness falls back to directly writable sysfs, then to `SetKeyboardBacklightBrightness(t)` on `rog-helper-privileged` only for the canonical ASUS WMI LED
 - brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
 - unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`

@@ -149,6 +149,16 @@ where
     }
 }
 
+async fn restore_fans_without_prompt(hwmon: &HwmonTelemetryProvider) -> rog_core::RogResult<()> {
+    match hwmon.set_fan_auto(None) {
+        Ok(()) => Ok(()),
+        Err(rog_core::RogError::PermissionDenied(_)) => privileged_client::recover_fans_if_armed()
+            .await
+            .map_err(map_privileged_fan_error),
+        Err(error) => Err(error),
+    }
+}
+
 fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
@@ -322,9 +332,22 @@ impl RogHelperDaemon {
             .clone();
         apply_fan_privilege_to_state(&mut fan_state, &privilege, &authorization);
         let control = self.read_control_state();
+        let observed_curve = fan_state.fans.iter().any(|fan| {
+            fan.curve_readback
+                .as_ref()
+                .is_some_and(|readback| readback.enable_mode == 1)
+        });
         fan_state.sync_enabled = control.fan_sync_enabled;
-        fan_state.mode = control.fan_mode;
-        fan_state.last_action = control.fan_last_action;
+        if control.fan_mode == FanControlMode::Auto && observed_curve {
+            // Report the kernel-observed mode without claiming that this
+            // daemon owns a curve configured before it started.
+            fan_state.mode = FanControlMode::Curve;
+            fan_state.last_action =
+                Some("Observed an active backend curve; this daemon did not apply it.".to_string());
+        } else {
+            fan_state.mode = control.fan_mode;
+            fan_state.last_action = control.fan_last_action;
+        }
         fan_state.active_boost_until_ms = control.fan_boost_until_ms;
         let mut guard = self.state.inner.write().expect("rwlock poisoned");
         guard.fan_state = fan_state;
@@ -408,10 +431,16 @@ impl RogHelperDaemon {
         last_action: impl Into<String>,
         boost_until_ms: Option<u64>,
     ) {
+        let last_action = last_action.into();
         let mut guard = self.state.control.write().expect("rwlock poisoned");
         guard.fan_mode = mode;
-        guard.fan_last_action = Some(last_action.into());
+        guard.fan_last_action = Some(last_action.clone());
         guard.fan_boost_until_ms = boost_until_ms;
+        drop(guard);
+        let mut state = self.state.inner.write().expect("rwlock poisoned");
+        state.fan_state.mode = mode;
+        state.fan_state.last_action = Some(last_action);
+        state.fan_state.active_boost_until_ms = boost_until_ms;
     }
 
     fn refresh_cpu_state(&self) -> rog_core::RogResult<()> {
@@ -601,16 +630,35 @@ impl RogHelperDaemon {
 
     fn get_fan_curves(&self) -> HashMap<String, OwnedValue> {
         let mut m = HashMap::new();
+        let state = self.read_state();
+        let curves = state
+            .fan_state
+            .fans
+            .iter()
+            .filter_map(|fan| {
+                fan.curve_readback.as_ref().map(|readback| {
+                    let mut row = fan_curve_readback_to_dbus(readback);
+                    row.insert(
+                        dbus_keys::fan_curves::FAN_ID.to_string(),
+                        ov(fan.id.clone()),
+                    );
+                    row
+                })
+            })
+            .collect::<Vec<_>>();
         m.insert(
             dbus_keys::fan_curves::SUPPORTED.to_string(),
-            OwnedValue::from(self.read_state().fan_state.caps.has_fan_curves),
+            OwnedValue::from(state.fan_state.caps.has_fan_curves),
         );
+        m.insert(dbus_keys::fan_curves::CURVES.to_string(), ov(curves));
         m.insert(
             dbus_keys::fan_curves::REASON.to_string(),
-            ov(
-                "Fan curve reading is backend-dependent and not exposed by the active backend yet."
-                    .to_string(),
-            ),
+            ov(if state.fan_state.caps.has_fan_curves {
+                "Current curves are read directly from verified ASUS WMI attributes; reading does not authorize or write hardware."
+            } else {
+                "No verified readable fan-curve backend is active."
+            }
+            .to_string()),
         );
         m
     }
@@ -1473,7 +1521,13 @@ async fn main() -> anyhow::Result<()> {
         caps.notes
             .push(format!("keyboard backlight probing failed: {err}"));
     }
-    let mut control_state = ControlState::default();
+    // Ownership starts empty. An active curve observed at startup may belong
+    // to firmware or another tool and must not be restored by this daemon on
+    // shutdown merely because it was observed.
+    let mut control_state = ControlState {
+        fan_mode: initial_fan_state.mode,
+        ..ControlState::default()
+    };
 
     if let Some(aura) = &aura {
         caps.endpoints.push(aura.endpoint_tag());
@@ -2054,7 +2108,23 @@ async fn main() -> anyhow::Result<()> {
 
                 match hwmon.fan_state() {
                     Ok(fan_state) => {
-                        let current_mode = daemon.read_control_state().fan_mode;
+                        let mut current_mode = daemon.read_control_state().fan_mode;
+                        let readbacks = fan_state
+                            .fans
+                            .iter()
+                            .filter_map(|fan| fan.curve_readback.as_ref())
+                            .collect::<Vec<_>>();
+                        if current_mode == FanControlMode::Curve
+                            && !readbacks.is_empty()
+                            && readbacks.iter().all(|readback| readback.enable_mode != 1)
+                        {
+                            daemon.update_fan_control_state(
+                                FanControlMode::Auto,
+                                "Backend readback returned to Auto/BIOS mode.",
+                                None,
+                            );
+                            current_mode = FanControlMode::Auto;
+                        }
                         let temp_missing = telemetry.cpu_temp_c.is_none() && telemetry.gpu_temp_c.is_none();
                         let critical_temp = telemetry
                             .cpu_temp_c
@@ -2074,7 +2144,7 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 "temperature telemetry disappeared"
                             };
-                            match hwmon.set_fan_auto(None) {
+                            match restore_fans_without_prompt(&hwmon).await {
                                 Ok(()) => {
                                     warnings.push(format!(
                                         "fan safety restore: {reason}; returned fans to Auto/BIOS mode"
@@ -2151,8 +2221,9 @@ async fn main() -> anyhow::Result<()> {
                 daemon.set_control_state(current_profile, current_gpu_mode, current_battery_limit);
                 daemon.set_telemetry(telemetry, warnings);
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("ctrl-c received; exiting");
+            signal = shutdown_signal() => {
+                signal.context("listen for shutdown signal")?;
+                info!("shutdown signal received; exiting");
                 if matches!(
                     daemon.read_control_state().fan_mode,
                     FanControlMode::ManualPercent
@@ -2160,7 +2231,7 @@ async fn main() -> anyhow::Result<()> {
                         | FanControlMode::Curve
                         | FanControlMode::FullSpeedBoost
                 ) {
-                    if let Err(err) = hwmon.set_fan_auto(None) {
+                    if let Err(err) = restore_fans_without_prompt(&hwmon).await {
                         warn!("fan auto restore on shutdown failed: {err}");
                     }
                 }
@@ -2170,6 +2241,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 fn now_ms() -> u64 {
@@ -3018,6 +3099,16 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY.to_string(),
         OwnedValue::from(fan.supports_auto),
     );
+    if let Some(readback) = &fan.curve_readback {
+        m.insert(
+            dbus_keys::FAN_INFO_CURVE_READBACK_KEY.to_string(),
+            ov(fan_curve_readback_to_dbus(readback)),
+        );
+    }
+    m.insert(
+        dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY.to_string(),
+        OwnedValue::from(fan.rollback_available),
+    );
     m.insert(
         dbus_keys::FAN_INFO_BACKEND_KEY.to_string(),
         ov(fan.backend.clone()),
@@ -3035,6 +3126,43 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         ov(fan.warnings.clone()),
     );
     m
+}
+
+fn fan_curve_readback_to_dbus(
+    readback: &rog_core::FanCurveReadback,
+) -> HashMap<String, OwnedValue> {
+    let points = readback
+        .curve
+        .points
+        .iter()
+        .map(|point| {
+            let mut row = HashMap::new();
+            row.insert(
+                dbus_keys::fan_curves::TEMP_C.to_string(),
+                OwnedValue::from(u64::from(point.temp_c)),
+            );
+            row.insert(
+                dbus_keys::fan_curves::SPEED_PERCENT.to_string(),
+                OwnedValue::from(u64::from(point.duty_percent)),
+            );
+            row
+        })
+        .collect::<Vec<_>>();
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::fan_curves::SOURCE.to_string(),
+        ov("backend_current".to_string()),
+    );
+    map.insert(
+        dbus_keys::fan_curves::ENABLE_MODE.to_string(),
+        OwnedValue::from(u64::from(readback.enable_mode)),
+    );
+    map.insert(
+        dbus_keys::fan_curves::RAW_PWM.to_string(),
+        ov(readback.raw_pwm.clone()),
+    );
+    map.insert(dbus_keys::fan_curves::POINTS.to_string(), ov(points));
+    map
 }
 
 fn insert_feature_access_to_dbus(
@@ -5341,6 +5469,37 @@ mod tests {
     }
 
     #[test]
+    fn fan_curve_readback_dbus_preserves_raw_values_and_source() {
+        let readback = rog_core::FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![FanPoint {
+                    temp_c: 40,
+                    duty_percent: 50,
+                }],
+            },
+            raw_pwm: vec![128],
+            enable_mode: 2,
+        };
+        let map = fan_curve_readback_to_dbus(&readback);
+        assert_eq!(
+            value_as_str(&map, dbus_keys::fan_curves::SOURCE),
+            "backend_current"
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_curves::ENABLE_MODE)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(2)
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_curves::RAW_PWM)
+                .cloned()
+                .and_then(|value| Vec::<u8>::try_from(value).ok()),
+            Some(vec![128])
+        );
+    }
+
+    #[test]
     fn setup_status_to_dbus_emits_structured_rows() {
         let status = SetupStatus {
             checked_at_ms: 42,
@@ -5857,6 +6016,28 @@ mod tests {
                 permission_denied
             );
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_fan_mapping_never_calls_privileged_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let error = with_fan_privileged_fallback(
+            || {
+                Err(rog_core::RogError::NotSupported(
+                    "unsafe fan mapping".to_string(),
+                ))
+            },
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::NotSupported(_)));
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

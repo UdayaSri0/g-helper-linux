@@ -16,7 +16,7 @@ Decoder rule: absent optional keys and keys with the wrong DBus type are treated
 | `GetSetupStatus` | setup status/row encoders | `setup_status_from_dbus` | None; `setup-check` uses the same core models directly | `DBUS_API.md` |
 | `GetFanCaps` | `fan_caps_to_dbus` | `fan_caps_from_dbus` | None | `DBUS_API.md` |
 | `GetFanState` | `fan_state_to_dbus`, `fan_info_to_dbus` | `fan_state_from_dbus`, `fan_info_from_dbus` | None | `DBUS_API.md` |
-| `GetFanCurves` | inline map in `get_fan_curves` | No current UI decoder | None | `DBUS_API.md` |
+| `GetFanCurves` | inline map in `get_fan_curves` | No standalone-method decoder; the UI decodes equivalent nested `GetFanState` readbacks | None | `DBUS_API.md` |
 | Lighting nested state | `lighting_state_to_dbus` | `lighting_from_dbus` | None; CLI probes providers directly | `DBUS_API.md` |
 | Configuration and CPU diagnostics | normalized TOML / plain string | DBus proxy call or UI-local presentation | None | `DBUS_API.md`, `CONFIGURATION.md` |
 
@@ -46,8 +46,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | Setup issue row | `severity s`, `title s`, `summary s`, `guidance s` | Unknown severity uses the domain fallback; strings empty. |
 | `GetFanCaps` / nested `fan_caps` | all matching `GetCaps` fan booleans/count/backend/endpoints/notes plus `fan_curve_readable b`, `fan_curve_writable b`, `fan_mapping_confidence s`, `warnings as` | Booleans `false`, count `0`, mapping `unknown`, strings/lists empty. RPM telemetry never implies write support. |
 | `GetFanState` | `fan_caps a{sv}`, `fans aa{sv}`, `mode s`, `sync_enabled b`, `warnings as`; optional `last_action s`, `active_boost_fan_id s`, `active_boost_until_ms t`, `active_curve_summary s` | Empty/read-only fan model, mode `read_only`, sync `false`, optionals absent. |
-| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping `unknown`, measurements absent. |
-| `GetFanCurves` | `supported b`, `reason s` | No current UI/CLI decoder. This response remains documented for external clients. |
+| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, optional `curve_readback a{sv}`, `rollback_available b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping `unknown`, measurements/readback absent. `curve_readback` uses the same row shape as `GetFanCurves`. |
+| `GetFanCurves` | `supported b`, `reason s`, `curves aa{sv}`; each curve row has `fan_id s`, `source s` (`backend_current`), `enable_mode t`, `raw_pwm ay`, and `points aa{sv}` with `temp_c t` and `speed_percent t` | No standalone-method UI/CLI decoder. The UI consumes the equivalent `curve_readback` nested in `GetFanState`; malformed or non-eight-point nested readbacks are discarded. `backend_current` records readback origin, not factory ownership. |
 | Lighting map | `backend s`, `backend_kind s`, `device s`, `brightness t`, `max_brightness t`, `can_set b`, `writable b`, `direct_writable b`, `privileged_writable b`, `authorization_required b`, `authorization s`, `privileged_helper_installed b`, `privileged_helper_reachable b`, `privileged_helper_compatible b`, `polkit_available b`, `privileged_lighting_category_available b`, `write_path_ready b`, optional `mode s`, `supported_modes as`, `supports_brightness b`, `supports_modes b`, `supports_rgb b`, `supports_argb b`, `supports_zones b`, `supports_per_key b`, optional `rgb_hex s`, `secondary_rgb_hex s`, `supports_speed b`, `supported_speeds as`, optional `speed s`, `supported_directions as`, optional `direction s`, `supported_zones as`, optional `active_zone s`, `apply_outcome s`, optional `last_action s`, `status s`, optional `last_error s`, `diagnostics_summary s`, `diagnostics_details s`, `fallback_reason s`, `unavailable_reason s`, `permission_warning s` | Backend/device/status use calm unknown labels, numeric values `0`, capabilities/writable/readiness false, lists empty, optional values absent. Compatibility inference enables brightness only when an older daemon reports `max_brightness > 0`, and modes only when it reports a non-empty mode list. RGB/ARGB/zones/per-key and privileged readiness are never inferred. |
 
 ## Non-map Responses and Setter Requests
@@ -78,7 +78,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 The complete public method descriptions and accepted setter values remain in [DBUS_API.md](DBUS_API.md).
 
-The separate privileged system API is version 2. Its native Aura surface is exactly
+The separate privileged system API is version 3. Its native Aura surface is exactly
 `SetAuraEffect(sssss) -> b`: mode, primary colour, secondary colour, speed, and direction. No path,
 zone, raw packet, report ID, or command ID crosses DBus. See `DBUS_API.md` for the external asusd
 6.3.8-6.4.0 signature allow-list and the privileged method inventory.

@@ -42,7 +42,7 @@ Implication:
 The 2026-08-21 installed-target audit verified the physical identity and descriptor again, but the
 installed package at that time contained an API-v1 helper and no Aura udev rule/alias. That explains
 the observed read-only UI; it is installation-path evidence, not physical colour-change evidence.
-Current source requires helper API v2 and validates the complete packaged payload before install.
+Current source requires helper API v3 and validates the complete packaged payload before install.
 
 This record describes the implementation allow-list and existing read-only discovery evidence. It
 does not satisfy the validation requirements below and must not be advertised as working hardware.
@@ -180,8 +180,8 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan curve backend available | `fan-caps` reports `has_fan_curves: true` | curve apply validates safe high-temperature points and rejects dangerous curves | `fan-caps`, DBus/API result, Fans screenshot |
-| fan restore Auto | any controllable fan backend | Return to Auto returns control to firmware/backend automatic mode | `fans`, Fans screenshot before/after |
+| fan curve backend available | exact verified ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply validates safe points | `fan-caps`, `GetFanCurves`, Fans screenshot |
+| fan restore Auto | exact verified ASUS WMI curve backend | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 
 ## Fan-Control Validation Fields
@@ -189,16 +189,26 @@ The rows below describe what the first release should eventually have evidence f
 Include these fields in each machine record when fan testing is relevant:
 
 - fan count detected
-- labels detected
+- semantic channel and exact kernel label
+- RPM and curve hwmon identity plus canonical-device relationship
 - RPM reading works
 - manual percent status (currently deliberately unsupported)
 - RPM target status (currently deliberately unsupported)
 - fan curve works
-- sync status (currently modeled but non-operational)
+- imported source, all eight raw PWM values, converted percentages, and enable mode
+- direct/helper route and authorization success/cancel/deny state
+- all eight post-write readbacks and enable-last result
+- rollback result and recovery-marker arm/clear/restart behavior
+- daemon/helper restart, suspend/resume, backend disappearance, and firmware-profile interaction
+- sync status (unsupported on the current verified curve backend)
 - boost status (currently deliberately unsupported)
 - restore Auto works
 - backend used
 - notes/warnings
+
+Keep `fan curve works` and `fan restore Auto works` as **Untested** until the supervised physical
+workflow in `FAN_CONTROL_DISCOVERY.md` is recorded. Compilation and fixture tests are not hardware
+validation.
 
 ## Lighting Validation Fields
 
