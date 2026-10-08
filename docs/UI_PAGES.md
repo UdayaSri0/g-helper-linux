@@ -283,6 +283,7 @@ Current behavior:
 - a live capability note for saved lighting effects and semantic fan roles when those fields exist
 - AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
 - a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
+- X11-only internal-panel refresh-rate discovery, current mode/rate, advertised same-mode rates, manual Apply, and unsupported-backend explanation
 - a confirmed Reset to Defaults action
 
 ### What it supports

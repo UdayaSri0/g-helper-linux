@@ -248,11 +248,13 @@ Current state:
 
 ### Linux-native convenience controls
 
-Research-only and currently missing:
+Status after Prompt 07:
 
-- display refresh discovery/control through an explicit DRM, Wayland, or compositor contract
+- manual internal-display refresh discovery/control through X11 RandR only; Wayland and
+  AC/Battery switching remain unavailable until a reliable session-bound contract exists
 - global hotkeys that invoke existing semantic daemon actions
-- keyboard timeout control through a verified Linux backend
+- keyboard timeout control through a verified Linux backend (no timeout ABI found; software
+  idle behavior is omitted to avoid conflict with desktop power management)
 
 ## Priorities
 

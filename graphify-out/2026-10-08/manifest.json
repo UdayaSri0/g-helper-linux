@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
-    "mtime": 1790912091.2126853,
-    "ast_hash": "ab8a524898c183d08d03d3fba0e16619",
+    "mtime": 1791446147.465968,
+    "ast_hash": "5db7551e5753bc13b0794606f8a99f06",
     "semantic_hash": ""
   },
   "crates/rog-core/src/error.rs": {
@@ -30,13 +30,13 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/policy.rs": {
-    "mtime": 1786565577.9232118,
-    "ast_hash": "9a640d5f959f6dde1d137c26966d0b86",
+    "mtime": 1791446668.4612513,
+    "ast_hash": "bd3a9636cd383b7704d1e766265088d4",
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1791445393.1082473,
-    "ast_hash": "4d16a74138a8f810fa15766e45e29e87",
+    "mtime": 1791446770.055514,
+    "ast_hash": "5df0c570c58f501222b36571e24e6727",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1791445334.2050145,
-    "ast_hash": "19da40b217af63edd445d189234b8b87",
+    "mtime": 1791447424.8755279,
+    "ast_hash": "a4f25fe65faa014d5ed827cac0ec0bc8",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -230,8 +230,8 @@
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1791445167.0681577,
-    "ast_hash": "d375579db8c6d2c87e234380219ad3b8",
+    "mtime": 1791446368.053839,
+    "ast_hash": "60c0bfdc22908f9ca6e1500a58a364c7",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -245,13 +245,13 @@
     "semantic_hash": ""
   },
   "docs/FEATURE_MATRIX.md": {
-    "mtime": 1791445184.548029,
-    "ast_hash": "e7bb18c7c7a00301e64fd46513385648",
+    "mtime": 1791447480.4432807,
+    "ast_hash": "9f29d5ee74c0146f2f56a226a3ac53ff",
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1791445206.3111637,
-    "ast_hash": "3e54b4a3a808b075e4989661a8786af3",
+    "mtime": 1791447480.4442809,
+    "ast_hash": "15743c7e0c9d126412779e52530ac4b1",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -285,8 +285,8 @@
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
-    "mtime": 1791445350.0139728,
-    "ast_hash": "aa5d1b8e6fabc6d0213c58077dcfefb0",
+    "mtime": 1791447480.4432807,
+    "ast_hash": "15a9a7dc3bcbdb3aaf201c988c7f61d4",
     "semantic_hash": ""
   },
   "docs/TROUBLESHOOTING.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1791445202.6576684,
-    "ast_hash": "163a23d1c66ffcb0d31d6b9a22ab09a9",
+    "mtime": 1791447480.4432807,
+    "ast_hash": "cdb514affe9315b94c939bdfb186107b",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -495,8 +495,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/config.rs": {
-    "mtime": 1791445393.1062472,
-    "ast_hash": "3b837fd0b4d05fba6f37c4bf95aae805",
+    "mtime": 1791446818.5813444,
+    "ast_hash": "bd2dad3a3b3db37134859392ceddae3a",
     "semantic_hash": ""
   },
   "graphify-out/memory/query_20260812_200206_implement_robust_persistent_configuration_and_a_de.md": {
@@ -615,13 +615,13 @@
     "semantic_hash": ""
   },
   "docs/GHELPER_REFERENCE_AUDIT.md": {
-    "mtime": 1790779301.761566,
-    "ast_hash": "220b68f1d4f3d830d222bd745ace9c01",
+    "mtime": 1791447532.7580235,
+    "ast_hash": "7a495d8c423621f0a1bb671f28516510",
     "semantic_hash": ""
   },
   "docs/IMPLEMENTATION_PRIORITY.md": {
-    "mtime": 1790933039.4173954,
-    "ast_hash": "9bbc9cd3bbb26a97721cec645ed646aa",
+    "mtime": 1791447532.7570236,
+    "ast_hash": "1658cc3ea5d749f4ac1541607f271173",
     "semantic_hash": ""
   },
   "docs/releases/v0.3.1-readiness.md": {
@@ -632,6 +632,16 @@
   "docs/releases/v0.3.1.md": {
     "mtime": 1790779301.7622957,
     "ast_hash": "f955892594fb79b5e73a217190070909",
+    "semantic_hash": ""
+  },
+  "crates/rog-ui/src/display.rs": {
+    "mtime": 1791447563.3194716,
+    "ast_hash": "f5e55a26c6a7ff4f70137f42399859ce",
+    "semantic_hash": ""
+  },
+  "docs/DISPLAY_POWER_DISCOVERY.md": {
+    "mtime": 1791447480.4432807,
+    "ast_hash": "871c218568dd53dbba3b20700e7cc215",
     "semantic_hash": ""
   }
 }

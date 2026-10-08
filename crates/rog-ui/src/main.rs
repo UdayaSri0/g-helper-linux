@@ -33,6 +33,7 @@ use tracing::{debug, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
 mod dbus_decode;
+mod display;
 mod fan_widgets;
 mod shell;
 mod theme;
@@ -274,6 +275,11 @@ struct SharedUiState {
     settings: AppConfig,
     automation_status: AutomationUiStatus,
     pending_resume_automation: bool,
+    display_snapshot: display::DisplaySnapshot,
+    display_draft_rate: Option<f64>,
+    pending_display_refresh: bool,
+    pending_display_apply: Option<f64>,
+    display_action_in_progress: bool,
     pending_config_save: Option<AppConfig>,
     pending_config_reset: bool,
     selected_saved_profile_id: Option<String>,
@@ -347,6 +353,19 @@ impl Default for SharedUiState {
             settings: AppConfig::default(),
             automation_status: AutomationUiStatus::default(),
             pending_resume_automation: false,
+            display_snapshot: display::DisplaySnapshot {
+                session_type: "unknown".into(),
+                backend: "checking".into(),
+                internal_output: None,
+                current_mode: None,
+                current_rate: None,
+                supported_rates: Vec::new(),
+                reason: "Display capabilities have not been checked yet.".into(),
+            },
+            display_draft_rate: None,
+            pending_display_refresh: true,
+            pending_display_apply: None,
+            display_action_in_progress: false,
             pending_config_save: None,
             pending_config_reset: false,
             selected_saved_profile_id: None,
@@ -3160,6 +3179,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     settings_page.append(&lifecycle_group);
 
+    let display_group = adw::PreferencesGroup::builder()
+        .title("Internal Display Refresh Rate")
+        .description("X11 RandR only. Changes are manual, limited to advertised rates for the current panel mode, and are never applied by AC/Battery automation.")
+        .build();
+    let display_backend = pref_value_row(&display_group, "Session backend", false);
+    let display_panel = pref_value_row(&display_group, "Internal panel", false);
+    let display_rate_combo = gtk::ComboBoxText::new();
+    style_combo_control(&display_rate_combo);
+    let display_syncing = Rc::new(std::cell::Cell::new(false));
+    let display_rate_row = adw::ActionRow::builder()
+        .title("Refresh rate")
+        .subtitle("Only rates advertised for the current resolution are offered.")
+        .build();
+    display_rate_row.add_suffix(&display_rate_combo);
+    display_rate_row.set_activatable(false);
+    display_group.add(&display_rate_row);
+    let display_refresh_button = gtk::Button::with_label("Refresh");
+    style_apply_button(&display_refresh_button);
+    let display_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&display_apply_button);
+    let display_action_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    display_action_box.append(&display_refresh_button);
+    display_action_box.append(&display_apply_button);
+    let display_action_row = adw::ActionRow::builder()
+        .title("Display mode")
+        .subtitle(
+            "The app will verify the result and try to restore the previous rate if it fails.",
+        )
+        .build();
+    display_action_row.add_suffix(&display_action_box);
+    display_action_row.set_activatable(false);
+    display_group.add(&display_action_row);
+    let display_diagnostics = gtk::Label::new(Some("Checking display support…"));
+    display_diagnostics.set_xalign(0.0);
+    display_diagnostics.set_wrap(true);
+    display_diagnostics.add_css_class("dim-label");
+    display_group.add(&display_diagnostics);
+    settings_page.append(&display_group);
+
     let dashboard_settings_group = adw::PreferencesGroup::builder()
         .title("Dashboard")
         .description("Choose which optional dashboard areas are visible.")
@@ -3546,6 +3604,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     support_button.set_sensitive(app_metadata.repository_url.is_some());
     report_issue_button.set_sensitive(app_metadata.issues_url.is_some());
 
+    {
+        let shared = shared.clone();
+        display_refresh_button.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                if !state.display_action_in_progress {
+                    state.pending_display_refresh = true;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = display_syncing.clone();
+        display_rate_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let rate = combo.active_id().and_then(|id| id.parse::<f64>().ok());
+            if let Ok(mut state) = shared.lock() {
+                state.display_draft_rate = rate;
+                state.mark_render_dirty();
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        display_apply_button.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                if !state.display_action_in_progress
+                    && state.display_snapshot.supported()
+                    && state.display_draft_rate.is_some()
+                {
+                    state.pending_display_apply = state.display_draft_rate;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
     {
         let shared = shared.clone();
         close_behavior_combo.connect_changed(move |combo| {
@@ -5801,6 +5898,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             daemon_error,
             settings,
             automation_status,
+            display_snapshot,
+            display_draft_rate,
+            display_action_in_progress,
             selected_saved_profile_id,
             saved_profile_draft,
             saved_profile_action_in_progress,
@@ -5865,6 +5965,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.daemon_error.clone(),
                 st.settings.clone(),
                 st.automation_status.clone(),
+                st.display_snapshot.clone(),
+                st.display_draft_rate,
+                st.display_action_in_progress,
                 st.selected_saved_profile_id.clone(),
                 st.saved_profile_draft.clone(),
                 st.saved_profile_action_in_progress,
@@ -5930,6 +6033,51 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         close_behavior_combo.set_active_id(Some(settings.ui.close_behavior.id()));
         launch_on_login_switch.set_active(settings.ui.launch_on_login);
         start_minimized_switch.set_active(settings.ui.start_minimized_to_tray);
+        display_backend.set_text(&format!(
+            "{} ({})",
+            display_snapshot.backend, display_snapshot.session_type
+        ));
+        let panel_summary = match (
+            display_snapshot.internal_output.as_deref(),
+            display_snapshot.current_mode.as_deref(),
+            display_snapshot.current_rate,
+        ) {
+            (Some(output), Some(mode), Some(rate)) => format!("{output} · {mode} · {rate:.2} Hz"),
+            (Some(output), Some(mode), _) => {
+                format!("{output} · {mode} · current rate unavailable")
+            }
+            (Some(output), None, _) => format!("{output} · current mode unavailable"),
+            _ => "Unavailable".into(),
+        };
+        display_panel.set_text(&panel_summary);
+        display_syncing.set(true);
+        display_rate_combo.remove_all();
+        for rate in &display_snapshot.supported_rates {
+            let rate_id = format!("{rate:.2}");
+            display_rate_combo.append(Some(&rate_id), &format!("{rate:.2} Hz"));
+        }
+        let selected_display_rate = display_draft_rate.or(display_snapshot.current_rate);
+        let selected_display_rate_id = selected_display_rate.map(|rate| format!("{rate:.2}"));
+        display_rate_combo.set_active_id(selected_display_rate_id.as_deref());
+        display_syncing.set(false);
+        display_rate_combo
+            .set_sensitive(display_snapshot.supported() && !display_action_in_progress);
+        display_refresh_button.set_sensitive(!display_action_in_progress);
+        display_apply_button.set_sensitive(
+            display_snapshot.supported()
+                && !display_action_in_progress
+                && display_draft_rate.is_some_and(|rate| {
+                    display_snapshot
+                        .current_rate
+                        .is_some_and(|current| (current - rate).abs() >= 0.01)
+                }),
+        );
+        display_apply_button.set_label(if display_action_in_progress {
+            "Applying…"
+        } else {
+            "Apply"
+        });
+        display_diagnostics.set_text(&display_snapshot.reason);
         remember_charge_switch.set_active(settings.controls.preferred_charge_limit.is_some());
         preferred_charge_spin.set_sensitive(settings.controls.preferred_charge_limit.is_some());
         if let Some(limit) = settings.controls.preferred_charge_limit {
@@ -8640,6 +8788,59 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 state.pending_toast = Some((error, true));
                             }
                         }
+                    }
+                }
+
+                let pending_display_refresh = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_display_refresh))
+                    .unwrap_or(false);
+                if pending_display_refresh {
+                    let snapshot = tokio::task::spawn_blocking(display::discover)
+                        .await
+                        .unwrap_or_else(|error| display::DisplaySnapshot {
+                            session_type: "unknown".into(),
+                            backend: "unavailable".into(),
+                            internal_output: None,
+                            current_mode: None,
+                            current_rate: None,
+                            supported_rates: Vec::new(),
+                            reason: format!("Display discovery worker failed: {error}"),
+                        });
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_draft_rate = snapshot.current_rate;
+                        state.display_snapshot = snapshot;
+                        state.mark_render_dirty();
+                    }
+                }
+
+                let pending_display_apply = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut state| state.pending_display_apply.take());
+                if let Some(rate) = pending_display_apply {
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_action_in_progress = true;
+                        state.mark_render_dirty();
+                    }
+                    let result = tokio::task::spawn_blocking(move || display::apply_refresh_rate(rate))
+                        .await
+                        .unwrap_or_else(|error| Err(format!("Display operation worker failed: {error}")));
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_action_in_progress = false;
+                        match result {
+                            Ok(snapshot) => {
+                                state.display_draft_rate = snapshot.current_rate;
+                                state.display_snapshot = snapshot;
+                            }
+                            Err(error) => {
+                                let mut snapshot = display::discover();
+                                snapshot.reason = error;
+                                state.display_snapshot = snapshot;
+                            }
+                        }
+                        state.mark_render_dirty();
                     }
                 }
 

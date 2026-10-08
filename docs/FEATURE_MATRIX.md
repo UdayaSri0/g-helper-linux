@@ -44,9 +44,9 @@ This matrix reflects the current implementation in the repository today. It is b
 | Persistent fan curves | Named profile config | Save only | Implemented, inert | Semantic CPU/GPU/Mid targets, exactly eight safety-validated points, provenance, and per-curve schema version; saved curves do not prove current hardware support |
 | Automation rules | Named presets + daemon policy runtime | Read + Write | Implemented, limited safe subset | Applies only asusd platform profile and asusd/direct-writable battery limit; privileged, fan, lighting, and GPU fields are skipped (GPU stays manual/pending) |
 | Named hardware profiles / presets | `rog-core` config model + daemon profile CRUD + Settings | Save only | Implemented, inert | Named presets persist semantic desired settings and stable IDs; saving, duplicating, renaming, and deleting never applies hardware; curves/effects remain subject to live capability and safety checks |
-| Display refresh control | None | Read + Write | Missing | Requires Linux-native DRM/Wayland/compositor discovery and a separately verified write contract |
+| Display refresh control | `rog-ui` X11 RandR session backend | Read + Write | Implemented, session-limited | Manual only; internal panel, current mode, and rates are discovered live; same-mode advertised rates only; best-effort previous-rate rollback; Wayland and AC/Battery automation unsupported |
 | Global hotkeys | None | Write | Missing | Tray actions exist, but no global shortcut or input integration is implemented |
-| Keyboard timeout | None | Read + Write | Missing | Research-only until a verified Linux backend exists |
+| Keyboard timeout | None | Read + Write | Missing | ASUS WMI brightness sysfs exposes no timeout; software idle behavior is omitted to avoid conflicting with desktop power management |
 
 ## Notes
 

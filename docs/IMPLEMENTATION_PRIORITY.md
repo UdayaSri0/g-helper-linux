@@ -167,17 +167,20 @@ Acceptance gate:
 
 ### P2.1 Display refresh controls
 
-- Begin with read-only connector/mode/current-refresh discovery.
-- Choose a session-scoped compositor, portal, or DRM contract with clear ownership; avoid arbitrary
-  shell commands and never add display operations to the root helper merely for convenience.
-- Handle multiple displays, missing internal panels, unsupported sessions, and mode disappearance.
-- Add AC/battery refresh automation only after the P1 policy runtime is stable.
+- Implemented in the UI for X11 sessions through the installed XRandR client: live internal-panel,
+  current-mode, and same-mode rate discovery; re-discovery before a manual change; readback and
+  best-effort restoration. It does not use shell invocation or the root helper.
+- Wayland/compositor control, AC/battery refresh automation, and multiple-internal-panel targeting
+  remain unsupported. Automation needs a session-bound contract integrated with the existing P1
+  policy runtime; it must not add a second watcher.
 
 Acceptance gate:
 
-- Fixtures/integration tests cover multiple connectors and unsupported Wayland/X11 sessions.
-- Apply has readback or an authoritative compositor result and cannot target an inferred display.
-- Failure leaves the previous mode active and visible in diagnostics.
+- Fixtures cover multiple connectors, external-only and unsupported Wayland sessions, unsupported
+  rates, successful readback, and mode-failure rollback. Physical mode-change validation remains
+  required before claiming hardware support.
+- Apply can target only one uniquely identified connected internal panel and a currently advertised
+  rate for its active resolution.
 
 ### P2.2 Global shortcuts and ASUS hotkeys
 
