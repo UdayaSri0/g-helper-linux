@@ -4,6 +4,22 @@ Linux-native control app for ASUS ROG laptops, built as a Rust workspace with a 
 
 This repository was reviewed and its markdown docs were refreshed against the current source code. When documentation and source disagree in the future, prefer the implementation in `crates/` and update the docs.
 
+## Screenshots
+
+These are real application captures from an ASUS ROG test system. Available controls vary with
+detected hardware, installed providers, and permissions; read-only states remain visible.
+
+<table>
+<tr>
+<td width="50%"><strong>Dashboard</strong><br><img src="assets/screenshots/dashboard.png" alt="rog-helper Dashboard"></td>
+<td width="50%"><strong>Fan Control</strong><br><img src="assets/screenshots/fans.png" alt="rog-helper Cooling and fan monitoring"></td>
+</tr>
+<tr>
+<td width="50%"><strong>Lighting</strong><br><img src="assets/screenshots/lighting.png" alt="rog-helper Lighting controls"></td>
+<td width="50%"><strong>CPU Telemetry</strong><br><img src="assets/screenshots/cpu.png" alt="rog-helper CPU telemetry and controls"></td>
+</tr>
+</table>
+
 ## Overview
 
 `rog-helper` is designed to provide a single Linux-native control surface for ASUS laptop features that are otherwise split across multiple services and system interfaces. Packaged installs also include an optional, PolicyKit-gated root helper for a small set of typed hardware writes; the UI and session daemon remain unprivileged.
@@ -13,7 +29,8 @@ The current codebase implements:
 - A GTK4/libadwaita desktop application with tray support via `ksni`
 - A session-DBus daemon (`rog-helperd`) that owns current state and control actions
 - Provider modules for `asusd`, `supergfxd`, `UPower`, `hwmon`, CPU sysfs, keyboard backlight sysfs, battery sysfs, memory telemetry, DBus diagnostics, and setup-readiness checks
-- A CLI (`rog-helper`) for diagnostics and environment inspection
+- A CLI (`rog-helper`) for diagnostics, environment inspection, supervised validation, and
+  daemon-backed semantic actions suitable for desktop shortcut bindings
 
 The project is clearly beyond an initial scaffold, but it is still an early implementation. Several core features are working today, while other planned features are still missing or only partially modeled.
 
@@ -137,6 +154,15 @@ Current source-backed features include:
 - Lighting UI 2.0 with capability-driven effects, validated hex colour fields and swatches, a
   keyboard-shaped local preview, Current/Pending state, local Reset, and dirty-only Apply;
   authentication is requested only when Apply needs the typed privileged route
+- Named semantic presets with create, duplicate, rename, update, and confirmed delete; saving a
+  preset changes configuration only and never applies hardware
+- Opt-in daemon-owned AC/Battery automation with stable-source debounce, duplicate suppression,
+  persistent manual override, and explicit Resume; automatic application is intentionally limited
+  to platform profiles and non-interactive supported battery-limit routes
+- Manual internal-display refresh-rate selection through the active X11 RandR session backend;
+  Wayland and automatic AC/Battery refresh switching remain unsupported
+- Desktop-owned shortcut support through semantic daemon-backed CLI actions for profile cycling,
+  keyboard brightness, and automation pause/resume; ROG Helper does not capture global input
 - `rog-helper privileged-status` reports both daemon/helper compatibility and the installed
   binary, D-Bus, systemd, PolicyKit, udev, Aura alias, descriptor, and protocol readiness
 
@@ -242,8 +268,8 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 Direct `.deb` install:
 
 ```bash
-sha256sum -c rog-helper-0.3.1-SHA256SUMS.txt --ignore-missing
-sudo apt install ./rog-helper_0.3.1_amd64.deb
+sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
+sudo apt install ./rog-helper_0.4.0_amd64.deb
 rog-helper privileged-status
 ```
 
@@ -276,8 +302,8 @@ systemctl --user daemon-reload
 Direct `.rpm` install:
 
 ```bash
-sha256sum -c rog-helper-0.3.1-RPM-SHA256SUMS.txt --ignore-missing
-sudo dnf install ./rog-helper-0.3.1-1.x86_64.rpm
+sha256sum -c rog-helper-0.4.0-RPM-SHA256SUMS.txt --ignore-missing
+sudo dnf install ./rog-helper-0.4.0-1.x86_64.rpm
 ```
 
 Optional user-session daemon enablement:
@@ -388,9 +414,9 @@ sudo apt install rog-helper
 Download the AppImage and verify it before first run:
 
 ```bash
-sha256sum -c rog-helper-0.3.1-SHA256SUMS.txt --ignore-missing
-chmod +x rog-helper-v0.3.1-x86_64.AppImage
-./rog-helper-v0.3.1-x86_64.AppImage
+sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
+chmod +x rog-helper-v0.4.0-x86_64.AppImage
+./rog-helper-v0.4.0-x86_64.AppImage
 ```
 
 The AppImage bundles:

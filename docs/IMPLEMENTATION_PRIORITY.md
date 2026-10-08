@@ -1,7 +1,15 @@
-# Implementation Priority
+# Implementation Priority (Historical v0.3.1 Plan)
 
 Baseline: `0145a261dcbfe57bea452c3256d3b8caef49ff0b` (v0.3.1)  
 Prepared: 2026-09-30
+
+> **Historical planning record:** The stages and acceptance gates below describe the plan at the
+> pinned v0.3.1 baseline; they are not a current implementation-status list. Named profiles,
+> limited opt-in AC/Battery automation, manual X11 refresh control, semantic shortcut commands,
+> and the redacted issue report have since been implemented. Use
+> [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [ROADMAP.md](ROADMAP.md), and
+> [FINAL_INTEGRATION_REVIEW.md](FINAL_INTEGRATION_REVIEW.md) for current status and validation
+> boundaries.
 
 This backlog is ordered by safety dependencies and user value, not novelty. A stage may move forward
 only when its acceptance gate is satisfied. “Implemented in code” never substitutes for supervised

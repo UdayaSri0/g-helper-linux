@@ -7,7 +7,7 @@ certification. No UI or session-daemon process runs as root.
 ## Prompt 09 integration addendum
 
 This addendum reviews the working-tree integration changes based on `Dev` commit
-`c56648526c2e3f10501503b4c3480fddba47e5b1`. The workspace package version is still 0.3.1;
+`c56648526c2e3f10501503b4c3480fddba47e5b1`. At that review point the workspace package version was 0.3.1;
 the baseline commit subject `v0.3.9` is not an artifact version. Earlier check counts and dated
 observations in this document are historical evidence, not this candidate's validation totals.
 
