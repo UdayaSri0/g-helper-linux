@@ -30,6 +30,11 @@ Shared presentation rules:
 - semantic chips consistently distinguish available, informational, attention, and unavailable states
 - long capability, endpoint, and metadata values wrap instead of being silently truncated
 - page content uses restrained 20 px vertical rhythm and native GTK/Adwaita controls
+- support and access are separate: a verified feature may show Authentication required or
+  Authorization denied without being relabeled unsupported
+- fan counts are RPM endpoint counts, not claims about distinct physical fans
+- a fan value is numeric only while its timestamp is fresh; fresh zero displays `0 RPM`, while a
+  stale, malformed, unreadable, or removed source displays Unknown/Unavailable with its reason in diagnostics
 
 The implemented page set is:
 

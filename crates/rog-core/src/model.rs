@@ -33,12 +33,24 @@ pub struct TopProcessMem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanTelemetry {
+    #[serde(default)]
+    pub stable_id: String,
     pub hwmon_device: String,
     pub hwmon_path: String,
     pub input_path: String,
     pub raw_label: Option<String>,
     pub display_label: String,
     pub rpm: Option<u32>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub sampled_at_ms: u64,
+    #[serde(default)]
+    pub freshness: String,
+    #[serde(default)]
+    pub telemetry_available: bool,
+    #[serde(default)]
+    pub telemetry_reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +276,14 @@ pub struct FanInfo {
     #[serde(default)]
     pub mapping_confidence: FanMappingConfidence,
     pub current_rpm: Option<u32>,
+    #[serde(default)]
+    pub telemetry_source: String,
+    #[serde(default)]
+    pub sampled_at_ms: u64,
+    #[serde(default)]
+    pub freshness: String,
+    #[serde(default)]
+    pub telemetry_reason: String,
     pub min_rpm: Option<u32>,
     pub max_rpm: Option<u32>,
     pub current_percent: Option<u8>,
@@ -297,7 +317,11 @@ pub struct FanInfo {
 impl FanInfo {
     pub fn read_only_from_telemetry(index: u32, telemetry: &FanTelemetry) -> Self {
         Self {
-            id: format!("hwmon-fan-{index}"),
+            id: if telemetry.stable_id.is_empty() {
+                format!("hwmon-fan-{index}")
+            } else {
+                telemetry.stable_id.clone()
+            },
             index,
             label: telemetry.display_label.clone(),
             mapping_confidence: if telemetry.raw_label.is_some() {
@@ -306,6 +330,10 @@ impl FanInfo {
                 FanMappingConfidence::Unknown
             },
             current_rpm: telemetry.rpm,
+            telemetry_source: telemetry.source.clone(),
+            sampled_at_ms: telemetry.sampled_at_ms,
+            freshness: telemetry.freshness.clone(),
+            telemetry_reason: telemetry.telemetry_reason.clone(),
             min_rpm: None,
             max_rpm: None,
             current_percent: None,
@@ -1411,6 +1439,37 @@ pub struct LightingDiagnostics {
     pub recommended_action: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn native_aura_readiness_reason(
+    supported_count: usize,
+    asusd_owned: bool,
+    helper_compatible: bool,
+    lighting_category: bool,
+    polkit_available: bool,
+    alias_present: bool,
+    alias_matches: bool,
+) -> &'static str {
+    if supported_count == 0 {
+        "identity_mismatch"
+    } else if supported_count > 1 {
+        "ambiguous_candidates"
+    } else if asusd_owned {
+        "suppressed_by_asusd_owner"
+    } else if !helper_compatible {
+        "helper_incompatible_or_unreachable"
+    } else if !lighting_category {
+        "lighting_category_missing"
+    } else if !polkit_available {
+        "polkit_missing"
+    } else if !alias_present {
+        "aura_alias_missing"
+    } else if !alias_matches {
+        "aura_alias_mismatch"
+    } else {
+        "ready_for_supervised_write"
+    }
+}
+
 impl LightingDiagnostics {
     pub fn unknown() -> Self {
         Self {
@@ -2022,6 +2081,8 @@ pub struct DeviceCaps {
     pub fan_count: u32,
     pub fan_backend: String,
     #[serde(default)]
+    pub lighting_backend: String,
+    #[serde(default)]
     pub gpu_backend: String,
     #[serde(default)]
     pub battery_limit_backend: String,
@@ -2069,6 +2130,7 @@ impl DeviceCaps {
             has_fan_boost: false,
             fan_count: 0,
             fan_backend: "unknown".to_string(),
+            lighting_backend: "none".to_string(),
             gpu_backend: "none".to_string(),
             battery_limit_backend: "none".to_string(),
             battery_limit_direct_write: false,
@@ -2344,6 +2406,9 @@ impl PermissionKind {
 pub enum PermissionState {
     Unknown,
     Writable,
+    AuthorizationRequired,
+    AuthorizationDenied,
+    HelperMissing,
     ReadOnly,
     Unsupported,
     Unavailable,
@@ -2354,6 +2419,9 @@ impl PermissionState {
         match self {
             Self::Unknown => "unknown",
             Self::Writable => "writable",
+            Self::AuthorizationRequired => "authorization_required",
+            Self::AuthorizationDenied => "authorization_denied",
+            Self::HelperMissing => "helper_missing",
             Self::ReadOnly => "read_only",
             Self::Unsupported => "unsupported",
             Self::Unavailable => "unavailable",
@@ -2363,6 +2431,9 @@ impl PermissionState {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "writable" => Self::Writable,
+            "authorization_required" => Self::AuthorizationRequired,
+            "authorization_denied" => Self::AuthorizationDenied,
+            "helper_missing" => Self::HelperMissing,
             "read_only" => Self::ReadOnly,
             "unsupported" => Self::Unsupported,
             "unavailable" => Self::Unavailable,
@@ -2374,6 +2445,9 @@ impl PermissionState {
         match self {
             Self::Unknown => "Checking",
             Self::Writable => "Writable",
+            Self::AuthorizationRequired => "Administrator authentication required",
+            Self::AuthorizationDenied => "Authorization denied",
+            Self::HelperMissing => "Privileged helper missing",
             Self::ReadOnly => "Read-only",
             Self::Unsupported => "Unsupported",
             Self::Unavailable => "Unavailable",
@@ -2384,6 +2458,9 @@ impl PermissionState {
         match self {
             Self::Unknown => ContractStatus::Unknown,
             Self::Writable => ContractStatus::Available,
+            Self::AuthorizationRequired => ContractStatus::Available,
+            Self::AuthorizationDenied => ContractStatus::PermissionDenied,
+            Self::HelperMissing => ContractStatus::MissingDependency,
             Self::ReadOnly => ContractStatus::ReadOnly,
             Self::Unsupported => ContractStatus::Unsupported,
             Self::Unavailable => ContractStatus::Unavailable,
@@ -2494,7 +2571,10 @@ impl SetupStatus {
             .filter(|entry| {
                 matches!(
                     entry.state,
-                    PermissionState::ReadOnly | PermissionState::Unavailable
+                    PermissionState::AuthorizationDenied
+                        | PermissionState::HelperMissing
+                        | PermissionState::ReadOnly
+                        | PermissionState::Unavailable
                 )
             })
             .count();
@@ -3333,6 +3413,10 @@ mod tests {
             label: "Fan 1".to_string(),
             mapping_confidence: FanMappingConfidence::Unknown,
             current_rpm: Some(1000),
+            telemetry_source: "fixture".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_reason: "fresh_numeric".to_string(),
             min_rpm: None,
             max_rpm: None,
             current_percent: None,

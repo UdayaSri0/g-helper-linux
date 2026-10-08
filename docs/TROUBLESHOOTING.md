@@ -11,6 +11,32 @@ cargo run -p rog-cli -- setup-check
 The report verifies live APIs where possible and lists binary, systemd, DBus, and sysfs evidence.
 It does not elevate privileges or apply any repair automatically.
 
+## Cooling and access diagnostics
+
+Run discovery as the desktop user. Do not run the GUI with `sudo` and do not change sysfs or HID
+permissions broadly.
+
+```bash
+rog-helper privileged-status
+rog-helper sensors
+rog-helper fans
+rog-helper fan-caps
+rog-helper caps
+rog-helper lighting-diagnostics
+```
+
+Interpret fan rows as RPM endpoints. `fresh_numeric` plus `0` means the kernel returned a fresh
+numeric zero; `malformed_numeric`, `permission_denied`, `source_removed`, `read_error`, or an expired
+timestamp means Unknown/Unavailable. An unlabeled `acpi_fan` row is unverified telemetry and is not
+proof of another physical fan. Compare `source`, `stable_id`, and `sampled_at_ms` with a simultaneous
+read of `name`, `fan*_label`, `fan*_input`, and the canonical `device` link.
+
+Setup refreshes use non-authorizing helper probes. `authorization_required` means the typed helper
+route is ready and PolicyKit will be requested only after Apply. `authorization_denied` is the last
+result for that operation; it is not the same as unsupported. Missing `asusd` affects performance
+profiles, but a uniquely verified standard battery threshold may still provide charge-limit support.
+Missing `supergfxd` affects GPU switching only.
+
 For a consolidated issue attachment, use:
 
 ```bash
