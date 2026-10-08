@@ -284,7 +284,7 @@ Current content:
 - Dashboard: Advanced System Health, conditional NVMe card, Cooling Snapshot, and compact spacing
 - Control Preferences: preferred charge limit and last manual performance profile
 - Saved Profiles: create, duplicate, rename/save, and confirmed delete; the current editor stages a name, platform profile, and battery limit
-- Automation: an explicit notice that saved hardware preferences are not auto-applied
+- Automation: opt-in AC/Battery presets, optional battery threshold, daemon state/result, and explicit Resume after manual override
 - Reset: destructive-style button with confirmation that restores rog-helper defaults
 
 Current behavior:

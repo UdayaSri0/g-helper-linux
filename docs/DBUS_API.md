@@ -67,19 +67,30 @@ and colors, not backend packets. Unknown profile fields and future top-level con
 retained through read/serialize cycles. All profile methods are storage-only; they never call
 hardware setters, request PolicyKit authorization, or activate automatic policy.
 
+Automation preferences use the same version-3 XDG configuration. Rules are opt-in and disabled by
+default. The daemon waits for a power source to remain stable for five seconds, applies a rule only
+on a stable transition (or explicit Resume), and suppresses identical telemetry reapplication.
+Manual hardware actions persist a pause until `ResumeAutomation`. Automatic application currently
+supports only the asusd platform profile and charge limit through asusd or a directly writable
+standard power-supply endpoint. A charge-limit write requiring PolicyKit is reported and skipped
+without opening a prompt. Fan, lighting, and GPU preset fields are retained but skipped; GPU changes
+remain pending/manual because they may require logout or reboot. Per-component results distinguish
+applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
+
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
 | `GetDaemonInfo` | none | `a{sv}` | Read-only daemon API/package identity used to detect a stale user-session process after upgrade |
 | `GetConfiguration` | none | `s` | Returns normalized versioned TOML |
 | `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
 | `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
+| `ResumeAutomation` | none | `()` | Clears the persisted manual-override pause and reevaluates the current stable power rule |
 | `ListProfiles` | none | `a(ss)` | Lists profile IDs and names without hardware state or storage paths |
 | `GetProfile` | `s` ID | `s` TOML | Returns one saved semantic profile |
 | `CreateProfile` | `s` name, `s` settings TOML | `s` ID | Creates a profile; persists configuration only, never applies hardware |
 | `UpdateProfile` | `s` ID, `s` profile TOML | none | Saves a validated profile draft; immutable ID and case-insensitive unique name |
 | `DeleteProfile` | `s` ID | none | Deletes only the stored profile; no hardware action |
 | `GetCaps` | none | `a{sv}` | Returns the top-level device capability map |
-| `GetState` | none | `a{sv}` | Returns combined daemon state, including nested maps |
+| `GetState` | none | `a{sv}` | Returns combined daemon state, including nested automation state/result/explanation fields |
 | `GetTelemetry` | none | `a{sv}` | Returns the current telemetry snapshot |
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |

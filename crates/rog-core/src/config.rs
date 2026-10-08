@@ -920,7 +920,10 @@ mod tests {
                 battery_profile_id: Some("mobile".into()),
                 battery_threshold_percent: Some(25),
                 manual_override: true,
-                ..AutomationPreferences::default()
+                future_fields: BTreeMap::from([(
+                    "future_rule_option".into(),
+                    toml::Value::String("keep".into()),
+                )]),
             },
             ..AppConfig::default()
         };
@@ -954,7 +957,7 @@ mod tests {
     #[test]
     fn unknown_fields_are_tolerated() {
         let loaded = parse_config(
-            "version = 2\nfuture = 'ok'\n[ui]\nlaunch_on_login = true\nfuture_ui = 9\n",
+            "version = 3\nfuture = 'ok'\n[ui]\nlaunch_on_login = true\nfuture_ui = 9\n",
         );
         assert!(loaded.config.ui.launch_on_login);
         assert!(loaded.warnings.is_empty());
@@ -964,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_configuration_migrates_to_v2_without_changing_known_settings() {
+    fn v1_configuration_migrates_to_current_without_changing_known_settings() {
         let loaded = parse_config("version = 1\n[dashboard]\ncompact = true\n");
         assert_eq!(loaded.config.version, CONFIG_VERSION);
         assert!(loaded.config.dashboard.compact);
@@ -972,6 +975,21 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("Migrated configuration version 1")));
+    }
+
+    #[test]
+    fn v2_configuration_migrates_to_v3_with_automation_disabled() {
+        let loaded = parse_config(
+            "version = 2\n[controls]\nfan_sync_enabled = true\n[ui]\nlaunch_on_login = true\n",
+        );
+        assert_eq!(loaded.config.version, 3);
+        assert!(loaded.config.controls.fan_sync_enabled);
+        assert!(loaded.config.ui.launch_on_login);
+        assert!(!loaded.config.automation.enabled);
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Migrated configuration version 2")));
     }
 
     #[test]

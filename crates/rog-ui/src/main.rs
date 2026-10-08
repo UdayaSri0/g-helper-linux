@@ -77,6 +77,7 @@ trait Daemon1 {
     fn get_configuration(&self) -> zbus::Result<String>;
     fn set_configuration(&self, contents: &str) -> zbus::Result<()>;
     fn reset_configuration(&self) -> zbus::Result<String>;
+    fn resume_automation(&self) -> zbus::Result<()>;
     fn list_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
     fn get_profile(&self, id: &str) -> zbus::Result<String>;
     fn create_profile(&self, name: &str, settings_toml: &str) -> zbus::Result<String>;
@@ -271,6 +272,8 @@ struct SharedUiState {
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
     settings: AppConfig,
+    automation_status: AutomationUiStatus,
+    pending_resume_automation: bool,
     pending_config_save: Option<AppConfig>,
     pending_config_reset: bool,
     selected_saved_profile_id: Option<String>,
@@ -342,6 +345,8 @@ impl Default for SharedUiState {
             pending_toast: None,
             daemon_error: None,
             settings: AppConfig::default(),
+            automation_status: AutomationUiStatus::default(),
+            pending_resume_automation: false,
             pending_config_save: None,
             pending_config_reset: false,
             selected_saved_profile_id: None,
@@ -353,6 +358,27 @@ impl Default for SharedUiState {
             show_about: false,
             show_gpu_page: false,
             quit: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutomationUiStatus {
+    state: String,
+    explanation: String,
+    last_result: String,
+    last_transition_ms: Option<u64>,
+    last_profile_id: Option<String>,
+}
+
+impl Default for AutomationUiStatus {
+    fn default() -> Self {
+        Self {
+            state: "disabled".into(),
+            explanation: "Automation is disabled.".into(),
+            last_result: "No automatic profile has been applied this session.".into(),
+            last_transition_ms: None,
+            last_profile_id: None,
         }
     }
 }
@@ -3293,16 +3319,68 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let saved_profile_syncing = Rc::new(std::cell::Cell::new(false));
 
     let automation_group = adw::PreferencesGroup::builder()
-        .title("Automation")
-        .description("Automatic hardware changes are intentionally unavailable in this release.")
+        .title("AC / Battery Automation")
+        .description("After a stable power-source change, select a saved preset. Automation is opt-in; privileged, fan, lighting, and GPU actions are skipped.")
         .build();
-    let automation_row = adw::ActionRow::builder()
-        .title("Startup Hardware Actions")
-        .subtitle("Disabled — saved control preferences are never auto-applied at boot or login.")
+    let automation_enabled = gtk::Switch::new();
+    automation_enabled.set_valign(gtk::Align::Center);
+    automation_enabled.set_active(app_settings.automation.enabled);
+    let automation_enabled_row = adw::ActionRow::builder()
+        .title("Enable Automation")
+        .subtitle("Manual hardware controls pause automation until you resume it.")
         .build();
-    automation_row.set_activatable(false);
-    automation_group.add(&automation_row);
+    automation_enabled_row.add_suffix(&automation_enabled);
+    automation_enabled_row.set_activatable(false);
+    automation_group.add(&automation_enabled_row);
+    let automation_ac_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_ac_profile);
+    let automation_ac_row = adw::ActionRow::builder().title("AC Preset").build();
+    automation_ac_row.add_suffix(&automation_ac_profile);
+    automation_ac_row.set_activatable(false);
+    automation_group.add(&automation_ac_row);
+    let automation_battery_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_battery_profile);
+    let automation_battery_row = adw::ActionRow::builder().title("Battery Preset").build();
+    automation_battery_row.add_suffix(&automation_battery_profile);
+    automation_battery_row.set_activatable(false);
+    automation_group.add(&automation_battery_row);
+    let automation_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
+    style_spin_control(&automation_threshold, 0);
+    automation_threshold.set_numeric(true);
+    automation_threshold.set_value(
+        app_settings
+            .automation
+            .battery_threshold_percent
+            .unwrap_or(0) as f64,
+    );
+    let automation_threshold_row = adw::ActionRow::builder()
+        .title("Battery Threshold")
+        .subtitle("0 disables the condition; otherwise the Battery preset waits for this percentage or lower.")
+        .build();
+    automation_threshold_row.add_suffix(&automation_threshold);
+    automation_threshold_row.set_activatable(false);
+    automation_group.add(&automation_threshold_row);
+    let automation_state_label = gtk::Label::new(Some("Disabled"));
+    automation_state_label.set_xalign(0.0);
+    automation_state_label.set_wrap(true);
+    automation_state_label.add_css_class("title-4");
+    automation_group.add(&automation_state_label);
+    let automation_explanation_label = gtk::Label::new(Some("Automation is disabled."));
+    automation_explanation_label.set_xalign(0.0);
+    automation_explanation_label.set_wrap(true);
+    automation_explanation_label.add_css_class("dim-label");
+    automation_group.add(&automation_explanation_label);
+    let automation_result_label =
+        gtk::Label::new(Some("No automatic profile has been applied this session."));
+    automation_result_label.set_xalign(0.0);
+    automation_result_label.set_wrap(true);
+    automation_group.add(&automation_result_label);
+    let automation_resume = gtk::Button::with_label("Resume Automation");
+    automation_resume.add_css_class("suggested-action");
+    automation_resume.set_halign(gtk::Align::End);
+    automation_group.add(&automation_resume);
     settings_page.append(&automation_group);
+    let automation_syncing = Rc::new(std::cell::Cell::new(false));
 
     let reset_group = adw::PreferencesGroup::builder()
         .title("Reset")
@@ -3586,6 +3664,83 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 if let Ok(mut st) = shared.lock() {
                     st.pending_toast = Some((error, true));
                 }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_enabled.connect_state_set(move |_, enabled| {
+            if enabled {
+                let has_rules = shared.lock().is_ok_and(|state| {
+                    state.settings.automation.ac_profile_id.is_some()
+                        && state.settings.automation.battery_profile_id.is_some()
+                });
+                if !has_rules {
+                    if let Ok(mut state) = shared.lock() {
+                        state.pending_toast = Some((
+                            "Choose both AC and Battery presets before enabling automation.".into(),
+                            true,
+                        ));
+                        state.mark_render_dirty();
+                    }
+                    return glib::Propagation::Stop;
+                }
+            }
+            match persist_settings_change(&shared, |settings| settings.automation.enabled = enabled)
+            {
+                Ok(_) => glib::Propagation::Proceed,
+                Err(error) => {
+                    if let Ok(mut state) = shared.lock() {
+                        state.pending_toast = Some((error, true));
+                    }
+                    glib::Propagation::Stop
+                }
+            }
+        });
+    }
+    for (selector, is_ac) in [
+        (automation_ac_profile.clone(), true),
+        (automation_battery_profile.clone(), false),
+    ] {
+        let shared = shared.clone();
+        let syncing = automation_syncing.clone();
+        selector.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let selected = combo
+                .active_id()
+                .filter(|id| id.as_str() != "none")
+                .map(|id| id.to_string());
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                if is_ac {
+                    settings.automation.ac_profile_id = selected;
+                } else {
+                    settings.automation.battery_profile_id = selected;
+                }
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_threshold.connect_value_changed(move |spin| {
+            let value = spin.value().round() as u8;
+            let threshold = (value > 0).then_some(value);
+            let _ = persist_settings_change(&shared, |settings| {
+                settings.automation.battery_threshold_percent = threshold;
+            });
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_resume.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                state.pending_resume_automation = true;
+                state.mark_render_dirty();
             }
         });
     }
@@ -5645,6 +5800,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             pending_open_link,
             daemon_error,
             settings,
+            automation_status,
             selected_saved_profile_id,
             saved_profile_draft,
             saved_profile_action_in_progress,
@@ -5708,6 +5864,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.pending_open_link.take(),
                 st.daemon_error.clone(),
                 st.settings.clone(),
+                st.automation_status.clone(),
                 st.selected_saved_profile_id.clone(),
                 st.saved_profile_draft.clone(),
                 st.saved_profile_action_in_progress,
@@ -5787,6 +5944,56 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .as_deref()
                 .unwrap_or("none"),
         ));
+        automation_enabled.set_active(settings.automation.enabled);
+        automation_threshold
+            .set_value(settings.automation.battery_threshold_percent.unwrap_or(0) as f64);
+        automation_syncing.set(true);
+        for (selector, selected) in [
+            (
+                &automation_ac_profile,
+                settings.automation.ac_profile_id.as_deref(),
+            ),
+            (
+                &automation_battery_profile,
+                settings.automation.battery_profile_id.as_deref(),
+            ),
+        ] {
+            selector.remove_all();
+            selector.append(Some("none"), "Choose a preset…");
+            for profile in &settings.profiles {
+                selector.append(Some(&profile.id), &profile.name);
+            }
+            selector.set_active_id(selected.or(Some("none")));
+        }
+        automation_syncing.set(false);
+        let last_transition = automation_status
+            .last_transition_ms
+            .map(|timestamp| format_timestamp_local(timestamp as i64))
+            .unwrap_or_else(|| "none yet".into());
+        let power_source = match telemetry.as_ref().and_then(|sample| sample.power_source) {
+            Some(PowerSource::Ac) => "AC",
+            Some(PowerSource::Battery) => "Battery",
+            None => "Unknown",
+        };
+        let last_profile = automation_status
+            .last_profile_id
+            .as_deref()
+            .map(|id| {
+                settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or(id)
+            })
+            .unwrap_or("none yet");
+        automation_state_label.set_text(&format!(
+            "State: {} · Power: {power_source} · Last transition: {last_transition} · Last preset: {last_profile}",
+            automation_status.state,
+        ));
+        automation_explanation_label.set_text(&automation_status.explanation);
+        automation_result_label.set_text(&automation_status.last_result);
+        automation_resume.set_sensitive(automation_can_resume(&automation_status.state));
         saved_profile_syncing.set(true);
         saved_profile_select.remove_all();
         for profile in &settings.profiles {
@@ -8413,6 +8620,29 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     }
                 }
 
+                let resume_automation_requested = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_resume_automation))
+                    .unwrap_or(false);
+                if resume_automation_requested {
+                    match resume_automation().await {
+                        Ok(()) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.pending_toast = Some((
+                                    "Automation resumed. The daemon will evaluate the current power rule.".into(),
+                                    false,
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.pending_toast = Some((error, true));
+                            }
+                        }
+                    }
+                }
+
                 let pending_saved_profile_action = shared
                     .lock()
                     .ok()
@@ -8767,6 +8997,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         battery_limit,
                         lighting,
                         fan_state,
+                        automation_status,
                     )) => {
                         let summary = summary_from_state(&t, profile.as_deref(), gpu_mode.as_deref());
                         if let Some(h) = &tray_handle {
@@ -8835,6 +9066,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.fan_sync_edit
                                 .update_reported(Some(fan_state.sync_enabled));
                             st.fan_state = fan_state;
+                            st.automation_status = automation_status;
                             st.daemon_error = None;
                             st.mark_render_dirty();
                         }
@@ -9065,6 +9297,19 @@ async fn save_configuration(config: &AppConfig) -> Result<(), String> {
         .map_err(|error| format!("Unable to save settings through rog-helperd: {error}"))
 }
 
+async fn resume_automation() -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    proxy
+        .resume_automation()
+        .await
+        .map_err(|error| format!("Unable to resume automation through rog-helperd: {error}"))
+}
+
 async fn fetch_configuration() -> Result<AppConfig, String> {
     let conn = zbus::Connection::session()
         .await
@@ -9157,6 +9402,7 @@ async fn fetch_state() -> Result<
         Option<u8>,
         Option<LightingInfo>,
         FanState,
+        AutomationUiStatus,
     ),
     String,
 > {
@@ -9178,6 +9424,24 @@ async fn fetch_state() -> Result<
     let cpu_caps_map =
         dbus_decode::nested_map(&state, dbus_keys::state::CPU_CAPS).unwrap_or_default();
     let warnings = dbus_decode::strings(&state, dbus_keys::state::WARNINGS).unwrap_or_default();
+    let automation_map =
+        dbus_decode::nested_map(&state, dbus_keys::state::AUTOMATION).unwrap_or_default();
+    let automation_status = AutomationUiStatus {
+        state: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_STATE)
+            .unwrap_or_else(|| "disabled".into()),
+        explanation: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_EXPLANATION)
+            .unwrap_or_else(|| "Automation status is unavailable.".into()),
+        last_result: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_LAST_RESULT)
+            .unwrap_or_else(|| "No automatic result is available.".into()),
+        last_transition_ms: dbus_decode::unsigned(
+            &automation_map,
+            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
+        ),
+        last_profile_id: dbus_decode::string(
+            &automation_map,
+            dbus_keys::state::AUTOMATION_PROFILE_ID,
+        ),
+    };
     let profile = dbus_decode::string(&state, dbus_keys::state::PROFILE);
     let gpu_mode = dbus_decode::string(&state, dbus_keys::state::GPU_MODE);
     let battery_limit = dbus_decode::unsigned(&state, dbus_keys::state::BATTERY_LIMIT)
@@ -9249,6 +9513,7 @@ async fn fetch_state() -> Result<
         battery_limit,
         lighting,
         fan_state,
+        automation_status,
     ))
 }
 
@@ -14199,6 +14464,10 @@ fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
         .collect()
 }
 
+fn automation_can_resume(state: &str) -> bool {
+    matches!(state, "manual_override" | "blocked" | "error")
+}
+
 fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
     let curve = FanCurve {
         domain: FanDomain::Cpu,
@@ -14980,6 +15249,15 @@ mod tests {
         T: Into<Value<'static>>,
     {
         OwnedValue::try_from(value.into()).expect("OwnedValue conversion should succeed")
+    }
+
+    #[test]
+    fn automation_resume_is_available_for_paused_or_blocked_states() {
+        assert!(automation_can_resume("manual_override"));
+        assert!(automation_can_resume("blocked"));
+        assert!(automation_can_resume("error"));
+        assert!(!automation_can_resume("monitoring"));
+        assert!(!automation_can_resume("disabled"));
     }
 
     #[test]

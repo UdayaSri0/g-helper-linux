@@ -281,7 +281,8 @@ Current behavior:
 - named Saved Profiles with create, duplicate, rename/save, and confirmed delete
 - saved platform-profile and battery-limit fields; profile edits remain local until Save Changes
 - a live capability note for saved lighting effects and semantic fan roles when those fields exist
-- an explicit Automation section explaining that startup hardware actions are disabled
+- AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
+- a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
 - a confirmed Reset to Defaults action
 
 ### What it supports

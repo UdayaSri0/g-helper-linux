@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::PowerSource;
 
+pub fn battery_threshold_satisfied(
+    threshold_percent: u8,
+    battery_percent: Option<f32>,
+) -> Option<bool> {
+    battery_percent
+        .filter(|percent| percent.is_finite())
+        .map(|percent| percent <= f32::from(threshold_percent))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyConfig {
     /// Minimum time between applies (debounce window).
@@ -60,6 +69,9 @@ impl PolicyState {
             self.auto_enabled = enabled;
             self.candidate_power_source = None;
             self.candidate_since_ms = None;
+            if !enabled {
+                self.resume_pending = false;
+            }
         }
     }
 
@@ -228,6 +240,26 @@ mod tests {
     }
 
     #[test]
+    fn ac_battery_ac_transitions_each_emit_once_after_debounce() {
+        let mut state = PolicyState::new(PolicyConfig { debounce_ms: 1_000 });
+        state.set_enabled(true);
+        for (at_ms, source, expected) in [
+            (0, PowerSource::Ac, None),
+            (1_000, PowerSource::Ac, Some(PowerSource::Ac)),
+            (2_000, PowerSource::Battery, None),
+            (3_000, PowerSource::Battery, Some(PowerSource::Battery)),
+            (4_000, PowerSource::Ac, None),
+            (5_000, PowerSource::Ac, Some(PowerSource::Ac)),
+        ] {
+            let actions = state.observe_power_source(at_ms, Some(source));
+            let actual = actions.first().map(|action| match action {
+                PolicyAction::ApplyFor(source) => *source,
+            });
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn missing_power_sample_resets_candidate_without_fabricating_a_transition() {
         let mut state = PolicyState::new(PolicyConfig { debounce_ms: 1_000 });
         state.set_enabled(true);
@@ -240,5 +272,60 @@ mod tests {
             state.observe_power_source(1_800, Some(PowerSource::Ac)),
             vec![PolicyAction::ApplyFor(PowerSource::Ac)]
         );
+    }
+
+    #[test]
+    fn disabled_policy_never_emits_and_resume_is_explicit() {
+        let mut state = PolicyState::new(PolicyConfig { debounce_ms: 0 });
+        assert!(state
+            .observe_power_source(1_000, Some(PowerSource::Ac))
+            .is_empty());
+        state.set_enabled(true);
+        assert!(state
+            .observe_power_source(2_000, Some(PowerSource::Ac))
+            .is_empty());
+        assert_eq!(
+            state.observe_power_source(2_000, Some(PowerSource::Ac)),
+            vec![PolicyAction::ApplyFor(PowerSource::Ac)]
+        );
+        state.set_manual_override(true);
+        assert!(state
+            .observe_power_source(3_000, Some(PowerSource::Battery))
+            .is_empty());
+        state.resume();
+        assert_eq!(
+            state.observe_power_source(4_000, Some(PowerSource::Battery)),
+            vec![PolicyAction::ApplyFor(PowerSource::Battery)]
+        );
+        state.set_enabled(false);
+        state.resume();
+        assert!(state
+            .observe_power_source(5_000, Some(PowerSource::Ac))
+            .is_empty());
+    }
+
+    #[test]
+    fn persisted_manual_override_survives_reconstructed_runtime() {
+        let persisted = crate::AutomationPreferences {
+            enabled: true,
+            manual_override: true,
+            ..crate::AutomationPreferences::default()
+        };
+        let mut state = PolicyState::new(PolicyConfig::default());
+        state.set_enabled(persisted.enabled);
+        state.set_manual_override(persisted.manual_override);
+        for now in [0, 5_000, 10_000] {
+            assert!(state
+                .observe_power_source(now, Some(PowerSource::Ac))
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn battery_threshold_requires_finite_telemetry_and_includes_boundary() {
+        assert_eq!(battery_threshold_satisfied(25, Some(25.0)), Some(true));
+        assert_eq!(battery_threshold_satisfied(25, Some(26.0)), Some(false));
+        assert_eq!(battery_threshold_satisfied(25, None), None);
+        assert_eq!(battery_threshold_satisfied(25, Some(f32::NAN)), None);
     }
 }

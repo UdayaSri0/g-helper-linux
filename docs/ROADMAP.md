@@ -188,16 +188,16 @@ Still missing:
 
 ### Auto mode and policy automation
 
-Planned but missing at runtime:
+Implemented as an opt-in daemon-owned policy runtime:
 
-- daemon-side use of the `rog-core` policy model
-- AC/Battery rule application
-- manual override pause/resume flow
-- UI for auto rules
+- versioned AC/Battery preset rules, optional Battery percentage threshold, disabled by default
+- stable-source debounce, duplicate suppression, persistent manual override, and explicit Resume
+- automatic application is limited to asusd platform profile and asusd/direct-writable battery limit
+- PolicyKit-requiring, fan, lighting, and GPU changes are skipped; GPU remains manual because it may require logout/reboot
+- runtime reports per-component applied, unchanged, skipped, failed, and blocked results
 
-Note:
-
-- the policy model exists in `rog-core`, but it is not wired into `rog-helperd`
+Remaining limitation: the Battery threshold is a one-way activation condition for the selected
+Battery preset; it does not switch to a second preset when charge later rises above the threshold.
 
 ### Aura / RGB lighting
 
