@@ -311,6 +311,12 @@ pub mod fan_state {
     pub const ACTIVE_BOOST_UNTIL_MS: &str = "active_boost_until_ms";
     pub const ACTIVE_CURVE_SUMMARY: &str = "active_curve_summary";
     pub const WARNINGS: &str = "warnings";
+    pub const AUTOMATION: &str = "automation";
+    pub const AUTOMATION_STATE: &str = "state";
+    pub const AUTOMATION_LAST_TRANSITION_MS: &str = "last_transition_ms";
+    pub const AUTOMATION_PROFILE_ID: &str = "profile_id";
+    pub const AUTOMATION_EXPLANATION: &str = "explanation";
+    pub const AUTOMATION_LAST_RESULT: &str = "last_result";
 }
 
 pub mod setup {

@@ -45,9 +45,27 @@ This is the current design, not a placeholder.
   - updates preferences only; it never invokes a hardware setter
 - `ResetConfiguration() -> s`
   - atomically replaces the canonical file with safe defaults and returns normalized TOML
+- `ListProfiles() -> a(ss)`
+  - returns saved profile ID/name pairs only
+- `GetProfile(s id) -> s`
+  - returns one semantic profile as TOML; the storage path is never exposed
+- `CreateProfile(s name, s settings_toml) -> s id`
+  - validates and creates a named profile with a daemon-generated stable ID
+- `UpdateProfile(s id, s profile_toml) -> ()`
+  - validates a complete profile replacement; the profile ID cannot be changed
+- `DeleteProfile(s id) -> ()`
+  - removes the preset only and clears a preferred-profile reference if present
 
 The daemon is the only runtime writer of `config.toml`. The UI reads the file directly only during
 early startup so start-minimized behavior is known before the DBus connection is ready.
+
+Named profiles live in the same versioned XDG `config.toml` as existing preferences. Their profile
+and fan-curve schema versions are independent of the top-level config version. Fan targets are
+semantic CPU/GPU/Mid roles and curves must contain exactly eight safe points with provenance; a
+stored curve is not evidence of current hardware support. Lighting stores semantic effect labels
+and colors, not backend packets. Unknown profile fields and future top-level config versions are
+retained through read/serialize cycles. All profile methods are storage-only; they never call
+hardware setters, request PolicyKit authorization, or activate automatic policy.
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
@@ -55,6 +73,11 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetConfiguration` | none | `s` | Returns normalized versioned TOML |
 | `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
 | `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
+| `ListProfiles` | none | `a(ss)` | Lists profile IDs and names without hardware state or storage paths |
+| `GetProfile` | `s` ID | `s` TOML | Returns one saved semantic profile |
+| `CreateProfile` | `s` name, `s` settings TOML | `s` ID | Creates a profile; persists configuration only, never applies hardware |
+| `UpdateProfile` | `s` ID, `s` profile TOML | none | Saves a validated profile draft; immutable ID and case-insensitive unique name |
+| `DeleteProfile` | `s` ID | none | Deletes only the stored profile; no hardware action |
 | `GetCaps` | none | `a{sv}` | Returns the top-level device capability map |
 | `GetState` | none | `a{sv}` | Returns combined daemon state, including nested maps |
 | `GetTelemetry` | none | `a{sv}` | Returns the current telemetry snapshot |

@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1791445393.1082473,
-    "ast_hash": "4d16a74138a8f810fa15766e45e29e87",
+    "mtime": 1791272054.1489406,
+    "ast_hash": "58ba8567d4fcc46f27da670fbf490220",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1791445334.2050145,
-    "ast_hash": "19da40b217af63edd445d189234b8b87",
+    "mtime": 1791443990.1471982,
+    "ast_hash": "8c7648a2803dbe6e6cc3294c94b8382d",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -230,8 +230,8 @@
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1791445167.0681577,
-    "ast_hash": "d375579db8c6d2c87e234380219ad3b8",
+    "mtime": 1791271492.2676744,
+    "ast_hash": "797c56ba949b953c014d47e1a59746c2",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -245,13 +245,13 @@
     "semantic_hash": ""
   },
   "docs/FEATURE_MATRIX.md": {
-    "mtime": 1791445184.548029,
-    "ast_hash": "e7bb18c7c7a00301e64fd46513385648",
+    "mtime": 1791443765.2733235,
+    "ast_hash": "854a0867575df2296c80ad0ed1e50544",
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1791445206.3111637,
-    "ast_hash": "3e54b4a3a808b075e4989661a8786af3",
+    "mtime": 1791443819.3288531,
+    "ast_hash": "a31bf38fa6773e1c5a8e4ebf4aa0a49c",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -285,8 +285,8 @@
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
-    "mtime": 1791445350.0139728,
-    "ast_hash": "aa5d1b8e6fabc6d0213c58077dcfefb0",
+    "mtime": 1790933039.4133952,
+    "ast_hash": "3a12ab45e435d4e2d0c6b000932419b9",
     "semantic_hash": ""
   },
   "docs/TROUBLESHOOTING.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1791445202.6576684,
-    "ast_hash": "163a23d1c66ffcb0d31d6b9a22ab09a9",
+    "mtime": 1791443760.1982963,
+    "ast_hash": "faee9e54cf763bbab2240268e9012507",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -495,8 +495,8 @@
     "semantic_hash": ""
   },
   "crates/rog-core/src/config.rs": {
-    "mtime": 1791445393.1062472,
-    "ast_hash": "3b837fd0b4d05fba6f37c4bf95aae805",
+    "mtime": 1786565577.926212,
+    "ast_hash": "6fc1dcb0ab14898bde783f4e1c30f846",
     "semantic_hash": ""
   },
   "graphify-out/memory/query_20260812_200206_implement_robust_persistent_configuration_and_a_de.md": {

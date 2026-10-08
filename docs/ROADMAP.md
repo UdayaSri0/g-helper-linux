@@ -226,12 +226,14 @@ Implemented:
   `ui.toml` migration
 - dedicated Settings page for lifecycle and dashboard preferences
 - inert preferred charge limit, last manual profile, and fan-sync preference
+- named profile presets with create, duplicate, rename, update, and confirmed delete
+- semantic platform-profile and charge-limit preferences, plus versioned fan-curve/lighting fields
+- profile CRUD over session DBus with atomic persistence only; profile saving never applies hardware
 - confirmed reset to defaults
 
 Still missing:
 
 - saved automation rules and daemon policy execution
-- persistent verified fan curves
 - automatic hardware application, intentionally deferred until an explicit safety model exists
 
 ### Typed daemon API payloads
@@ -256,8 +258,8 @@ Research-only and currently missing:
 
 The dependency-ordered priorities are maintained in
 [IMPLEMENTATION_PRIORITY.md](IMPLEMENTATION_PRIORITY.md): validate the existing narrow hardware
-contracts first, then add durable profiles and automation, then Linux-native convenience features,
-and only then broaden device coverage.
+contracts first, save-only profiles second, and automation only after a separate safety design;
+Linux-native convenience features and broader device coverage follow those foundations.
 
 ## Suggested Labels
 

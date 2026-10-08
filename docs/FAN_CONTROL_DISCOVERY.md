@@ -121,7 +121,15 @@ in-process; firmware reboot behavior remains the final safety boundary.
   Unsupported or unsafe mappings never invoke the helper.
 - The UI distinguishes direct, authorization-required, authorization-denied, helper-missing,
   unsafe/read-only, telemetry-only, and unsupported states. Curve Apply is enabled only when an
-  actionable route exists.
+  actionable route exists and the selected local draft is both dirty and valid.
+- Cooling provides semantic CPU/GPU/Mid channel tabs when present, eight-point numeric and
+  drag/keyboard editing, neighbor clamping, selected-channel import/Auto actions, and no hardware
+  writes during local edits. Graph segments are straight visual guides only. CPU/GPU package/system
+  temperature markers are labelled as system telemetry rather than fan-mounted sensors; Mid
+  temperature is not inferred.
+- After SetFanCurve returns, the UI waits for current backend readback to match the request before
+  showing confirmed success. A mismatch or absent readback remains visibly unconfirmed. This is UI
+  behavior only and does not add a hardware capability or change the physical-validation status.
 - Filesystem tests cover complete/incomplete and extra-point layouts, label and canonical-device
   mismatch, trusted IDs, raw-preserving read-only import, point-count rejection, direct success,
   readback conversion, Auto reset, fallback preference, authorization denial, helper unavailability,
