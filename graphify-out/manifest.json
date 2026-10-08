@@ -5,8 +5,8 @@
     "semantic_hash": ""
   },
   "crates/rog-cli/src/main.rs": {
-    "mtime": 1790932883.027627,
-    "ast_hash": "83be04f4710e5327e190a2abe0ab70bc",
+    "mtime": 1791448222.1087415,
+    "ast_hash": "ac16155e541662ada94a505bd21041d1",
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "crates/rog-daemon/src/main.rs": {
-    "mtime": 1791446770.055514,
-    "ast_hash": "5df0c570c58f501222b36571e24e6727",
+    "mtime": 1791448143.0832806,
+    "ast_hash": "3c18856ce98cfbec0a4384377bbf4251",
     "semantic_hash": ""
   },
   "crates/rog-providers/src/asusd.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "crates/rog-ui/src/main.rs": {
-    "mtime": 1791447610.3991802,
-    "ast_hash": "e1372dca734adc2ca16b694ec6ae6526",
+    "mtime": 1791448164.096667,
+    "ast_hash": "550d85f8b17fdca325a21fffc6a004be",
     "semantic_hash": ""
   },
   "packaging/appimage/rog-helper-apprun-hook.sh": {
@@ -230,8 +230,8 @@
     "semantic_hash": ""
   },
   "docs/DBUS_API.md": {
-    "mtime": 1791446368.053839,
-    "ast_hash": "60c0bfdc22908f9ca6e1500a58a364c7",
+    "mtime": 1791448116.3047898,
+    "ast_hash": "5e773dde4e30aef1fa7c6326c533dac4",
     "semantic_hash": ""
   },
   "docs/DBUS_NOTES.md": {
@@ -245,13 +245,13 @@
     "semantic_hash": ""
   },
   "docs/FEATURE_MATRIX.md": {
-    "mtime": 1791447480.4432807,
-    "ast_hash": "9f29d5ee74c0146f2f56a226a3ac53ff",
+    "mtime": 1791448127.622997,
+    "ast_hash": "5f6debd5c0658b5cee3ac142af120bc6",
     "semantic_hash": ""
   },
   "docs/GUI_SPEC.md": {
-    "mtime": 1791447480.4442809,
-    "ast_hash": "15743c7e0c9d126412779e52530ac4b1",
+    "mtime": 1791448141.4432504,
+    "ast_hash": "a18230be644a22f631d480322cac607c",
     "semantic_hash": ""
   },
   "docs/HARDWARE_SUPPORT.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "docs/UI_PAGES.md": {
-    "mtime": 1791447480.4432807,
-    "ast_hash": "cdb514affe9315b94c939bdfb186107b",
+    "mtime": 1791448139.1452081,
+    "ast_hash": "72e8b2ed20d1fdadf66584ce99a789a1",
     "semantic_hash": ""
   },
   "docs/releases/X/g_helper_fan_control_codex_prompt.md": {
@@ -620,8 +620,8 @@
     "semantic_hash": ""
   },
   "docs/IMPLEMENTATION_PRIORITY.md": {
-    "mtime": 1791447532.7570236,
-    "ast_hash": "1658cc3ea5d749f4ac1541607f271173",
+    "mtime": 1791448134.2761188,
+    "ast_hash": "d8aa4c95aa85a69384d81695315fc548",
     "semantic_hash": ""
   },
   "docs/releases/v0.3.1-readiness.md": {
@@ -642,6 +642,11 @@
   "docs/DISPLAY_POWER_DISCOVERY.md": {
     "mtime": 1791447480.4432807,
     "ast_hash": "871c218568dd53dbba3b20700e7cc215",
+    "semantic_hash": ""
+  },
+  "docs/HOTKEY_DISCOVERY.md": {
+    "mtime": 1791448124.665943,
+    "ast_hash": "98a0e7a649cda22e163d1666a61a692d",
     "semantic_hash": ""
   }
 }

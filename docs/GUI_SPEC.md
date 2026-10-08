@@ -286,6 +286,7 @@ Current content:
 - Saved Profiles: create, duplicate, rename/save, and confirmed delete; the current editor stages a name, platform profile, and battery limit
 - Automation: opt-in AC/Battery presets, optional battery threshold, daemon state/result, and explicit Resume after manual override
 - Internal Display Refresh Rate: session/backend diagnostics and manual X11 RandR rate selection for the currently active internal-panel mode; no Wayland or automatic AC/Battery switching
+- Desktop Shortcuts: semantic profile, keyboard-brightness, and automation CLI commands; desktop-owned bindings with no ROG Helper key capture or global-registration claim
 - Reset: destructive-style button with confirmation that restores rog-helper defaults
 
 Current behavior:

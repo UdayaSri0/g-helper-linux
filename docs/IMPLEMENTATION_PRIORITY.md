@@ -184,15 +184,20 @@ Acceptance gate:
 
 ### P2.2 Global shortcuts and ASUS hotkeys
 
-- Inventory standard Linux input keycodes and desktop shortcut/portal support read-only.
-- Map shortcuts only to existing typed daemon actions such as profile cycling or opening a page.
-- Keep desktop registration/session ownership separate from hardware providers.
+- Implemented as semantic CLI actions that call the session daemon: profile cycle, keyboard
+  brightness up/down/toggle, and automation pause/resume.
+- Research found the standard ASUS WMI input device and kernel key mapping support; no key is
+  captured or consumed by ROG Helper, and the development host's physical mappings were not tested.
+- Shortcut registration remains desktop-owned. The Settings page documents manual custom-command
+  binding; global registration, current mapping discovery, page activation, and GPU switching are
+  intentionally not implemented.
 
 Acceptance gate:
 
 - No arbitrary command binding or root input listener exists.
-- Conflicts, unsupported desktops, and repeat behavior are explicit.
-- Every action is capability-gated and tested without manufacturing success.
+- Daemon absence and unsupported profile/brightness capabilities return errors; CLI cycling uses
+  only the asusd-advertised choices.
+- No arbitrary input listener, exclusive grab, privileged capture, or direct hardware write exists.
 
 ### P2.3 Keyboard timeout
 

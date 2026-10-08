@@ -1040,6 +1040,45 @@ impl RogHelperDaemon {
         Ok(())
     }
 
+    /// Explicitly pause automatic policy until the user resumes it.
+    fn pause_automation(&self) -> fdo::Result<()> {
+        self.mutate_config(|config| {
+            config.automation.manual_override = true;
+            Ok(())
+        })?;
+        self.state
+            .policy
+            .write()
+            .expect("rwlock poisoned")
+            .set_manual_override(true);
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.state = "manual_override";
+        status.explanation =
+            "Automation paused explicitly by the user; resume it from the UI or CLI.".into();
+        info!(target: "rog_helper::policy", event = "manual_override", source = "cli", "automatic policy paused explicitly");
+        Ok(())
+    }
+
+    /// Advertise only profile choices reported by the active asusd provider.
+    async fn get_profile_choices(&self) -> fdo::Result<Vec<String>> {
+        let Some(asusd) = &self.asusd else {
+            return Ok(Vec::new());
+        };
+        let caps = asusd.probe_caps().await.map_err(|error| {
+            fdo::Error::Failed(format!("could not discover ASUS profiles: {error}"))
+        })?;
+        Ok(caps
+            .profile_choices
+            .into_iter()
+            .map(profile_to_str)
+            .map(str::to_string)
+            .collect())
+    }
+
     fn reset_configuration(&self) -> fdo::Result<String> {
         let config = self
             .persist_config(AppConfig::default())

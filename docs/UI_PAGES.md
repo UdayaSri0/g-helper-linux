@@ -284,6 +284,7 @@ Current behavior:
 - AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
 - a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
 - X11-only internal-panel refresh-rate discovery, current mode/rate, advertised same-mode rates, manual Apply, and unsupported-backend explanation
+- semantic CLI commands for desktop-owned shortcuts, with explicit note that ROG Helper does not capture keys or own global mappings
 - a confirmed Reset to Defaults action
 
 ### What it supports

@@ -38,6 +38,33 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum ProfileCmd {
+    /// Cycle through the profile choices currently advertised by asusd.
+    Cycle,
+}
+
+#[derive(Debug, Subcommand)]
+enum LightingCmd {
+    /// Adjust keyboard brightness through rog-helperd.
+    Brightness { action: BrightnessAction },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum BrightnessAction {
+    Up,
+    Down,
+    Toggle,
+}
+
+#[derive(Debug, Subcommand)]
+enum AutomationCmd {
+    /// Pause policy application until explicitly resumed.
+    Pause,
+    /// Resume policy evaluation.
+    Resume,
+}
+
+#[derive(Debug, Subcommand)]
 enum Cmd {
     /// Check service readiness, hardware access, and write permissions.
     SetupCheck,
@@ -79,8 +106,11 @@ enum Cmd {
     Fans,
     /// Print fan capability summary only.
     FanCaps,
-    /// Print keyboard lighting and RGB/Aura diagnostics only.
-    Lighting,
+    /// Print keyboard lighting and RGB/Aura diagnostics, or adjust brightness.
+    Lighting {
+        #[command(subcommand)]
+        command: Option<LightingCmd>,
+    },
     /// Print keyboard lighting and RGB/Aura diagnostics only.
     LightingDiagnostics,
     /// Supervised, exact-target Aura physical-validation preparation/sequence.
@@ -96,6 +126,16 @@ enum Cmd {
     HardwareReport,
     /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
     PrivilegedStatus,
+    /// Semantic profile actions routed through rog-helperd.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCmd,
+    },
+    /// Pause or resume automatic policy through rog-helperd.
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCmd,
+    },
 }
 
 #[tokio::main]
@@ -135,13 +175,24 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Caps => cmd_caps().await?,
         Cmd::Fans => cmd_fans().await?,
         Cmd::FanCaps => cmd_fan_caps().await?,
-        Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
+        Cmd::Lighting { command } => match command {
+            Some(LightingCmd::Brightness { action }) => cmd_lighting_brightness(action).await?,
+            None => cmd_lighting_diagnostics().await?,
+        },
+        Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
         Cmd::LightingTest {
             safe_sequence,
             confirm_g615jmr_physical_write,
         } => cmd_lighting_test(safe_sequence, confirm_g615jmr_physical_write).await?,
         Cmd::HardwareReport => cmd_hardware_report().await?,
         Cmd::PrivilegedStatus => cmd_privileged_status().await?,
+        Cmd::Profile {
+            command: ProfileCmd::Cycle,
+        } => cmd_profile_cycle().await?,
+        Cmd::Automation { command } => match command {
+            AutomationCmd::Pause => cmd_automation_pause().await?,
+            AutomationCmd::Resume => cmd_automation_resume().await?,
+        },
     }
 
     Ok(())
@@ -333,6 +384,147 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
         anyhow::bail!("ROG Helper installation is not ready; review the failed checks above");
     }
     Ok(())
+}
+
+async fn daemon_connection() -> anyhow::Result<zbus::Connection> {
+    zbus::Connection::session()
+        .await
+        .context("could not connect to the session bus")
+}
+
+async fn daemon_proxy(connection: &zbus::Connection) -> anyhow::Result<zbus::Proxy<'_>> {
+    let proxy = zbus::Proxy::new(
+        connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    .context("could not create a rog-helperd client")?;
+    let _: HashMap<String, zbus::zvariant::OwnedValue> = proxy
+        .call("GetDaemonInfo", &())
+        .await
+        .context("rog-helperd is unavailable; start the ROG Helper session service first")?;
+    Ok(proxy)
+}
+
+async fn cmd_profile_cycle() -> anyhow::Result<()> {
+    use zbus::zvariant::OwnedValue;
+
+    let connection = daemon_connection().await?;
+    let proxy = daemon_proxy(&connection).await?;
+    let choices: Vec<String> = proxy
+        .call("GetProfileChoices", &())
+        .await
+        .context("could not read profile choices from rog-helperd")?;
+    anyhow::ensure!(
+        !choices.is_empty(),
+        "profile cycling is unavailable: asusd did not advertise profile choices"
+    );
+    let state: HashMap<String, OwnedValue> = proxy
+        .call("GetState", &())
+        .await
+        .context("could not read current profile from rog-helperd")?;
+    let current = state
+        .get(dbus_keys::state::PROFILE)
+        .and_then(|value| <&str>::try_from(value).ok());
+    let next = next_profile(&choices, current)
+        .context("profile cycling is unavailable: no valid profile choices")?;
+    proxy
+        .call::<_, _, ()>("SetProfile", &(next,))
+        .await
+        .context("rog-helperd could not apply the next performance profile")?;
+    println!("Requested profile: {next}");
+    Ok(())
+}
+
+async fn cmd_lighting_brightness(action: BrightnessAction) -> anyhow::Result<()> {
+    use zbus::zvariant::{OwnedValue, Value};
+
+    let connection = daemon_connection().await?;
+    let proxy = daemon_proxy(&connection).await?;
+    let state: HashMap<String, OwnedValue> = proxy
+        .call("GetState", &())
+        .await
+        .context("could not read keyboard lighting state from rog-helperd")?;
+    let lighting: HashMap<String, OwnedValue> = state
+        .get(dbus_keys::state::LIGHTING)
+        .cloned()
+        .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
+        .context("keyboard brightness is unavailable: no lighting state was reported")?;
+    let supports_brightness = lighting
+        .get(dbus_keys::lighting::SUPPORTS_BRIGHTNESS)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    anyhow::ensure!(
+        supports_brightness,
+        "keyboard brightness is unsupported by the detected backend"
+    );
+    let current = lighting
+        .get(dbus_keys::lighting::BRIGHTNESS)
+        .and_then(|value| u8::try_from(value).ok())
+        .context("keyboard brightness has no valid readback")?;
+    let max = lighting
+        .get(dbus_keys::lighting::MAX_BRIGHTNESS)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|max| *max > 0)
+        .context("keyboard brightness maximum is unavailable")?;
+    let requested = next_brightness(current, max, action);
+    let mut update = HashMap::new();
+    update.insert(
+        dbus_keys::lighting::BRIGHTNESS.to_string(),
+        OwnedValue::try_from(Value::from(requested)).expect("u8 is a supported DBus value"),
+    );
+    proxy
+        .call::<_, _, ()>("SetLighting", &(update,))
+        .await
+        .context("rog-helperd could not apply keyboard brightness")?;
+    println!("Requested keyboard brightness: {requested}/{max}");
+    Ok(())
+}
+
+async fn cmd_automation_pause() -> anyhow::Result<()> {
+    let connection = daemon_connection().await?;
+    daemon_proxy(&connection)
+        .await?
+        .call::<_, _, ()>("PauseAutomation", &())
+        .await
+        .context("rog-helperd could not pause automation")?;
+    println!("Automation paused until explicitly resumed.");
+    Ok(())
+}
+
+async fn cmd_automation_resume() -> anyhow::Result<()> {
+    let connection = daemon_connection().await?;
+    daemon_proxy(&connection)
+        .await?
+        .call::<_, _, ()>("ResumeAutomation", &())
+        .await
+        .context("rog-helperd could not resume automation")?;
+    println!("Automation resumed.");
+    Ok(())
+}
+
+fn next_profile<'a>(choices: &'a [String], current: Option<&str>) -> Option<&'a str> {
+    if choices.is_empty() {
+        return None;
+    }
+    let current_index = current.and_then(|name| choices.iter().position(|choice| choice == name));
+    Some(choices[(current_index.map_or(0, |index| index + 1)) % choices.len()].as_str())
+}
+
+fn next_brightness(current: u8, max: u8, action: BrightnessAction) -> u8 {
+    match action {
+        BrightnessAction::Up => current.saturating_add(1).min(max),
+        BrightnessAction::Down => current.saturating_sub(1).min(max),
+        BrightnessAction::Toggle => {
+            if current == 0 {
+                max
+            } else {
+                0
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1918,6 +2110,60 @@ fn lighting_access_from_backend_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_cycle_uses_discovered_order_and_wraps() {
+        let choices = vec![
+            "Silent".to_string(),
+            "Balanced".to_string(),
+            "Turbo".to_string(),
+        ];
+        assert_eq!(next_profile(&choices, Some("Silent")), Some("Balanced"));
+        assert_eq!(next_profile(&choices, Some("Turbo")), Some("Silent"));
+        assert_eq!(next_profile(&choices, Some("unknown")), Some("Silent"));
+        assert_eq!(next_profile(&[], None), None);
+    }
+
+    #[test]
+    fn brightness_actions_respect_hardware_bounds() {
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Up), 1);
+        assert_eq!(next_brightness(3, 3, BrightnessAction::Up), 3);
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Down), 0);
+        assert_eq!(next_brightness(2, 3, BrightnessAction::Down), 1);
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Toggle), 3);
+        assert_eq!(next_brightness(2, 3, BrightnessAction::Toggle), 0);
+    }
+
+    #[test]
+    fn semantic_actions_parse_without_exposing_gpu_switching() {
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "profile", "cycle"])
+                .unwrap()
+                .cmd,
+            Cmd::Profile {
+                command: ProfileCmd::Cycle
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "lighting", "brightness", "up"])
+                .unwrap()
+                .cmd,
+            Cmd::Lighting {
+                command: Some(LightingCmd::Brightness {
+                    action: BrightnessAction::Up
+                })
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "automation", "pause"])
+                .unwrap()
+                .cmd,
+            Cmd::Automation {
+                command: AutomationCmd::Pause
+            }
+        ));
+        assert!(Cli::try_parse_from(["rog-helper", "gpu", "switch"]).is_err());
+    }
 
     #[test]
     fn setup_check_is_a_first_class_cli_command() {

@@ -3440,6 +3440,52 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     settings_page.append(&automation_group);
     let automation_syncing = Rc::new(std::cell::Cell::new(false));
 
+    let desktop_name =
+        std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown desktop".to_string());
+    let shortcut_backend = if desktop_name.to_ascii_lowercase().contains("cinnamon") {
+        "Cinnamon custom shortcuts (manual binding)".to_string()
+    } else if desktop_name == "unknown desktop" {
+        "desktop shortcut settings unavailable (desktop not detected)".to_string()
+    } else {
+        format!("{desktop_name} custom shortcuts (manual binding)")
+    };
+    let shortcuts_group = adw::PreferencesGroup::builder()
+        .title("Desktop Shortcuts")
+        .description(format!("Detected shortcut backend: {shortcut_backend}. ROG Helper does not register global keys or read keyboard events. Bind these semantic CLI commands in your desktop's shortcut settings.").as_str())
+        .build();
+    for (title, command) in [
+        ("Cycle performance profile", "rog-helper profile cycle"),
+        (
+            "Keyboard brightness up",
+            "rog-helper lighting brightness up",
+        ),
+        (
+            "Keyboard brightness down",
+            "rog-helper lighting brightness down",
+        ),
+        (
+            "Toggle keyboard brightness",
+            "rog-helper lighting brightness toggle",
+        ),
+        ("Pause automation", "rog-helper automation pause"),
+        ("Resume automation", "rog-helper automation resume"),
+    ] {
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(command)
+            .build();
+        row.set_activatable(false);
+        shortcuts_group.add(&row);
+    }
+    let shortcut_note = gtk::Label::new(Some(
+        "On Cinnamon: System Settings → Keyboard → Shortcuts → Custom Shortcuts. The desktop owns the mappings; current bindings are not discoverable here. Profile and brightness actions use rog-helperd and report unavailable capabilities instead of guessing.",
+    ));
+    shortcut_note.set_wrap(true);
+    shortcut_note.set_xalign(0.0);
+    shortcut_note.add_css_class("dim-label");
+    shortcuts_group.add(&shortcut_note);
+    settings_page.append(&shortcuts_group);
+
     let reset_group = adw::PreferencesGroup::builder()
         .title("Reset")
         .description(

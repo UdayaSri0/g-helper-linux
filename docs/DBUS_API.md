@@ -84,6 +84,8 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
 | `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
 | `ResumeAutomation` | none | `()` | Clears the persisted manual-override pause and reevaluates the current stable power rule |
+| `PauseAutomation` | none | `()` | Persists a manual override until explicit resume; performs no hardware action |
+| `GetProfileChoices` | none | `as` | Reads only choices advertised by the active asusd provider; empty means unavailable |
 | `ListProfiles` | none | `a(ss)` | Lists profile IDs and names without hardware state or storage paths |
 | `GetProfile` | `s` ID | `s` TOML | Returns one saved semantic profile |
 | `CreateProfile` | `s` name, `s` settings TOML | `s` ID | Creates a profile; persists configuration only, never applies hardware |
