@@ -25,8 +25,8 @@ jobs:
       - name: Repoint only the still-unpublished v0.4.0 tag
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_OLD_TAG_OBJECT: 0183f9fe56567114ac3a3335238518f0a59c96ea
-          EXPECTED_OLD_COMMIT: 89b56f35df7ad0e6feff5b74eafbad28e4bc3451
+          EXPECTED_OLD_TAG_OBJECT: dd2ff1b32ed8724c7efb9b42d930f2112674ae06
+          EXPECTED_OLD_COMMIT: ffa3de27e7d3640cb19458784ab1f99de2ce8482
         run: |
           set -euo pipefail
 
