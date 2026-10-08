@@ -2,7 +2,7 @@
 
 This document describes the current pages implemented in `crates/rog-ui/src/`.
 
-All ten pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, compact/standard/hero metric tiers, semantic status chips, neutral card surfaces, spacing, and capability-state language.
+All eleven pages live in one `adw::ViewStack` selected by the persistent left sidebar. They share the same 1260 px responsive content container, page-title hierarchy, compact/standard/hero metric tiers, semantic status chips, neutral card surfaces, spacing, and capability-state language.
 
 For each page, it lists:
 

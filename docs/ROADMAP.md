@@ -53,14 +53,23 @@ The daemon already exposes:
 - `GetCpuCaps`
 - `GetCpuTelemetry`
 - `GetCpuDiagnostics`
+- `GetSetupStatus`
+- `GetPrivilegedStatus`
+- `GetFanCaps`
+- `GetFanState`
+- `GetFanCurves`
 - `GetConfiguration`
 - `SetConfiguration`
 - `ResetConfiguration`
+- profile list/get/create/update/delete methods
+- `PauseAutomation`
+- `ResumeAutomation`
 - `SetLighting`
 - `SetProfile`
 - `SetGpuMode`
 - `SetBatteryLimit`
 - CPU control setters
+- verified fan control setters and Auto restore
 
 See [DBUS_API.md](DBUS_API.md) for the current details.
 
@@ -139,10 +148,11 @@ Current status:
 - diagnostics page exists
 - CLI diagnostics exist
 - daemon exposes capability and CPU diagnostics data
+- `rog-helper issue-report` exports a copy-friendly, default-redacted report from an explicit
+  diagnostic allow-list
 
 Still evolving:
 
-- richer exported diagnostics
 - clearer operator-facing docs
 - better hardware coverage reporting
 
@@ -182,8 +192,9 @@ Still missing:
 - supervised physical validation of apply, rollback, helper recovery, suspend/resume, and firmware ownership
 - complete recovery-marker startup/residency/shutdown lifecycle tests; deterministic injected
   readback-mismatch, partial-write, and rollback-failure coverage is implemented
-- editable and persistent per-fan curves
-- profile-linked curves and safe multi-fan semantics
+- automatic application of saved semantic per-fan curves; profile storage and the local eight-point
+  editor are implemented, but saved curves remain inert
+- safe atomic multi-fan apply semantics
 - an independently verified asusd curve contract; generic hwmon formats remain unsupported
 
 ### Auto mode and policy automation
@@ -253,15 +264,17 @@ Status after Prompt 07:
 - manual internal-display refresh discovery/control through X11 RandR only; Wayland and
   AC/Battery switching remain unavailable until a reliable session-bound contract exists
 - desktop-owned shortcut bindings to semantic CLI actions; no global shortcut registration or input capture
-- keyboard timeout control through a verified Linux backend (no timeout ABI found; software
-  idle behavior is omitted to avoid conflict with desktop power management)
+- keyboard timeout remains unavailable: no hardware timeout ABI was found, and software idle
+  behavior is omitted to avoid conflict with desktop power management
 
 ## Priorities
 
-The dependency-ordered priorities are maintained in
-[IMPLEMENTATION_PRIORITY.md](IMPLEMENTATION_PRIORITY.md): validate the existing narrow hardware
-contracts first, save-only profiles second, and automation only after a separate safety design;
-Linux-native convenience features and broader device coverage follow those foundations.
+The original dependency-ordered plan is retained as a historical baseline in
+[IMPLEMENTATION_PRIORITY.md](IMPLEMENTATION_PRIORITY.md). Current priorities are supervised
+validation of the narrow fan/Aura contracts, broader package and hardware evidence, and extending
+only those profile/automation categories that have a verified non-interactive backend. Save-only
+profiles, limited opt-in automation, manual X11 refresh control, and semantic desktop shortcut
+commands are already implemented.
 
 ## Suggested Labels
 

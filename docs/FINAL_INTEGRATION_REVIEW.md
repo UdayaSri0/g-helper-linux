@@ -6,8 +6,8 @@ Review date: 2026-10-08.
 
 Prompt 09 reviews the integrated Linux implementation and prepares a future release. It does not
 create, tag, publish, or certify a release. Baseline: branch `Dev`, commit
-`c56648526c2e3f10501503b4c3480fddba47e5b1`, whose subject is `v0.3.9`. The actual workspace/package
-version remains **0.3.1**; the commit subject is not package identity. Findings below concern this
+`c56648526c2e3f10501503b4c3480fddba47e5b1`, whose subject is `v0.3.9`. At the time of this review,
+the workspace/package version was **0.3.1**; the commit subject was not package identity. Findings below concern this
 baseline plus the reviewed working-tree changes. `00_GENERAL_INSTRUCTIONS.md` was absent; the
 general instructions supplied in the task were applied.
 
@@ -155,7 +155,7 @@ observations; code paths and package builds do not promote models to validated s
   RPM/Arch, AppImage, and Flatpak evidence before claiming those release formats are verified.
 - Run dependency vulnerability auditing when tooling is available and triage findings.
 - Make an explicit maintainer version choice and update coordinated metadata before release;
-  the current 0.3.1 package metadata must not be mistaken for the Git subject `v0.3.9`.
+  the then-current 0.3.1 package metadata must not be mistaken for the Git subject `v0.3.9`.
 
 A future **0.4.0** integration release is a reasonable scope recommendation for the accumulated
 preset/policy/UI/convenience work, subject to maintainer version choice and the evidence above.
