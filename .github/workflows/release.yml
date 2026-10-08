@@ -72,6 +72,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Installer mocks and maintainer-script unit tests are independent of dist/.
+      # Run them before producing release artifacts, matching the green CI order.
+      - name: Packaging Script Tests
+        run: |
+          packaging/scripts/test-install-dev.sh
+          packaging/scripts/test-debian-maintainer-scripts.sh
+
       - name: Build Release Assets
         run: ROG_HELPER_BUILD_APPIMAGE=0 ROG_HELPER_BUILD_RPM=0 packaging/scripts/build-release-assets.sh dist
 
@@ -79,8 +86,6 @@ jobs:
         run: |
           packages=(dist/rog-helper_*.deb)
           [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
-          packaging/scripts/test-install-dev.sh
-          packaging/scripts/test-debian-maintainer-scripts.sh
           packaging/scripts/check-deb-package.sh "${packages[0]}"
           packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
 
