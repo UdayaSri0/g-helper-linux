@@ -45,9 +45,37 @@ This is the current design, not a placeholder.
   - updates preferences only; it never invokes a hardware setter
 - `ResetConfiguration() -> s`
   - atomically replaces the canonical file with safe defaults and returns normalized TOML
+- `ListProfiles() -> a(ss)`
+  - returns saved profile ID/name pairs only
+- `GetProfile(s id) -> s`
+  - returns one semantic profile as TOML; the storage path is never exposed
+- `CreateProfile(s name, s settings_toml) -> s id`
+  - validates and creates a named profile with a daemon-generated stable ID
+- `UpdateProfile(s id, s profile_toml) -> ()`
+  - validates a complete profile replacement; the profile ID cannot be changed
+- `DeleteProfile(s id) -> ()`
+  - removes the preset only and clears a preferred-profile reference if present
 
 The daemon is the only runtime writer of `config.toml`. The UI reads the file directly only during
 early startup so start-minimized behavior is known before the DBus connection is ready.
+
+Named profiles live in the same versioned XDG `config.toml` as existing preferences. Their profile
+and fan-curve schema versions are independent of the top-level config version. Fan targets are
+semantic CPU/GPU/Mid roles and curves must contain exactly eight safe points with provenance; a
+stored curve is not evidence of current hardware support. Lighting stores semantic effect labels
+and colors, not backend packets. Unknown profile fields and future top-level config versions are
+retained through read/serialize cycles. All profile methods are storage-only; they never call
+hardware setters, request PolicyKit authorization, or activate automatic policy.
+
+Automation preferences use the same version-3 XDG configuration. Rules are opt-in and disabled by
+default. The daemon waits for a power source to remain stable for five seconds, applies a rule only
+on a stable transition (or explicit Resume), and suppresses identical telemetry reapplication.
+Manual hardware actions persist a pause until `ResumeAutomation`. Automatic application currently
+supports only the asusd platform profile and charge limit through asusd or a directly writable
+standard power-supply endpoint. A charge-limit write requiring PolicyKit is reported and skipped
+without opening a prompt. Fan, lighting, and GPU preset fields are retained but skipped; GPU changes
+remain pending/manual because they may require logout or reboot. Per-component results distinguish
+applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
@@ -55,8 +83,16 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetConfiguration` | none | `s` | Returns normalized versioned TOML |
 | `SetConfiguration` | `s` TOML | none | Validates and atomically persists preferences without applying hardware controls |
 | `ResetConfiguration` | none | `s` | Resets the canonical configuration and returns normalized defaults |
+| `ResumeAutomation` | none | `()` | Clears the persisted manual-override pause and reevaluates the current stable power rule |
+| `PauseAutomation` | none | `()` | Persists a manual override until explicit resume; performs no hardware action |
+| `GetProfileChoices` | none | `as` | Reads only choices advertised by the active asusd provider; empty means unavailable |
+| `ListProfiles` | none | `a(ss)` | Lists profile IDs and names without hardware state or storage paths |
+| `GetProfile` | `s` ID | `s` TOML | Returns one saved semantic profile |
+| `CreateProfile` | `s` name, `s` settings TOML | `s` ID | Creates a profile; persists configuration only, never applies hardware |
+| `UpdateProfile` | `s` ID, `s` profile TOML | none | Saves a validated profile draft; immutable ID and case-insensitive unique name |
+| `DeleteProfile` | `s` ID | none | Deletes only the stored profile; no hardware action |
 | `GetCaps` | none | `a{sv}` | Returns the top-level device capability map |
-| `GetState` | none | `a{sv}` | Returns combined daemon state, including nested maps |
+| `GetState` | none | `a{sv}` | Returns combined daemon state, including nested automation state/result/explanation fields |
 | `GetTelemetry` | none | `a{sv}` | Returns the current telemetry snapshot |
 | `GetCpuCaps` | none | `a{sv}` | Returns CPU capability summary |
 | `GetCpuTelemetry` | none | `a{sv}` | Returns CPU telemetry snapshot |
@@ -65,7 +101,7 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `GetPrivilegedStatus` | none | `a{sv}` | Bounded optional-helper, compatibility, PolicyKit, authorization, and category diagnostics |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
-| `GetFanCurves` | none | `a{sv}` | Returns fan-curve availability summary; curve reading is backend-dependent |
+| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves only for exactly verified ASUS WMI channels; never prompts or writes |
 | `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then the allow-listed G615JMR target through the typed helper, then sysfs brightness |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
@@ -80,9 +116,9 @@ early startup so start-minimized behavior is known before the DBus connection is
 | `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
 | `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
 | `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
-| `SetFanSync` | `b` | `()` | Enables/disables sync mode in daemon state |
-| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Time-limited manual percent boost; empty string means all controllable fans |
-| `ResetFansToAuto` | none | `()` | Best-effort restore to Auto/BIOS mode |
+| `SetFanSync` | `b` | `()` | Compatibility state only; not advertised on the current curve-only backend |
+| `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Compatibility method; currently rejects because no verified manual-percent backend exists |
+| `ResetFansToAuto` | none | `()` | Requests all verified ASUS WMI channels return to Auto and reports any failure |
 
 ### `GetDaemonInfo` Response
 
@@ -156,6 +192,11 @@ Important note:
 - `fan_state` -> nested `a{sv}` fan state map
 - `lighting_diagnostics_summary` -> `s`
 - `lighting_diagnostics_details` -> `s`
+- `automation` -> nested `a{sv}` policy status map
+
+The automation map contains `state`, `explanation`, and `last_result` strings, plus optional
+`last_transition_ms` (`t`) and `profile_id` (`s`). States are `disabled`, `monitoring`, `applying`,
+`manual_override`, `blocked`, or `error`; results retain partial-failure and skipped-field explanations.
 
 Optional keys:
 
@@ -203,14 +244,15 @@ than daemon startup failures.
 - Bus name: `io.github.roghelper.Privileged`
 - Object path: `/io/github/roghelper/Privileged`
 - Interface: `io.github.roghelper.Privileged1`
-- API version: `2` (version 2 adds the path-free high-level Aura effect operation)
+- API version: `3` (version 2 added path-free Aura effects; version 3 adds marker-gated fan Auto
+  recovery with a non-interactive PolicyKit check)
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
 | `Ping` | none | `b` | Reachability only |
 | `GetVersion` | none | `s` | Package version |
 | `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories: `cpu`, `battery`, `fans`, and `lighting` |
-| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list and never prompts |
+| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects actions outside the five-item allow-list and never prompts |
 | `SetCpuTurbo` | `b` | `()` | Validated turbo toggle |
 | `SetCpuPowerMode` | `s` | `()` | Validated preset mapped to detected governor/EPP choices |
 | `SetCpuGovernor` | `s` | `()` | Value must be in every affected policy's detected allow-list |
@@ -220,9 +262,15 @@ than daemon startup failures.
 | `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
 | `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
 | `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
+| `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: checks `fans.recover`, acts solely on root-owned armed semantic IDs in an active local session, and can only restore Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 | `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
 | `SetBatteryChargeLimit` | `t` | `t` actual value | Validates 20..=100, discovers one exact Battery threshold internally, writes, and returns readback |
+
+Fan recovery marker replacement is atomic and durably synced. The helper remains resident while the
+marker is armed, `RuntimeDirectoryPreserve=yes` retains it across service restart and stop/start, and
+recovery clears it only after every recorded channel reaches Auto. If any channel is absent or fails,
+the exact recorded set remains armed for a later retry.
 
 `SetAuraEffect` accepts no path, device number, report/command ID, zone, or bytes. The helper
 re-discovers exactly one allow-listed `0b05:19b6` interface, verifies the G615JMR target's `G615JM`
@@ -319,10 +367,21 @@ Each fan map includes:
 - `supports_manual_rpm_target`
 - `supports_curve`
 - `supports_auto`
+- optional `curve_readback`, containing `source=backend_current`, `enable_mode`, eight converted
+  `points`, and eight lossless `raw_pwm` values
+- `rollback_available`
 - `backend`
 - `endpoints`, `notes`, `warnings`
 
 Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no verified backend is active. Candidate generic hwmon files never authorize a write.
+
+`GetFanCurves` returns `supported`, `reason`, and `curves`. Each curve row contains `fan_id`,
+`source`, `enable_mode`, `raw_pwm`, and `points`. The read uses no privileged method. Import Current
+is a UI draft operation; Reset Draft is local, while Restore Auto is the typed hardware action.
+`backend_current` identifies the readback origin only; it does not claim that firmware authored the
+curve or that the values are immutable factory defaults.
+Presets and hysteresis are not DBus hardware concepts: presets are local drafts and hysteresis is
+unsupported because there is no verified Linux ASUS ABI.
 
 ## `GetTelemetry` Response
 
@@ -544,8 +603,9 @@ Current accepted keys:
 Current behavior:
 
 - verified asusd Aura operations are preferred whenever that API exposes the requested control
-- when asusd is unavailable, the exact G615JMR target backend routes effect fields through
-  privileged API v2 `SetAuraEffect`; active asusd ownership suppresses native HID
+- when asusd is unavailable, the exact G615JMR target backend routes effect fields through the
+  current privileged API v3 `SetAuraEffect` method introduced in v2; active asusd ownership
+  suppresses native HID
 - brightness falls back to directly writable sysfs, then to `SetKeyboardBacklightBrightness(t)` on `rog-helper-privileged` only for the canonical ASUS WMI LED
 - brightness must be an in-range non-negative integer; invalid RGB strings and empty modes return `InvalidArgs`
 - unknown keys return `InvalidArgs`; unsupported RGB/effect/speed/zone requests return `NotSupported`

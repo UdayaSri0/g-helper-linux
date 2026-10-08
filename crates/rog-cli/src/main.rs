@@ -7,11 +7,14 @@ use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
     dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
-    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed,
+    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed, PRIVILEGED_API_VERSION,
+    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
-use rog_providers::aura_hid::{g615jm_lighting_caps, scan_native_aura_hid};
+use rog_providers::aura_hid::{
+    g615jm_lighting_caps, scan_native_aura_hid, G615JM_PHYSICAL_VALIDATION_RECORDED,
+};
 use rog_providers::cpu::CpuTelemetryProvider;
 use rog_providers::dbus;
 use rog_providers::hwmon::HwmonTelemetryProvider;
@@ -23,6 +26,8 @@ use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use tracing::{info, warn};
 
+mod issue_report;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rog-helper",
@@ -32,6 +37,33 @@ use tracing::{info, warn};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum ProfileCmd {
+    /// Cycle through the profile choices currently advertised by asusd.
+    Cycle,
+}
+
+#[derive(Debug, Subcommand)]
+enum LightingCmd {
+    /// Adjust keyboard brightness through rog-helperd.
+    Brightness { action: BrightnessAction },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum BrightnessAction {
+    Up,
+    Down,
+    Toggle,
+}
+
+#[derive(Debug, Subcommand)]
+enum AutomationCmd {
+    /// Pause policy application until explicitly resumed.
+    Pause,
+    /// Resume policy evaluation.
+    Resume,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,14 +108,38 @@ enum Cmd {
     Fans,
     /// Print fan capability summary only.
     FanCaps,
-    /// Print keyboard lighting and RGB/Aura diagnostics only.
-    Lighting,
+    /// Print keyboard lighting and RGB/Aura diagnostics, or adjust brightness.
+    Lighting {
+        #[command(subcommand)]
+        command: Option<LightingCmd>,
+    },
     /// Print keyboard lighting and RGB/Aura diagnostics only.
     LightingDiagnostics,
+    /// Supervised, exact-target Aura physical-validation preparation/sequence.
+    LightingTest {
+        /// Print and, only with the exact confirmation flag, run the fixed safe sequence.
+        #[arg(long)]
+        safe_sequence: bool,
+        /// Confirm a supervised physical write to the exact G615JMR target.
+        #[arg(long)]
+        confirm_g615jmr_physical_write: bool,
+    },
     /// Print a read-only Markdown record for hardware validation.
     HardwareReport,
+    /// Print a redacted, read-only Markdown issue report for copying into an issue.
+    IssueReport,
     /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
     PrivilegedStatus,
+    /// Semantic profile actions routed through rog-helperd.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCmd,
+    },
+    /// Pause or resume automatic policy through rog-helperd.
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCmd,
+    },
 }
 
 #[tokio::main]
@@ -123,9 +179,25 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Caps => cmd_caps().await?,
         Cmd::Fans => cmd_fans().await?,
         Cmd::FanCaps => cmd_fan_caps().await?,
-        Cmd::Lighting | Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
+        Cmd::Lighting { command } => match command {
+            Some(LightingCmd::Brightness { action }) => cmd_lighting_brightness(action).await?,
+            None => cmd_lighting_diagnostics().await?,
+        },
+        Cmd::LightingDiagnostics => cmd_lighting_diagnostics().await?,
+        Cmd::LightingTest {
+            safe_sequence,
+            confirm_g615jmr_physical_write,
+        } => cmd_lighting_test(safe_sequence, confirm_g615jmr_physical_write).await?,
         Cmd::HardwareReport => cmd_hardware_report().await?,
+        Cmd::IssueReport => issue_report::print().await?,
         Cmd::PrivilegedStatus => cmd_privileged_status().await?,
+        Cmd::Profile {
+            command: ProfileCmd::Cycle,
+        } => cmd_profile_cycle().await?,
+        Cmd::Automation { command } => match command {
+            AutomationCmd::Pause => cmd_automation_pause().await?,
+            AutomationCmd::Resume => cmd_automation_resume().await?,
+        },
     }
 
     Ok(())
@@ -317,6 +389,147 @@ async fn cmd_privileged_status() -> anyhow::Result<()> {
         anyhow::bail!("ROG Helper installation is not ready; review the failed checks above");
     }
     Ok(())
+}
+
+async fn daemon_connection() -> anyhow::Result<zbus::Connection> {
+    zbus::Connection::session()
+        .await
+        .context("could not connect to the session bus")
+}
+
+async fn daemon_proxy(connection: &zbus::Connection) -> anyhow::Result<zbus::Proxy<'_>> {
+    let proxy = zbus::Proxy::new(
+        connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    .context("could not create a rog-helperd client")?;
+    let _: HashMap<String, zbus::zvariant::OwnedValue> = proxy
+        .call("GetDaemonInfo", &())
+        .await
+        .context("rog-helperd is unavailable; start the ROG Helper session service first")?;
+    Ok(proxy)
+}
+
+async fn cmd_profile_cycle() -> anyhow::Result<()> {
+    use zbus::zvariant::OwnedValue;
+
+    let connection = daemon_connection().await?;
+    let proxy = daemon_proxy(&connection).await?;
+    let choices: Vec<String> = proxy
+        .call("GetProfileChoices", &())
+        .await
+        .context("could not read profile choices from rog-helperd")?;
+    anyhow::ensure!(
+        !choices.is_empty(),
+        "profile cycling is unavailable: asusd did not advertise profile choices"
+    );
+    let state: HashMap<String, OwnedValue> = proxy
+        .call("GetState", &())
+        .await
+        .context("could not read current profile from rog-helperd")?;
+    let current = state
+        .get(dbus_keys::state::PROFILE)
+        .and_then(|value| <&str>::try_from(value).ok());
+    let next = next_profile(&choices, current)
+        .context("profile cycling is unavailable: no valid profile choices")?;
+    proxy
+        .call::<_, _, ()>("SetProfile", &(next,))
+        .await
+        .context("rog-helperd could not apply the next performance profile")?;
+    println!("Requested profile: {next}");
+    Ok(())
+}
+
+async fn cmd_lighting_brightness(action: BrightnessAction) -> anyhow::Result<()> {
+    use zbus::zvariant::{OwnedValue, Value};
+
+    let connection = daemon_connection().await?;
+    let proxy = daemon_proxy(&connection).await?;
+    let state: HashMap<String, OwnedValue> = proxy
+        .call("GetState", &())
+        .await
+        .context("could not read keyboard lighting state from rog-helperd")?;
+    let lighting: HashMap<String, OwnedValue> = state
+        .get(dbus_keys::state::LIGHTING)
+        .cloned()
+        .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
+        .context("keyboard brightness is unavailable: no lighting state was reported")?;
+    let supports_brightness = lighting
+        .get(dbus_keys::lighting::SUPPORTS_BRIGHTNESS)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    anyhow::ensure!(
+        supports_brightness,
+        "keyboard brightness is unsupported by the detected backend"
+    );
+    let current = lighting
+        .get(dbus_keys::lighting::BRIGHTNESS)
+        .and_then(|value| u8::try_from(value).ok())
+        .context("keyboard brightness has no valid readback")?;
+    let max = lighting
+        .get(dbus_keys::lighting::MAX_BRIGHTNESS)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|max| *max > 0)
+        .context("keyboard brightness maximum is unavailable")?;
+    let requested = next_brightness(current, max, action);
+    let mut update = HashMap::new();
+    update.insert(
+        dbus_keys::lighting::BRIGHTNESS.to_string(),
+        OwnedValue::try_from(Value::from(requested)).expect("u8 is a supported DBus value"),
+    );
+    proxy
+        .call::<_, _, ()>("SetLighting", &(update,))
+        .await
+        .context("rog-helperd could not apply keyboard brightness")?;
+    println!("Requested keyboard brightness: {requested}/{max}");
+    Ok(())
+}
+
+async fn cmd_automation_pause() -> anyhow::Result<()> {
+    let connection = daemon_connection().await?;
+    daemon_proxy(&connection)
+        .await?
+        .call::<_, _, ()>("PauseAutomation", &())
+        .await
+        .context("rog-helperd could not pause automation")?;
+    println!("Automation paused until explicitly resumed.");
+    Ok(())
+}
+
+async fn cmd_automation_resume() -> anyhow::Result<()> {
+    let connection = daemon_connection().await?;
+    daemon_proxy(&connection)
+        .await?
+        .call::<_, _, ()>("ResumeAutomation", &())
+        .await
+        .context("rog-helperd could not resume automation")?;
+    println!("Automation resumed.");
+    Ok(())
+}
+
+fn next_profile<'a>(choices: &'a [String], current: Option<&str>) -> Option<&'a str> {
+    if choices.is_empty() {
+        return None;
+    }
+    let current_index = current.and_then(|name| choices.iter().position(|choice| choice == name));
+    Some(choices[(current_index.map_or(0, |index| index + 1)) % choices.len()].as_str())
+}
+
+fn next_brightness(current: u8, max: u8, action: BrightnessAction) -> u8 {
+    match action {
+        BrightnessAction::Up => current.saturating_add(1).min(max),
+        BrightnessAction::Down => current.saturating_sub(1).min(max),
+        BrightnessAction::Toggle => {
+            if current == 0 {
+                max
+            } else {
+                0
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1286,6 +1499,31 @@ fn print_fan_info(fan: &FanInfo) {
     println!("    rpm_target: {}", fan.supports_manual_rpm_target);
     println!("    curve: {}", fan.supports_curve);
     println!("    auto_restore: {}", fan.supports_auto);
+    println!("    direct_write_ready: {}", fan.direct_write);
+    println!("    helper_write_ready: {}", fan.privileged_write);
+    println!("    authorization: {}", fan.authorization);
+    println!("    access_state: {}", fan.access_state);
+    println!("    rollback_available: {}", fan.rollback_available);
+    if let Some(readback) = &fan.curve_readback {
+        println!("    current_curve_source: backend_current");
+        println!("    enable_mode: {}", readback.enable_mode);
+        println!("    current_curve_points:");
+        for (index, (point, raw_pwm)) in readback
+            .curve
+            .points
+            .iter()
+            .zip(&readback.raw_pwm)
+            .enumerate()
+        {
+            println!(
+                "      {}: {}C / {}% / raw_pwm={}",
+                index + 1,
+                point.temp_c,
+                point.duty_percent,
+                raw_pwm
+            );
+        }
+    }
     if !fan.endpoints.is_empty() {
         println!("    endpoints:");
         for endpoint in &fan.endpoints {
@@ -1303,6 +1541,234 @@ fn print_fan_info(fan: &FanInfo) {
 async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {
     let lighting_probe = probe_lighting_diagnostics().await;
     println!("{}", lighting_probe.diagnostics.to_report_text());
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SafeAuraStep {
+    label: &'static str,
+    mode: &'static str,
+    primary: Option<&'static str>,
+    secondary: Option<&'static str>,
+    speed: Option<&'static str>,
+    direction: Option<&'static str>,
+}
+
+fn safe_aura_sequence() -> Vec<SafeAuraStep> {
+    vec![
+        SafeAuraStep {
+            label: "Static red",
+            mode: "static",
+            primary: Some("#FF0000"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static green",
+            mode: "static",
+            primary: Some("#00FF00"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static blue",
+            mode: "static",
+            primary: Some("#0000FF"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Static white",
+            mode: "static",
+            primary: Some("#FFFFFF"),
+            secondary: None,
+            speed: None,
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Breathe red + blue",
+            mode: "breathe",
+            primary: Some("#FF0000"),
+            secondary: Some("#0000FF"),
+            speed: Some("medium"),
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Rainbow Cycle",
+            mode: "rainbow-cycle",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: None,
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave right",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("right"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave left",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("left"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave up",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("up"),
+        },
+        SafeAuraStep {
+            label: "Rainbow Wave down",
+            mode: "rainbow-wave",
+            primary: None,
+            secondary: None,
+            speed: Some("medium"),
+            direction: Some("down"),
+        },
+        SafeAuraStep {
+            label: "Pulse white",
+            mode: "pulse",
+            primary: Some("#FFFFFF"),
+            secondary: None,
+            speed: Some("medium"),
+            direction: None,
+        },
+    ]
+}
+
+fn safe_restore_step() -> SafeAuraStep {
+    SafeAuraStep {
+        label: "Restore neutral Static white",
+        mode: "static",
+        primary: Some("#FFFFFF"),
+        secondary: None,
+        speed: None,
+        direction: None,
+    }
+}
+
+fn safe_step_to_dbus(step: &SafeAuraStep) -> HashMap<String, zbus::zvariant::OwnedValue> {
+    use zbus::zvariant::{OwnedValue, Value};
+
+    fn owned(value: &'static str) -> OwnedValue {
+        OwnedValue::try_from(Value::from(value)).expect("static string converts to OwnedValue")
+    }
+
+    let mut request = HashMap::new();
+    request.insert("mode".to_string(), owned(step.mode));
+    if let Some(value) = step.primary {
+        request.insert("rgb_hex".to_string(), owned(value));
+    }
+    if let Some(value) = step.secondary {
+        request.insert("secondary_rgb_hex".to_string(), owned(value));
+    }
+    if let Some(value) = step.speed {
+        request.insert("speed".to_string(), owned(value));
+    }
+    if let Some(value) = step.direction {
+        request.insert("direction".to_string(), owned(value));
+    }
+    request
+}
+
+async fn cmd_lighting_test(safe_sequence: bool, confirmed: bool) -> anyhow::Result<()> {
+    use anyhow::bail;
+    use std::time::Duration;
+    use zbus::Proxy;
+
+    if !safe_sequence {
+        bail!("lighting-test requires --safe-sequence; no hardware write was performed");
+    }
+
+    let probe = probe_lighting_diagnostics().await;
+    println!("{}", probe.diagnostics.to_report_text());
+    println!();
+    println!("Supervised G615JMR sequence plan");
+    println!("================================");
+    for (index, step) in safe_aura_sequence().iter().enumerate() {
+        println!("{}. {}", index + 1, step.label);
+    }
+    println!("12. {}", safe_restore_step().label);
+    println!();
+    println!("Each accepted request has no hardware readback. A human must observe and record every result.");
+
+    if !confirmed {
+        println!("NO HARDWARE WRITE PERFORMED.");
+        println!("After reviewing the identity and readiness above, rerun with --confirm-g615jmr-physical-write while supervising the keyboard.");
+        return Ok(());
+    }
+    if probe.diagnostics.selected_backend_kind != LightingBackendKind::NativeAuraHid
+        || probe.diagnostics.native_write_readiness != "ready_for_supervised_write"
+    {
+        bail!(
+            "refusing physical validation: selected backend is '{}' and native readiness is '{}'; no hardware write was performed",
+            probe.diagnostics.active_backend,
+            probe.diagnostics.native_write_readiness
+        );
+    }
+
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to the session D-Bus")?;
+    let proxy = Proxy::new(
+        &connection,
+        "io.github.roghelper.Daemon",
+        "/io/github/roghelper/Daemon",
+        "io.github.roghelper.Daemon1",
+    )
+    .await
+    .context("connect to rog-helperd")?;
+
+    let steps = safe_aura_sequence();
+    let mut failure = None;
+    for step in &steps {
+        println!("Requesting {}...", step.label);
+        let result: zbus::Result<()> = proxy.call("SetLighting", &(safe_step_to_dbus(step),)).await;
+        match result {
+            Ok(()) => {
+                println!("  accepted_no_readback — record observed / not observed / uncertain")
+            }
+            Err(error) => {
+                failure = Some(anyhow::anyhow!("{} failed: {error}", step.label));
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    println!("Restoring neutral Static white...");
+    let restore = safe_restore_step();
+    let restore_result: zbus::Result<()> = proxy
+        .call("SetLighting", &(safe_step_to_dbus(&restore),))
+        .await;
+    match &restore_result {
+        Ok(()) => println!("  restore accepted_no_readback — confirm the visible Static state"),
+        Err(error) => eprintln!("  restore failed: {error}"),
+    }
+
+    println!();
+    println!("Human checklist (copy into the validation record):");
+    for step in &steps {
+        println!("- {}: observed / not observed / uncertain", step.label);
+    }
+    println!("- {}: observed / not observed / uncertain", restore.label);
+    println!("This command does not mark the target physically validated.");
+
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    restore_result.context("neutral Static restore was not accepted")?;
     Ok(())
 }
 
@@ -1367,7 +1833,7 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         .devices
         .iter()
         .any(|device| device.protocol.is_some());
-    if aura.is_none() && native_supported {
+    if !aura_probe.service_detected && native_supported {
         let caps = g615jm_lighting_caps();
         diagnostics.selected_backend_kind = LightingBackendKind::NativeAuraHid;
         diagnostics.capabilities = caps.clone();
@@ -1393,12 +1859,14 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         );
         diagnostics.unavailable_reason = None;
         diagnostics.recommended_action = None;
-    } else if aura.is_some() && native_supported {
+    } else if aura_probe.service_detected && native_supported {
         diagnostics.probe_errors.push(
-            "Verified native Aura HID was suppressed because asusd owns the preferred Aura backend."
+            "Verified native Aura HID was suppressed because an ASUS daemon owns a protected DBus name."
                 .to_string(),
         );
     }
+
+    enrich_native_aura_readiness(&mut diagnostics).await;
 
     LightingProbe {
         kbd_backlight,
@@ -1408,6 +1876,117 @@ async fn probe_lighting_diagnostics() -> LightingProbe {
         aura_probe_error,
         aura_notes,
         diagnostics,
+    }
+}
+
+async fn enrich_native_aura_readiness(diagnostics: &mut LightingDiagnostics) {
+    use dbus_keys::privileged_status as keys;
+
+    let install = probe_privileged_installation(Path::new("/"), Path::new("/dev"));
+    let (status, helper_api_version) = probe_lighting_helper_status().await;
+    let categories = status
+        .get(keys::CATEGORIES_AVAILABLE)
+        .cloned()
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .unwrap_or_default();
+    let supported_count = diagnostics
+        .native_aura_hid_devices
+        .iter()
+        .filter(|device| device.supported)
+        .count();
+
+    diagnostics.helper_api_version = helper_api_version;
+    diagnostics.helper_expected_api_version = Some(PRIVILEGED_API_VERSION);
+    diagnostics.helper_compatible = map_bool(&status, keys::HELPER_COMPATIBLE).unwrap_or(false)
+        && helper_api_version == Some(PRIVILEGED_API_VERSION);
+    diagnostics.helper_lighting_category_available =
+        categories.iter().any(|category| category == "lighting");
+    diagnostics.polkit_available = map_bool(&status, keys::POLKIT_AVAILABLE).unwrap_or(false);
+    diagnostics.aura_alias_present = Path::new("/dev/rog-helper-aura").exists();
+    diagnostics.aura_alias_matches_selected_device = install.symlink_valid;
+    diagnostics.physical_validation_recorded = G615JM_PHYSICAL_VALIDATION_RECORDED;
+    diagnostics.native_write_readiness = native_aura_readiness_reason(
+        supported_count,
+        diagnostics.asusd_service_detected,
+        diagnostics.helper_compatible,
+        diagnostics.helper_lighting_category_available,
+        diagnostics.polkit_available,
+        diagnostics.aura_alias_present,
+        diagnostics.aura_alias_matches_selected_device,
+    )
+    .to_string();
+}
+
+async fn probe_lighting_helper_status() -> (HashMap<String, zbus::zvariant::OwnedValue>, Option<u32>)
+{
+    use zbus::Proxy;
+
+    let status = match zbus::Connection::session().await {
+        Ok(connection) => match Proxy::new(
+            &connection,
+            "io.github.roghelper.Daemon",
+            "/io/github/roghelper/Daemon",
+            "io.github.roghelper.Daemon1",
+        )
+        .await
+        {
+            Ok(proxy) => proxy
+                .call("GetPrivilegedStatus", &())
+                .await
+                .unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        },
+        Err(_) => HashMap::new(),
+    };
+    let helper_api = match zbus::Connection::system().await {
+        Ok(connection) => match Proxy::new(
+            &connection,
+            PRIVILEGED_DBUS_NAME,
+            PRIVILEGED_DBUS_PATH,
+            PRIVILEGED_DBUS_INTERFACE,
+        )
+        .await
+        {
+            Ok(proxy) => proxy
+                .call::<_, _, (u32, Vec<String>)>("GetCapabilities", &())
+                .await
+                .ok()
+                .map(|(version, _)| version),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    (status, helper_api)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_aura_readiness_reason(
+    supported_count: usize,
+    asusd_owned: bool,
+    helper_compatible: bool,
+    lighting_category: bool,
+    polkit_available: bool,
+    alias_present: bool,
+    alias_matches: bool,
+) -> &'static str {
+    if supported_count == 0 {
+        "identity_mismatch"
+    } else if supported_count > 1 {
+        "ambiguous_candidates"
+    } else if asusd_owned {
+        "suppressed_by_asusd_owner"
+    } else if !helper_compatible {
+        "helper_incompatible_or_unreachable"
+    } else if !lighting_category {
+        "lighting_category_missing"
+    } else if !polkit_available {
+        "polkit_missing"
+    } else if !alias_present {
+        "aura_alias_missing"
+    } else if !alias_matches {
+        "aura_alias_mismatch"
+    } else {
+        "ready_for_supervised_write"
     }
 }
 
@@ -1538,6 +2117,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn profile_cycle_uses_discovered_order_and_wraps() {
+        let choices = vec![
+            "Silent".to_string(),
+            "Balanced".to_string(),
+            "Turbo".to_string(),
+        ];
+        assert_eq!(next_profile(&choices, Some("Silent")), Some("Balanced"));
+        assert_eq!(next_profile(&choices, Some("Turbo")), Some("Silent"));
+        assert_eq!(next_profile(&choices, Some("unknown")), Some("Silent"));
+        assert_eq!(next_profile(&[], None), None);
+    }
+
+    #[test]
+    fn brightness_actions_respect_hardware_bounds() {
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Up), 1);
+        assert_eq!(next_brightness(3, 3, BrightnessAction::Up), 3);
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Down), 0);
+        assert_eq!(next_brightness(2, 3, BrightnessAction::Down), 1);
+        assert_eq!(next_brightness(0, 3, BrightnessAction::Toggle), 3);
+        assert_eq!(next_brightness(2, 3, BrightnessAction::Toggle), 0);
+    }
+
+    #[test]
+    fn semantic_actions_parse_without_exposing_gpu_switching() {
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "profile", "cycle"])
+                .unwrap()
+                .cmd,
+            Cmd::Profile {
+                command: ProfileCmd::Cycle
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "lighting", "brightness", "up"])
+                .unwrap()
+                .cmd,
+            Cmd::Lighting {
+                command: Some(LightingCmd::Brightness {
+                    action: BrightnessAction::Up
+                })
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["rog-helper", "automation", "pause"])
+                .unwrap()
+                .cmd,
+            Cmd::Automation {
+                command: AutomationCmd::Pause
+            }
+        ));
+        assert!(Cli::try_parse_from(["rog-helper", "gpu", "switch"]).is_err());
+    }
+
+    #[test]
     fn setup_check_is_a_first_class_cli_command() {
         let cli = Cli::try_parse_from(["rog-helper", "setup-check"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::SetupCheck));
@@ -1553,6 +2186,83 @@ mod tests {
     fn privileged_status_is_a_first_class_cli_command() {
         let cli = Cli::try_parse_from(["rog-helper", "privileged-status"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::PrivilegedStatus));
+    }
+
+    #[test]
+    fn lighting_test_requires_an_explicit_exact_target_confirmation_flag() {
+        let cli = Cli::try_parse_from(["rog-helper", "lighting-test", "--safe-sequence"])
+            .expect("dry-run form parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::LightingTest {
+                safe_sequence: true,
+                confirm_g615jmr_physical_write: false
+            }
+        ));
+    }
+
+    #[test]
+    fn safe_sequence_is_fixed_high_level_and_ends_with_a_separate_restore() {
+        let steps = safe_aura_sequence();
+        assert_eq!(steps.len(), 11);
+        assert_eq!(steps[0].label, "Static red");
+        assert_eq!(steps[4].secondary, Some("#0000FF"));
+        assert_eq!(
+            steps
+                .iter()
+                .filter_map(|step| step.direction)
+                .collect::<Vec<_>>(),
+            vec!["right", "left", "up", "down"]
+        );
+        let restore = safe_restore_step();
+        assert_eq!(restore.mode, "static");
+        for step in steps.iter().chain(std::iter::once(&restore)) {
+            let request = safe_step_to_dbus(step);
+            assert!(request.keys().all(|key| matches!(
+                key.as_str(),
+                "mode" | "rgb_hex" | "secondary_rgb_hex" | "speed" | "direction"
+            )));
+        }
+    }
+
+    #[test]
+    fn native_readiness_fails_closed_in_priority_order() {
+        assert_eq!(
+            native_aura_readiness_reason(0, false, true, true, true, true, true),
+            "identity_mismatch"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(2, false, true, true, true, true, true),
+            "ambiguous_candidates"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, true, true, true, true, true, true),
+            "suppressed_by_asusd_owner"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, false, true, true, true, true),
+            "helper_incompatible_or_unreachable"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, false, true, true, true),
+            "lighting_category_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, false, true, true),
+            "polkit_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, false, false),
+            "aura_alias_missing"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, true, false),
+            "aura_alias_mismatch"
+        );
+        assert_eq!(
+            native_aura_readiness_reason(1, false, true, true, true, true, true),
+            "ready_for_supervised_write"
+        );
     }
 
     #[test]

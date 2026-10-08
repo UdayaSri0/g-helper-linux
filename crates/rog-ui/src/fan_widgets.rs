@@ -7,6 +7,8 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 
 type Color = (f64, f64, f64);
+type CurvePoints = Vec<(u8, u8)>;
+type CurveChangeHandler = Rc<RefCell<Option<Box<dyn Fn(CurvePoints)>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotorStatus {
@@ -191,12 +193,16 @@ impl TempGauge {
 struct CurvePreviewState {
     points: Vec<(u8, u8)>,
     enabled: bool,
+    current_temp_c: Option<f32>,
+    selected_point: Option<usize>,
+    drag_origin: Option<(f64, f64, u8, u8)>,
 }
 
 #[derive(Clone)]
 pub struct CurvePreview {
     area: gtk::DrawingArea,
     state: Rc<RefCell<CurvePreviewState>>,
+    points_changed: CurveChangeHandler,
 }
 
 impl CurvePreview {
@@ -206,8 +212,9 @@ impl CurvePreview {
         area.set_hexpand(true);
         area.add_css_class("fan-curve-widget");
         area.set_tooltip_text(Some(
-            "Safe fan curve preview. Disabled until curve support is available.",
+            "Eight-point draft editor. Drag a point or focus the chart and use arrow keys; edits remain local until Apply.",
         ));
+        area.set_focusable(true);
 
         let state = Rc::new(RefCell::new(CurvePreviewState {
             points: vec![
@@ -221,13 +228,131 @@ impl CurvePreview {
                 (95, 100),
             ],
             enabled: false,
+            current_temp_c: None,
+            selected_point: None,
+            drag_origin: None,
         }));
+        let points_changed = Rc::new(RefCell::new(None::<Box<dyn Fn(CurvePoints)>>));
         let draw_state = state.clone();
         area.set_draw_func(move |_, ctx, width, height| {
             draw_curve_preview(ctx, width as f64, height as f64, &draw_state.borrow());
         });
 
-        Self { area, state }
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
+        let drag_state = state.clone();
+        let drag_area = area.clone();
+        drag.connect_drag_begin(move |_, x, y| {
+            let width = drag_area.width() as f64;
+            let height = drag_area.height() as f64;
+            let mut state = drag_state.borrow_mut();
+            if !state.enabled {
+                return;
+            }
+            let Some(index) = nearest_curve_point(&state.points, width, height, x, y, 18.0) else {
+                state.selected_point = None;
+                state.drag_origin = None;
+                return;
+            };
+            state.selected_point = Some(index);
+            let (temp, duty) = state.points[index];
+            state.drag_origin = Some((x, y, temp, duty));
+            drop(state);
+            drag_area.grab_focus();
+            drag_area.queue_draw();
+        });
+        let drag_state = state.clone();
+        let drag_area = area.clone();
+        let drag_changed = points_changed.clone();
+        drag.connect_drag_update(move |_, offset_x, offset_y| {
+            let width = drag_area.width() as f64;
+            let height = drag_area.height() as f64;
+            let changed = {
+                let mut state = drag_state.borrow_mut();
+                if !state.enabled {
+                    return;
+                }
+                let (Some(index), Some((start_x, start_y, start_temp, start_duty))) =
+                    (state.selected_point, state.drag_origin)
+                else {
+                    return;
+                };
+                let (_, _, plot_w, plot_h) = curve_plot_bounds(width, height);
+                let temp = (start_temp as f64 + (offset_x / plot_w * 70.0).round())
+                    .clamp(30.0, 100.0) as u8;
+                let duty = (start_duty as f64 - (offset_y / plot_h * 100.0).round())
+                    .clamp(0.0, 100.0) as u8;
+                let _ = (start_x, start_y); // GestureDrag offsets are relative to the drag origin.
+                move_curve_point(&mut state.points, index, temp, duty)
+            };
+            if changed {
+                let points = drag_state.borrow().points.clone();
+                if let Some(callback) = drag_changed.borrow().as_ref() {
+                    callback(points);
+                }
+                drag_area.queue_draw();
+            }
+        });
+        let drag_state = state.clone();
+        drag.connect_drag_end(move |_, _, _| {
+            drag_state.borrow_mut().drag_origin = None;
+        });
+        area.add_controller(drag);
+
+        let keys = gtk::EventControllerKey::new();
+        let key_state = state.clone();
+        let key_area = area.clone();
+        let key_changed = points_changed.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let mut state = key_state.borrow_mut();
+            if !state.enabled || state.points.len() != 8 {
+                return gtk::glib::Propagation::Proceed;
+            }
+            let selected = state.selected_point.unwrap_or(0).min(7);
+            let step = if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                5
+            } else {
+                1
+            };
+            match key {
+                gtk::gdk::Key::Left => {
+                    let temp = state.points[selected].0.saturating_sub(step);
+                    let duty = state.points[selected].1;
+                    move_curve_point(&mut state.points, selected, temp, duty);
+                }
+                gtk::gdk::Key::Right => {
+                    let temp = state.points[selected].0.saturating_add(step);
+                    let duty = state.points[selected].1;
+                    move_curve_point(&mut state.points, selected, temp, duty);
+                }
+                gtk::gdk::Key::Up => {
+                    let temp = state.points[selected].0;
+                    let duty = state.points[selected].1.saturating_add(step).min(100);
+                    move_curve_point(&mut state.points, selected, temp, duty);
+                }
+                gtk::gdk::Key::Down => {
+                    let temp = state.points[selected].0;
+                    let duty = state.points[selected].1.saturating_sub(step);
+                    move_curve_point(&mut state.points, selected, temp, duty);
+                }
+                _ => return gtk::glib::Propagation::Proceed,
+            }
+            state.selected_point = Some(selected);
+            let points = state.points.clone();
+            drop(state);
+            if let Some(callback) = key_changed.borrow().as_ref() {
+                callback(points);
+            }
+            key_area.queue_draw();
+            gtk::glib::Propagation::Stop
+        });
+        area.add_controller(keys);
+
+        Self {
+            area,
+            state,
+            points_changed,
+        }
     }
 
     pub fn widget(&self) -> &gtk::DrawingArea {
@@ -249,6 +374,110 @@ impl CurvePreview {
     pub fn points(&self) -> Vec<(u8, u8)> {
         self.state.borrow().points.clone()
     }
+
+    pub fn set_points(&self, points: Vec<(u8, u8)>) {
+        let mut state = self.state.borrow_mut();
+        if state.points == points {
+            return;
+        }
+        state.points = points;
+        state.selected_point = None;
+        state.drag_origin = None;
+        drop(state);
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
+    }
+
+    pub fn connect_points_changed(&self, callback: impl Fn(Vec<(u8, u8)>) + 'static) {
+        *self.points_changed.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn set_current_temp(&self, temp_c: Option<f32>) {
+        let mut state = self.state.borrow_mut();
+        if state.current_temp_c == temp_c {
+            return;
+        }
+        state.current_temp_c = temp_c;
+        drop(state);
+        if self.area.is_mapped() {
+            self.area.queue_draw();
+        }
+    }
+}
+
+fn curve_plot_bounds(width: f64, height: f64) -> (f64, f64, f64, f64) {
+    let left = 42.0;
+    let right = 18.0;
+    let top = 22.0;
+    let bottom = 34.0;
+    (
+        left,
+        top,
+        (width - left - right).max(40.0),
+        (height - top - bottom).max(40.0),
+    )
+}
+
+fn curve_xy(width: f64, height: f64, temp: u8, duty: u8) -> (f64, f64) {
+    let (left, top, plot_w, plot_h) = curve_plot_bounds(width, height);
+    (
+        left + ((temp.saturating_sub(30)) as f64 / 70.0).clamp(0.0, 1.0) * plot_w,
+        top + (1.0 - (duty as f64 / 100.0).clamp(0.0, 1.0)) * plot_h,
+    )
+}
+
+fn nearest_curve_point(
+    points: &[(u8, u8)],
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+    radius: f64,
+) -> Option<usize> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (temp, duty))| {
+            let (point_x, point_y) = curve_xy(width, height, *temp, *duty);
+            (index, (point_x - x).hypot(point_y - y))
+        })
+        .filter(|(_, distance)| *distance <= radius)
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(index, _)| index)
+}
+
+/// Move one point without allowing temperature or duty ordering to cross neighbors.
+pub fn move_curve_point(points: &mut [(u8, u8)], index: usize, temp: u8, duty: u8) -> bool {
+    if points.len() != 8 || index >= points.len() {
+        return false;
+    }
+    let min_temp = if index == 0 {
+        30
+    } else {
+        points[index - 1].0.saturating_add(1)
+    };
+    let max_temp = if index + 1 == points.len() {
+        100
+    } else {
+        points[index + 1].0.saturating_sub(1)
+    };
+    if min_temp > max_temp {
+        return false;
+    }
+    let min_duty = if index == 0 { 0 } else { points[index - 1].1 };
+    let max_duty = if index + 1 == points.len() {
+        100
+    } else {
+        points[index + 1].1
+    };
+    let next = (
+        temp.clamp(min_temp, max_temp),
+        duty.clamp(min_duty, max_duty),
+    );
+    let changed = points[index] != next;
+    points[index] = next;
+    changed
 }
 
 fn draw_fan_rotor(ctx: &Context, width: f64, height: f64, state: &FanRotorState) {
@@ -404,12 +633,7 @@ fn draw_temperature_gauge(ctx: &Context, width: f64, height: f64, state: &TempGa
 }
 
 fn draw_curve_preview(ctx: &Context, width: f64, height: f64, state: &CurvePreviewState) {
-    let pad_left = 42.0;
-    let pad_right = 18.0;
-    let pad_top = 22.0;
-    let pad_bottom = 34.0;
-    let plot_w = (width - pad_left - pad_right).max(40.0);
-    let plot_h = (height - pad_top - pad_bottom).max(40.0);
+    let (pad_left, pad_top, plot_w, plot_h) = curve_plot_bounds(width, height);
     let alpha = if state.enabled { 0.95 } else { 0.48 };
 
     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.06);
@@ -428,11 +652,7 @@ fn draw_curve_preview(ctx: &Context, width: f64, height: f64, state: &CurvePrevi
     ctx.set_line_width(1.0);
     ctx.stroke().ok();
 
-    let to_xy = |temp: u8, speed: u8| {
-        let x = pad_left + ((temp.saturating_sub(30)) as f64 / 70.0).clamp(0.0, 1.0) * plot_w;
-        let y = pad_top + (1.0 - (speed as f64 / 100.0).clamp(0.0, 1.0)) * plot_h;
-        (x, y)
-    };
+    let to_xy = |temp: u8, speed: u8| curve_xy(width, height, temp, speed);
 
     if let Some((first_temp, first_speed)) = state.points.first().copied() {
         let first = to_xy(first_temp, first_speed);
@@ -447,13 +667,57 @@ fn draw_curve_preview(ctx: &Context, width: f64, height: f64, state: &CurvePrevi
         ctx.set_source_rgba(0.30, 0.64, 1.0, 0.85 * alpha);
         ctx.stroke().ok();
 
-        for (temp, speed) in &state.points {
+        for (index, (temp, speed)) in state.points.iter().enumerate() {
             let (x, y) = to_xy(*temp, *speed);
+            if state.selected_point == Some(index) {
+                ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85);
+                ctx.arc(x, y, 8.0, 0.0, 2.0 * PI);
+                ctx.stroke().ok();
+            }
             ctx.arc(x, y, 4.0, 0.0, 2.0 * PI);
             ctx.set_source_rgba(0.30, 0.64, 1.0, alpha);
             ctx.fill().ok();
         }
     }
+
+    if let Some(temp_c) = state.current_temp_c.filter(|value| value.is_finite()) {
+        let x = pad_left + ((f64::from(temp_c) - 30.0) / 70.0).clamp(0.0, 1.0) * plot_w;
+        ctx.set_dash(&[4.0, 4.0], 0.0);
+        ctx.set_source_rgba(1.0, 0.74, 0.22, 0.9);
+        ctx.set_line_width(1.5);
+        ctx.move_to(x, pad_top);
+        ctx.line_to(x, pad_top + plot_h);
+        ctx.stroke().ok();
+        ctx.set_dash(&[], 0.0);
+        draw_label(
+            ctx,
+            x.clamp(pad_left + 34.0, pad_left + plot_w - 34.0),
+            14.0,
+            &format!("Now {:.0}°C", temp_c),
+            10.0,
+            (1.0, 0.74, 0.22),
+            0.95,
+        );
+    }
+
+    draw_label(
+        ctx,
+        pad_left + plot_w / 2.0,
+        height - 5.0,
+        "Temperature (°C) · straight segments are visual only",
+        10.0,
+        (1.0, 1.0, 1.0),
+        0.72,
+    );
+    draw_label(
+        ctx,
+        13.0,
+        pad_top + plot_h / 2.0,
+        "Fan %",
+        10.0,
+        (1.0, 1.0, 1.0),
+        0.72,
+    );
 
     draw_label(
         ctx,
@@ -568,4 +832,38 @@ fn rounded_rect(ctx: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
 
 fn polar(cx: f64, cy: f64, radius: f64, angle: f64) -> (f64, f64) {
     (cx + radius * angle.cos(), cy + radius * angle.sin())
+}
+
+#[cfg(test)]
+mod curve_editor_tests {
+    use super::move_curve_point;
+
+    fn points() -> Vec<(u8, u8)> {
+        vec![
+            (35, 15),
+            (45, 25),
+            (55, 35),
+            (65, 50),
+            (75, 70),
+            (85, 90),
+            (90, 100),
+            (95, 100),
+        ]
+    }
+
+    #[test]
+    fn graph_point_drag_clamps_to_neighbor_order() {
+        let mut curve = points();
+        assert!(move_curve_point(&mut curve, 3, 99, 100));
+        assert_eq!(curve[3], (74, 70));
+        assert!(curve.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(curve.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+    }
+
+    #[test]
+    fn graph_point_edit_rejects_wrong_point_count() {
+        let mut curve = points();
+        curve.pop();
+        assert!(!move_curve_point(&mut curve, 1, 50, 30));
+    }
 }

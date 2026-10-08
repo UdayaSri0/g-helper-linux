@@ -169,27 +169,35 @@ Implemented narrowly in code:
 
 - exact ASUS WMI CPU/GPU/Mid mapping and eight-point validation
 - staged writes, per-value readback, enable-last behavior, Auto rollback, and typed PolicyKit fallback
-- capability-driven Cooling UI with a fixed conservative preview/apply flow
+- capability-driven Cooling UI with raw-preserving Import Current, explicit draft provenance,
+  eight-point Quiet/Balanced/Performance drafts, Reset Draft, Apply, and separate Restore Auto
+
+Research outcome:
+
+- fan hysteresis remains unsupported because current mainline Linux and asusctl/asusd expose no
+  verified ASUS hysteresis ABI; no proprietary Windows method or software thermal loop is used
 
 Still missing:
 
 - supervised physical validation of apply, rollback, helper recovery, suspend/resume, and firmware ownership
+- complete recovery-marker startup/residency/shutdown lifecycle tests; deterministic injected
+  readback-mismatch, partial-write, and rollback-failure coverage is implemented
 - editable and persistent per-fan curves
 - profile-linked curves and safe multi-fan semantics
 - an independently verified asusd curve contract; generic hwmon formats remain unsupported
 
 ### Auto mode and policy automation
 
-Planned but missing at runtime:
+Implemented as an opt-in daemon-owned policy runtime:
 
-- daemon-side use of the `rog-core` policy model
-- AC/Battery rule application
-- manual override pause/resume flow
-- UI for auto rules
+- versioned AC/Battery preset rules, optional Battery percentage threshold, disabled by default
+- stable-source debounce, duplicate suppression, persistent manual override, and explicit Resume
+- automatic application is limited to asusd platform profile and asusd/direct-writable battery limit
+- PolicyKit-requiring, fan, lighting, and GPU changes are skipped; GPU remains manual because it may require logout/reboot
+- runtime reports per-component applied, unchanged, skipped, failed, and blocked results
 
-Note:
-
-- the policy model exists in `rog-core`, but it is not wired into `rog-helperd`
+Remaining limitation: the Battery threshold is a one-way activation condition for the selected
+Battery preset; it does not switch to a second preset when charge later rises above the threshold.
 
 ### Aura / RGB lighting
 
@@ -218,13 +226,15 @@ Implemented:
   `ui.toml` migration
 - dedicated Settings page for lifecycle and dashboard preferences
 - inert preferred charge limit, last manual profile, and fan-sync preference
+- named profile presets with create, duplicate, rename, update, and confirmed delete
+- semantic platform-profile and charge-limit preferences, plus versioned fan-curve/lighting fields
+- profile CRUD over session DBus with atomic persistence only; profile saving never applies hardware
 - confirmed reset to defaults
 
-Still missing:
+Remaining limitations:
 
-- saved automation rules and daemon policy execution
-- persistent verified fan curves
-- automatic hardware application, intentionally deferred until an explicit safety model exists
+- automation applies only the approved platform-profile and battery-limit subset
+- persisted fan and lighting settings require live capability validation and remain skipped by automation
 
 ### Typed daemon API payloads
 
@@ -238,18 +248,20 @@ Current state:
 
 ### Linux-native convenience controls
 
-Research-only and currently missing:
+Status after Prompt 07:
 
-- display refresh discovery/control through an explicit DRM, Wayland, or compositor contract
-- global hotkeys that invoke existing semantic daemon actions
-- keyboard timeout control through a verified Linux backend
+- manual internal-display refresh discovery/control through X11 RandR only; Wayland and
+  AC/Battery switching remain unavailable until a reliable session-bound contract exists
+- desktop-owned shortcut bindings to semantic CLI actions; no global shortcut registration or input capture
+- keyboard timeout control through a verified Linux backend (no timeout ABI found; software
+  idle behavior is omitted to avoid conflict with desktop power management)
 
 ## Priorities
 
 The dependency-ordered priorities are maintained in
 [IMPLEMENTATION_PRIORITY.md](IMPLEMENTATION_PRIORITY.md): validate the existing narrow hardware
-contracts first, then add durable profiles and automation, then Linux-native convenience features,
-and only then broaden device coverage.
+contracts first, save-only profiles second, and automation only after a separate safety design;
+Linux-native convenience features and broader device coverage follow those foundations.
 
 ## Suggested Labels
 

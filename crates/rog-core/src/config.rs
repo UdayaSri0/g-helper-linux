@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -5,7 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 3;
+pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 pub const CONFIG_DIR_NAME: &str = "rog-helper";
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const LEGACY_UI_FILE_NAME: &str = "ui.toml";
@@ -36,7 +38,7 @@ impl CloseBehavior {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
     pub close_behavior: CloseBehavior,
@@ -44,6 +46,8 @@ pub struct UiPreferences {
     pub start_minimized_to_tray: bool,
     pub close_to_tray_hint_shown: bool,
     pub fan_warning_acknowledged: bool,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
 }
 
 impl Default for UiPreferences {
@@ -54,17 +58,20 @@ impl Default for UiPreferences {
             start_minimized_to_tray: false,
             close_to_tray_hint_shown: false,
             fan_warning_acknowledged: false,
+            future_fields: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DashboardPreferences {
     pub show_system_health: bool,
     pub show_nvme: bool,
     pub show_cooling_snapshot: bool,
     pub compact: bool,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
 }
 
 impl Default for DashboardPreferences {
@@ -74,11 +81,12 @@ impl Default for DashboardPreferences {
             show_nvme: true,
             show_cooling_snapshot: true,
             compact: false,
+            future_fields: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ControlPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,15 +94,114 @@ pub struct ControlPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_manual_profile: Option<String>,
     pub fan_sync_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_profile_id: Option<String>,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AutomationPreferences {
+    pub enabled: bool,
+    pub ac_profile_id: Option<String>,
+    pub battery_profile_id: Option<String>,
+    pub battery_threshold_percent: Option<u8>,
+    pub manual_override: bool,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileFanRole {
+    Cpu,
+    Gpu,
+    Mid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FanCurveProvenance {
+    UserDefined,
+    Imported,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "curve", rename_all = "snake_case")]
+pub enum ProfileFanControl {
+    Auto,
+    Curve(SavedFanCurve),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedFanCurve {
+    pub schema_version: u32,
+    pub role: ProfileFanRole,
+    pub points: Vec<crate::FanPoint>,
+    pub provenance: FanCurveProvenance,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProfileLighting {
+    /// Kept as a semantic backend label so a future effect survives on older hardware.
+    pub effect: String,
+    pub primary_rgb: Option<crate::RgbColor>,
+    pub secondary_rgb: Option<crate::RgbColor>,
+    pub speed: Option<String>,
+    pub direction: Option<String>,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProfileSettings {
+    pub platform_profile: Option<crate::PerformanceProfile>,
+    pub battery_charge_limit: Option<u8>,
+    pub gpu_mode: Option<crate::GpuMode>,
+    pub fan_controls: BTreeMap<ProfileFanRole, ProfileFanControl>,
+    pub lighting: Option<ProfileLighting>,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamedProfile {
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub settings: ProfileSettings,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
+}
+
+impl NamedProfile {
+    pub fn empty(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            schema_version: PROFILE_SCHEMA_VERSION,
+            id: id.into(),
+            name: name.into(),
+            settings: ProfileSettings::default(),
+            future_fields: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub version: u32,
     pub ui: UiPreferences,
     pub dashboard: DashboardPreferences,
     pub controls: ControlPreferences,
+    pub automation: AutomationPreferences,
+    pub profiles: Vec<NamedProfile>,
+    #[serde(flatten)]
+    pub future_fields: BTreeMap<String, toml::Value>,
 }
 
 impl Default for AppConfig {
@@ -104,18 +211,21 @@ impl Default for AppConfig {
             ui: UiPreferences::default(),
             dashboard: DashboardPreferences::default(),
             controls: ControlPreferences::default(),
+            automation: AutomationPreferences::default(),
+            profiles: Vec::new(),
+            future_fields: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfigSource {
     Defaults,
     File,
     LegacyUi,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfigLoad {
     pub config: AppConfig,
     pub source: ConfigSource,
@@ -217,14 +327,23 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
     match root.get("version").and_then(toml::Value::as_integer) {
         Some(version) if version >= 1 => {
             let version = u32::try_from(version).unwrap_or(u32::MAX);
+            config.version = version.max(CONFIG_VERSION);
             if version > CONFIG_VERSION {
                 warnings.push(format!(
-                    "Configuration version {version} is newer than supported version {CONFIG_VERSION}; known fields were loaded and unknown fields preserved only on disk."
+                    "Configuration version {version} is newer than supported version {CONFIG_VERSION}; known fields were loaded and unknown fields are preserved."
+                ));
+            } else if version < CONFIG_VERSION {
+                warnings.push(format!(
+                    "Migrated configuration version {version} to version {CONFIG_VERSION}; known settings were retained."
                 ));
             }
         }
-        Some(_) => warnings.push("Invalid configuration version; treating it as version 1.".into()),
-        None => warnings.push("Configuration has no version; migrated as version 1.".into()),
+        Some(_) => warnings.push(
+            "Invalid configuration version; migrating known fields to the current version.".into(),
+        ),
+        None => warnings.push(
+            "Configuration has no version; migrating known fields to the current version.".into(),
+        ),
     }
 
     if let Some(ui) = table(root, "ui", &mut warnings) {
@@ -261,6 +380,17 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
             &mut config.ui.fan_warning_acknowledged,
             &mut warnings,
         );
+        preserve_unknown(
+            ui,
+            &[
+                "close_behavior",
+                "launch_on_login",
+                "start_minimized_to_tray",
+                "close_to_tray_hint_shown",
+                "fan_warning_acknowledged",
+            ],
+            &mut config.ui.future_fields,
+        );
     }
 
     if let Some(dashboard) = table(root, "dashboard", &mut warnings) {
@@ -288,16 +418,23 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
             &mut config.dashboard.compact,
             &mut warnings,
         );
+        preserve_unknown(
+            dashboard,
+            &[
+                "show_system_health",
+                "show_nvme",
+                "show_cooling_snapshot",
+                "compact",
+            ],
+            &mut config.dashboard.future_fields,
+        );
     }
 
     if let Some(controls) = table(root, "controls", &mut warnings) {
         if let Some(raw) = controls.get("preferred_charge_limit") {
-            match raw.as_integer().and_then(|v| u8::try_from(v).ok()) {
+            match raw.as_integer().and_then(|value| u8::try_from(value).ok()) {
                 Some(value @ 40..=100) => config.controls.preferred_charge_limit = Some(value),
-                _ => warnings.push(
-                    "Invalid controls.preferred_charge_limit; expected 40..=100, so no preference is active."
-                        .into(),
-                ),
+                _ => warnings.push("Invalid controls.preferred_charge_limit; expected 40..=100, so no preference is active.".into()),
             }
         }
         if let Some(value) = string(controls, "last_manual_profile", &mut warnings) {
@@ -316,6 +453,80 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
             &mut config.controls.fan_sync_enabled,
             &mut warnings,
         );
+        if let Some(value) = string(controls, "preferred_profile_id", &mut warnings) {
+            if valid_profile_id(value) {
+                config.controls.preferred_profile_id = Some(value.to_string());
+            } else {
+                warnings.push(
+                    "Invalid controls.preferred_profile_id; no preferred profile is active.".into(),
+                );
+            }
+        }
+        preserve_unknown(
+            controls,
+            &[
+                "preferred_charge_limit",
+                "last_manual_profile",
+                "fan_sync_enabled",
+                "preferred_profile_id",
+            ],
+            &mut config.controls.future_fields,
+        );
+    }
+
+    if let Some(automation) = table(root, "automation", &mut warnings) {
+        match toml::Value::Table(automation.clone()).try_into::<AutomationPreferences>() {
+            Ok(preferences) => config.automation = preferences,
+            Err(error) => warnings.push(format!(
+                "Invalid automation configuration; automation remains disabled: {error}"
+            )),
+        }
+    }
+
+    if let Some(raw_profiles) = root.get("profiles") {
+        if let Some(profiles) = raw_profiles.as_array() {
+            for (index, raw_profile) in profiles.iter().enumerate() {
+                match raw_profile.clone().try_into::<NamedProfile>() {
+                    Ok(profile) => {
+                        if let Err(error) = validate_profile(&profile) {
+                            warnings.push(format!("Ignoring invalid profile at index {index}: {error}"));
+                        } else if config.profiles.iter().any(|existing| existing.id == profile.id || existing.name.eq_ignore_ascii_case(profile.name.trim())) {
+                            warnings.push(format!("Ignoring profile at index {index} because its ID or name is duplicated."));
+                        } else {
+                            config.profiles.push(profile);
+                        }
+                    }
+                    Err(error) => warnings.push(format!("Ignoring unreadable profile at index {index}; other profiles remain available: {error}")),
+                }
+            }
+        } else {
+            warnings.push("Invalid profiles section; saved profiles were not loaded.".into());
+        }
+    }
+    preserve_unknown(
+        root,
+        &[
+            "version",
+            "ui",
+            "dashboard",
+            "controls",
+            "automation",
+            "profiles",
+        ],
+        &mut config.future_fields,
+    );
+
+    if let Some(preferred_id) = config.controls.preferred_profile_id.as_deref() {
+        if !config
+            .profiles
+            .iter()
+            .any(|profile| profile.id == preferred_id)
+        {
+            config.controls.preferred_profile_id = None;
+            warnings.push(
+                "Preferred profile ID does not exist; no preferred profile is active.".into(),
+            );
+        }
     }
 
     ConfigLoad {
@@ -385,10 +596,32 @@ pub fn parse_legacy_ui_config(contents: &str) -> ConfigLoad {
 
 pub fn config_to_toml(config: &AppConfig) -> Result<String, String> {
     let mut normalized = config.clone();
-    normalized.version = CONFIG_VERSION;
+    normalized.version = normalized.version.max(CONFIG_VERSION);
     validate_config(&normalized)?;
     toml::to_string_pretty(&normalized)
         .map_err(|error| format!("Unable to serialize configuration: {error}"))
+}
+
+pub fn profile_to_toml(profile: &NamedProfile) -> Result<String, String> {
+    validate_profile(profile)?;
+    toml::to_string(profile).map_err(|error| format!("Unable to serialize saved profile: {error}"))
+}
+
+pub fn profile_settings_to_toml(settings: &ProfileSettings) -> Result<String, String> {
+    toml::to_string(settings)
+        .map_err(|error| format!("Unable to serialize profile settings: {error}"))
+}
+
+fn preserve_unknown(
+    source: &toml::map::Map<String, toml::Value>,
+    known: &[&str],
+    target: &mut BTreeMap<String, toml::Value>,
+) {
+    for (key, value) in source {
+        if !known.contains(&key.as_str()) {
+            target.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 pub fn validate_config(config: &AppConfig) -> Result<(), String> {
@@ -401,6 +634,159 @@ pub fn validate_config(config: &AppConfig) -> Result<(), String> {
         if profile.trim().is_empty() || profile.len() > 64 {
             return Err("Last manual profile must contain 1 to 64 characters.".into());
         }
+    }
+    if let Some(id) = config.controls.preferred_profile_id.as_deref() {
+        if !valid_profile_id(id) || !config.profiles.iter().any(|profile| profile.id == id) {
+            return Err("Preferred profile must refer to an existing profile ID.".into());
+        }
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    for profile in &config.profiles {
+        validate_profile(profile)?;
+        if !ids.insert(profile.id.as_str()) {
+            return Err(format!("Profile ID '{}' is duplicated.", profile.id));
+        }
+        if !names.insert(profile.name.trim().to_ascii_lowercase()) {
+            return Err(format!("Profile name '{}' is duplicated.", profile.name));
+        }
+    }
+    if config
+        .automation
+        .battery_threshold_percent
+        .is_some_and(|threshold| !(1..=100).contains(&threshold))
+    {
+        return Err("Automation battery threshold must be between 1 and 100 percent.".into());
+    }
+    for id in [
+        config.automation.ac_profile_id.as_deref(),
+        config.automation.battery_profile_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !valid_profile_id(id) {
+            return Err("Automation rule profile IDs must be valid saved profile IDs.".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_profile(profile: &NamedProfile) -> Result<(), String> {
+    if !valid_profile_id(&profile.id) {
+        return Err(
+            "Profile ID must contain 1 to 64 ASCII letters, digits, '-' or '_' characters.".into(),
+        );
+    }
+    let name = profile.name.trim();
+    if name.is_empty() || name.len() > 64 {
+        return Err("Profile name must contain 1 to 64 characters.".into());
+    }
+    if profile.schema_version == 0 {
+        return Err("Profile schema version must be greater than zero.".into());
+    }
+    if let Some(limit) = profile.settings.battery_charge_limit {
+        if !(40..=100).contains(&limit) {
+            return Err("Profile battery charge limit must be between 40 and 100 percent.".into());
+        }
+    }
+    if let Some(lighting) = &profile.settings.lighting {
+        if lighting.effect.trim().is_empty() || lighting.effect.len() > 64 {
+            return Err("Profile lighting effect must contain 1 to 64 characters.".into());
+        }
+        for (label, value) in [
+            ("speed", &lighting.speed),
+            ("direction", &lighting.direction),
+        ] {
+            if value
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty() || value.len() > 64)
+            {
+                return Err(format!(
+                    "Profile lighting {label} must contain 1 to 64 characters."
+                ));
+            }
+        }
+    }
+    for (role, control) in &profile.settings.fan_controls {
+        if let ProfileFanControl::Curve(curve) = control {
+            if curve.role != *role {
+                return Err("Saved fan curve target role does not match its profile entry.".into());
+            }
+            if curve.schema_version == 0 {
+                return Err("Saved fan curve schema version must be greater than zero.".into());
+            }
+            crate::validate_fan_curve_points(
+                &curve.points,
+                crate::FanCurvePolicy {
+                    exact_point_count: Some(8),
+                    ..crate::FanCurvePolicy::default()
+                },
+            )
+            .map_err(|error| format!("Saved fan curve is unsafe: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn profile_lighting_is_available(
+    lighting: &ProfileLighting,
+    capabilities: &crate::LightingCaps,
+) -> bool {
+    let saved = crate::LightingMode::from_backend_label(&lighting.effect);
+    capabilities
+        .supported_modes
+        .iter()
+        .any(|supported| supported.same_user_mode(&saved))
+}
+
+fn valid_profile_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+pub fn insert_profile(config: &mut AppConfig, profile: NamedProfile) -> Result<(), String> {
+    validate_profile(&profile)?;
+    if config.profiles.iter().any(|existing| {
+        existing.id == profile.id || existing.name.eq_ignore_ascii_case(profile.name.trim())
+    }) {
+        return Err("A profile with this ID or name already exists.".into());
+    }
+    config.profiles.push(profile);
+    Ok(())
+}
+
+pub fn replace_profile(config: &mut AppConfig, profile: NamedProfile) -> Result<(), String> {
+    validate_profile(&profile)?;
+    let Some(index) = config
+        .profiles
+        .iter()
+        .position(|existing| existing.id == profile.id)
+    else {
+        return Err("Profile was not found.".into());
+    };
+    if config.profiles.iter().enumerate().any(|(other, existing)| {
+        other != index && existing.name.eq_ignore_ascii_case(profile.name.trim())
+    }) {
+        return Err("A profile with this name already exists.".into());
+    }
+    if config.profiles[index].schema_version > PROFILE_SCHEMA_VERSION {
+        return Err("This profile was created by a newer schema and cannot be edited here.".into());
+    }
+    config.profiles[index] = profile;
+    Ok(())
+}
+
+pub fn remove_profile(config: &mut AppConfig, id: &str) -> Result<(), String> {
+    let Some(index) = config.profiles.iter().position(|profile| profile.id == id) else {
+        return Err("Profile was not found.".into());
+    };
+    config.profiles.remove(index);
+    if config.controls.preferred_profile_id.as_deref() == Some(id) {
+        config.controls.preferred_profile_id = None;
     }
     Ok(())
 }
@@ -520,6 +906,39 @@ mod tests {
         assert_eq!(config.ui.close_behavior, CloseBehavior::MinimizeToTray);
         assert!(config.dashboard.show_system_health);
         assert_eq!(config.controls.preferred_charge_limit, None);
+        assert!(config.profiles.is_empty());
+        assert!(!config.automation.enabled);
+        assert!(!config.automation.manual_override);
+    }
+
+    #[test]
+    fn automation_rules_round_trip_and_reject_invalid_thresholds() {
+        let config = AppConfig {
+            automation: AutomationPreferences {
+                enabled: true,
+                ac_profile_id: Some("quiet".into()),
+                battery_profile_id: Some("mobile".into()),
+                battery_threshold_percent: Some(25),
+                manual_override: true,
+                future_fields: BTreeMap::from([(
+                    "future_rule_option".into(),
+                    toml::Value::String("keep".into()),
+                )]),
+            },
+            ..AppConfig::default()
+        };
+        let serialized = config_to_toml(&config).unwrap();
+        let loaded = parse_config(&serialized).config;
+        assert_eq!(loaded.automation, config.automation);
+
+        let invalid = AppConfig {
+            automation: AutomationPreferences {
+                battery_threshold_percent: Some(0),
+                ..AutomationPreferences::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(validate_config(&invalid).is_err());
     }
 
     #[test]
@@ -538,10 +957,230 @@ mod tests {
     #[test]
     fn unknown_fields_are_tolerated() {
         let loaded = parse_config(
-            "version = 1\nfuture = 'ok'\n[ui]\nlaunch_on_login = true\nfuture_ui = 9\n",
+            "version = 3\nfuture = 'ok'\n[ui]\nlaunch_on_login = true\nfuture_ui = 9\n",
         );
         assert!(loaded.config.ui.launch_on_login);
         assert!(loaded.warnings.is_empty());
+        let serialized = config_to_toml(&loaded.config).unwrap();
+        assert!(serialized.contains("future = \"ok\""));
+        assert!(serialized.contains("future_ui = 9"));
+    }
+
+    #[test]
+    fn v1_configuration_migrates_to_current_without_changing_known_settings() {
+        let loaded = parse_config("version = 1\n[dashboard]\ncompact = true\n");
+        assert_eq!(loaded.config.version, CONFIG_VERSION);
+        assert!(loaded.config.dashboard.compact);
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Migrated configuration version 1")));
+    }
+
+    #[test]
+    fn v2_configuration_migrates_to_v3_with_automation_disabled() {
+        let loaded = parse_config(
+            "version = 2\n[controls]\nfan_sync_enabled = true\n[ui]\nlaunch_on_login = true\n",
+        );
+        assert_eq!(loaded.config.version, 3);
+        assert!(loaded.config.controls.fan_sync_enabled);
+        assert!(loaded.config.ui.launch_on_login);
+        assert!(!loaded.config.automation.enabled);
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Migrated configuration version 2")));
+    }
+
+    #[test]
+    fn future_configuration_fields_survive_parse_and_atomic_serialization() {
+        let source = "version = 99\nfuture_root = { enabled = true }\n[ui]\nfuture_ui = 'keep'\n[dashboard]\nfuture_dashboard = 17\n[controls]\nfuture_control = 'keep'\n";
+        let loaded = parse_config(source);
+        let serialized = config_to_toml(&loaded.config).unwrap();
+        assert!(serialized.contains("version = 99"));
+        assert!(serialized.contains("future_root"));
+        assert!(serialized.contains("future_ui = \"keep\""));
+        assert!(serialized.contains("future_dashboard = 17"));
+        assert!(serialized.contains("future_control = \"keep\""));
+        assert_eq!(parse_config(&serialized).config.version, 99);
+
+        let daemon_input = toml::from_str::<AppConfig>(source).unwrap();
+        let daemon_round_trip = config_to_toml(&daemon_input).unwrap();
+        assert!(daemon_round_trip.contains("future_root"));
+        assert!(daemon_round_trip.contains("future_ui = \"keep\""));
+        assert!(daemon_round_trip.contains("future_dashboard = 17"));
+        assert!(daemon_round_trip.contains("future_control = \"keep\""));
+    }
+
+    fn safe_saved_curve(role: ProfileFanRole) -> SavedFanCurve {
+        SavedFanCurve {
+            schema_version: PROFILE_SCHEMA_VERSION,
+            role,
+            points: crate::FanCurvePreset::Balanced.points(),
+            provenance: FanCurveProvenance::UserDefined,
+            future_fields: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn named_profile_round_trip_keeps_semantic_curve_and_unknown_lighting_effect() {
+        let mut profile = NamedProfile::empty("gaming-1", "Gaming");
+        profile.settings.fan_controls.insert(
+            ProfileFanRole::Cpu,
+            ProfileFanControl::Curve(safe_saved_curve(ProfileFanRole::Cpu)),
+        );
+        if let Some(ProfileFanControl::Curve(curve)) =
+            profile.settings.fan_controls.get_mut(&ProfileFanRole::Cpu)
+        {
+            curve.future_fields.insert(
+                "future_curve_policy".into(),
+                toml::Value::String("keep".into()),
+            );
+        }
+        profile.settings.lighting = Some(ProfileLighting {
+            effect: "Future Aurora Flow".into(),
+            primary_rgb: Some(crate::RgbColor::parse_hex("#23AABB").unwrap()),
+            ..ProfileLighting::default()
+        });
+        profile
+            .settings
+            .future_fields
+            .insert("future_setting".into(), toml::Value::Boolean(true));
+        profile
+            .settings
+            .lighting
+            .as_mut()
+            .unwrap()
+            .future_fields
+            .insert("future_light_field".into(), toml::Value::Integer(4));
+        profile
+            .future_fields
+            .insert("future_profile".into(), toml::Value::Integer(8));
+        let mut config = AppConfig::default();
+        insert_profile(&mut config, profile.clone()).unwrap();
+
+        let serialized = config_to_toml(&config).unwrap();
+        let loaded = parse_config(&serialized);
+        assert_eq!(loaded.config.profiles[0], profile);
+        assert!(serialized.contains("schema_version = 1"));
+        assert!(serialized.contains("future_profile = 8"));
+        assert!(serialized.contains("future_curve_policy = \"keep\""));
+        assert!(serialized.contains("future_setting = true"));
+        assert!(serialized.contains("future_light_field = 4"));
+    }
+
+    #[test]
+    fn corrupt_profile_isolated_without_discarding_valid_profiles() {
+        let good = NamedProfile::empty("good", "Good");
+        let mut bad = toml::Value::try_from(NamedProfile::empty("bad", "Bad")).unwrap();
+        bad.as_table_mut()
+            .unwrap()
+            .insert("id".into(), toml::Value::Integer(7));
+        let mut root = toml::map::Map::new();
+        root.insert("version".into(), toml::Value::Integer(2));
+        root.insert(
+            "profiles".into(),
+            toml::Value::Array(vec![bad, toml::Value::try_from(good).unwrap()]),
+        );
+        let loaded = parse_config(&toml::to_string(&toml::Value::Table(root)).unwrap());
+        assert_eq!(loaded.config.profiles.len(), 1);
+        assert_eq!(loaded.config.profiles[0].id, "good");
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("profile at index 0")));
+    }
+
+    #[test]
+    fn saved_curve_requires_exactly_eight_safe_points() {
+        let mut profile = NamedProfile::empty("curve", "Curve");
+        let mut curve = safe_saved_curve(ProfileFanRole::Cpu);
+        curve.points.pop();
+        profile
+            .settings
+            .fan_controls
+            .insert(ProfileFanRole::Cpu, ProfileFanControl::Curve(curve));
+        assert!(validate_profile(&profile)
+            .unwrap_err()
+            .contains("exactly 8"));
+
+        let mut curve = safe_saved_curve(ProfileFanRole::Cpu);
+        curve.points[6].duty_percent = 10;
+        profile
+            .settings
+            .fan_controls
+            .insert(ProfileFanRole::Cpu, ProfileFanControl::Curve(curve));
+        assert!(validate_profile(&profile)
+            .unwrap_err()
+            .contains("non-decreasing"));
+
+        profile.settings.fan_controls.insert(
+            ProfileFanRole::Cpu,
+            ProfileFanControl::Curve(safe_saved_curve(ProfileFanRole::Cpu)),
+        );
+        let mut curve = safe_saved_curve(ProfileFanRole::Gpu);
+        curve.role = ProfileFanRole::Cpu;
+        profile
+            .settings
+            .fan_controls
+            .insert(ProfileFanRole::Gpu, ProfileFanControl::Curve(curve));
+        assert!(validate_profile(&profile)
+            .unwrap_err()
+            .contains("target role"));
+    }
+
+    #[test]
+    fn unsupported_lighting_mode_remains_saved_but_is_not_available() {
+        let saved = ProfileLighting {
+            effect: "Future Aurora Flow".into(),
+            ..ProfileLighting::default()
+        };
+        let caps = crate::LightingCaps {
+            supported_modes: vec![crate::LightingMode::Static],
+            ..crate::LightingCaps::default()
+        };
+        assert!(!profile_lighting_is_available(&saved, &caps));
+        let mut profile = NamedProfile::empty("light", "Lighting");
+        profile.settings.lighting = Some(saved.clone());
+        let config = AppConfig {
+            profiles: vec![profile],
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            parse_config(&config_to_toml(&config).unwrap())
+                .config
+                .profiles[0]
+                .settings
+                .lighting,
+            Some(saved)
+        );
+    }
+
+    #[test]
+    fn profile_ids_and_names_are_unique_case_insensitively_and_delete_clears_preference() {
+        let mut config = AppConfig::default();
+        insert_profile(&mut config, NamedProfile::empty("one", "Quiet")).unwrap();
+        assert!(insert_profile(&mut config, NamedProfile::empty("one", "Other")).is_err());
+        assert!(insert_profile(&mut config, NamedProfile::empty("two", "quiet")).is_err());
+        config.controls.preferred_profile_id = Some("one".into());
+        replace_profile(&mut config, NamedProfile::empty("one", "Renamed")).unwrap();
+        assert_eq!(config.profiles[0].id, "one");
+        remove_profile(&mut config, "one").unwrap();
+        assert!(config.profiles.is_empty());
+        assert_eq!(config.controls.preferred_profile_id, None);
+    }
+
+    #[test]
+    fn failed_atomic_save_does_not_replace_existing_file_or_leave_temporary_file() {
+        let root = test_dir("atomic-failure");
+        fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("not-a-directory");
+        fs::write(&blocker, "preserve me").unwrap();
+        let target = blocker.join(CONFIG_FILE_NAME);
+        let result = save_config_atomic(&target, &AppConfig::default());
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&blocker).unwrap(), "preserve me");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -576,7 +1215,7 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("newer")));
-        assert_eq!(loaded.config.version, CONFIG_VERSION);
+        assert_eq!(loaded.config.version, 99);
     }
 
     #[test]

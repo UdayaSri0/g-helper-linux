@@ -1,8 +1,10 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,26 +17,29 @@ use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray, TrayMethods};
 use rog_core::{
     config_path, config_to_toml, dbus_keys, legacy_ui_config_path, load_config, parse_config,
-    parse_legacy_ui_config, validate_config, AppConfig, AuthorizationState, BatteryState,
-    CloseBehavior, ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess,
-    CpuControlKind, CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
-    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanInfo,
-    FanMappingConfidence, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability,
-    GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource,
-    PrivilegedCategory, PrivilegedStatus, RgbColor, SetupIssue, SetupSeverity, SetupStatus,
-    TelemetrySnapshot, TopProcessMem,
+    parse_legacy_ui_config, profile_settings_to_toml, profile_to_toml, validate_config, AppConfig,
+    AuthorizationState, BatteryState, CloseBehavior, ContractStatus, CpuAccessState,
+    CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
+    CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, ErrorCategory,
+    FanCaps, FanControlMode, FanCurve, FanCurvePolicy, FanCurvePreset, FanCurveReadback, FanDomain,
+    FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FeatureAccessState,
+    FeatureAvailability, GpuSwitchState, NamedProfile, PerformanceProfile, PermissionKind,
+    PermissionState, PermissionStatus, PowerSource, PrivilegedCategory, PrivilegedStatus,
+    ProfileSettings, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
+    TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
 mod dbus_decode;
+use rog_providers::display;
 mod fan_widgets;
 mod shell;
 mod theme;
 mod widgets;
 
-use fan_widgets::{CurvePreview, FanRotor, GaugeAccent, RotorStatus, TempGauge};
+use fan_widgets::{move_curve_point, CurvePreview, FanRotor, GaugeAccent, RotorStatus, TempGauge};
 use shell::NavigationItem;
 use widgets::{
     page_container, page_header, page_header_group, HistoryGraph, MetricCard, Sparkline,
@@ -73,6 +78,12 @@ trait Daemon1 {
     fn get_configuration(&self) -> zbus::Result<String>;
     fn set_configuration(&self, contents: &str) -> zbus::Result<()>;
     fn reset_configuration(&self) -> zbus::Result<String>;
+    fn resume_automation(&self) -> zbus::Result<()>;
+    fn list_profiles(&self) -> zbus::Result<Vec<(String, String)>>;
+    fn get_profile(&self, id: &str) -> zbus::Result<String>;
+    fn create_profile(&self, name: &str, settings_toml: &str) -> zbus::Result<String>;
+    fn update_profile(&self, id: &str, profile_toml: &str) -> zbus::Result<()>;
+    fn delete_profile(&self, id: &str) -> zbus::Result<()>;
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -195,6 +206,16 @@ struct OpenLinkRequest {
     error_message: String,
 }
 
+#[derive(Debug, Clone)]
+enum PendingSavedProfileAction {
+    Create {
+        name: String,
+        settings: ProfileSettings,
+    },
+    Update(NamedProfile),
+    Delete(String),
+}
+
 #[derive(Debug)]
 struct SharedUiState {
     render_revision: u64,
@@ -222,8 +243,6 @@ struct SharedUiState {
     battery_limit: Option<u8>,
     battery_limit_edit: EditableDraft<u8>,
     keyboard_brightness_edit: EditableDraft<u64>,
-<<<<<<< HEAD
-=======
     cpu_turbo_edit: EditableDraft<bool>,
     cpu_power_mode_edit: EditableDraft<String>,
     cpu_freq_limits_edit: EditableDraft<(Option<u32>, Option<u32>)>,
@@ -232,7 +251,6 @@ struct SharedUiState {
     profile_edit: EditableDraft<String>,
     gpu_mode_edit: EditableDraft<String>,
     fan_sync_edit: EditableDraft<bool>,
->>>>>>> origin/main
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -243,6 +261,7 @@ struct SharedUiState {
     lighting_apply_in_progress: bool,
     lighting_apply_success_revision: u64,
     pending_fan_action: Option<PendingFanAction>,
+    fan_curve_apply_confirmed: Option<(String, Vec<(u8, u8)>)>,
     lighting_error: Option<String>,
     action_error: Option<String>,
     update_state: UpdateState,
@@ -254,8 +273,19 @@ struct SharedUiState {
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
     settings: AppConfig,
+    automation_status: AutomationUiStatus,
+    pending_resume_automation: bool,
+    display_snapshot: display::DisplaySnapshot,
+    display_draft_rate: Option<f64>,
+    pending_display_refresh: bool,
+    pending_display_apply: Option<f64>,
+    display_action_in_progress: bool,
     pending_config_save: Option<AppConfig>,
     pending_config_reset: bool,
+    selected_saved_profile_id: Option<String>,
+    saved_profile_draft: Option<NamedProfile>,
+    pending_saved_profile_action: Option<PendingSavedProfileAction>,
+    saved_profile_action_in_progress: bool,
     tray_available: Option<bool>,
     show_window: bool,
     show_about: bool,
@@ -291,8 +321,6 @@ impl Default for SharedUiState {
             battery_limit: None,
             battery_limit_edit: EditableDraft::default(),
             keyboard_brightness_edit: EditableDraft::default(),
-<<<<<<< HEAD
-=======
             cpu_turbo_edit: EditableDraft::default(),
             cpu_power_mode_edit: EditableDraft::default(),
             cpu_freq_limits_edit: EditableDraft::default(),
@@ -301,7 +329,6 @@ impl Default for SharedUiState {
             profile_edit: EditableDraft::default(),
             gpu_mode_edit: EditableDraft::default(),
             fan_sync_edit: EditableDraft::default(),
->>>>>>> origin/main
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -312,6 +339,7 @@ impl Default for SharedUiState {
             lighting_apply_in_progress: false,
             lighting_apply_success_revision: 0,
             pending_fan_action: None,
+            fan_curve_apply_confirmed: None,
             lighting_error: None,
             action_error: None,
             update_state: UpdateState::default(),
@@ -323,13 +351,53 @@ impl Default for SharedUiState {
             pending_toast: None,
             daemon_error: None,
             settings: AppConfig::default(),
+            automation_status: AutomationUiStatus::default(),
+            pending_resume_automation: false,
+            display_snapshot: display::DisplaySnapshot {
+                session_type: "unknown".into(),
+                backend: "checking".into(),
+                internal_output: None,
+                current_mode: None,
+                current_rate: None,
+                supported_rates: Vec::new(),
+                reason: "Display capabilities have not been checked yet.".into(),
+            },
+            display_draft_rate: None,
+            pending_display_refresh: true,
+            pending_display_apply: None,
+            display_action_in_progress: false,
             pending_config_save: None,
             pending_config_reset: false,
+            selected_saved_profile_id: None,
+            saved_profile_draft: None,
+            pending_saved_profile_action: None,
+            saved_profile_action_in_progress: false,
             tray_available: None,
             show_window: false,
             show_about: false,
             show_gpu_page: false,
             quit: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutomationUiStatus {
+    state: String,
+    explanation: String,
+    last_result: String,
+    last_transition_ms: Option<u64>,
+    last_profile_id: Option<String>,
+}
+
+impl Default for AutomationUiStatus {
+    fn default() -> Self {
+        Self {
+            state: "disabled".into(),
+            explanation: "Automation is disabled.".into(),
+            last_result: "No automatic profile has been applied this session.".into(),
+            last_transition_ms: None,
+            last_profile_id: None,
         }
     }
 }
@@ -1135,6 +1203,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     if let Ok(mut st) = shared.lock() {
         st.update_state = initial_update_state(&app_metadata);
         st.settings = app_settings.clone();
+        st.selected_saved_profile_id = app_settings
+            .profiles
+            .first()
+            .map(|profile| profile.id.clone());
+        st.saved_profile_draft = app_settings.profiles.first().cloned();
     }
     spawn_background(shared.clone(), app_metadata.clone());
 
@@ -3106,6 +3179,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     settings_page.append(&lifecycle_group);
 
+    let display_group = adw::PreferencesGroup::builder()
+        .title("Internal Display Refresh Rate")
+        .description("X11 RandR only. Changes are manual, limited to advertised rates for the current panel mode, and are never applied by AC/Battery automation.")
+        .build();
+    let display_backend = pref_value_row(&display_group, "Session backend", false);
+    let display_panel = pref_value_row(&display_group, "Internal panel", false);
+    let display_rate_combo = gtk::ComboBoxText::new();
+    style_combo_control(&display_rate_combo);
+    let display_syncing = Rc::new(std::cell::Cell::new(false));
+    let display_rate_row = adw::ActionRow::builder()
+        .title("Refresh rate")
+        .subtitle("Only rates advertised for the current resolution are offered.")
+        .build();
+    display_rate_row.add_suffix(&display_rate_combo);
+    display_rate_row.set_activatable(false);
+    display_group.add(&display_rate_row);
+    let display_refresh_button = gtk::Button::with_label("Refresh");
+    style_apply_button(&display_refresh_button);
+    let display_apply_button = gtk::Button::with_label("Apply");
+    style_apply_button(&display_apply_button);
+    let display_action_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    display_action_box.append(&display_refresh_button);
+    display_action_box.append(&display_apply_button);
+    let display_action_row = adw::ActionRow::builder()
+        .title("Display mode")
+        .subtitle(
+            "The app will verify the result and try to restore the previous rate if it fails.",
+        )
+        .build();
+    display_action_row.add_suffix(&display_action_box);
+    display_action_row.set_activatable(false);
+    display_group.add(&display_action_row);
+    let display_diagnostics = gtk::Label::new(Some("Checking display support…"));
+    display_diagnostics.set_xalign(0.0);
+    display_diagnostics.set_wrap(true);
+    display_diagnostics.add_css_class("dim-label");
+    display_group.add(&display_diagnostics);
+    settings_page.append(&display_group);
+
     let dashboard_settings_group = adw::PreferencesGroup::builder()
         .title("Dashboard")
         .description("Choose which optional dashboard areas are visible.")
@@ -3182,17 +3294,197 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     control_settings_group.add(&preferred_profile_row);
     settings_page.append(&control_settings_group);
 
+    let saved_profiles_group = adw::PreferencesGroup::builder()
+        .title("Saved Profiles")
+        .description("Edit named desired settings. Saving a profile never applies it to hardware.")
+        .build();
+    let saved_profile_select = gtk::ComboBoxText::new();
+    style_combo_control(&saved_profile_select);
+    let saved_profile_select_row = adw::ActionRow::builder()
+        .title("Profile")
+        .subtitle("Select a saved preset to edit or duplicate.")
+        .build();
+    saved_profile_select_row.add_suffix(&saved_profile_select);
+    saved_profile_select_row.set_activatable(false);
+    saved_profiles_group.add(&saved_profile_select_row);
+
+    let saved_profile_name = gtk::Entry::new();
+    saved_profile_name.set_placeholder_text(Some("e.g. Quiet study"));
+    saved_profile_name.set_width_chars(22);
+    let saved_profile_name_row = adw::ActionRow::builder()
+        .title("Name")
+        .subtitle("Names are unique; renaming keeps the profile ID stable.")
+        .build();
+    saved_profile_name_row.add_suffix(&saved_profile_name);
+    saved_profile_name_row.set_activatable(false);
+    saved_profiles_group.add(&saved_profile_name_row);
+
+    let saved_profile_platform = gtk::ComboBoxText::new();
+    style_combo_control(&saved_profile_platform);
+    saved_profile_platform.append(Some("unchanged"), "Unchanged");
+    saved_profile_platform.append(Some("silent"), "Quiet");
+    saved_profile_platform.append(Some("balanced"), "Balanced");
+    saved_profile_platform.append(Some("turbo"), "Turbo");
+    let saved_profile_platform_row = adw::ActionRow::builder()
+        .title("ASUS Platform Profile")
+        .subtitle("Desired value only; hardware capability is checked when later applied.")
+        .build();
+    saved_profile_platform_row.add_suffix(&saved_profile_platform);
+    saved_profile_platform_row.set_activatable(false);
+    saved_profiles_group.add(&saved_profile_platform_row);
+
+    let saved_profile_charge_enabled = gtk::Switch::new();
+    saved_profile_charge_enabled.set_valign(gtk::Align::Center);
+    let saved_profile_charge_limit = gtk::SpinButton::with_range(40.0, 100.0, 5.0);
+    style_spin_control(&saved_profile_charge_limit, 5);
+    saved_profile_charge_limit.set_numeric(true);
+    let saved_profile_charge_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    saved_profile_charge_box.append(&saved_profile_charge_enabled);
+    saved_profile_charge_box.append(&saved_profile_charge_limit);
+    let saved_profile_charge_row = adw::ActionRow::builder()
+        .title("Battery Charge Limit")
+        .subtitle("Optional desired value; saving does not change the battery limit.")
+        .build();
+    saved_profile_charge_row.add_suffix(&saved_profile_charge_box);
+    saved_profile_charge_row.set_activatable(false);
+    saved_profiles_group.add(&saved_profile_charge_row);
+
+    let saved_profile_summary = gtk::Label::new(Some("No profile selected."));
+    saved_profile_summary.set_xalign(0.0);
+    saved_profile_summary.set_wrap(true);
+    saved_profile_summary.add_css_class("dim-label");
+    saved_profiles_group.add(&saved_profile_summary);
+
+    let saved_profile_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    saved_profile_actions.set_halign(gtk::Align::End);
+    let saved_profile_create = gtk::Button::with_label("Create");
+    let saved_profile_duplicate = gtk::Button::with_label("Duplicate");
+    let saved_profile_save = gtk::Button::with_label("Save Changes");
+    let saved_profile_delete = gtk::Button::with_label("Delete…");
+    saved_profile_delete.add_css_class("destructive-action");
+    for button in [
+        &saved_profile_create,
+        &saved_profile_duplicate,
+        &saved_profile_save,
+        &saved_profile_delete,
+    ] {
+        button.add_css_class("suggested-action");
+        saved_profile_actions.append(button);
+    }
+    saved_profile_delete.remove_css_class("suggested-action");
+    saved_profiles_group.add(&saved_profile_actions);
+    settings_page.append(&saved_profiles_group);
+    let saved_profile_syncing = Rc::new(std::cell::Cell::new(false));
+
     let automation_group = adw::PreferencesGroup::builder()
-        .title("Automation")
-        .description("Automatic hardware changes are intentionally unavailable in this release.")
+        .title("AC / Battery Automation")
+        .description("After a stable power-source change, select a saved preset. Automation is opt-in; privileged, fan, lighting, and GPU actions are skipped.")
         .build();
-    let automation_row = adw::ActionRow::builder()
-        .title("Startup Hardware Actions")
-        .subtitle("Disabled — saved control preferences are never auto-applied at boot or login.")
+    let automation_enabled = gtk::Switch::new();
+    automation_enabled.set_valign(gtk::Align::Center);
+    automation_enabled.set_active(app_settings.automation.enabled);
+    let automation_enabled_row = adw::ActionRow::builder()
+        .title("Enable Automation")
+        .subtitle("Manual hardware controls pause automation until you resume it.")
         .build();
-    automation_row.set_activatable(false);
-    automation_group.add(&automation_row);
+    automation_enabled_row.add_suffix(&automation_enabled);
+    automation_enabled_row.set_activatable(false);
+    automation_group.add(&automation_enabled_row);
+    let automation_ac_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_ac_profile);
+    let automation_ac_row = adw::ActionRow::builder().title("AC Preset").build();
+    automation_ac_row.add_suffix(&automation_ac_profile);
+    automation_ac_row.set_activatable(false);
+    automation_group.add(&automation_ac_row);
+    let automation_battery_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_battery_profile);
+    let automation_battery_row = adw::ActionRow::builder().title("Battery Preset").build();
+    automation_battery_row.add_suffix(&automation_battery_profile);
+    automation_battery_row.set_activatable(false);
+    automation_group.add(&automation_battery_row);
+    let automation_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
+    style_spin_control(&automation_threshold, 0);
+    automation_threshold.set_numeric(true);
+    automation_threshold.set_value(
+        app_settings
+            .automation
+            .battery_threshold_percent
+            .unwrap_or(0) as f64,
+    );
+    let automation_threshold_row = adw::ActionRow::builder()
+        .title("Battery Threshold")
+        .subtitle("0 disables the condition; otherwise the Battery preset waits for this percentage or lower.")
+        .build();
+    automation_threshold_row.add_suffix(&automation_threshold);
+    automation_threshold_row.set_activatable(false);
+    automation_group.add(&automation_threshold_row);
+    let automation_state_label = gtk::Label::new(Some("Disabled"));
+    automation_state_label.set_xalign(0.0);
+    automation_state_label.set_wrap(true);
+    automation_state_label.add_css_class("title-4");
+    automation_group.add(&automation_state_label);
+    let automation_explanation_label = gtk::Label::new(Some("Automation is disabled."));
+    automation_explanation_label.set_xalign(0.0);
+    automation_explanation_label.set_wrap(true);
+    automation_explanation_label.add_css_class("dim-label");
+    automation_group.add(&automation_explanation_label);
+    let automation_result_label =
+        gtk::Label::new(Some("No automatic profile has been applied this session."));
+    automation_result_label.set_xalign(0.0);
+    automation_result_label.set_wrap(true);
+    automation_group.add(&automation_result_label);
+    let automation_resume = gtk::Button::with_label("Resume Automation");
+    automation_resume.add_css_class("suggested-action");
+    automation_resume.set_halign(gtk::Align::End);
+    automation_group.add(&automation_resume);
     settings_page.append(&automation_group);
+    let automation_syncing = Rc::new(std::cell::Cell::new(false));
+
+    let desktop_name =
+        std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown desktop".to_string());
+    let shortcut_backend = if desktop_name.to_ascii_lowercase().contains("cinnamon") {
+        "Cinnamon custom shortcuts (manual binding)".to_string()
+    } else if desktop_name == "unknown desktop" {
+        "desktop shortcut settings unavailable (desktop not detected)".to_string()
+    } else {
+        format!("{desktop_name} custom shortcuts (manual binding)")
+    };
+    let shortcuts_group = adw::PreferencesGroup::builder()
+        .title("Desktop Shortcuts")
+        .description(format!("Detected shortcut backend: {shortcut_backend}. ROG Helper does not register global keys or read keyboard events. Bind these semantic CLI commands in your desktop's shortcut settings.").as_str())
+        .build();
+    for (title, command) in [
+        ("Cycle performance profile", "rog-helper profile cycle"),
+        (
+            "Keyboard brightness up",
+            "rog-helper lighting brightness up",
+        ),
+        (
+            "Keyboard brightness down",
+            "rog-helper lighting brightness down",
+        ),
+        (
+            "Toggle keyboard brightness",
+            "rog-helper lighting brightness toggle",
+        ),
+        ("Pause automation", "rog-helper automation pause"),
+        ("Resume automation", "rog-helper automation resume"),
+    ] {
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(command)
+            .build();
+        row.set_activatable(false);
+        shortcuts_group.add(&row);
+    }
+    let shortcut_note = gtk::Label::new(Some(
+        "On Cinnamon: System Settings → Keyboard → Shortcuts → Custom Shortcuts. The desktop owns the mappings; current bindings are not discoverable here. Profile and brightness actions use rog-helperd and report unavailable capabilities instead of guessing.",
+    ));
+    shortcut_note.set_wrap(true);
+    shortcut_note.set_xalign(0.0);
+    shortcut_note.add_css_class("dim-label");
+    shortcuts_group.add(&shortcut_note);
+    settings_page.append(&shortcuts_group);
 
     let reset_group = adw::PreferencesGroup::builder()
         .title("Reset")
@@ -3360,6 +3652,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     {
         let shared = shared.clone();
+        display_refresh_button.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                if !state.display_action_in_progress {
+                    state.pending_display_refresh = true;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = display_syncing.clone();
+        display_rate_combo.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let rate = combo.active_id().and_then(|id| id.parse::<f64>().ok());
+            if let Ok(mut state) = shared.lock() {
+                state.display_draft_rate = rate;
+                state.mark_render_dirty();
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        display_apply_button.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                if !state.display_action_in_progress
+                    && state.display_snapshot.supported()
+                    && state.display_draft_rate.is_some()
+                {
+                    state.pending_display_apply = state.display_draft_rate;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
         close_behavior_combo.connect_changed(move |combo| {
             let behavior = combo
                 .active_id()
@@ -3477,6 +3808,285 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     st.pending_toast = Some((error, true));
                 }
             }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_enabled.connect_state_set(move |_, enabled| {
+            if enabled {
+                let has_rules = shared.lock().is_ok_and(|state| {
+                    state.settings.automation.ac_profile_id.is_some()
+                        && state.settings.automation.battery_profile_id.is_some()
+                });
+                if !has_rules {
+                    if let Ok(mut state) = shared.lock() {
+                        state.pending_toast = Some((
+                            "Choose both AC and Battery presets before enabling automation.".into(),
+                            true,
+                        ));
+                        state.mark_render_dirty();
+                    }
+                    return glib::Propagation::Stop;
+                }
+            }
+            match persist_settings_change(&shared, |settings| settings.automation.enabled = enabled)
+            {
+                Ok(_) => glib::Propagation::Proceed,
+                Err(error) => {
+                    if let Ok(mut state) = shared.lock() {
+                        state.pending_toast = Some((error, true));
+                    }
+                    glib::Propagation::Stop
+                }
+            }
+        });
+    }
+    for (selector, is_ac) in [
+        (automation_ac_profile.clone(), true),
+        (automation_battery_profile.clone(), false),
+    ] {
+        let shared = shared.clone();
+        let syncing = automation_syncing.clone();
+        selector.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let selected = combo
+                .active_id()
+                .filter(|id| id.as_str() != "none")
+                .map(|id| id.to_string());
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                if is_ac {
+                    settings.automation.ac_profile_id = selected;
+                } else {
+                    settings.automation.battery_profile_id = selected;
+                }
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_threshold.connect_value_changed(move |spin| {
+            let value = spin.value().round() as u8;
+            let threshold = (value > 0).then_some(value);
+            let _ = persist_settings_change(&shared, |settings| {
+                settings.automation.battery_threshold_percent = threshold;
+            });
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_resume.connect_clicked(move |_| {
+            if let Ok(mut state) = shared.lock() {
+                state.pending_resume_automation = true;
+                state.mark_render_dirty();
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = saved_profile_syncing.clone();
+        let selector = saved_profile_select.clone();
+        saved_profile_select.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let selected = combo.active_id().map(|id| id.to_string());
+            if let Ok(mut st) = shared.lock() {
+                let dirty = st.saved_profile_draft.as_ref().is_some_and(|draft| {
+                    st.settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == draft.id)
+                        .is_some_and(|saved| saved != draft)
+                });
+                if dirty {
+                    syncing.set(true);
+                    selector.set_active_id(st.selected_saved_profile_id.as_deref());
+                    syncing.set(false);
+                    st.pending_toast = Some((
+                        "Save profile changes before selecting another profile, or restore the edited fields.".into(),
+                        true,
+                    ));
+                    st.mark_render_dirty();
+                    return;
+                }
+                st.selected_saved_profile_id = selected.clone();
+                st.saved_profile_draft = selected.and_then(|id| {
+                    st.settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == id)
+                        .cloned()
+                });
+                st.mark_render_dirty();
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = saved_profile_syncing.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_name.connect_changed(move |_| {
+            sync_saved_profile_form(
+                &shared,
+                &syncing,
+                &name,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+            );
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = saved_profile_syncing.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_platform.connect_changed(move |_| {
+            sync_saved_profile_form(
+                &shared,
+                &syncing,
+                &name,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+            );
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = saved_profile_syncing.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_charge_enabled.connect_state_set(move |_, _| {
+            sync_saved_profile_form(
+                &shared,
+                &syncing,
+                &name,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+            );
+            glib::Propagation::Proceed
+        });
+    }
+    {
+        let shared = shared.clone();
+        let syncing = saved_profile_syncing.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_charge_limit.connect_value_changed(move |_| {
+            sync_saved_profile_form(
+                &shared,
+                &syncing,
+                &name,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+            );
+        });
+    }
+    {
+        let shared = shared.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_create.connect_clicked(move |_| {
+            let settings = saved_profile_form_settings(
+                &shared,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+                false,
+            );
+            queue_saved_profile_action(
+                &shared,
+                PendingSavedProfileAction::Create {
+                    name: name.text().trim().to_string(),
+                    settings,
+                },
+            );
+        });
+    }
+    {
+        let shared = shared.clone();
+        let name = saved_profile_name.clone();
+        let platform = saved_profile_platform.clone();
+        let charge_enabled = saved_profile_charge_enabled.clone();
+        let charge_limit = saved_profile_charge_limit.clone();
+        saved_profile_duplicate.connect_clicked(move |_| {
+            let settings = saved_profile_form_settings(
+                &shared,
+                &platform,
+                &charge_enabled,
+                &charge_limit,
+                true,
+            );
+            queue_saved_profile_action(
+                &shared,
+                PendingSavedProfileAction::Create {
+                    name: name.text().trim().to_string(),
+                    settings,
+                },
+            );
+        });
+    }
+    {
+        let shared = shared.clone();
+        saved_profile_save.connect_clicked(move |_| {
+            let profile = shared
+                .lock()
+                .ok()
+                .and_then(|st| st.saved_profile_draft.clone());
+            if let Some(profile) = profile {
+                queue_saved_profile_action(&shared, PendingSavedProfileAction::Update(profile));
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        saved_profile_delete.connect_clicked(move |_| {
+            let Some(id) = shared
+                .lock()
+                .ok()
+                .and_then(|st| st.selected_saved_profile_id.clone())
+            else {
+                return;
+            };
+            let dialog = adw::MessageDialog::new(
+                None::<&gtk::Window>,
+                Some("Delete saved profile?"),
+                Some("This removes the saved preset only. It does not change current hardware state."),
+            );
+            dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete Profile")]);
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+            let shared_delete = shared.clone();
+            dialog.connect_response(Some("delete"), move |dialog, _| {
+                queue_saved_profile_action(
+                    &shared_delete,
+                    PendingSavedProfileAction::Delete(id.clone()),
+                );
+                dialog.close();
+            });
+            dialog.connect_response(Some("cancel"), |dialog, _| dialog.close());
+            dialog.present();
         });
     }
     {
@@ -4271,14 +4881,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     {
         let shared = shared.clone();
         fan_sync_switch.connect_state_set(move |_, enabled| {
-            if let Err(error) = persist_settings_change(&shared, |settings| {
-                settings.controls.fan_sync_enabled = enabled;
-            }) {
-                if let Ok(mut st) = shared.lock() {
-                    st.pending_toast = Some((error, true));
-                }
-                return glib::Propagation::Stop;
-            }
             if let Ok(mut st) = shared.lock() {
                 st.fan_sync_edit.set_user_draft(enabled);
                 if let Some(enabled) = st.fan_sync_edit.begin_apply() {
@@ -4466,12 +5068,79 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     curve_status.set_xalign(0.0);
     curve_status.set_wrap(true);
     curve_status.add_css_class("dim-label");
+    let curve_channel_tabs = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    curve_channel_tabs.set_halign(gtk::Align::Start);
+    let curve_cpu_tab = gtk::ToggleButton::with_label("CPU");
+    let curve_gpu_tab = gtk::ToggleButton::with_label("GPU");
+    let curve_mid_tab = gtk::ToggleButton::with_label("Mid");
+    curve_gpu_tab.set_group(Some(&curve_cpu_tab));
+    curve_mid_tab.set_group(Some(&curve_cpu_tab));
+    for tab in [&curve_cpu_tab, &curve_gpu_tab, &curve_mid_tab] {
+        tab.set_visible(false);
+        curve_channel_tabs.append(tab);
+    }
     let curve_preview = CurvePreview::new();
+    let curve_target_fan = Rc::new(RefCell::new(None::<String>));
+    let curve_drafts = Rc::new(RefCell::new(HashMap::<String, (Vec<(u8, u8)>, bool)>::new()));
+    let curve_baselines = Rc::new(RefCell::new(HashMap::<String, Vec<(u8, u8)>>::new()));
+    let curve_dirty = Rc::new(std::cell::Cell::new(false));
+    let curve_valid = Rc::new(std::cell::Cell::new(true));
+    let curve_writable = Rc::new(std::cell::Cell::new(false));
+    let curve_apply_pending = Rc::new(RefCell::new(None::<(String, Vec<(u8, u8)>)>));
+    let curve_context = gtk::Label::new(Some("Select a mapped fan curve."));
+    curve_context.set_xalign(0.0);
+    curve_context.set_wrap(true);
+    curve_context.add_css_class("dim-label");
+    let curve_apply_result = gtk::Label::new(Some("No curve change submitted in this session."));
+    curve_apply_result.set_xalign(0.0);
+    curve_apply_result.set_wrap(true);
+    curve_apply_result.add_css_class("dim-label");
+    let curve_temp_inputs = Rc::new(
+        (0..8)
+            .map(|_| gtk::SpinButton::with_range(30.0, 100.0, 1.0))
+            .collect::<Vec<_>>(),
+    );
+    let curve_duty_inputs = Rc::new(
+        (0..8)
+            .map(|_| gtk::SpinButton::with_range(0.0, 100.0, 1.0))
+            .collect::<Vec<_>>(),
+    );
+    for (index, (temp, duty)) in curve_temp_inputs
+        .iter()
+        .zip(curve_duty_inputs.iter())
+        .enumerate()
+    {
+        temp.set_value([35.0, 45.0, 55.0, 65.0, 75.0, 85.0, 90.0, 95.0][index]);
+        duty.set_value([15.0, 25.0, 35.0, 50.0, 70.0, 90.0, 100.0, 100.0][index]);
+    }
+    let curve_source = gtk::Label::new(Some("Draft source: Balanced preset"));
+    curve_source.set_xalign(0.0);
+    curve_source.add_css_class("dim-label");
+    let curve_points = gtk::Label::new(Some(&fan_curve_points_text(&curve_preview.points())));
+    curve_points.set_xalign(0.0);
+    curve_points.set_wrap(true);
+    curve_points.add_css_class("monospace");
+    let curve_presets = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let curve_quiet = gtk::Button::with_label("Quiet");
+    let curve_balanced = gtk::Button::with_label("Balanced");
+    let curve_performance = gtk::Button::with_label("Performance");
+    let curve_import = gtk::Button::with_label("Import Current");
+    for button in [
+        &curve_quiet,
+        &curve_balanced,
+        &curve_performance,
+        &curve_import,
+    ] {
+        style_apply_button(button);
+        button.set_sensitive(false);
+        curve_presets.append(button);
+    }
     let curve_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     curve_actions.set_halign(gtk::Align::End);
     let curve_apply = gtk::Button::with_label("Apply curve");
-    let curve_reset = gtk::Button::with_label("Reset to Auto");
-    for button in [&curve_apply, &curve_reset] {
+    let curve_reset = gtk::Button::with_label("Reset Draft");
+    let curve_auto = gtk::Button::with_label("Restore Auto / BIOS");
+    for button in [&curve_apply, &curve_reset, &curve_auto] {
         style_apply_button(button);
         button.set_sensitive(false);
         button.set_tooltip_text(Some(
@@ -4481,38 +5150,506 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     }
     curve_card.append(&curve_title);
     curve_card.append(&curve_status);
+    curve_card.append(&curve_channel_tabs);
+    curve_card.append(&curve_context);
+    curve_card.append(&curve_source);
+    curve_card.append(&curve_presets);
+    let curve_editor = gtk::Grid::new();
+    curve_editor.set_column_spacing(8);
+    curve_editor.set_row_spacing(4);
+    curve_editor.attach(&gtk::Label::new(Some("Point")), 0, 0, 1, 1);
+    curve_editor.attach(&gtk::Label::new(Some("Temperature (°C)")), 1, 0, 1, 1);
+    curve_editor.attach(&gtk::Label::new(Some("Fan duty (%)")), 2, 0, 1, 1);
+    for index in 0_usize..8 {
+        curve_editor.attach(
+            &gtk::Label::new(Some(&format!("{}", index + 1))),
+            0,
+            (index + 1) as i32,
+            1,
+            1,
+        );
+        curve_editor.attach(&curve_temp_inputs[index], 1, (index + 1) as i32, 1, 1);
+        curve_editor.attach(&curve_duty_inputs[index], 2, (index + 1) as i32, 1, 1);
+    }
+    curve_card.append(&curve_editor);
     curve_card.append(curve_preview.widget());
+    curve_card.append(&curve_points);
+    curve_card.append(&curve_apply_result);
+    let curve_validation = gtk::Label::new(Some("Draft curve is valid."));
+    curve_validation.set_xalign(0.0);
+    curve_validation.set_wrap(true);
+    curve_validation.add_css_class("dim-label");
+    curve_card.append(&curve_validation);
     curve_card.append(&curve_actions);
     fans_root.append(&curve_card);
+    let curve_syncing = Rc::new(std::cell::Cell::new(false));
     {
-        let shared = shared.clone();
         let preview = curve_preview.clone();
-        curve_apply.connect_clicked(move |_| {
-            if let Ok(mut state) = shared.lock() {
-                let fan_id = state
-                    .fan_state
-                    .fans
-                    .iter()
-                    .find(|fan| fan.supports_curve && fan.controllable)
-                    .map(|fan| fan.id.clone());
-                if let Some(fan_id) = fan_id {
-                    state.pending_fan_action = Some(PendingFanAction::Curve {
-                        fan_id,
-                        points: preview.points(),
-                    });
-                    state.action_error = None;
+        let points_label = curve_points.clone();
+        let validation_label = curve_validation.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let target = curve_target_fan.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let valid = curve_valid.clone();
+        let writable = curve_writable.clone();
+        let apply = curve_apply.clone();
+        let source = curve_source.clone();
+        let syncing = curve_syncing.clone();
+        let shared = shared.clone();
+        let refresh = Rc::new(move |index: usize| {
+            if syncing.get() {
+                return;
+            }
+            let points = temps
+                .iter()
+                .zip(duties.iter())
+                .map(|(temp, duty)| (temp.value_as_int() as u8, duty.value_as_int() as u8))
+                .collect::<Vec<_>>();
+            let requested = points[index];
+            let mut bounded = points;
+            move_curve_point(&mut bounded, index, requested.0, requested.1);
+            syncing.set(true);
+            for (index, (temp, duty)) in bounded.iter().enumerate() {
+                if temps[index].value_as_int() != i32::from(*temp) {
+                    temps[index].set_value(f64::from(*temp));
+                }
+                if duties[index].value_as_int() != i32::from(*duty) {
+                    duties[index].set_value(f64::from(*duty));
                 }
             }
+            syncing.set(false);
+            let points = bounded;
+            preview.set_points(points.clone());
+            points_label.set_text(&fan_curve_points_text(&points));
+            let validation = validate_ui_fan_curve(&points);
+            valid.set(validation.is_ok());
+            validation_label.set_text(&match validation {
+                Ok(()) => "Draft curve is valid; hardware is unchanged.".to_string(),
+                Err(error) => format!("Invalid draft: {error}"),
+            });
+            let is_dirty = target
+                .borrow()
+                .as_ref()
+                .and_then(|fan_id| baselines.borrow().get(fan_id).cloned())
+                .as_deref()
+                .is_none_or(|baseline| fan_curve_draft_is_dirty(&points, Some(baseline)));
+            dirty.set(is_dirty);
+            if let Some(fan_id) = target.borrow().as_ref() {
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.clone(), (points, is_dirty));
+            }
+            source.set_text(if is_dirty {
+                "Draft source: edited locally; hardware is unchanged"
+            } else {
+                "Draft matches current readback; no Apply is needed"
+            });
+            apply.set_sensitive(fan_curve_apply_enabled(
+                writable.get(),
+                dirty.get(),
+                valid.get(),
+            ));
+            mark_ui_render_dirty(&shared);
+        });
+        for (index, input) in curve_temp_inputs.iter().enumerate() {
+            let refresh = refresh.clone();
+            input.connect_value_changed(move |_| refresh(index));
+        }
+        for (index, input) in curve_duty_inputs.iter().enumerate() {
+            let refresh = refresh.clone();
+            input.connect_value_changed(move |_| refresh(index));
+        }
+    }
+    {
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let syncing = curve_syncing.clone();
+        let points_label = curve_points.clone();
+        let validation_label = curve_validation.clone();
+        let target = curve_target_fan.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let valid = curve_valid.clone();
+        let writable = curve_writable.clone();
+        let apply = curve_apply.clone();
+        let source = curve_source.clone();
+        let shared = shared.clone();
+        curve_preview.connect_points_changed(move |points| {
+            if points.len() != 8 {
+                return;
+            }
+            syncing.set(true);
+            for (index, (temp, duty)) in points.iter().enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
+            syncing.set(false);
+            points_label.set_text(&fan_curve_points_text(&points));
+            let validation = validate_ui_fan_curve(&points);
+            valid.set(validation.is_ok());
+            validation_label.set_text(&match validation {
+                Ok(()) => "Draft curve is valid; hardware is unchanged.".to_string(),
+                Err(error) => format!("Invalid draft: {error}"),
+            });
+            let is_dirty = target
+                .borrow()
+                .as_ref()
+                .and_then(|fan_id| baselines.borrow().get(fan_id).cloned())
+                .as_deref()
+                .is_none_or(|baseline| fan_curve_draft_is_dirty(&points, Some(baseline)));
+            dirty.set(is_dirty);
+            if let Some(fan_id) = target.borrow().as_ref() {
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.clone(), (points, is_dirty));
+            }
+            source.set_text(if is_dirty {
+                "Draft source: edited locally; hardware is unchanged"
+            } else {
+                "Draft matches current readback; no Apply is needed"
+            });
+            apply.set_sensitive(fan_curve_apply_enabled(
+                writable.get(),
+                dirty.get(),
+                valid.get(),
+            ));
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    for (tab, fan_id) in [
+        (curve_cpu_tab.clone(), "asus-wmi:cpu"),
+        (curve_gpu_tab.clone(), "asus-wmi:gpu"),
+        (curve_mid_tab.clone(), "asus-wmi:mid"),
+    ] {
+        let shared = shared.clone();
+        let target = curve_target_fan.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let preview = curve_preview.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let points_label = curve_points.clone();
+        let source = curve_source.clone();
+        let validation_label = curve_validation.clone();
+        let valid = curve_valid.clone();
+        let apply = curve_apply.clone();
+        let writable = curve_writable.clone();
+        let syncing = curve_syncing.clone();
+        tab.connect_toggled(move |button| {
+            if !button.is_active() || target.borrow().as_deref() == Some(fan_id) {
+                return;
+            }
+            let stored = drafts.borrow().get(fan_id).cloned();
+            let (points, is_dirty) = stored.unwrap_or_else(|| {
+                let current = shared
+                    .lock()
+                    .ok()
+                    .and_then(|state| {
+                        state
+                            .fan_state
+                            .fans
+                            .iter()
+                            .find(|fan| fan.id == fan_id)
+                            .and_then(|fan| fan.curve_readback.as_ref())
+                            .and_then(fan_curve_points_from_readback)
+                    })
+                    .unwrap_or_else(|| fan_curve_preset("balanced"));
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.to_string(), (current.clone(), false));
+                baselines
+                    .borrow_mut()
+                    .insert(fan_id.to_string(), current.clone());
+                (current, false)
+            });
+            *target.borrow_mut() = Some(fan_id.to_string());
+            dirty.set(is_dirty);
+            syncing.set(true);
+            for (index, (temp, duty)) in points.iter().take(8).enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
+            syncing.set(false);
+            preview.set_points(points.clone());
+            points_label.set_text(&fan_curve_points_text(&points));
+            let result = validate_ui_fan_curve(&points);
+            valid.set(result.is_ok());
+            validation_label.set_text(&match result {
+                Ok(()) => "Draft curve is valid; hardware is unchanged.".to_string(),
+                Err(error) => format!("Imported/current draft is not safe to apply: {error}"),
+            });
+            source.set_text(if is_dirty {
+                "Draft source: saved local edits for this fan (not applied)"
+            } else {
+                "Draft source: current backend curve or conservative local template"
+            });
+            apply.set_sensitive(fan_curve_apply_enabled(
+                writable.get(),
+                is_dirty,
+                valid.get(),
+            ));
+            mark_ui_render_dirty(&shared);
         });
     }
     {
         let shared = shared.clone();
-        curve_reset.connect_clicked(move |_| {
+        let preview = curve_preview.clone();
+        let target_fan = curve_target_fan.clone();
+        let validation_label = curve_validation.clone();
+        let apply_pending = curve_apply_pending.clone();
+        let dirty = curve_dirty.clone();
+        let apply_button = curve_apply.clone();
+        curve_apply.connect_clicked(move |_| {
+            if !dirty.get() || apply_pending.borrow().is_some() {
+                return;
+            }
             if let Ok(mut state) = shared.lock() {
-                state.pending_fan_action = Some(PendingFanAction::Auto {
-                    fan_id: String::new(),
+                let points = preview.points();
+                if let Err(error) = validate_ui_fan_curve(&points) {
+                    state.action_error = Some(format!("Invalid fan-curve draft: {error}"));
+                    validation_label.set_text(&format!("Invalid draft: {error}"));
+                    state.mark_render_dirty();
+                    return;
+                }
+                let fan_id = target_fan
+                    .borrow()
+                    .clone()
+                    .or_else(|| {
+                        state
+                            .fan_state
+                            .fans
+                            .iter()
+                            .find(|fan| fan.supports_curve && fan.controllable)
+                            .map(|fan| fan.id.clone())
+                    })
+                    .filter(|id| {
+                        state
+                            .fan_state
+                            .fans
+                            .iter()
+                            .any(|fan| fan.id == *id && fan.supports_curve && fan.controllable)
+                    });
+                if let Some(fan_id) = fan_id {
+                    state.pending_fan_action = Some(PendingFanAction::Curve {
+                        fan_id: fan_id.clone(),
+                        points: points.clone(),
+                    });
+                    *apply_pending.borrow_mut() = Some((fan_id, points));
+                    apply_button.set_sensitive(false);
+                    state.fan_curve_apply_confirmed = None;
+                    dirty.set(true);
+                    state.pending_toast = Some((
+                        "Curve submitted; waiting for backend readback confirmation.".to_string(),
+                        false,
+                    ));
+                    state.action_error = None;
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    for (button, name) in [
+        (curve_quiet.clone(), "quiet"),
+        (curve_balanced.clone(), "balanced"),
+        (curve_performance.clone(), "performance"),
+    ] {
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let valid = curve_valid.clone();
+        let writable = curve_writable.clone();
+        let apply = curve_apply.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let syncing = curve_syncing.clone();
+        let shared = shared.clone();
+        button.connect_clicked(move |_| {
+            let points = fan_curve_preset(name);
+            syncing.set(true);
+            preview.set_points(points.clone());
+            for (index, (temp, duty)) in points.iter().enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
+            syncing.set(false);
+            let is_dirty = target_fan
+                .borrow()
+                .as_ref()
+                .and_then(|fan_id| baselines.borrow().get(fan_id).cloned())
+                .as_deref()
+                .is_none_or(|baseline| fan_curve_draft_is_dirty(&points, Some(baseline)));
+            if let Some(fan_id) = target_fan.borrow().as_ref() {
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.clone(), (points.clone(), is_dirty));
+            }
+            dirty.set(is_dirty);
+            valid.set(validate_ui_fan_curve(&points).is_ok());
+            apply.set_sensitive(fan_curve_apply_enabled(
+                writable.get(),
+                dirty.get(),
+                valid.get(),
+            ));
+            source.set_text(&format!("Draft source: {} preset", fan_preset_label(name)));
+            points_label.set_text(&fan_curve_points_text(&points));
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let shared = shared.clone();
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let validation_label = curve_validation.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let valid = curve_valid.clone();
+        let writable = curve_writable.clone();
+        let apply = curve_apply.clone();
+        let syncing = curve_syncing.clone();
+        let shared_for_refresh = shared.clone();
+        curve_import.connect_clicked(move |_| {
+            let selected = target_fan.borrow().clone();
+            let imported = shared.lock().ok().and_then(|state| {
+                state
+                    .fan_state
+                    .fans
+                    .iter()
+                    .find(|fan| selected.as_deref().is_some_and(|id| fan.id == id))
+                    .and_then(|fan| fan.curve_readback.as_ref().map(|curve| (fan.id.clone(), curve)))
+                    .and_then(|(fan_id, curve)| {
+                        Some((fan_id, curve.enable_mode, fan_curve_points_from_readback(curve)?))
+                    })
+            });
+            if let Some((fan_id, enable_mode, points)) = imported {
+                syncing.set(true);
+                let numeric_fields_represent_points = points.len() == 8
+                    && points.iter().all(|(temp, duty)| {
+                        (30..=100).contains(temp) && *duty <= 100
+                    });
+                if numeric_fields_represent_points {
+                    for (index, (temp, duty)) in points.iter().enumerate() {
+                        temps[index].set_value(f64::from(*temp));
+                        duties[index].set_value(f64::from(*duty));
+                    }
+                } else {
+                    preview.set_points(points.clone());
+                    points_label.set_text(&fan_curve_points_text(&points));
+                }
+                syncing.set(false);
+                *target_fan.borrow_mut() = Some(fan_id.clone());
+                let curve_valid = validate_ui_fan_curve(&points).is_ok();
+                let is_dirty = baselines
+                    .borrow()
+                    .get(&fan_id)
+                    .is_none_or(|baseline| {
+                        fan_curve_draft_is_dirty(&points, Some(baseline))
+                    });
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.clone(), (points.clone(), is_dirty));
+                dirty.set(is_dirty);
+                valid.set(curve_valid);
+                apply.set_sensitive(fan_curve_apply_enabled(
+                    writable.get(),
+                    is_dirty,
+                    curve_valid,
+                ));
+                validation_label.set_text(&match validate_ui_fan_curve(&points) {
+                    Ok(()) => "Imported draft is valid; hardware is unchanged.".to_string(),
+                    Err(error) if numeric_fields_represent_points => {
+                        format!("Imported curve is not safe to apply: {error}")
+                    }
+                    Err(error) => format!(
+                        "Imported curve cannot be represented by bounded editor fields ({error}); raw values remain visible in the point summary and graph."
+                    ),
                 });
-                state.action_error = None;
+                source.set_text(&format!(
+                    "Draft source: current backend curve ({fan_id}, enable mode {enable_mode}); importing did not write hardware"
+                ));
+                points_label.set_text(&fan_curve_points_text(&points));
+                mark_ui_render_dirty(&shared_for_refresh);
+            }
+        });
+    }
+    {
+        let preview = curve_preview.clone();
+        let source = curve_source.clone();
+        let points_label = curve_points.clone();
+        let target_fan = curve_target_fan.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let drafts = curve_drafts.clone();
+        let baselines = curve_baselines.clone();
+        let dirty = curve_dirty.clone();
+        let valid = curve_valid.clone();
+        let writable = curve_writable.clone();
+        let apply = curve_apply.clone();
+        let syncing = curve_syncing.clone();
+        let shared = shared.clone();
+        curve_reset.connect_clicked(move |_| {
+            let points = fan_curve_preset("balanced");
+            syncing.set(true);
+            preview.set_points(points.clone());
+            for (index, (temp, duty)) in points.iter().enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
+            syncing.set(false);
+            let is_dirty = target_fan
+                .borrow()
+                .as_ref()
+                .and_then(|fan_id| baselines.borrow().get(fan_id).cloned())
+                .as_deref()
+                .is_none_or(|baseline| fan_curve_draft_is_dirty(&points, Some(baseline)));
+            if let Some(fan_id) = target_fan.borrow().as_ref() {
+                drafts
+                    .borrow_mut()
+                    .insert(fan_id.clone(), (points.clone(), is_dirty));
+            }
+            dirty.set(is_dirty);
+            valid.set(validate_ui_fan_curve(&points).is_ok());
+            apply.set_sensitive(fan_curve_apply_enabled(
+                writable.get(),
+                dirty.get(),
+                valid.get(),
+            ));
+            source.set_text("Draft source: Balanced preset (draft reset only; hardware unchanged)");
+            points_label.set_text(&fan_curve_points_text(&points));
+            mark_ui_render_dirty(&shared);
+        });
+    }
+    {
+        let shared = shared.clone();
+        let target = curve_target_fan.clone();
+        curve_auto.connect_clicked(move |_| {
+            let Some(fan_id) = target.borrow().clone() else {
+                return;
+            };
+            if let Ok(mut state) = shared.lock() {
+                if state
+                    .fan_state
+                    .fans
+                    .iter()
+                    .any(|fan| fan.id == fan_id && fan.supports_auto && fan.controllable)
+                {
+                    state.pending_fan_action = Some(PendingFanAction::Auto { fan_id });
+                    state.action_error = None;
+                    state.mark_render_dirty();
+                }
             }
         });
     }
@@ -4786,8 +5923,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             battery_limit,
             battery_limit_edit,
             keyboard_brightness_edit,
-<<<<<<< HEAD
-=======
             cpu_turbo_edit,
             cpu_power_mode_edit,
             cpu_freq_limits_edit,
@@ -4796,7 +5931,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             profile_edit,
             gpu_mode_edit,
             fan_sync_edit,
->>>>>>> origin/main
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4809,6 +5943,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             pending_open_link,
             daemon_error,
             settings,
+            automation_status,
+            display_snapshot,
+            display_draft_rate,
+            display_action_in_progress,
+            selected_saved_profile_id,
+            saved_profile_draft,
+            saved_profile_action_in_progress,
             show_window,
             show_about,
             show_gpu_page,
@@ -4849,8 +5990,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.battery_limit,
                 st.battery_limit_edit.clone(),
                 st.keyboard_brightness_edit.clone(),
-<<<<<<< HEAD
-=======
                 st.cpu_turbo_edit.clone(),
                 st.cpu_power_mode_edit.clone(),
                 st.cpu_freq_limits_edit.clone(),
@@ -4859,7 +5998,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.profile_edit.clone(),
                 st.gpu_mode_edit.clone(),
                 st.fan_sync_edit.clone(),
->>>>>>> origin/main
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -4872,6 +6010,13 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.pending_open_link.take(),
                 st.daemon_error.clone(),
                 st.settings.clone(),
+                st.automation_status.clone(),
+                st.display_snapshot.clone(),
+                st.display_draft_rate,
+                st.display_action_in_progress,
+                st.selected_saved_profile_id.clone(),
+                st.saved_profile_draft.clone(),
+                st.saved_profile_action_in_progress,
                 show_window,
                 show_about,
                 show_gpu_page,
@@ -4934,6 +6079,51 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         close_behavior_combo.set_active_id(Some(settings.ui.close_behavior.id()));
         launch_on_login_switch.set_active(settings.ui.launch_on_login);
         start_minimized_switch.set_active(settings.ui.start_minimized_to_tray);
+        display_backend.set_text(&format!(
+            "{} ({})",
+            display_snapshot.backend, display_snapshot.session_type
+        ));
+        let panel_summary = match (
+            display_snapshot.internal_output.as_deref(),
+            display_snapshot.current_mode.as_deref(),
+            display_snapshot.current_rate,
+        ) {
+            (Some(output), Some(mode), Some(rate)) => format!("{output} · {mode} · {rate:.2} Hz"),
+            (Some(output), Some(mode), _) => {
+                format!("{output} · {mode} · current rate unavailable")
+            }
+            (Some(output), None, _) => format!("{output} · current mode unavailable"),
+            _ => "Unavailable".into(),
+        };
+        display_panel.set_text(&panel_summary);
+        display_syncing.set(true);
+        display_rate_combo.remove_all();
+        for rate in &display_snapshot.supported_rates {
+            let rate_id = format!("{rate:.2}");
+            display_rate_combo.append(Some(&rate_id), &format!("{rate:.2} Hz"));
+        }
+        let selected_display_rate = display_draft_rate.or(display_snapshot.current_rate);
+        let selected_display_rate_id = selected_display_rate.map(|rate| format!("{rate:.2}"));
+        display_rate_combo.set_active_id(selected_display_rate_id.as_deref());
+        display_syncing.set(false);
+        display_rate_combo
+            .set_sensitive(display_snapshot.supported() && !display_action_in_progress);
+        display_refresh_button.set_sensitive(!display_action_in_progress);
+        display_apply_button.set_sensitive(
+            display_snapshot.supported()
+                && !display_action_in_progress
+                && display_draft_rate.is_some_and(|rate| {
+                    display_snapshot
+                        .current_rate
+                        .is_some_and(|current| (current - rate).abs() >= 0.01)
+                }),
+        );
+        display_apply_button.set_label(if display_action_in_progress {
+            "Applying…"
+        } else {
+            "Apply"
+        });
+        display_diagnostics.set_text(&display_snapshot.reason);
         remember_charge_switch.set_active(settings.controls.preferred_charge_limit.is_some());
         preferred_charge_spin.set_sensitive(settings.controls.preferred_charge_limit.is_some());
         if let Some(limit) = settings.controls.preferred_charge_limit {
@@ -4948,6 +6138,189 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .as_deref()
                 .unwrap_or("none"),
         ));
+        automation_enabled.set_active(settings.automation.enabled);
+        automation_threshold
+            .set_value(settings.automation.battery_threshold_percent.unwrap_or(0) as f64);
+        automation_syncing.set(true);
+        for (selector, selected) in [
+            (
+                &automation_ac_profile,
+                settings.automation.ac_profile_id.as_deref(),
+            ),
+            (
+                &automation_battery_profile,
+                settings.automation.battery_profile_id.as_deref(),
+            ),
+        ] {
+            selector.remove_all();
+            selector.append(Some("none"), "Choose a preset…");
+            for profile in &settings.profiles {
+                selector.append(Some(&profile.id), &profile.name);
+            }
+            selector.set_active_id(selected.or(Some("none")));
+        }
+        automation_syncing.set(false);
+        let last_transition = automation_status
+            .last_transition_ms
+            .map(|timestamp| format_timestamp_local(timestamp as i64))
+            .unwrap_or_else(|| "none yet".into());
+        let power_source = match telemetry.as_ref().and_then(|sample| sample.power_source) {
+            Some(PowerSource::Ac) => "AC",
+            Some(PowerSource::Battery) => "Battery",
+            None => "Unknown",
+        };
+        let last_profile = automation_status
+            .last_profile_id
+            .as_deref()
+            .map(|id| {
+                settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or(id)
+            })
+            .unwrap_or("none yet");
+        automation_state_label.set_text(&format!(
+            "State: {} · Power: {power_source} · Last transition: {last_transition} · Last preset: {last_profile}",
+            automation_status.state,
+        ));
+        automation_explanation_label.set_text(&automation_status.explanation);
+        automation_result_label.set_text(&automation_status.last_result);
+        automation_resume.set_sensitive(automation_can_resume(&automation_status.state));
+        saved_profile_syncing.set(true);
+        saved_profile_select.remove_all();
+        for profile in &settings.profiles {
+            saved_profile_select.append(Some(&profile.id), &profile.name);
+        }
+        saved_profile_select.set_active_id(selected_saved_profile_id.as_deref());
+        if let Some(draft) = saved_profile_draft.as_ref() {
+            saved_profile_name.set_text(&draft.name);
+            saved_profile_platform.set_active_id(Some(match draft.settings.platform_profile {
+                Some(PerformanceProfile::Silent) => "silent",
+                Some(PerformanceProfile::Balanced) => "balanced",
+                Some(PerformanceProfile::Turbo) => "turbo",
+                _ => "unchanged",
+            }));
+            saved_profile_charge_enabled.set_active(draft.settings.battery_charge_limit.is_some());
+            saved_profile_charge_limit.set_sensitive(draft.settings.battery_charge_limit.is_some());
+            if let Some(limit) = draft.settings.battery_charge_limit {
+                saved_profile_charge_limit.set_value(limit as f64);
+            }
+            let mut details = Vec::new();
+            for (role, control) in &draft.settings.fan_controls {
+                let label = match role {
+                    rog_core::ProfileFanRole::Cpu => "CPU",
+                    rog_core::ProfileFanRole::Gpu => "GPU",
+                    rog_core::ProfileFanRole::Mid => "Mid",
+                };
+                match control {
+                    rog_core::ProfileFanControl::Auto => details.push(format!(
+                        "{label}: saved Auto preference{}",
+                        if profile_fan_role_available(&fan_state.fans, *role, false) {
+                            " (currently mapped)"
+                        } else {
+                            " (not mapped on this device)"
+                        }
+                    )),
+                    rog_core::ProfileFanControl::Curve(curve) => details.push(format!(
+                        "{label}: saved {}-point curve ({:?}); {}",
+                        curve.points.len(),
+                        curve.provenance,
+                        if profile_fan_role_available(&fan_state.fans, *role, true) {
+                            "current curve capability is reported; it will still be revalidated before application"
+                        } else {
+                            "not mapped to a verified curve channel on this device"
+                        }
+                    )),
+                }
+            }
+            if let Some(saved_lighting) = draft.settings.lighting.as_ref() {
+                let supported = lighting.as_ref().is_some_and(|live| {
+                    live.supports_modes
+                        && live.supported_modes.iter().any(|mode| {
+                            rog_core::LightingMode::from_backend_label(mode).same_user_mode(
+                                &rog_core::LightingMode::from_backend_label(&saved_lighting.effect),
+                            )
+                        })
+                });
+                details.push(format!(
+                    "Lighting effect {} on this device",
+                    if supported {
+                        "is currently available"
+                    } else {
+                        "is unavailable"
+                    }
+                ));
+                if !supported {
+                    details.push(format!(
+                        "{} is retained in this preset and was not substituted",
+                        saved_lighting.effect
+                    ));
+                }
+            }
+            if let Some(mode) = draft.settings.gpu_mode.as_ref() {
+                details.push(format!("Saved GPU mode preference: {mode:?}"));
+            }
+            let profile_summary = if details.is_empty() {
+                "This preset currently contains no desired hardware settings. It remains separate from live device state.".to_string()
+            } else {
+                format!(
+                    "{} Saved values are desired settings only; live hardware is not changed.",
+                    details.join(" · ")
+                )
+            };
+            saved_profile_summary.set_text(&profile_summary);
+        } else {
+            saved_profile_name.set_text("");
+            saved_profile_platform.set_active_id(Some("unchanged"));
+            saved_profile_charge_enabled.set_active(false);
+            saved_profile_charge_limit.set_sensitive(false);
+            saved_profile_summary.set_text(
+                "No profile selected. Create a preset with a name; nothing is applied to hardware.",
+            );
+        }
+        saved_profile_syncing.set(false);
+        let selected_profile = selected_saved_profile_id.is_some();
+        let profile_schema_supported = saved_profile_draft
+            .as_ref()
+            .is_none_or(|draft| draft.schema_version <= rog_core::PROFILE_SCHEMA_VERSION);
+        if !profile_schema_supported {
+            saved_profile_summary.set_text(&format!(
+                "This profile uses schema version {} from a newer application. It is retained read-only.",
+                saved_profile_draft.as_ref().map(|draft| draft.schema_version).unwrap_or_default()
+            ));
+        }
+        let profile_draft_is_dirty = saved_profile_draft.as_ref().is_some_and(|draft| {
+            settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == draft.id)
+                .is_some_and(|saved| saved != draft)
+        });
+        saved_profile_create.set_sensitive(!saved_profile_action_in_progress);
+        saved_profile_duplicate.set_sensitive(
+            selected_profile && profile_schema_supported && !saved_profile_action_in_progress,
+        );
+        saved_profile_save.set_sensitive(
+            selected_profile
+                && profile_schema_supported
+                && profile_draft_is_dirty
+                && !saved_profile_action_in_progress,
+        );
+        saved_profile_delete.set_sensitive(selected_profile && !saved_profile_action_in_progress);
+        saved_profile_select.set_sensitive(!saved_profile_action_in_progress);
+        saved_profile_name
+            .set_sensitive(!saved_profile_action_in_progress && profile_schema_supported);
+        saved_profile_platform
+            .set_sensitive(!saved_profile_action_in_progress && profile_schema_supported);
+        saved_profile_charge_enabled
+            .set_sensitive(!saved_profile_action_in_progress && profile_schema_supported);
+        saved_profile_charge_limit.set_sensitive(
+            !saved_profile_action_in_progress
+                && profile_schema_supported
+                && saved_profile_charge_enabled.is_active(),
+        );
         cpu_usage_graph.set_samples(&cpu_usage_history);
         cpu_temp_graph.set_samples(&cpu_temp_history);
         dashboard_cpu_sparkline.set_samples(&cpu_usage_history);
@@ -5453,13 +6826,45 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             fan_sync_switch.set_active(fan_sync_enabled);
         }
         let manual_available = fan_state.caps.has_fan_manual_percent;
-        let fan_authorization_required = fan_state
+        let selected_id = curve_target_fan
+            .borrow()
+            .clone()
+            .filter(|selected| fan_curve_tab_available(&fan_state.fans, selected))
+            .or_else(|| {
+                ["asus-wmi:cpu", "asus-wmi:gpu", "asus-wmi:mid"]
+                    .into_iter()
+                    .find(|id| fan_curve_tab_available(&fan_state.fans, id))
+                    .map(str::to_string)
+            });
+        for (tab, id) in [
+            (&curve_cpu_tab, "asus-wmi:cpu"),
+            (&curve_gpu_tab, "asus-wmi:gpu"),
+            (&curve_mid_tab, "asus-wmi:mid"),
+        ] {
+            let available = fan_curve_tab_available(&fan_state.fans, id);
+            tab.set_visible(available);
+            if available && selected_id.as_deref() == Some(id) && !tab.is_active() {
+                tab.set_active(true);
+            }
+        }
+        let selected_fan = selected_id.as_deref().and_then(|id| {
+            fan_state
+                .fans
+                .iter()
+                .find(|fan| fan.id == id && fan.supports_curve)
+        });
+        let selected_writable = selected_fan.is_some_and(|fan| fan.controllable);
+        let curve_apply_in_progress = curve_apply_pending.borrow().is_some();
+        let fan_authorization_required =
+            selected_fan.is_some_and(|fan| fan.access_state == "authorization_required");
+        let manual_authorization_required = fan_state
             .fans
             .iter()
             .any(|fan| fan.access_state == "authorization_required");
+        curve_writable.set(selected_writable);
         fan_manual_scale.set_sensitive(manual_available);
         fan_manual_apply.set_sensitive(manual_available);
-        fan_manual_apply.set_label(if fan_authorization_required {
+        fan_manual_apply.set_label(if manual_authorization_required {
             "Unlock & Apply"
         } else {
             "Apply"
@@ -5475,23 +6880,123 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 || fan_state.caps.has_fan_boost,
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
-        curve_preview.set_enabled(fan_state.caps.fan_curve_writable);
-        curve_apply.set_sensitive(fan_state.caps.fan_curve_writable);
+        curve_preview.set_enabled(selected_writable && !curve_apply_in_progress);
+        for input in curve_temp_inputs.iter().chain(curve_duty_inputs.iter()) {
+            input.set_sensitive(selected_writable && !curve_apply_in_progress);
+        }
+        for button in [&curve_quiet, &curve_balanced, &curve_performance] {
+            button.set_sensitive(selected_writable && !curve_apply_in_progress);
+        }
+        curve_import.set_sensitive(selected_fan.is_some_and(|fan| fan.curve_readback.is_some()));
+        curve_auto.set_sensitive(
+            !curve_apply_in_progress
+                && selected_fan.is_some_and(|fan| fan.supports_auto && fan.controllable),
+        );
+        curve_apply.set_sensitive(fan_curve_apply_enabled(
+            selected_writable && !curve_apply_in_progress,
+            curve_dirty.get(),
+            curve_valid.get(),
+        ));
         curve_apply.set_label(if fan_authorization_required {
             "Unlock & Apply curve"
         } else {
             "Apply curve"
         });
-        curve_reset.set_sensitive(fan_state.caps.fan_curve_writable);
-        curve_status.set_text(if fan_authorization_required {
-            "Administrator access required. Authentication starts only when Apply is used."
-        } else if fan_state.caps.fan_curve_writable {
-            "Curve editing is available for the active backend."
-        } else if fan_state.caps.has_fan_curves {
-            "Fan curves are supported, but the privileged helper is unavailable."
+        curve_reset.set_sensitive(selected_writable && !curve_apply_in_progress);
+        curve_status.set_text(&fan_curve_access_label(selected_fan));
+        if let Some(fan) = selected_fan {
+            let rpm = fan
+                .current_rpm
+                .map(|value| format!("{value} RPM"))
+                .unwrap_or_else(|| "RPM unavailable".to_string());
+            let package_temp = telemetry.as_ref().and_then(|t| match fan.id.as_str() {
+                "asus-wmi:cpu" => t
+                    .cpu_temp_c
+                    .map(|value| format!("CPU package sensor {value:.0}°C")),
+                "asus-wmi:gpu" => t
+                    .gpu_temp_c
+                    .map(|value| format!("GPU system sensor {value:.0}°C")),
+                _ => None,
+            });
+            let temp_text =
+                package_temp.unwrap_or_else(|| "temperature sensor unavailable".to_string());
+            curve_context.set_text(&format!(
+                "{} · {rpm} · {temp_text}. This is system telemetry, not a fan-mounted sensor.",
+                fan.label
+            ));
+            curve_preview.set_current_temp(telemetry.as_ref().and_then(
+                |t| match fan.id.as_str() {
+                    "asus-wmi:cpu" => t.cpu_temp_c,
+                    "asus-wmi:gpu" => t.gpu_temp_c,
+                    _ => None,
+                },
+            ));
         } else {
-            "Fan curve editing is not available on this backend."
-        });
+            curve_context.set_text("No verified semantic curve channel is currently mapped.");
+            curve_preview.set_current_temp(None);
+        }
+        if let Some((pending_id, requested)) = curve_apply_pending.borrow().clone() {
+            let action_confirmed = shared_clone
+                .lock()
+                .ok()
+                .and_then(|state| state.fan_curve_apply_confirmed.clone())
+                .as_ref()
+                == Some(&(pending_id.clone(), requested.clone()));
+            if let Some(error) = action_error_txt.as_deref() {
+                curve_apply_result.set_text(&format!("Apply failed; draft retained. {error}"));
+                *curve_apply_pending.borrow_mut() = None;
+            } else if action_confirmed {
+                if let Some(readback) = fan_state
+                    .fans
+                    .iter()
+                    .find(|fan| fan.id == pending_id)
+                    .and_then(|fan| fan.curve_readback.as_ref())
+                {
+                    let actual = fan_curve_points_from_readback(readback).unwrap_or_default();
+                    if actual == requested {
+                        curve_apply_result
+                            .set_text("Applied and confirmed by current backend readback.");
+                        curve_drafts
+                            .borrow_mut()
+                            .insert(pending_id.clone(), (actual, false));
+                        curve_baselines
+                            .borrow_mut()
+                            .insert(pending_id.clone(), requested.clone());
+                        if curve_target_fan.borrow().as_deref() == Some(pending_id.as_str()) {
+                            curve_dirty.set(false);
+                        }
+                        *curve_apply_pending.borrow_mut() = None;
+                    } else {
+                        curve_apply_result.set_text("The Apply operation completed, but current readback does not match the requested draft. It is not confirmed; draft retained.");
+                        *curve_apply_pending.borrow_mut() = None;
+                    }
+                } else {
+                    curve_apply_result.set_text("Apply operation completed, but readback is unavailable; the requested curve is not confirmed.");
+                    *curve_apply_pending.borrow_mut() = None;
+                }
+            } else {
+                curve_apply_result.set_text("Apply submitted; waiting for the daemon operation to finish. The draft is not yet confirmed.");
+            }
+        } else if action_error_txt.is_some() {
+            curve_apply_result.set_text(&format!(
+                "Last fan action failed: {}",
+                action_error_txt.as_deref().unwrap_or("unknown error")
+            ));
+        }
+        if !curve_dirty.get() {
+            curve_validation.set_text(
+                "Draft unchanged. Choose a preset, import, or edit a point before Apply.",
+            );
+        } else if !curve_valid.get() {
+            // Keep the validator's specific reason visible.
+        } else if !selected_writable {
+            curve_validation.set_text(&format!(
+                "Draft is local only. {}",
+                fan_curve_access_label(selected_fan)
+            ));
+        } else {
+            curve_validation.set_text("Draft curve is valid; hardware is unchanged until Apply.");
+        }
         fan_sync_row.set_subtitle(&fan_sync_subtitle(&fan_state));
         fan_manual_row.set_subtitle(&fan_manual_subtitle(&fan_state));
         fan_boost_row.set_subtitle(&fan_boost_subtitle(&fan_state));
@@ -6811,15 +8316,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let reported_identity = LightingControlIdentity::from(l);
             let identity_changed =
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
-<<<<<<< HEAD
-            let draft_is_clean =
-                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
-            let draft_matches_reported = lighting_draft
-                .borrow()
-                .as_ref()
-                .is_some_and(|draft| draft == &LightingDraft::from_info(l));
-=======
->>>>>>> origin/main
             let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
             if dashboard_brightness_dirty {
                 if let (Some(brightness), Some(draft)) = (
@@ -6829,13 +8325,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     draft.brightness = brightness;
                 }
             }
-<<<<<<< HEAD
-            let should_sync_draft = dashboard_brightness_dirty
-                || identity_changed
-                || lighting_baseline.borrow().is_none()
-                || draft_is_clean
-                || draft_matches_reported;
-=======
             let reported_draft = LightingDraft::from_info(l);
             let should_sync_draft = should_sync_lighting_draft(
                 lighting_baseline.borrow().as_ref(),
@@ -6844,7 +8333,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 identity_changed,
                 dashboard_brightness_dirty,
             );
->>>>>>> origin/main
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -6860,16 +8348,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 "Not available"
             });
-            lighting_argb_capability.set_text(if l.supports_argb || l.supports_zones {
-                "Supported by backend"
-            } else {
-                "Not reported by backend"
-            });
-            lighting_per_key_capability.set_text(if l.supports_per_key {
-                "Supported by backend"
-            } else {
-                "Not reported by backend"
-            });
+            lighting_argb_capability.set_text(&lighting_topology_capability_text(l, true));
+            lighting_per_key_capability.set_text(&lighting_topology_capability_text(l, false));
             lighting_device_group.set_title(&lighting_device_title(l));
             lighting_device_backend.set_text(&lighting_backend_label(l));
             lighting_device_rgb.set_text(if l.supports_rgb {
@@ -7268,6 +8748,11 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     if let Ok(mut st) = shared.lock() {
                         if st.pending_config_save.is_none() && !st.pending_config_reset {
                             st.settings = config;
+                            if st.selected_saved_profile_id.is_none() {
+                                st.selected_saved_profile_id =
+                                    st.settings.profiles.first().map(|profile| profile.id.clone());
+                                st.saved_profile_draft = st.settings.profiles.first().cloned();
+                            }
                             st.mark_render_dirty();
                         }
                     }
@@ -7294,6 +8779,8 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             if let Ok(mut st) = shared.lock() {
                                 st.settings = config;
                                 st.pending_config_save = None;
+                                st.selected_saved_profile_id = None;
+                                st.saved_profile_draft = None;
                                 st.pending_toast =
                                     Some(("Settings reset to defaults.".to_string(), false));
                                 st.mark_render_dirty();
@@ -7324,6 +8811,130 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.pending_toast = Some((error, true));
                             st.mark_render_dirty();
                         }
+                    }
+                }
+
+                let resume_automation_requested = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_resume_automation))
+                    .unwrap_or(false);
+                if resume_automation_requested {
+                    match resume_automation().await {
+                        Ok(()) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.pending_toast = Some((
+                                    "Automation resumed. The daemon will evaluate the current power rule.".into(),
+                                    false,
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut state) = shared.lock() {
+                                state.pending_toast = Some((error, true));
+                            }
+                        }
+                    }
+                }
+
+                let pending_display_refresh = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_display_refresh))
+                    .unwrap_or(false);
+                if pending_display_refresh {
+                    let snapshot = tokio::task::spawn_blocking(display::discover)
+                        .await
+                        .unwrap_or_else(|error| display::DisplaySnapshot {
+                            session_type: "unknown".into(),
+                            backend: "unavailable".into(),
+                            internal_output: None,
+                            current_mode: None,
+                            current_rate: None,
+                            supported_rates: Vec::new(),
+                            reason: format!("Display discovery worker failed: {error}"),
+                        });
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_draft_rate = snapshot.current_rate;
+                        state.display_snapshot = snapshot;
+                        state.mark_render_dirty();
+                    }
+                }
+
+                let pending_display_apply = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut state| state.pending_display_apply.take());
+                if let Some(rate) = pending_display_apply {
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_action_in_progress = true;
+                        state.mark_render_dirty();
+                    }
+                    let result = tokio::task::spawn_blocking(move || display::apply_refresh_rate(rate))
+                        .await
+                        .unwrap_or_else(|error| Err(format!("Display operation worker failed: {error}")));
+                    if let Ok(mut state) = shared.lock() {
+                        state.display_action_in_progress = false;
+                        match result {
+                            Ok(snapshot) => {
+                                state.display_draft_rate = snapshot.current_rate;
+                                state.display_snapshot = snapshot;
+                            }
+                            Err(error) => {
+                                let mut snapshot = display::discover();
+                                snapshot.reason = error;
+                                state.display_snapshot = snapshot;
+                            }
+                        }
+                        state.mark_render_dirty();
+                    }
+                }
+
+                let pending_saved_profile_action = shared
+                    .lock()
+                    .ok()
+                    .and_then(|mut st| st.pending_saved_profile_action.take());
+                if let Some(action) = pending_saved_profile_action {
+                    let result = submit_saved_profile_action(action).await;
+                    if let Ok(mut st) = shared.lock() {
+                        st.saved_profile_action_in_progress = false;
+                        match result {
+                            Ok(SavedProfileActionResult::Saved(profile)) => {
+                                let profile = *profile;
+                                if let Some(existing) = st
+                                    .settings
+                                    .profiles
+                                    .iter_mut()
+                                    .find(|existing| existing.id == profile.id)
+                                {
+                                    *existing = profile.clone();
+                                } else {
+                                    st.settings.profiles.push(profile.clone());
+                                }
+                                st.selected_saved_profile_id = Some(profile.id.clone());
+                                st.saved_profile_draft = Some(profile);
+                                st.pending_toast = Some(("Saved profile updated. Hardware was not changed.".into(), false));
+                                let profiles = st.settings.profiles.clone();
+                                if let Some(pending) = st.pending_config_save.as_mut() {
+                                    pending.profiles = profiles;
+                                }
+                            }
+                            Ok(SavedProfileActionResult::Deleted(id)) => {
+                                st.settings.profiles.retain(|profile| profile.id != id);
+                                if st.settings.controls.preferred_profile_id.as_deref() == Some(&id) {
+                                    st.settings.controls.preferred_profile_id = None;
+                                }
+                                st.selected_saved_profile_id = st.settings.profiles.first().map(|profile| profile.id.clone());
+                                st.saved_profile_draft = st.settings.profiles.first().cloned();
+                                st.pending_toast = Some(("Saved profile deleted. Hardware was not changed.".into(), false));
+                                let profiles = st.settings.profiles.clone();
+                                if let Some(pending) = st.pending_config_save.as_mut() {
+                                    pending.profiles = profiles;
+                                }
+                            }
+                            Err(error) => st.pending_toast = Some((error, true)),
+                        }
+                        st.mark_render_dirty();
                     }
                 }
 
@@ -7446,20 +9057,46 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .ok()
                     .and_then(|mut st| st.pending_fan_action.take());
                 if let Some(action) = pending_fan_action {
+                    let curve_request = match &action {
+                        PendingFanAction::Curve { fan_id, points } => {
+                            Some((fan_id.clone(), points.clone()))
+                        }
+                        _ => None,
+                    };
                     let sync_action = matches!(action, PendingFanAction::Sync(_));
+                    let sync_setting = match &action {
+                        PendingFanAction::Sync(enabled) => Some(*enabled),
+                        _ => None,
+                    };
                     match apply_fan_action(action).await {
                         Ok(()) => {
+                            let mut success_message = "Fan setting applied".to_string();
+                            if let Some(enabled) = sync_setting {
+                                if let Err(error) = persist_settings_change(&shared, |settings| {
+                                    settings.controls.fan_sync_enabled = enabled;
+                                }) {
+                                    success_message = format!(
+                                        "Fan sync changed, but its preference could not be saved: {error}"
+                                    );
+                                }
+                            }
                             if let Ok(mut st) = shared.lock() {
                                 st.action_error = None;
-                                st.pending_toast = Some(("Fan setting applied".to_string(), false));
+                                st.fan_curve_apply_confirmed = curve_request;
+                                st.pending_toast = Some((success_message, false));
+                                st.mark_render_dirty();
                             }
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
                                 if sync_action {
-                                    st.fan_sync_edit.apply_failed();
+                                    st.fan_sync_edit.reset();
+                                    let reported_sync = st.fan_state.sync_enabled;
+                                    st.settings.controls.fan_sync_enabled = reported_sync;
+                                    st.pending_config_save = Some(st.settings.clone());
                                 }
                                 st.action_error = Some(e.clone());
+                                st.fan_curve_apply_confirmed = None;
                                 st.pending_toast = Some((e, true));
                                 st.mark_render_dirty();
                             }
@@ -7607,6 +9244,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         battery_limit,
                         lighting,
                         fan_state,
+                        automation_status,
                     )) => {
                         let summary = summary_from_state(&t, profile.as_deref(), gpu_mode.as_deref());
                         if let Some(h) = &tray_handle {
@@ -7656,8 +9294,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     .filter(|info| info.supports_brightness)
                                     .map(|info| info.brightness),
                             );
-<<<<<<< HEAD
-=======
                             st.cpu_turbo_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.turbo_boost_enabled),
                             );
@@ -7673,11 +9309,11 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.cpu_epp_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.epp.clone()),
                             );
->>>>>>> origin/main
                             st.lighting = lighting;
                             st.fan_sync_edit
                                 .update_reported(Some(fan_state.sync_enabled));
                             st.fan_state = fan_state;
+                            st.automation_status = automation_status;
                             st.daemon_error = None;
                             st.mark_render_dirty();
                         }
@@ -7908,6 +9544,19 @@ async fn save_configuration(config: &AppConfig) -> Result<(), String> {
         .map_err(|error| format!("Unable to save settings through rog-helperd: {error}"))
 }
 
+async fn resume_automation() -> Result<(), String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    proxy
+        .resume_automation()
+        .await
+        .map_err(|error| format!("Unable to resume automation through rog-helperd: {error}"))
+}
+
 async fn fetch_configuration() -> Result<AppConfig, String> {
     let conn = zbus::Connection::session()
         .await
@@ -7940,6 +9589,53 @@ async fn reset_configuration() -> Result<AppConfig, String> {
     Ok(parse_config(&contents).config)
 }
 
+async fn submit_saved_profile_action(
+    action: PendingSavedProfileAction,
+) -> Result<SavedProfileActionResult, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session DBus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("failed to connect to daemon proxy: {error}"))?;
+    match action {
+        PendingSavedProfileAction::Create { name, settings } => {
+            let settings_toml = profile_settings_to_toml(&settings)?;
+            let id = proxy
+                .create_profile(&name, &settings_toml)
+                .await
+                .map_err(|error| format!("Unable to create saved profile: {error}"))?;
+            Ok(SavedProfileActionResult::Saved(Box::new(NamedProfile {
+                schema_version: rog_core::PROFILE_SCHEMA_VERSION,
+                id,
+                name,
+                settings,
+                future_fields: Default::default(),
+            })))
+        }
+        PendingSavedProfileAction::Update(profile) => {
+            let contents = profile_to_toml(&profile)?;
+            proxy
+                .update_profile(&profile.id, &contents)
+                .await
+                .map_err(|error| format!("Unable to save profile changes: {error}"))?;
+            Ok(SavedProfileActionResult::Saved(Box::new(profile)))
+        }
+        PendingSavedProfileAction::Delete(id) => {
+            proxy
+                .delete_profile(&id)
+                .await
+                .map_err(|error| format!("Unable to delete saved profile: {error}"))?;
+            Ok(SavedProfileActionResult::Deleted(id))
+        }
+    }
+}
+
+enum SavedProfileActionResult {
+    Saved(Box<NamedProfile>),
+    Deleted(String),
+}
+
 async fn fetch_state() -> Result<
     (
         TelemetrySnapshot,
@@ -7953,6 +9649,7 @@ async fn fetch_state() -> Result<
         Option<u8>,
         Option<LightingInfo>,
         FanState,
+        AutomationUiStatus,
     ),
     String,
 > {
@@ -7974,6 +9671,24 @@ async fn fetch_state() -> Result<
     let cpu_caps_map =
         dbus_decode::nested_map(&state, dbus_keys::state::CPU_CAPS).unwrap_or_default();
     let warnings = dbus_decode::strings(&state, dbus_keys::state::WARNINGS).unwrap_or_default();
+    let automation_map =
+        dbus_decode::nested_map(&state, dbus_keys::state::AUTOMATION).unwrap_or_default();
+    let automation_status = AutomationUiStatus {
+        state: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_STATE)
+            .unwrap_or_else(|| "disabled".into()),
+        explanation: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_EXPLANATION)
+            .unwrap_or_else(|| "Automation status is unavailable.".into()),
+        last_result: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_LAST_RESULT)
+            .unwrap_or_else(|| "No automatic result is available.".into()),
+        last_transition_ms: dbus_decode::unsigned(
+            &automation_map,
+            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
+        ),
+        last_profile_id: dbus_decode::string(
+            &automation_map,
+            dbus_keys::state::AUTOMATION_PROFILE_ID,
+        ),
+    };
     let profile = dbus_decode::string(&state, dbus_keys::state::PROFILE);
     let gpu_mode = dbus_decode::string(&state, dbus_keys::state::GPU_MODE);
     let battery_limit = dbus_decode::unsigned(&state, dbus_keys::state::BATTERY_LIMIT)
@@ -8045,6 +9760,7 @@ async fn fetch_state() -> Result<
         battery_limit,
         lighting,
         fan_state,
+        automation_status,
     ))
 }
 
@@ -8963,6 +10679,104 @@ where
     Ok(next)
 }
 
+fn queue_saved_profile_action(
+    shared: &Arc<Mutex<SharedUiState>>,
+    action: PendingSavedProfileAction,
+) {
+    let name = match &action {
+        PendingSavedProfileAction::Create { name, .. } => Some(name.as_str()),
+        PendingSavedProfileAction::Update(profile) => Some(profile.name.as_str()),
+        PendingSavedProfileAction::Delete(_) => None,
+    };
+    if name.is_some_and(|name| name.trim().is_empty() || name.trim().len() > 64) {
+        if let Ok(mut st) = shared.lock() {
+            st.pending_toast = Some(("Profile name must contain 1 to 64 characters.".into(), true));
+            st.mark_render_dirty();
+        }
+        return;
+    }
+    if let PendingSavedProfileAction::Update(profile) = &action {
+        if let Err(error) = rog_core::validate_profile(profile) {
+            if let Ok(mut st) = shared.lock() {
+                st.pending_toast = Some((error, true));
+                st.mark_render_dirty();
+            }
+            return;
+        }
+    }
+    if let Ok(mut st) = shared.lock() {
+        if st.saved_profile_action_in_progress {
+            return;
+        }
+        st.pending_saved_profile_action = Some(action);
+        st.saved_profile_action_in_progress = true;
+        st.mark_render_dirty();
+    }
+}
+
+fn sync_saved_profile_form(
+    shared: &Arc<Mutex<SharedUiState>>,
+    syncing: &Rc<std::cell::Cell<bool>>,
+    name: &gtk::Entry,
+    platform: &gtk::ComboBoxText,
+    charge_enabled: &gtk::Switch,
+    charge_limit: &gtk::SpinButton,
+) {
+    if syncing.get() {
+        return;
+    }
+    let platform_profile = match platform.active_id().as_deref() {
+        Some("silent") => Some(PerformanceProfile::Silent),
+        Some("balanced") => Some(PerformanceProfile::Balanced),
+        Some("turbo") => Some(PerformanceProfile::Turbo),
+        _ => None,
+    };
+    let battery_charge_limit = charge_enabled
+        .is_active()
+        .then(|| charge_limit.value().round().clamp(40.0, 100.0) as u8);
+    if let Ok(mut st) = shared.lock() {
+        if let Some(draft) = st.saved_profile_draft.as_mut() {
+            draft.name = name.text().to_string();
+            draft.settings.platform_profile = platform_profile;
+            draft.settings.battery_charge_limit = battery_charge_limit;
+            st.mark_render_dirty();
+        }
+    }
+    charge_limit.set_sensitive(charge_enabled.is_active());
+}
+
+fn saved_profile_form_settings(
+    shared: &Arc<Mutex<SharedUiState>>,
+    platform: &gtk::ComboBoxText,
+    charge_enabled: &gtk::Switch,
+    charge_limit: &gtk::SpinButton,
+    copy_selected: bool,
+) -> ProfileSettings {
+    let mut settings = if copy_selected {
+        shared
+            .lock()
+            .ok()
+            .and_then(|st| {
+                st.saved_profile_draft
+                    .as_ref()
+                    .map(|draft| draft.settings.clone())
+            })
+            .unwrap_or_default()
+    } else {
+        ProfileSettings::default()
+    };
+    settings.platform_profile = match platform.active_id().as_deref() {
+        Some("silent") => Some(PerformanceProfile::Silent),
+        Some("balanced") => Some(PerformanceProfile::Balanced),
+        Some("turbo") => Some(PerformanceProfile::Turbo),
+        _ => None,
+    };
+    settings.battery_charge_limit = charge_enabled
+        .is_active()
+        .then(|| charge_limit.value().round().clamp(40.0, 100.0) as u8);
+    settings
+}
+
 fn autostart_file_path() -> Result<PathBuf, String> {
     Ok(xdg_config_home()?
         .join("autostart")
@@ -9799,6 +11613,25 @@ fn lighting_preview_caption(lighting: &LightingInfo) -> String {
     }
 }
 
+fn lighting_topology_capability_text(lighting: &LightingInfo, argb: bool) -> String {
+    let supported = if argb {
+        lighting.supports_argb || lighting.supports_zones
+    } else {
+        lighting.supports_per_key
+    };
+    if supported {
+        "Supported by the active backend".to_string()
+    } else if lighting.backend_kind == "native-aura-hid" {
+        if argb {
+            "Not supported by this G615JMR single-zone backend".to_string()
+        } else {
+            "Per-key RGB is not supported by this backend".to_string()
+        }
+    } else {
+        "Not reported by the active backend".to_string()
+    }
+}
+
 fn lighting_mode_supports_secondary_colour(mode: &str) -> bool {
     normalize_label(mode) == "breathe"
 }
@@ -9953,8 +11786,12 @@ fn lighting_readiness_message(lighting: &LightingInfo) -> String {
 
 fn friendly_lighting_error(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
-    if lower.contains("cancel") || lower.contains("denied") || lower.contains("not authorized") {
-        "Administrator authorization was cancelled.".to_string()
+    if lower.contains("cancel") {
+        "Administrator authorization was cancelled; no lighting change was confirmed.".to_string()
+    } else if lower.contains("denied") || lower.contains("not authorized") {
+        "Administrator authorization was denied; no lighting change was confirmed.".to_string()
+    } else if lower.contains("disappear") || lower.contains("no longer present") {
+        "The lighting backend disappeared before the change could be confirmed.".to_string()
     } else if lower.contains("unknown mode") || lower.contains("not supported") {
         "This lighting effect is not supported by the detected keyboard.".to_string()
     } else if lower.contains("open") && (lower.contains("aura") || lower.contains("device")) {
@@ -10291,10 +12128,7 @@ fn lighting_last_action_text(
                     "Applied; this backend does not provide reliable readback.".to_string()
                 }
                 value if value.starts_with("failed:") => {
-                    format!(
-                        "Apply failed: {}",
-                        value.trim_start_matches("failed:").trim()
-                    )
+                    friendly_lighting_error(value.trim_start_matches("failed:").trim())
                 }
                 value => value.to_string(),
             };
@@ -12154,8 +13988,14 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
             .unwrap_or_default()
     }
 
+    let id = s(&map, dbus_keys::FAN_INFO_ID_KEY)?;
+    let curve_readback = map
+        .get(dbus_keys::FAN_INFO_CURVE_READBACK_KEY)
+        .cloned()
+        .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
+        .and_then(|curve| fan_curve_readback_from_dbus(&id, curve));
     Some(FanInfo {
-        id: s(&map, dbus_keys::FAN_INFO_ID_KEY)?,
+        id,
         index: u32v(&map, dbus_keys::FAN_INFO_INDEX_KEY).unwrap_or(0),
         label: s(&map, dbus_keys::FAN_INFO_LABEL_KEY)?,
         mapping_confidence: s(&map, dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY)
@@ -12178,10 +14018,56 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
         supports_curve: b(&map, dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY),
         supports_auto: b(&map, dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY),
+        curve_readback,
+        rollback_available: b(&map, dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY),
         backend: s(&map, dbus_keys::FAN_INFO_BACKEND_KEY).unwrap_or_else(|| "unknown".to_string()),
         endpoints: vec_string(&map, dbus_keys::FAN_INFO_ENDPOINTS_KEY),
         notes: vec_string(&map, dbus_keys::FAN_INFO_NOTES_KEY),
         warnings: vec_string(&map, dbus_keys::FAN_INFO_WARNINGS_KEY),
+    })
+}
+
+fn fan_curve_readback_from_dbus(
+    fan_id: &str,
+    map: HashMap<String, OwnedValue>,
+) -> Option<FanCurveReadback> {
+    let enable_mode = map
+        .get(dbus_keys::fan_curves::ENABLE_MODE)
+        .and_then(u64_from_value)
+        .and_then(|value| u8::try_from(value).ok())?;
+    let raw_pwm = map
+        .get(dbus_keys::fan_curves::RAW_PWM)
+        .cloned()
+        .and_then(|value| Vec::<u8>::try_from(value).ok())?;
+    let rows = map
+        .get(dbus_keys::fan_curves::POINTS)
+        .cloned()
+        .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())?;
+    let points = rows
+        .into_iter()
+        .map(|row| {
+            Some(FanPoint {
+                temp_c: row
+                    .get(dbus_keys::fan_curves::TEMP_C)
+                    .and_then(u64_from_value)
+                    .and_then(|value| u8::try_from(value).ok())?,
+                duty_percent: row
+                    .get(dbus_keys::fan_curves::SPEED_PERCENT)
+                    .and_then(u64_from_value)
+                    .and_then(|value| u8::try_from(value).ok())?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if points.len() != 8 || raw_pwm.len() != 8 {
+        return None;
+    }
+    Some(FanCurveReadback {
+        curve: FanCurve {
+            domain: FanDomain::Other(fan_id.to_string()),
+            points,
+        },
+        raw_pwm,
+        enable_mode,
     })
 }
 
@@ -12812,6 +14698,145 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
     lines.join("\n")
 }
 
+fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
+    let preset = match name {
+        "quiet" => FanCurvePreset::Quiet,
+        "performance" => FanCurvePreset::Performance,
+        _ => FanCurvePreset::Balanced,
+    };
+    preset
+        .points()
+        .into_iter()
+        .map(|point| (point.temp_c, point.duty_percent))
+        .collect()
+}
+
+fn automation_can_resume(state: &str) -> bool {
+    matches!(state, "manual_override" | "blocked" | "error")
+}
+
+fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
+    let curve = FanCurve {
+        domain: FanDomain::Cpu,
+        points: points
+            .iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c: *temp_c,
+                duty_percent: *duty_percent,
+            })
+            .collect(),
+    };
+    curve
+        .validate_safe(FanCurvePolicy {
+            exact_point_count: Some(8),
+            ..FanCurvePolicy::default()
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn fan_curve_apply_enabled(writable: bool, dirty: bool, valid: bool) -> bool {
+    writable && dirty && valid
+}
+
+fn fan_curve_draft_is_dirty(points: &[(u8, u8)], baseline: Option<&[(u8, u8)]>) -> bool {
+    baseline != Some(points)
+}
+
+fn fan_curve_points_from_readback(readback: &FanCurveReadback) -> Option<Vec<(u8, u8)>> {
+    if readback.curve.points.len() != 8 || readback.raw_pwm.len() != 8 {
+        return None;
+    }
+    Some(
+        readback
+            .curve
+            .points
+            .iter()
+            .map(|point| (point.temp_c, point.duty_percent))
+            .collect(),
+    )
+}
+
+fn fan_curve_access_label(fan: Option<&FanInfo>) -> String {
+    let Some(fan) = fan else {
+        return "Unsupported · no verified fan-curve channel is mapped".to_string();
+    };
+    match fan.access_state.as_str() {
+        "direct" if fan.controllable => {
+            "Direct curve control is available; the UI remains unprivileged.".to_string()
+        }
+        "curve_control_available" if fan.controllable => {
+            "Authorized curve control is available for this session.".to_string()
+        }
+        "authorization_required" => {
+            "Authorization required · PolicyKit is requested only when Apply is pressed."
+                .to_string()
+        }
+        "authorization_denied" => {
+            "Authorization denied · the draft is retained; Apply may be retried.".to_string()
+        }
+        "helper_missing" => {
+            "Privileged helper missing · curve readback remains available, writes are unavailable."
+                .to_string()
+        }
+        "unsafe_read_only" => "Unsafe or unverified mapping · this fan is read-only.".to_string(),
+        "telemetry_only" | "read_only" => {
+            "Telemetry only · RPM is visible, but this channel has no verified curve write route."
+                .to_string()
+        }
+        _ if fan.supports_curve && fan.curve_readback.is_some() => {
+            "Curve is readable but currently read-only.".to_string()
+        }
+        _ if fan.supports_curve => {
+            "Curve capability reported; write access is unavailable.".to_string()
+        }
+        _ => "Unsupported · this fan has no verified curve capability.".to_string(),
+    }
+}
+
+fn fan_curve_tab_available(fans: &[FanInfo], fan_id: &str) -> bool {
+    matches!(fan_id, "asus-wmi:cpu" | "asus-wmi:gpu" | "asus-wmi:mid")
+        && fans
+            .iter()
+            .any(|fan| fan.id == fan_id && fan.supports_curve)
+}
+
+fn profile_fan_role_available(
+    fans: &[FanInfo],
+    role: rog_core::ProfileFanRole,
+    curve: bool,
+) -> bool {
+    let id = match role {
+        rog_core::ProfileFanRole::Cpu => "asus-wmi:cpu",
+        rog_core::ProfileFanRole::Gpu => "asus-wmi:gpu",
+        rog_core::ProfileFanRole::Mid => "asus-wmi:mid",
+    };
+    fans.iter().any(|fan| {
+        fan.id == id
+            && if curve {
+                fan.supports_curve
+            } else {
+                fan.supports_auto
+            }
+    })
+}
+
+fn fan_preset_label(name: &str) -> &'static str {
+    match name {
+        "quiet" => FanCurvePreset::Quiet.label(),
+        "performance" => FanCurvePreset::Performance.label(),
+        _ => FanCurvePreset::Balanced.label(),
+    }
+}
+
+fn fan_curve_points_text(points: &[(u8, u8)]) -> String {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (temp_c, duty))| format!("{}: {temp_c}C / {duty}%", index + 1))
+        .collect::<Vec<_>>()
+        .join("   ")
+}
+
 fn fan_state_diagnostics_text(state: &FanState) -> String {
     let mut lines = Vec::new();
     lines.push("Fan Control Diagnostics".to_string());
@@ -12881,6 +14906,27 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
             fan.supports_curve,
             fan.supports_auto
         ));
+        lines.push(format!(
+            "  direct_write: {}; helper_ready: {}; authorization: {}; rollback_available: {}",
+            fan.direct_write, fan.privileged_write, fan.authorization, fan.rollback_available
+        ));
+        if let Some(readback) = &fan.curve_readback {
+            lines.push(format!(
+                "  current_curve: source=backend_current, enable_mode={}, points={}",
+                readback.enable_mode,
+                readback
+                    .curve
+                    .points
+                    .iter()
+                    .zip(&readback.raw_pwm)
+                    .map(|(point, raw)| format!(
+                        "{}C/{}%[raw={raw}]",
+                        point.temp_c, point.duty_percent
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         lines.push(format!(
             "  rpm_readable: {}; pwm_endpoint_verified: {}; direct_write: {}; privileged_write: {}; authorization: {}; access: {}",
             fan.rpm_readable,
@@ -13453,6 +15499,144 @@ mod tests {
     }
 
     #[test]
+    fn automation_resume_is_available_for_paused_or_blocked_states() {
+        assert!(automation_can_resume("manual_override"));
+        assert!(automation_can_resume("blocked"));
+        assert!(automation_can_resume("error"));
+        assert!(!automation_can_resume("monitoring"));
+        assert!(!automation_can_resume("disabled"));
+    }
+
+    #[test]
+    fn fan_curve_ui_accepts_only_safe_eight_point_drafts_and_presets() {
+        for preset in ["quiet", "balanced", "performance"] {
+            assert!(validate_ui_fan_curve(&fan_curve_preset(preset)).is_ok());
+        }
+        let mut invalid = fan_curve_preset("balanced");
+        invalid.pop();
+        assert!(validate_ui_fan_curve(&invalid).is_err());
+        let mut invalid = fan_curve_preset("balanced");
+        invalid[1].0 = invalid[0].0;
+        assert!(validate_ui_fan_curve(&invalid).is_err());
+        let mut invalid = fan_curve_preset("balanced");
+        invalid[5].1 = 50;
+        assert!(validate_ui_fan_curve(&invalid).is_err());
+    }
+
+    #[test]
+    fn curve_apply_requires_writable_dirty_and_valid_draft() {
+        assert!(!fan_curve_apply_enabled(false, true, true));
+        assert!(!fan_curve_apply_enabled(true, false, true));
+        assert!(!fan_curve_apply_enabled(true, true, false));
+        assert!(fan_curve_apply_enabled(true, true, true));
+    }
+
+    #[test]
+    fn curve_draft_returns_to_clean_when_it_matches_backend_baseline() {
+        let baseline = fan_curve_preset("balanced");
+        assert!(!fan_curve_draft_is_dirty(&baseline, Some(&baseline)));
+        let changed = fan_curve_preset("quiet");
+        assert!(fan_curve_draft_is_dirty(&changed, Some(&baseline)));
+        assert!(fan_curve_draft_is_dirty(&changed, None));
+    }
+
+    #[test]
+    fn fan_curve_access_labels_distinguish_capability_and_permission_states() {
+        let telemetry = FanTelemetry {
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "/sys/class/hwmon/hwmon0".to_string(),
+            input_path: "/sys/class/hwmon/hwmon0/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU".to_string(),
+            rpm: Some(2400),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+        fan.supports_curve = true;
+        fan.id = "asus-wmi:cpu".to_string();
+        assert!(fan_curve_tab_available(
+            std::slice::from_ref(&fan),
+            "asus-wmi:cpu"
+        ));
+        assert!(profile_fan_role_available(
+            std::slice::from_ref(&fan),
+            rog_core::ProfileFanRole::Cpu,
+            true
+        ));
+        assert!(!profile_fan_role_available(
+            std::slice::from_ref(&fan),
+            rog_core::ProfileFanRole::Cpu,
+            false
+        ));
+        assert!(!fan_curve_tab_available(
+            std::slice::from_ref(&fan),
+            "asus-wmi:gpu"
+        ));
+        assert!(!fan_curve_tab_available(
+            std::slice::from_ref(&fan),
+            "hwmon-fan-1"
+        ));
+        fan.curve_readback = Some(FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: fan_curve_preset("balanced")
+                    .into_iter()
+                    .map(|(temp_c, duty_percent)| FanPoint {
+                        temp_c,
+                        duty_percent,
+                    })
+                    .collect(),
+            },
+            raw_pwm: vec![40; 8],
+            enable_mode: 2,
+        });
+        for (state, expected) in [
+            ("direct", "Direct curve control"),
+            ("authorization_required", "Authorization required"),
+            ("authorization_denied", "Authorization denied"),
+            ("helper_missing", "Privileged helper missing"),
+            ("unsafe_read_only", "Unsafe or unverified mapping"),
+            ("telemetry_only", "Telemetry only"),
+        ] {
+            fan.access_state = state.to_string();
+            fan.controllable = state == "direct";
+            assert!(fan_curve_access_label(Some(&fan)).contains(expected));
+        }
+        assert!(fan_curve_access_label(None).contains("Unsupported"));
+    }
+
+    #[test]
+    fn curve_readback_mapping_requires_exactly_eight_points_and_raw_values() {
+        let readback = FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: fan_curve_preset("balanced")
+                    .into_iter()
+                    .map(|(temp_c, duty_percent)| FanPoint {
+                        temp_c,
+                        duty_percent,
+                    })
+                    .collect(),
+            },
+            raw_pwm: vec![40; 8],
+            enable_mode: 2,
+        };
+        assert_eq!(
+            fan_curve_points_from_readback(&readback),
+            Some(fan_curve_preset("balanced"))
+        );
+        let mut incomplete = readback;
+        incomplete.raw_pwm.pop();
+        assert_eq!(fan_curve_points_from_readback(&incomplete), None);
+    }
+
+    #[test]
+    fn lighting_status_separates_cancel_denial_and_backend_disappearance() {
+        assert!(friendly_lighting_error("authorization cancelled").contains("cancelled"));
+        assert!(friendly_lighting_error("authorization denied").contains("denied"));
+        assert!(friendly_lighting_error("Aura device disappeared").contains("disappeared"));
+    }
+
+    #[test]
     fn privileged_status_decoder_preserves_access_infrastructure_state() {
         let mut map = HashMap::new();
         map.insert(
@@ -13912,6 +16096,23 @@ mod tests {
         assert!(!lighting_mode_supports_speed("Static"));
         assert!(lighting_mode_supports_direction("Rainbow Wave"));
         assert!(!lighting_mode_supports_direction("Rainbow Cycle"));
+    }
+
+    #[test]
+    fn native_g615jm_lighting_does_not_claim_multi_zone_or_per_key_support() {
+        let mut map = HashMap::new();
+        map.insert(
+            dbus_keys::lighting::BACKEND_KIND.to_string(),
+            ov("native-aura-hid".to_string()),
+        );
+        map.insert(
+            dbus_keys::lighting::SUPPORTS_RGB.to_string(),
+            OwnedValue::from(true),
+        );
+        let info = lighting_from_dbus(map).expect("lighting capability map should decode");
+        assert!(lighting_topology_capability_text(&info, true).contains("Not supported"));
+        assert!(lighting_topology_capability_text(&info, false).contains("not supported"));
+        assert!(lighting_preview_caption(&info).contains("Single-target RGB"));
     }
 
     #[test]
@@ -14387,8 +16588,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn fan_sync_draft_survives_stale_poll_while_apply_is_pending() {
         let mut sync = EditableDraft::default();
         sync.update_reported(Some(false));
@@ -14405,7 +16604,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> origin/main
     fn editable_draft_reset_discards_pending_change() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));
@@ -14426,8 +16624,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn cpu_quick_control_drafts_survive_poll_after_focus_loss() {
         let mut turbo = EditableDraft::default();
         let mut preset = EditableDraft::default();
@@ -14477,7 +16673,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> origin/main
     fn clean_programmatic_sync_does_not_create_a_draft() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));

@@ -32,6 +32,9 @@ pub const AURA_OUTPUT_PAYLOAD_BYTES: usize = 63;
 pub const AURA_OUTPUT_REPORT_BYTES: usize = 64;
 pub const G615JM_REPORT_DESCRIPTOR_SHA256: &str =
     "bdcf63294f0793588d96a966c08b1e28062b36b5fdf5d54e714b0102bf1e1094";
+/// Remains false until a dated, human-observed validation record is committed
+/// with kernel, BIOS, package/commit, and per-effect results.
+pub const G615JM_PHYSICAL_VALIDATION_RECORDED: bool = false;
 
 const EFFECT_COMMAND: u8 = 0xb3;
 const APPLY_COMMAND: u8 = 0xb4;
@@ -516,6 +519,12 @@ fn inspect_hidraw(
         .map(|protocol| protocol.as_str().to_string());
     let diagnostics = LightingHidDeviceDiagnostics {
         hidraw_name: hidraw_name.to_string(),
+        canonical_device_identity: Some(format!(
+            "usb:{vendor_id:04x}:{product_id:04x}:if{}",
+            interface
+                .map(|value| format!("{value:02x}"))
+                .unwrap_or_else(|| "unknown".to_string())
+        )),
         vendor_id: Some(format!("{vendor_id:04x}")),
         product_id: Some(format!("{product_id:04x}")),
         interface_number: interface.map(|value| format!("{value:02x}")),
@@ -527,6 +536,7 @@ fn inspect_hidraw(
             .and_then(sanitize_metadata),
         driver,
         report_descriptor_sha256: Some(descriptor_hash),
+        report_descriptor_bytes: Some(descriptor.len() as u32),
         output_report_payload_bytes: output_payload.map(|bytes| bytes as u32),
         output_report_total_bytes: output_payload.map(|bytes| (bytes + 1) as u32),
         device_node_mode: devnode_mode,
@@ -795,11 +805,48 @@ mod tests {
             );
             assert_eq!(reports.effect()[7], 0xeb, "{}", mode.label());
             assert_eq!(reports.effect()[8], 0x00, "{}", mode.label());
+            assert_eq!(
+                reports.effect()[9],
+                0x00,
+                "the independently corroborated control/random flag stays zero for {}",
+                mode.label()
+            );
             assert_eq!(&reports.effect()[10..13], &[0, 0, 0], "{}", mode.label());
             assert_eq!(reports.effect().len(), AURA_OUTPUT_REPORT_BYTES);
             assert_eq!(reports.set()[..2], [AURA_REPORT_ID, SET_COMMAND]);
             assert_eq!(reports.apply()[..2], [AURA_REPORT_ID, APPLY_COMMAND]);
         }
+    }
+
+    #[test]
+    fn secondary_colour_is_breathe_only_and_reserved_bytes_stay_zero() {
+        for mode in [
+            LightingMode::Static,
+            LightingMode::RainbowCycle,
+            LightingMode::RainbowWave,
+            LightingMode::Pulse,
+        ] {
+            let mut effect = request(mode.clone());
+            effect.secondary_rgb = Some(RgbColor::new(1, 2, 3));
+            if matches!(mode, LightingMode::RainbowCycle | LightingMode::RainbowWave) {
+                effect.primary_rgb = None;
+                effect.speed = Some(LightingSpeed::Medium);
+            }
+            assert!(
+                encode_g615jm_effect(&effect).is_err(),
+                "{} must reject a secondary colour",
+                mode.label()
+            );
+        }
+
+        let mut breathe = request(LightingMode::Breathe);
+        breathe.secondary_rgb = Some(RgbColor::new(1, 2, 3));
+        breathe.speed = Some(LightingSpeed::Slow);
+        let reports = encode_g615jm_effect(&breathe).expect("Breathe supports two colours");
+        assert_eq!(&reports.effect()[10..13], &[1, 2, 3]);
+        assert!(reports.effect()[13..].iter().all(|byte| *byte == 0));
+        assert!(reports.set()[2..].iter().all(|byte| *byte == 0));
+        assert!(reports.apply()[2..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -923,6 +970,11 @@ mod tests {
                 .as_deref()
                 .map(str::len),
             Some(64)
+        );
+        assert_eq!(device.diagnostics.report_descriptor_bytes, Some(8));
+        assert_eq!(
+            device.diagnostics.canonical_device_identity.as_deref(),
+            Some("usb:0b05:19b6:if00")
         );
         assert!(!device.diagnostics.supported);
         assert!(device

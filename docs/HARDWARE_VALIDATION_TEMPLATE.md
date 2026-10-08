@@ -66,6 +66,34 @@ Recommended status words:
 - Fan rows with RPM:
 - Fan rows without RPM:
 
+### Fan Curve / Auto Safety
+
+- Exact semantic channel IDs and kernel labels:
+- RPM hwmon identity:
+- Curve hwmon identity:
+- Canonical-device relationship:
+- Current readback source (`backend_current`; readback origin only, not factory ownership):
+- Eight temperature points:
+- Eight raw PWM values:
+- Eight converted percentages:
+- Enable mode before Apply:
+- Write route (direct/helper):
+- Helper readiness:
+- PolicyKit success / cancellation / denial:
+- Eight post-write temperature/PWM readbacks:
+- Enable-last result and final enable mode:
+- Rollback result after an injected/simulated failure:
+- Recovery marker armed IDs before recovery:
+- Recovery marker state after success/failure:
+- Restore Auto readback and physical firmware-control observation:
+- User-daemon restart while curve active:
+- Helper clean stop while curve active:
+- Helper kill/restart recovery:
+- Suspend/resume result:
+- Backend-disappearance result:
+- Firmware/platform-profile interaction:
+- Thermal supervision notes (no automatic stress test):
+
 ### Lighting
 
 - Selected backend:

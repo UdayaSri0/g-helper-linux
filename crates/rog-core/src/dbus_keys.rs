@@ -49,6 +49,8 @@ pub const FAN_INFO_SUPPORTS_MANUAL_PERCENT_KEY: &str = "supports_manual_percent"
 pub const FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY: &str = "supports_manual_rpm_target";
 pub const FAN_INFO_SUPPORTS_CURVE_KEY: &str = "supports_curve";
 pub const FAN_INFO_SUPPORTS_AUTO_KEY: &str = "supports_auto";
+pub const FAN_INFO_CURVE_READBACK_KEY: &str = "curve_readback";
+pub const FAN_INFO_ROLLBACK_AVAILABLE_KEY: &str = "rollback_available";
 pub const FAN_INFO_BACKEND_KEY: &str = "backend";
 pub const FAN_INFO_ENDPOINTS_KEY: &str = "endpoints";
 pub const FAN_INFO_NOTES_KEY: &str = "notes";
@@ -108,6 +110,12 @@ pub mod state {
     pub const GPU_MODE: &str = "gpu_mode";
     pub const BATTERY_LIMIT: &str = "battery_limit";
     pub const WARNINGS: &str = "warnings";
+    pub const AUTOMATION: &str = "automation";
+    pub const AUTOMATION_STATE: &str = "state";
+    pub const AUTOMATION_LAST_TRANSITION_MS: &str = "last_transition_ms";
+    pub const AUTOMATION_PROFILE_ID: &str = "profile_id";
+    pub const AUTOMATION_EXPLANATION: &str = "explanation";
+    pub const AUTOMATION_LAST_RESULT: &str = "last_result";
     pub const FAN_STATE: &str = FAN_STATE_KEY;
     pub const FAN_CAPS: &str = FAN_CAPS_KEY;
 }
@@ -335,6 +343,11 @@ pub mod privileged_status {
 pub mod fan_curves {
     pub const SUPPORTED: &str = "supported";
     pub const REASON: &str = "reason";
+    pub const CURVES: &str = "curves";
+    pub const FAN_ID: &str = "fan_id";
+    pub const SOURCE: &str = "source";
+    pub const ENABLE_MODE: &str = "enable_mode";
+    pub const RAW_PWM: &str = "raw_pwm";
     pub const POINTS: &str = "points";
     pub const TEMP_C: &str = "temp_c";
     pub const SPEED_PERCENT: &str = "speed_percent";

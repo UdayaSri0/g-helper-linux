@@ -251,6 +251,10 @@ Current content:
 - secondary colour, speed, direction, and zone rows only when the selected mode/backend reports them
 - durable Current/Pending draft summaries, local-only Reset, and Apply enabled only for a valid dirty
   draft; labels cover Unlock & Apply, Applying, Applied, and retryable failure
+- native G615JMR Aura is described as single-target RGB; ARGB/multi-zone and per-key RGB are
+  explicitly unsupported by that backend, without disabled controls that imply future support
+- last action distinguishes readback-confirmed success from accepted-without-readback and separates
+  authorization denied/cancelled and backend-disappeared errors
 - collapsed backend details containing device, backend, capabilities, brightness, mode, and RGB values
 
 Current implementation note:
@@ -261,7 +265,9 @@ Current implementation note:
 - sysfs daemon-reported supported modes are `Off` and `Static`
 - the native G615JMR target is single-target RGB, not ARGB: it exposes no zones or per-key controls
 - native effect Apply may request PolicyKit and reports accepted without readback; opening the page does not authenticate
-- all mode, secondary colour, speed, direction, and zone visibility comes from daemon capability data
+- available effect choices and backend-level support come from daemon capabilities. The UI gates
+  known effect-specific fields (Breathe colours, directional Wave, and supported speed modes), while
+  the daemon remains authoritative and validates each submitted request
 - Diagnostics copy includes a dedicated `Keyboard Lighting / RGB Diagnostics` section with sysfs paths, asusd DBus probe results, fallback reasons, and recommended actions
 - unavailable or read-only states should use the same capability-aware wording style as the Dashboard and GPU page rather than raw `(n/a)` placeholders
 
@@ -277,15 +283,22 @@ Current content:
 - Startup & Tray: On Close, Launch on Login, Start Minimized to Tray, and Exit Completely
 - Dashboard: Advanced System Health, conditional NVMe card, Cooling Snapshot, and compact spacing
 - Control Preferences: preferred charge limit and last manual performance profile
-- Automation: an explicit notice that saved hardware preferences are not auto-applied
+- Saved Profiles: create, duplicate, rename/save, and confirmed delete; the current editor stages a name, platform profile, and battery limit
+- Automation: opt-in AC/Battery presets, optional battery threshold, daemon state/result, and explicit Resume after manual override
+- Internal Display Refresh Rate: session/backend diagnostics and manual X11 RandR rate selection for the currently active internal-panel mode; no Wayland or automatic AC/Battery switching
+- Desktop Shortcuts: semantic profile, keyboard-brightness, and automation CLI commands; desktop-owned bindings with no ROG Helper key capture or global-registration claim
 - Reset: destructive-style button with confirmation that restores rog-helper defaults
 
 Current behavior:
 
 - changes are sent to the daemon and atomically saved in versioned XDG `config.toml`
+- profile edits stay local until Save Changes; creating, duplicating, renaming, and deleting only mutate the saved preset store
+- profile CRUD does not invoke hardware setters or PolicyKit; selecting a profile is management-only
+- saved lighting labels are capability-checked and retained if unsupported; saved fan roles/curves are not treated as evidence of a current mapping
 - a failed save leaves the previous good file in place and reports an error toast
 - Reset synchronizes rog-helper's managed autostart entry with the default lifecycle setting
-- remembered hardware values do not trigger writes on application or daemon startup
+- remembered control preferences do not trigger writes; explicitly enabled AC/Battery rules may
+  apply the approved preset subset after a stable power-source sample
 
 ### Diagnostics
 
@@ -379,11 +392,25 @@ Cooling is the user-facing name of the existing internal `fans` page and backend
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
 - exposes manual percentage control only when the daemon reports writable manual percent support
-- exposes sync mode only when more than one controllable fan is detected
+- exposes sync mode only when more than one controllable fan and a verified manual-percent backend
+  are detected; multiple curve-only fans never advertise sync
 - exposes time-limited full-speed boost buttons for 5, 10, and 15 minutes when boost is supported
 - always exposes Return to Auto for controllable fans
 - asks for explicit acknowledgement before first manual fan control
-- shows a disabled safe-curve preview when curves are unsupported
+- shows a disabled safe-curve preview when curves are unsupported; on the verified backend it offers
+  mapped CPU/GPU/Mid channel tabs, eight bounded temperature/duty rows, and a graph whose points can
+  be dragged or keyboard-adjusted. Point edits clamp between neighbors to prevent temperature or
+  duty ordering from crossing
+- graph segments are straight point-to-point visual guides only; they do not imply firmware
+  interpolation or additional points. A CPU/GPU system-temperature marker appears only when
+  reported and is labelled as system telemetry, not a fan-mounted sensor; no Mid temperature is
+  fabricated
+- Quiet/Balanced/Performance, selected-channel Import Current, and Reset Draft update local drafts
+  only. Apply is enabled only for a valid, dirty draft on a writable selected channel. Restore Auto /
+  BIOS is channel-specific; Apply is not shown as confirmed until the operation completes and current
+  backend readback matches the request
+- selected-channel status distinguishes direct access, authorization required/denied, missing helper,
+  unsafe/read-only mapping, telemetry-only, and unsupported
 - keeps raw diagnostics collapsed by default while preserving Copy fan diagnostics
 - keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
 - never writes directly to sysfs or hardware from the UI
@@ -402,7 +429,6 @@ Related note:
 
 ### Planned or future capabilities
 
-- graphical fan-curve editor beyond the current validated DBus/API surface
 - auto mode / rules editor
 - exported diagnostics bundle
 - more specialized conflict detection and service-management UI

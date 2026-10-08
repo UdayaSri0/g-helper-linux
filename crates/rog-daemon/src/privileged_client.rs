@@ -183,6 +183,10 @@ pub async fn reset_fans_to_auto() -> Result<(), PrivilegedError> {
     call_fan("ResetFansToAuto", &()).await
 }
 
+pub async fn recover_fans_if_armed() -> Result<(), PrivilegedError> {
+    call_fan("RecoverFansIfArmed", &()).await
+}
+
 pub async fn set_keyboard_backlight_brightness(level: u32) -> Result<(), PrivilegedError> {
     let connection = Connection::system()
         .await
@@ -381,6 +385,25 @@ mod tests {
             ],
         )
         .is_none());
+    }
+
+    #[test]
+    fn zero_future_and_malformed_helper_contracts_fail_closed() {
+        assert!(classify_capabilities(0, vec!["lighting".to_string()]).is_none());
+        assert!(
+            classify_capabilities(PRIVILEGED_API_VERSION + 1, vec!["lighting".to_string()])
+                .is_none()
+        );
+        assert!(
+            classify_capabilities(PRIVILEGED_API_VERSION, vec!["raw-hid".to_string()]).is_none()
+        );
+    }
+
+    #[test]
+    fn current_api_without_lighting_does_not_advertise_lighting() {
+        let capabilities = classify_capabilities(PRIVILEGED_API_VERSION, vec!["cpu".to_string()])
+            .expect("known subset remains API-compatible");
+        assert!(!capabilities.supports(rog_core::PrivilegedCategory::Lighting));
     }
 
     #[test]

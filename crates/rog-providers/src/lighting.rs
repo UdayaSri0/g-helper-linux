@@ -35,6 +35,15 @@ pub fn build_lighting_diagnostics(
     diagnostics.asusd_zone_methods_detected = aura_probe.zone_methods_detected.clone();
     diagnostics.asusd_zone_properties_detected = aura_probe.zone_properties_detected.clone();
     diagnostics.asusd_verified_aura_interface = aura_probe.verified_interface_detected;
+    if aura_probe.service_detected {
+        diagnostics.asusd_version =
+            Some("not exposed by the supported read-only Aura DBus probe".to_string());
+    }
+    if let Some(provider) = aura_provider {
+        diagnostics.asusd_abi = Some(provider.contract().as_str().to_string());
+    } else if aura_probe.service_detected {
+        diagnostics.asusd_abi = Some("no verified Aura ABI selected".to_string());
+    }
     diagnostics.probe_errors = aura_probe.probe_errors.clone();
 
     if let Some(error) = kbd_backlight_probe_error {

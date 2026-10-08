@@ -113,8 +113,8 @@ if ! introspection="$(busctl --system introspect \
   echo "Run: journalctl -u rog-helper-privileged.service -b --no-pager" >&2
   exit 1
 fi
-if [[ "$introspection" != *"SetAuraEffect"* || "$introspection" != *"GetCapabilities"* ]]; then
-  echo "the activated helper does not expose the required Aura API" >&2
+if [[ "$introspection" != *"SetAuraEffect"* || "$introspection" != *"RecoverFansIfArmed"* || "$introspection" != *"GetCapabilities"* ]]; then
+  echo "the activated helper does not expose the required privileged API" >&2
   echo "Check for a stale process: systemctl status rog-helper-privileged.service --no-pager" >&2
   exit 1
 fi
@@ -128,9 +128,9 @@ if ! capabilities="$(busctl --system call \
   exit 1
 fi
 read -r capabilities_signature capabilities_api_version _ <<<"$capabilities"
-if [[ "$capabilities_signature" != "uas" || "$capabilities_api_version" != "2" || "$capabilities" != *'"lighting"'* ]]; then
+if [[ "$capabilities_signature" != "uas" || "$capabilities_api_version" != "3" || "$capabilities" != *'"lighting"'* ]]; then
   echo "incompatible privileged capability response: $capabilities" >&2
-  echo "Expected API 2 with the lighting category." >&2
+  echo "Expected API 3 with the lighting category and marker-gated fan recovery." >&2
   exit 1
 fi
 

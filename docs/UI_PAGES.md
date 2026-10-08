@@ -238,6 +238,10 @@ Current behavior:
 - strict `#RRGGBB` entry, GTK picker, and visual preset swatches only when the daemon reports `supports_rgb`
 - secondary colour, speed, direction, and zones only when the active mode/backend reports them
 - Current/Pending draft summaries, local Reset, and dirty-only Apply with applying/success/failure state
+- native G615JMR Aura is identified as single-target RGB; ARGB/multi-zone and per-key RGB are
+  explicitly unsupported by that backend
+- last Apply result distinguishes readback-confirmed, accepted-without-readback, authorization
+  denied/cancelled, and backend-disappeared outcomes
 
 ### Capability dependencies
 
@@ -256,7 +260,9 @@ Current behavior:
 - active asusd ownership suppresses native HID to prevent competing writers
 - sysfs keyboard backlight remains available as a brightness-only fallback
 - sysfs-supported modes are limited to `Off` and `Static`
-- Aura-supported modes, speeds, and zones are not invented by the UI; they come from daemon/backend reporting
+- Aura-supported modes, speeds, and zones are not invented by the UI; available effects come from
+  daemon/backend reporting, known effect-specific fields are gated in the UI, and the daemon remains
+  authoritative for final validation
 - native HID authorization occurs only on Apply; its successful outcome is accepted without hardware readback
 
 ### Diagnostics report
@@ -272,7 +278,13 @@ Current behavior:
 - dashboard visibility switches for Advanced System Health, the conditional NVMe card, and Cooling Snapshot
 - compact dashboard spacing
 - an optional preferred battery charge limit and last manual performance profile
-- an explicit Automation section explaining that startup hardware actions are disabled
+- named Saved Profiles with create, duplicate, rename/save, and confirmed delete
+- saved platform-profile and battery-limit fields; profile edits remain local until Save Changes
+- a live capability note for saved lighting effects and semantic fan roles when those fields exist
+- AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
+- a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
+- X11-only internal-panel refresh-rate discovery, current mode/rate, advertised same-mode rates, manual Apply, and unsupported-backend explanation
+- semantic CLI commands for desktop-owned shortcuts, with explicit note that ROG Helper does not capture keys or own global mappings
 - a confirmed Reset to Defaults action
 
 ### What it supports
@@ -281,13 +293,17 @@ Current behavior:
 - immediate dashboard visibility/layout updates
 - synchronization of the app-managed XDG autostart entry
 - reset of rog-helper preferences without touching hardware state or unrelated user files
+- profile CRUD through typed daemon-owned semantic records; saving a preset never applies controls
 
 ### Persistence and safety
 
 - canonical file: `$XDG_CONFIG_HOME/rog-helper/config.toml`, or `$HOME/.config/rog-helper/config.toml`
 - the UI reads startup behavior locally, then uses the daemon configuration API for writes
-- preferred hardware values are reminders for manual use and are never auto-applied at boot/login
-- malformed configuration falls back safely; unknown fields are tolerated; writes replace atomically
+- preferred hardware values and saved profiles are desired settings, not current hardware state;
+  saving does not apply them, while explicitly enabled AC/Battery rules may apply the supported subset
+- malformed configuration falls back safely; unknown/future fields are retained through serialization; writes replace atomically
+- saved fan curves use semantic roles and eight-point validation; capability and safety are checked again before any future apply
+- unsupported lighting effect labels remain stored and are marked unavailable rather than substituted
 - legacy `rog-helper/ui.toml` is migrated when no canonical file exists and is left in place
 
 ## Diagnostics
@@ -370,13 +386,26 @@ Current page. The internal page identifier remains `fans` for compatibility.
 - operating MHz display in the CPU/GPU gauge cards when telemetry is available
 - animated fan rotors in the hero dashboard, scaled from live RPM telemetry, limited to 20 FPS, paused while unmapped, and reduced with GTK's animation setting
 - capability warning banner
-- sync toggle is modeled and may be capability-enabled for multiple curve-controllable fans, but it
-  does not synchronize curve application and is non-operational without a verified manual-percent backend
+- sync toggle remains modeled for compatibility but is capability-disabled on the current curve-only
+  backend; multiple curve-controllable fans alone never advertise sync, which requires a verified
+  manual-percent backend
 - manual percentage slider remains disabled because generic PWM support is deliberately withheld
 - 5/10/15 minute boost actions remain disabled because no verified manual-percent backend exists
 - Return to Auto action
-- a fixed conservative eight-point preview/apply flow when the verified ASUS WMI curve backend is
-  available; the preview is disabled when curve support is unavailable
+- mapped CPU/GPU/Mid channels have separate selector tabs and show the selected channel's RPM and
+  current backend curve where available; read-only fan cards remain visible
+- a writable channel's eight exact points are editable with bounded numeric fields, point dragging,
+  and keyboard arrows. Moving a point clamps it between neighbors to prevent crossing; Apply still
+  uses the shared safety validator
+- graph segments are straight and explicitly visual-only. A CPU/GPU system-temperature marker is
+  shown only when reported and is not described as a fan-mounted sensor; Mid temperature is never
+  guessed
+- Quiet/Balanced/Performance, selected-channel Import Current, and Reset Draft remain local drafts.
+  Apply requires a valid dirty draft and writable selected channel; Restore Auto / BIOS is
+  channel-specific. The requested curve is confirmed only after the daemon operation completes and
+  current backend readback matches; otherwise the draft and visible error remain
+- channel status distinguishes direct, authorization-required, denied, helper-missing,
+  unsafe/read-only, telemetry-only, and unsupported states
 - individual fan cards with RPM, backend, read-only/controllable badges, endpoint details, notes, and warnings
 - copyable fan diagnostics with IDs, RPM, percentages, endpoints, notes, and warnings
 - collapsed diagnostics section by default

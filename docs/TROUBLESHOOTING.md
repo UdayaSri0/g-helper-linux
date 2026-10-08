@@ -11,6 +11,26 @@ cargo run -p rog-cli -- setup-check
 The report verifies live APIs where possible and lists binary, systemd, DBus, and sysfs evidence.
 It does not elevate privileges or apply any repair automatically.
 
+For a consolidated issue attachment, use:
+
+```bash
+rog-helper issue-report > issue-report.md
+# From the source tree:
+cargo run -p rog-cli -- issue-report > issue-report.md
+```
+
+This read-only Markdown report is redacted by default. It combines package version, build commit,
+inferred installation route, distro/kernel, DMI vendor/model/board/BIOS, relevant services,
+capabilities, fan mapping/readback, Aura identity/descriptor, daemon identity, helper readiness,
+automation state/timestamp, warning count, and session display/desktop-shortcut status. It omits hostnames,
+serials, configuration and profile names, process telemetry, and unrelated session DBus content;
+home-directory paths and control characters are redacted. Review the output before sharing.
+An inferred installation route is evidence, not authoritative package-manager provenance. The
+embedded commit identifies the base revision, may omit local edits, and may be unknown in archives.
+Missing backend services remain diagnostic results rather than requiring hardware writes.
+Freeform policy results, warning text, and broad Aura DBus discovery content are omitted from the
+shareable report. Use local UI diagnostics or the targeted CLI diagnostics for detailed errors.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:
@@ -329,13 +349,32 @@ cargo run -p rog-cli -- dbus --filter "asus|rog" --service xyz.ljones.Asusd --pa
 
 Some laptops accept a software fan value briefly and then firmware policy takes over. Use Auto/BIOS mode if fan behavior is inconsistent, and include `fans`, `fan-caps`, and hwmon path output in hardware validation notes.
 
+## Import Current, Reset Draft, and Restore Auto
+
+**Import Current** reads the verified eight-point curve into the preview. It does not write, enable
+a curve, or request PolicyKit. The displayed source is the current firmware/backend data, not a
+claim that it is the immutable ASUS factory default. **Reset Draft** only returns the local preview
+to the Balanced application preset. **Restore Auto** is the separate hardware action that returns
+the verified channel(s) to firmware/profile control.
+
+Quiet, Balanced, and Performance are ordinary ROG Helper drafts and must not be interpreted as ASUS
+platform modes. All eight points remain visible before Apply.
+
+## Fan Hysteresis Is Unavailable
+
+The current Linux `asus-wmi` driver and asusctl/asusd expose no verified ASUS hysteresis interface.
+ROG Helper therefore shows no enabled hysteresis control, does not call the proprietary Windows
+firmware method, and does not run a software loop that competes with firmware.
+
 ## Fan Labels Unknown
 
 If `fan*_label` is missing, the app uses `Fan 1`, `Fan 2`, and so on. It does not guess CPU/GPU mapping from position alone.
 
 ## Boost Failed or Restored Auto
 
-Boost requires writable manual percentage support. It is always time-limited. If temperatures become unavailable or a critical temperature is observed during manual control, the daemon attempts to restore Auto/BIOS mode and records a warning.
+Boost is currently unsupported because the verified ASUS WMI backend has no manual-percentage
+contract; the compatibility method rejects the request. A future boost backend would have to be
+time-limited and restore Auto on telemetry loss or critical temperature.
 
 Typical signs:
 
@@ -461,12 +500,35 @@ cat /sys/class/leds/asus::kbd_backlight/brightness
 cat /sys/class/leds/asus::kbd_backlight/max_brightness
 ```
 
+For the exact G615JMR target, first run the supervised sequence as a write-free preflight:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence
+```
+
+It prints the planned effects and `NO HARDWARE WRITE PERFORMED`. Only while physically supervising
+the keyboard, and only after every readiness field passes, use the explicit confirmation:
+
+```bash
+cargo run -p rog-cli -- lighting-test --safe-sequence --confirm-g615jmr-physical-write
+```
+
+The command refuses descriptor/interface/driver/DMI mismatch, zero or multiple verified candidates,
+active asusd ownership, helper/API mismatch, a missing lighting category or PolicyKit service, and a
+missing/mismatched `/dev/rog-helper-aura` alias. Do not bypass a refusal by changing hidraw permissions,
+stopping ownership checks, or sending raw reports. `accepted_no_readback` means only that the typed
+request returned successfully; record visible behavior separately. If interrupted, verify the final
+Static state—the command attempts a neutral Static-white restore but cannot read back physical state.
+Copy `lighting-diagnostics` plus the human checklist into an issue; it contains no USB serial or raw
+physical sysfs path.
+
 Expected behavior:
 
 - `has_aura: true` only when an exact verified asusd or native Aura/RGB provider is selected
 - `has_kbd_backlight: true` can still be true for brightness-only sysfs support
 - the Lighting page enables the RGB picker only when `supports_rgb` is true
-- helper API v1 is intentionally incompatible with native Aura; current control requires API v2
+- helper API v1 is intentionally incompatible with native Aura; current packages require API v3
+  (Aura was added in v2 and marker-gated fan recovery in v3)
   and `SetAuraEffect`, plus the root-only `/dev/rog-helper-aura` alias
 - `authorization=not_checked` with a ready write path enables local editing; only Apply may prompt
 - if asusd is present but no verified contract matches, Diagnostics should keep the interface diagnostic-only

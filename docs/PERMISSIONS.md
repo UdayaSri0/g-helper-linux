@@ -45,7 +45,10 @@ Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
 a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan,
 keyboard-brightness, native Aura-effect, and standard battery-threshold operations. Privileged API
-v2 adds only the high-level `SetAuraEffect` operation for the exact G615JMR target contract.
+v3 is current; v2 introduced the high-level `SetAuraEffect` operation for the exact G615JMR target
+contract, and v3 adds marker-gated fan Auto recovery. `RecoverFansIfArmed` performs the dedicated
+`fans.recover` PolicyKit check without user interaction; the packaged policy permits it only for
+an active local session. It can only restore exact semantic IDs recorded in the root-owned marker.
 Battery privilege is limited to one unambiguous
 `type=Battery` power-supply device exposing the documented `charge_control_end_threshold` ABI. It
 does not expose generic HID/USB writes, caller-selected paths, raw bytes, report IDs, command IDs,
@@ -61,15 +64,25 @@ The PolicyKit actions are:
 - `io.github.roghelper.cpu.control`
 - `io.github.roghelper.battery.control`
 - `io.github.roghelper.fans.control`
+- `io.github.roghelper.fans.recover`
 - `io.github.roghelper.lighting.control`
 
 There is deliberately no generic “root” permission. Interactive authorization for control
 methods is delegated to the desktop PolicyKit agent; the GTK application must not ask for or
-handle a password. The packaged policy uses `auth_admin` rather than `auth_admin_keep`, so ROG
-Helper does not intentionally retain authorization for later writes.
+handle a password. The packaged policy uses `auth_admin` rather than `auth_admin_keep` for writes.
+The separate `fans.recover` action allows Auto-only recovery from an active local session without
+a prompt; the helper still requires its exact root-owned marker and cannot enable a curve through
+that action.
 
 The complete root method/resource inventory, filesystem checks, hardening decisions, and residual
 risks are recorded in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
+
+The developer-only `rog-helper lighting-test --safe-sequence` flow creates no new privilege route.
+It is a read-only preflight unless the exact G615JMR confirmation flag is supplied, and then sends a
+fixed list of semantic requests to the existing session-daemon `SetLighting` method. Only the daemon
+may call the typed helper, and the existing `io.github.roghelper.lighting.control` PolicyKit action,
+identity/ownership checks, root-only alias, duplicate suppression, rate limit, and fixed report encoder
+remain authoritative.
 
 ## Current Permission Boundaries
 

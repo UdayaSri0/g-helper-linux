@@ -1,14 +1,46 @@
 # Privileged Architecture Security Review
 
-<<<<<<< HEAD
 This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura lighting, and
 battery privilege migration. It is a source and packaging audit, not a claim of hardware
 certification. No UI or session-daemon process runs as root.
-=======
-This review covers commit `0145a261dcbfe57bea452c3256d3b8caef49ff0b` (v0.3.1 baseline) after
-the CPU, fan, keyboard/Aura lighting, and battery privilege migration. It is a source and packaging
-audit, not a claim of hardware certification. No UI or session-daemon process runs as root.
->>>>>>> origin/main
+
+## Prompt 09 integration addendum
+
+This addendum reviews the working-tree integration changes based on `Dev` commit
+`c56648526c2e3f10501503b4c3480fddba47e5b1`. The workspace package version is still 0.3.1;
+the baseline commit subject `v0.3.9` is not an artifact version. Earlier check counts and dated
+observations in this document are historical evidence, not this candidate's validation totals.
+
+Root fan marker access, arm/disarm, custom writes, and recovery now share a transaction lock.
+Concurrent requests cannot independently overwrite the armed recovery set, and poisoned locking
+fails closed before fan writes. Root-helper shutdown closes the mutation gate while restoring
+armed channels; a request still awaiting authorization cannot apply a new curve after recovery.
+The existing unprivileged daemon distinguishes observed curves from control ownership;
+read-only curve discovery alone does not authorize shutdown Auto writes.
+The root-owned atomic recovery marker, fixed semantic IDs, Auto-only recovery operation, and
+PolicyKit category checks remain intact.
+
+Manual platform-profile application now reports readback failure/mismatch rather than fabricating
+confirmed state. The session display backend moved into providers and remains unprivileged,
+explicitly manual, and bound to the active desktop environment. Neither change adds a root method.
+
+The copy-friendly issue report uses an explicit diagnostic allow-list and default redaction.
+Configuration/profile names, process telemetry, serials/hostname, unrelated session DBus content,
+freeform policy results/warnings, and broad Aura DBus discovery strings are excluded. Detailed
+error explanations remain local diagnostics. This narrows sharing without changing the root ABI.
+
+No path/raw-command/raw-HID method, retained authorization, broadened udev access, or physical
+hardware-validation claim was added. Final command and package evidence is tracked in
+[FINAL_INTEGRATION_REVIEW.md](FINAL_INTEGRATION_REVIEW.md); unavailable native packaging tools
+remain explicit gaps rather than passing checks.
+
+Final candidate verification passed formatting, build, all 274 Rust tests, and warnings-denied
+clippy. Debian/tarball ownership and mode checks passed: root/root or 0/0 archive ownership,
+helper executable 0755, and integration metadata 0644. Offline analysis of the rendered packaged
+helper service scored 3.5 and passed; a prior unrendered-template check failed on its placeholder
+and is not a valid runtime-unit result. Package lifecycle tests passed modeled fresh/reinstall,
+synthetic API-v1 upgrade, remove, and purge cases. These checks do not substitute for actual APT
+installation, native RPM/Arch/Flatpak/AppImage runtime testing, or physical hardware validation.
 
 ## 1. Trust boundary
 
@@ -50,7 +82,7 @@ name, path, or authorization token supplied as a method argument.
 | `Ping` | none | none; diagnostic | No write |
 | `GetVersion` | none | none; diagnostic | No write |
 | `GetCapabilities` | none | none; diagnostic | No write |
-| `CanPerform` | one of four allow-listed action IDs | non-interactive check of caller | No write and no prompt |
+| `CanPerform` | one of five allow-listed action IDs | non-interactive check of caller | No write and no prompt |
 | `SetCpuTurbo` | boolean | `cpu.control` | Fixed detected turbo attribute |
 | `SetCpuPowerMode` | `Quiet`, `Balanced`, or `Performance` | `cpu.control` | Detected governor/EPP attributes |
 | `SetCpuGovernor` | detected exact token | `cpu.control` | Detected policy governors |
@@ -60,12 +92,9 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanAuto` | empty/all or fixed `asus-wmi:{cpu,gpu,mid}` ID | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
+| `RecoverFansIfArmed` | none | `fans.recover`, non-interactive | Auto only for exact IDs in the root-owned marker; active local session only; never prompts |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
-<<<<<<< HEAD
-| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
-=======
 | `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
->>>>>>> origin/main
 | `SetBatteryChargeLimit` | percentage | `battery.control` | One exact standard battery threshold |
 
 There is no generic filesystem-write, process-execution, GPU, PCI, kernel-module, ACPI, USB, HID,
@@ -77,6 +106,7 @@ environment, or arbitrary-byte privileged method.
 |---|---|---|
 | `io.github.roghelper.cpu.control` | all CPU writes | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.fans.control` | ASUS fan curve/Auto writes | any: no; inactive/active: `auth_admin` |
+| `io.github.roghelper.fans.recover` | marker-gated Auto recovery only | any/inactive: no; active: yes |
 | `io.github.roghelper.lighting.control` | keyboard brightness fallback and allow-listed native Aura effect | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.battery.control` | standard threshold fallback | any: no; inactive/active: `auth_admin` |
 
@@ -144,9 +174,18 @@ approved sysfs trees are declared in `ReadWritePaths`. `PrivateDevices=yes` rema
 the optional root-only Aura alias is introduced into the private device namespace with
 `BindPaths=-/dev/rog-helper-aura` and admitted by the matching narrow `DeviceAllow` entry.
 
-`Restart=on-failure` restores the service after a crash or kill. On restart, normal shutdown, or
-idle exit, an armed fan marker causes an Auto reset attempt. A temporarily missing fan backend does
-not trap the service in a restart loop: the marker is retained and idle exit is deferred for retry.
+`Restart=on-failure` restores the service after a crash or kill. On restart or normal shutdown, an
+armed fan marker causes an Auto reset attempt. The helper remains resident while the marker is armed
+instead of taking its normal idle exit. `RuntimeDirectoryPreserve=yes` retains the root-owned marker
+across restart and stop/start cycles. Marker replacement uses a same-directory temporary regular
+file, `sync_all`, atomic rename, and directory sync. The marker records exact semantic fan IDs;
+recovery leaves that exact set armed if any recorded channel is missing or fails Auto.
+
+API v3 exposes `RecoverFansIfArmed`, which performs the dedicated `fans.recover` PolicyKit check
+with user interaction disabled. The packaged policy permits this narrow Auto-only operation for an
+active local session, so daemon recovery does not depend on prior interactive authorization or a
+reused D-Bus sender identity. The method can consume only the root-owned marker and return those
+allow-listed channels to Auto. It cannot enable custom control.
 
 Deliberate exceptions:
 
@@ -194,8 +233,9 @@ Deliberate exceptions:
 8. Added service crash restart and a private runtime directory for fan fail-safe recovery.
 9. Prevented the root service from taking logging configuration from its process environment.
 10. Added CPU readback, battery hot-plug ambiguity revalidation, and symlink-safe fan-marker writes.
-11. Prevented a targeted fan reset from clearing the global recovery marker and kept the helper
-    online to retry Auto recovery when a fan backend temporarily disappears.
+11. Made the recovery marker track exact semantic fan IDs; targeted `SetFanAuto` disarms only its
+    successful target, while fail-safe recovery clears only after every recorded target succeeds,
+    retains the complete set on incomplete recovery, and keeps the helper resident while armed.
 12. Made package payload modes independent of the builder umask; rendered systemd/D-Bus metadata
     is explicitly `0644` and the root-owned helper remains `0755`.
 13. Bound only `/dev/rog-helper-aura` into the helper's private device namespace and retained a
@@ -259,6 +299,12 @@ behavior. Real root/helper kill during a fan transaction, PolicyKit-agent absenc
 success/cancellation/denial, UI kill, and physical-hardware disappearance still require supervised
 manual testing on a packaged target before release. They were not simulated with unsafe host writes
 in this source review.
+
+Prompt 03 added negative fan-mapping fixtures and raw-preserving, non-writing current-curve
+readback coverage. Deterministic tests now cover enable-last ordering, an injected nth-write/readback
+failure, the Auto rollback attempt, and surfacing rollback failure. The complete recovery-marker
+startup/residency/shutdown lifecycle remains outstanding. The implementation retains marker state
+when recovery is not proven; these statements are not a claim of completed physical validation.
 
 ## 12. Change accounting
 

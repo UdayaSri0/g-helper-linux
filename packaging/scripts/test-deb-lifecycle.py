@@ -17,10 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-<<<<<<< HEAD
-=======
 import tomllib
->>>>>>> origin/main
 
 
 REQUIRED_INTEGRATION = (
@@ -35,8 +32,6 @@ REQUIRED_INTEGRATION = (
 )
 
 
-<<<<<<< HEAD
-=======
 def current_deb_path() -> Path:
     root = Path(__file__).resolve().parents[2]
     cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
@@ -44,7 +39,6 @@ def current_deb_path() -> Path:
     return root / "dist" / f"rog-helper_{version}_amd64.deb"
 
 
->>>>>>> origin/main
 class TestFailure(RuntimeError):
     pass
 
@@ -192,7 +186,7 @@ def validate_current_package(package: Package) -> None:
             raise TestFailure(f"current package does not own /{relative}")
     helper = package.tree / "usr/libexec/rog-helper-privileged"
     if b"SetAuraEffect" not in helper.read_bytes():
-        raise TestFailure("current privileged helper does not expose API-v2 SetAuraEffect")
+        raise TestFailure("current API-v3 privileged helper does not expose SetAuraEffect (introduced in v2)")
 
 
 def exercise(current: Package, previous: Package | None, root: Path, work: Path) -> None:
@@ -260,13 +254,8 @@ def parse_args() -> argparse.Namespace:
         "deb",
         nargs="?",
         type=Path,
-<<<<<<< HEAD
-        default=Path("dist/rog-helper_0.3.0_amd64.deb"),
-        help="current package to test (default: dist/rog-helper_0.3.0_amd64.deb)",
-=======
         default=current_deb_path(),
         help="current package to test (default: dist/rog-helper_<workspace-version>_amd64.deb)",
->>>>>>> origin/main
     )
     parser.add_argument(
         "--previous",

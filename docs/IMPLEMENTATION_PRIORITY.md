@@ -13,7 +13,7 @@ hardware evidence where a physical effect has no reliable readback.
 P0 source truth and target validation
 ├── documentation/support taxonomy
 ├── fan-sync capability correction
-├── installed helper API-v2/package readiness
+├── installed helper API-v3/package readiness
 ├── G615JMR Aura physical validation
 └── ASUS WMI fan/Auto/recovery validation
      │
@@ -76,7 +76,7 @@ Acceptance gate:
 
 ### P0.3 Validate installed privileged integration
 
-- Install the current API-v2 helper and current systemd, system-D-Bus, PolicyKit, and udev payload on
+- Install the current API-v3 helper and current systemd, system-D-Bus, PolicyKit, and udev payload on
   the target through a normal package/development-install path.
 - Confirm diagnostics distinguish missing, unreachable, incompatible, denied, cancelled, and
   unsupported states.
@@ -167,29 +167,37 @@ Acceptance gate:
 
 ### P2.1 Display refresh controls
 
-- Begin with read-only connector/mode/current-refresh discovery.
-- Choose a session-scoped compositor, portal, or DRM contract with clear ownership; avoid arbitrary
-  shell commands and never add display operations to the root helper merely for convenience.
-- Handle multiple displays, missing internal panels, unsupported sessions, and mode disappearance.
-- Add AC/battery refresh automation only after the P1 policy runtime is stable.
+- Implemented in the UI for X11 sessions through the installed XRandR client: live internal-panel,
+  current-mode, and same-mode rate discovery; re-discovery before a manual change; readback and
+  best-effort restoration. It does not use shell invocation or the root helper.
+- Wayland/compositor control, AC/battery refresh automation, and multiple-internal-panel targeting
+  remain unsupported. Automation needs a session-bound contract integrated with the existing P1
+  policy runtime; it must not add a second watcher.
 
 Acceptance gate:
 
-- Fixtures/integration tests cover multiple connectors and unsupported Wayland/X11 sessions.
-- Apply has readback or an authoritative compositor result and cannot target an inferred display.
-- Failure leaves the previous mode active and visible in diagnostics.
+- Fixtures cover multiple connectors, external-only and unsupported Wayland sessions, unsupported
+  rates, successful readback, and mode-failure rollback. Physical mode-change validation remains
+  required before claiming hardware support.
+- Apply can target only one uniquely identified connected internal panel and a currently advertised
+  rate for its active resolution.
 
 ### P2.2 Global shortcuts and ASUS hotkeys
 
-- Inventory standard Linux input keycodes and desktop shortcut/portal support read-only.
-- Map shortcuts only to existing typed daemon actions such as profile cycling or opening a page.
-- Keep desktop registration/session ownership separate from hardware providers.
+- Implemented as semantic CLI actions that call the session daemon: profile cycle, keyboard
+  brightness up/down/toggle, and automation pause/resume.
+- Research found the standard ASUS WMI input device and kernel key mapping support; no key is
+  captured or consumed by ROG Helper, and the development host's physical mappings were not tested.
+- Shortcut registration remains desktop-owned. The Settings page documents manual custom-command
+  binding; global registration, current mapping discovery, page activation, and GPU switching are
+  intentionally not implemented.
 
 Acceptance gate:
 
 - No arbitrary command binding or root input listener exists.
-- Conflicts, unsupported desktops, and repeat behavior are explicit.
-- Every action is capability-gated and tested without manufacturing success.
+- Daemon absence and unsupported profile/brightness capabilities return errors; CLI cycling uses
+  only the asusd-advertised choices.
+- No arbitrary input listener, exclusive grab, privileged capture, or direct hardware write exists.
 
 ### P2.3 Keyboard timeout
 
@@ -242,6 +250,6 @@ Acceptance gate:
 
 ## Recommended next stage
 
-Execute P0.2 through P0.5: correct the fan-sync capability mismatch, validate the installed API-v2
+Execute P0.2 through P0.5: correct the fan-sync capability mismatch, validate the installed API-v3
 integration, then perform the separately supervised Aura and ASUS WMI fan matrices. Persistent
 profiles and automation should wait for those gates rather than guessing at hardware behavior.

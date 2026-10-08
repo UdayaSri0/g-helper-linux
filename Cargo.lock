@@ -1539,6 +1539,7 @@ dependencies = [
  "libadwaita",
  "reqwest",
  "rog-core",
+ "rog-providers",
  "semver",
  "serde",
  "tokio",

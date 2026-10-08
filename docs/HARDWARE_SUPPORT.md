@@ -36,15 +36,42 @@ Implication:
 | Modes encoded | Static, Breathe, Rainbow Cycle, Rainbow Wave, Pulse |
 | Backend priority | verified asusd -> verified native HID -> sysfs brightness -> unavailable |
 | Readback | No reliable hardware effect-state readback; accepted writes are not physical confirmation |
+| Validation record | None committed; diagnostics reports `Physical target validation recorded: no` |
 | Physical Apply observed | **No** |
 
 The 2026-08-21 installed-target audit verified the physical identity and descriptor again, but the
 installed package at that time contained an API-v1 helper and no Aura udev rule/alias. That explains
 the observed read-only UI; it is installation-path evidence, not physical colour-change evidence.
-Current source requires helper API v2 and validates the complete packaged payload before install.
+Current source requires helper API v3 and validates the complete packaged payload before install.
 
 This record describes the implementation allow-list and existing read-only discovery evidence. It
 does not satisfy the validation requirements below and must not be advertised as working hardware.
+
+### Structured fan discovery record (read-only; no physical writes)
+
+| Field | G615JMR target observation on 2026-10-06 |
+| --- | --- |
+| Model / DMI / BIOS | ASUS ROG Strix G16 `G615JMR_G615JMR`; board `G615JMR`; BIOS `G615JMR.318` |
+| Distro / kernel / desktop | Linux Mint 22.3; `7.0.0-38-generic`; Cinnamon on X11 |
+| Fan backend | In-tree `asus_wmi` / `asus_custom_fan_curve`; privileged route unavailable in this session |
+| Detected channels | CPU, GPU, Mid with kernel hardware labels, plus one separate unlabeled ACPI RPM row |
+| RPM telemetry | Read on all four rows; current snapshot 2500 / 2800 / 3300 / 2520 RPM (CPU / GPU / Mid / unlabeled) |
+| Curve read | Three ASUS channels, eight paired points each; `enable_mode=2`; raw PWM and converted percentages available |
+| Curve write | Not available in this runtime: current session reports `fan_curve_writable=false`, `direct_write_ready=false`, `helper_write_ready=false` |
+| Auto restoration | Implemented against the verified driver command; not physically tested |
+| PolicyKit | Policy is installed/static source; no prompt/write attempted because installed helper API was incompatible |
+| Suspend / resume / recovery | Not tested |
+| Hysteresis | Unsupported; no verified ASUS Linux ABI |
+| Validation boundary | Read-only discovery only; no curve Apply or Auto write has been physically validated |
+
+This snapshot documents the exact environment that was inspected. It is not a completed machine
+validation record and must not be generalized to other ASUS models or to successful fan writes.
+
+The developer-only `lighting-test --safe-sequence` command provides a fixed, supervised checklist.
+Its default invocation is preflight-only and performs no write. Even with the exact confirmation flag,
+PolicyKit success or `accepted_no_readback` is not a validation result: a human must record each Static
+colour, Breathe pair, Rainbow Cycle, four Rainbow Wave directions, Pulse, and final Static restore as
+`observed`, `not observed`, or `uncertain`. Only a dated committed record may change this table.
 
 ## Untested / Not Yet Validated
 
@@ -118,6 +145,7 @@ Capture these commands:
 
 ```bash
 cargo run -p rog-cli -- hardware-report > hardware-report.md
+cargo run -p rog-cli -- issue-report > issue-report.md
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
@@ -134,6 +162,10 @@ versions and states, provider capabilities, fan/sensor endpoints, mapping confid
 permission/dependency results. Review the output, fill in the manual runtime fields, attach the
 remaining command/screenshot evidence, and do not treat generated capability output as proof that
 a hardware write succeeded.
+
+For a public troubleshooting attachment, prefer `issue-report`: it consolidates backend and
+policy/readiness evidence with default redaction and omits configuration/profile names, process
+telemetry, hostname, and serial numbers. Neither report proves physical write behavior.
 
 Capture these UI views when relevant:
 
@@ -161,11 +193,11 @@ The rows below describe what the first release should eventually have evidence f
 
 | Scenario | How to identify it | Expected behavior | Evidence to capture |
 | --- | --- | --- | --- |
-| `asusd` missing | stop or remove `asusd`, or use a machine without it | profile and charge-limit controls stay visible but clearly explain that `asusd` is required | `services`, `dbus`, `caps`, Dashboard screenshot, Diagnostics screenshot |
+| `asusd` missing | use a machine or isolated test environment without it | profiles explain that `asusd` is required; battery control may use one verified standard power-supply threshold with a direct or typed privileged route | `services`, `dbus`, `caps`, Dashboard screenshot, Diagnostics screenshot |
 | `supergfxd` missing | stop or remove `supergfxd`, or use a machine without it | GPU mode controls stay visible but clearly explain that `supergfxd` is required | `services`, `dbus`, `caps`, GPU screenshot, Diagnostics screenshot |
 | CPU readable but not writable | CPU telemetry works, but CPU sysfs files are not writable by the current user | CPU telemetry remains visible, affected controls are read-only, and Diagnostics lists the blocked paths | `caps`, CPU Diagnostics copy, CPU screenshot, CPU sysfs `ls -l` output |
 | CPU writable | CPU control sysfs paths are writable for the daemon user | at least one quick control and one policy control apply successfully | `caps`, CPU screenshot before/after, Diagnostics copy |
-| keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness is still visible and the control is clearly read-only | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
+| keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness remains visible; an approved helper route offers authorization on Apply, otherwise the control explains its read-only state | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
 | Aura/RGB exposed by asusd | `caps` reports `has_aura: true` and the lighting backend is `asusd-aura` | RGB picker and backend-reported lighting modes are enabled when writable; brightness still works through Aura or sysfs fallback | `caps`, `lighting-diagnostics`, `dbus --filter "asus\|rog\|aura\|kbd\|keyboard\|led\|rgb"`, Lighting screenshot, Diagnostics copy |
 | G615JMR native Aura | lighting backend is `native-aura-hid` and diagnostics match the complete allow-list above | only single-target RGB and the five supported modes are shown; Apply requests PolicyKit; result says accepted without readback; ARGB/zones/per-key remain unavailable | before/after physical observation, `caps`, `lighting-diagnostics`, Lighting screenshot, PolicyKit success/denial, asusd conflict test |
 | asusd present without Aura/RGB | asusd service exists, but `caps` reports `has_aura: false` | RGB picker stays disabled with a clear “not exposed by asusd” or brightness-only fallback message | `caps`, `lighting-diagnostics`, DBus introspection output, Lighting screenshot |
@@ -173,8 +205,8 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan curve backend available | `fan-caps` reports `has_fan_curves: true` | curve apply validates safe high-temperature points and rejects dangerous curves | `fan-caps`, DBus/API result, Fans screenshot |
-| fan restore Auto | any controllable fan backend | Return to Auto returns control to firmware/backend automatic mode | `fans`, Fans screenshot before/after |
+| fan curve backend available | exact verified ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply validates safe points | `fan-caps`, `GetFanCurves`, Fans screenshot |
+| fan restore Auto | exact verified ASUS WMI curve backend | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 
 ## Fan-Control Validation Fields
@@ -182,16 +214,26 @@ The rows below describe what the first release should eventually have evidence f
 Include these fields in each machine record when fan testing is relevant:
 
 - fan count detected
-- labels detected
+- semantic channel and exact kernel label
+- RPM and curve hwmon identity plus canonical-device relationship
 - RPM reading works
 - manual percent status (currently deliberately unsupported)
 - RPM target status (currently deliberately unsupported)
 - fan curve works
-- sync status (currently modeled but non-operational)
+- imported source, all eight raw PWM values, converted percentages, and enable mode
+- direct/helper route and authorization success/cancel/deny state
+- all eight post-write readbacks and enable-last result
+- rollback result and recovery-marker arm/clear/restart behavior
+- daemon/helper restart, suspend/resume, backend disappearance, and firmware-profile interaction
+- sync status (unsupported on the current verified curve backend)
 - boost status (currently deliberately unsupported)
 - restore Auto works
 - backend used
 - notes/warnings
+
+Keep `fan curve works` and `fan restore Auto works` as **Untested** until the supervised physical
+workflow in `FAN_CONTROL_DISCOVERY.md` is recorded. Compilation and fixture tests are not hardware
+validation.
 
 ## Lighting Validation Fields
 

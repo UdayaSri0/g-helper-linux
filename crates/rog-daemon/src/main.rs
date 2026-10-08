@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,8 +15,9 @@ use rog_core::{
     FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
     FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState, LightingApplyOutcome,
     LightingApplyRequest, LightingBackendKind, LightingCaps, LightingDiagnostics,
-    LightingDirection, LightingMode, LightingSpeed, LightingState, PerformanceProfile,
-    PermissionStatus, PowerSource, RgbColor, SetupIssue, SetupStatus, TelemetrySnapshot,
+    LightingDirection, LightingMode, LightingSpeed, LightingState, NamedProfile,
+    PerformanceProfile, PermissionStatus, PolicyAction, PolicyConfig, PolicyState, PowerSource,
+    ProfileSettings, RgbColor, SetupIssue, SetupStatus, TelemetrySnapshot,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{
@@ -44,6 +46,7 @@ mod privileged_client;
 const DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DBUS_PATH: &str = "/io/github/roghelper/Daemon";
 const DBUS_IFACE: &str = "io.github.roghelper.Daemon1";
+static PROFILE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 struct SharedState {
@@ -55,6 +58,72 @@ struct SharedState {
     fan_authorization: RwLock<String>,
     lighting_authorization: RwLock<String>,
     native_lighting: RwLock<NativeLightingState>,
+    policy: RwLock<PolicyState>,
+    automation_status: RwLock<AutomationRuntimeStatus>,
+    hardware_control_lock: tokio::sync::Mutex<()>,
+}
+
+#[derive(Debug, Clone)]
+struct AutomationRuntimeStatus {
+    state: &'static str,
+    last_transition_ms: Option<u64>,
+    last_profile_id: Option<String>,
+    explanation: String,
+    last_result: String,
+}
+
+impl Default for AutomationRuntimeStatus {
+    fn default() -> Self {
+        Self {
+            state: "disabled",
+            last_transition_ms: None,
+            last_profile_id: None,
+            explanation: "Automation is disabled.".into(),
+            last_result: "No automatic profile has been applied this session.".into(),
+        }
+    }
+}
+
+fn selected_automation_profile_id(
+    preferences: &rog_core::AutomationPreferences,
+    source: PowerSource,
+) -> Option<&str> {
+    match source {
+        PowerSource::Ac => preferences.ac_profile_id.as_deref(),
+        PowerSource::Battery => preferences.battery_profile_id.as_deref(),
+    }
+}
+
+fn automation_profile<'a>(config: &'a AppConfig, id: &str) -> Option<&'a NamedProfile> {
+    config.profiles.iter().find(|profile| profile.id == id)
+}
+
+fn battery_automation_requires_authorization(backend: &str, direct_writable: bool) -> bool {
+    backend == "power_supply_sysfs" && !direct_writable
+}
+
+fn automation_result_state(results: &[String], blocked: bool) -> &'static str {
+    if results.iter().any(|line| line.starts_with("failed:")) {
+        "error"
+    } else if blocked {
+        "blocked"
+    } else {
+        "monitoring"
+    }
+}
+
+fn automation_skipped_components(settings: &ProfileSettings) -> Vec<&'static str> {
+    let mut skipped = Vec::new();
+    if settings.gpu_mode.is_some() {
+        skipped.push("pending/skipped: GPU mode changes may require logout or reboot and need manual confirmation");
+    }
+    if !settings.fan_controls.is_empty() {
+        skipped.push("skipped: fan controls require an explicit supervised manual Apply");
+    }
+    if settings.lighting.is_some() {
+        skipped.push("skipped: lighting automation is disabled to avoid PolicyKit prompts and unobservable HID writes");
+    }
+    skipped
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,6 +218,32 @@ where
     }
 }
 
+async fn restore_fans_without_prompt(hwmon: &HwmonTelemetryProvider) -> rog_core::RogResult<()> {
+    match hwmon.set_fan_auto(None) {
+        Ok(()) => Ok(()),
+        Err(rog_core::RogError::PermissionDenied(_)) => privileged_client::recover_fans_if_armed()
+            .await
+            .map_err(map_privileged_fan_error),
+        Err(error) => Err(error),
+    }
+}
+
+fn unresolved_owned_fan_curves(owned_fan_ids: &[String], fans: &[FanInfo]) -> Vec<String> {
+    owned_fan_ids
+        .iter()
+        .filter(|fan_id| {
+            !fans.iter().any(|fan| {
+                fan.id == **fan_id
+                    && fan
+                        .curve_readback
+                        .as_ref()
+                        .is_some_and(|readback| readback.enable_mode != 1)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
@@ -213,6 +308,7 @@ struct ControlState {
     battery_limit: Option<BatteryLimitPercent>,
     fan_sync_enabled: bool,
     fan_mode: FanControlMode,
+    fan_curve_owned_fan_ids: Vec<String>,
     fan_last_action: Option<String>,
     fan_boost_until_ms: Option<u64>,
 }
@@ -225,6 +321,7 @@ impl Default for ControlState {
             battery_limit: None,
             fan_sync_enabled: false,
             fan_mode: FanControlMode::Auto,
+            fan_curve_owned_fan_ids: Vec::new(),
             fan_last_action: None,
             fan_boost_until_ms: None,
         }
@@ -322,9 +419,22 @@ impl RogHelperDaemon {
             .clone();
         apply_fan_privilege_to_state(&mut fan_state, &privilege, &authorization);
         let control = self.read_control_state();
+        let observed_curve = fan_state.fans.iter().any(|fan| {
+            fan.curve_readback
+                .as_ref()
+                .is_some_and(|readback| readback.enable_mode == 1)
+        });
         fan_state.sync_enabled = control.fan_sync_enabled;
-        fan_state.mode = control.fan_mode;
-        fan_state.last_action = control.fan_last_action;
+        if control.fan_mode == FanControlMode::Auto && observed_curve {
+            // Report the kernel-observed mode without claiming that this
+            // daemon owns a curve configured before it started.
+            fan_state.mode = FanControlMode::Curve;
+            fan_state.last_action =
+                Some("Observed an active backend curve; this daemon did not apply it.".to_string());
+        } else {
+            fan_state.mode = control.fan_mode;
+            fan_state.last_action = control.fan_last_action;
+        }
         fan_state.active_boost_until_ms = control.fan_boost_until_ms;
         let mut guard = self.state.inner.write().expect("rwlock poisoned");
         guard.fan_state = fan_state;
@@ -347,15 +457,424 @@ impl RogHelperDaemon {
         self.state.config.read().expect("rwlock poisoned").clone()
     }
 
+    fn pause_automation_for_manual_action(&self) {
+        let mut stored = self.state.config.write().expect("rwlock poisoned");
+        if !stored.automation.enabled || stored.automation.manual_override {
+            return;
+        }
+        let mut config = stored.clone();
+        config.automation.manual_override = true;
+        let result = self
+            .state
+            .config_path
+            .as_ref()
+            .ok_or_else(|| "configuration path is unavailable".to_string())
+            .and_then(|path| save_config_atomic(path, &config));
+        if let Err(error) = result {
+            warn!(target: "rog_helper::policy", event = "manual_override_persist_failed", %error, "manual override remains active for this daemon session");
+        }
+        *stored = config;
+        drop(stored);
+        self.state
+            .policy
+            .write()
+            .expect("rwlock poisoned")
+            .set_manual_override(true);
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.state = "manual_override";
+        status.explanation = "Automation paused because a manual hardware control was used. Resume explicitly to continue.".into();
+        info!(target: "rog_helper::policy", event = "manual_override", "automatic policy paused by manual hardware control");
+    }
+
+    async fn process_automation(&self, telemetry: &TelemetrySnapshot) {
+        let config = self.read_config();
+        let now = now_ms();
+        let actions = {
+            let mut policy = self.state.policy.write().expect("rwlock poisoned");
+            policy.set_enabled(config.automation.enabled);
+            policy.set_manual_override(config.automation.manual_override);
+            if config.automation.enabled && !config.automation.manual_override {
+                let mut actions = policy.observe_power_source(now, telemetry.power_source);
+                if actions.is_empty()
+                    && policy.stable_power_source() == Some(PowerSource::Battery)
+                    && telemetry.power_source == Some(PowerSource::Battery)
+                    && config
+                        .automation
+                        .battery_threshold_percent
+                        .is_some_and(|threshold| {
+                            rog_core::battery_threshold_satisfied(
+                                threshold,
+                                telemetry.battery_percent,
+                            ) == Some(true)
+                        })
+                {
+                    let profile_id = config.automation.battery_profile_id.as_ref();
+                    let status = self
+                        .state
+                        .automation_status
+                        .read()
+                        .expect("rwlock poisoned");
+                    let should_apply = status.last_profile_id.as_ref() != profile_id
+                        || status
+                            .last_result
+                            .starts_with("Threshold condition is not met")
+                        || status
+                            .last_result
+                            .starts_with("Battery percentage is unavailable");
+                    if should_apply {
+                        actions = policy.request_current_rule(now);
+                    }
+                }
+                actions
+            } else {
+                Vec::new()
+            }
+        };
+
+        if !config.automation.enabled {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "disabled";
+            status.explanation =
+                "Automation is disabled; hardware will not be changed automatically.".into();
+            return;
+        }
+        if config.automation.manual_override {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "manual_override";
+            status.explanation = "Automation is paused after a manual hardware action. Resume explicitly to continue.".into();
+            return;
+        }
+
+        let action = actions.into_iter().next();
+        let Some(PolicyAction::ApplyFor(source)) = action else {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            if !matches!(status.state, "error" | "blocked") {
+                status.state = "monitoring";
+            }
+            if matches!(status.state, "error" | "blocked") {
+                return;
+            }
+            status.explanation = if telemetry.power_source.is_none() {
+                "Monitoring; waiting for a reliable AC/Battery reading.".into()
+            } else if self
+                .state
+                .policy
+                .read()
+                .expect("rwlock poisoned")
+                .stable_power_source()
+                .is_none()
+            {
+                "Monitoring; waiting for the power source to remain stable for five seconds.".into()
+            } else {
+                "Monitoring the stable power source; no rule transition is pending.".into()
+            };
+            return;
+        };
+
+        let profile_id = selected_automation_profile_id(&config.automation, source);
+        let Some(profile_id) = profile_id else {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "blocked";
+            status.last_transition_ms = Some(now);
+            status.last_profile_id = None;
+            status.explanation = format!("{source:?} rule has no selected saved preset.");
+            status.last_result = "No hardware settings were changed.".into();
+            warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, reason = "no preset selected", "automatic rule could not be resolved");
+            return;
+        };
+        if source == PowerSource::Battery {
+            if let Some(threshold) = config.automation.battery_threshold_percent {
+                match rog_core::battery_threshold_satisfied(threshold, telemetry.battery_percent) {
+                    Some(true) => {}
+                    Some(false) => {
+                        let percent = telemetry.battery_percent.unwrap_or_default();
+                        let mut status = self
+                            .state
+                            .automation_status
+                            .write()
+                            .expect("rwlock poisoned");
+                        status.state = "monitoring";
+                        status.last_transition_ms = Some(now);
+                        status.last_profile_id = Some(profile_id.into());
+                        status.explanation = format!("Battery rule waits until charge is at or below {threshold}% (currently {:.0}%).", percent);
+                        status.last_result =
+                            "Threshold condition is not met; hardware was not changed.".into();
+                        return;
+                    }
+                    None => {
+                        let mut status = self
+                            .state
+                            .automation_status
+                            .write()
+                            .expect("rwlock poisoned");
+                        status.state = "blocked";
+                        status.last_transition_ms = Some(now);
+                        status.last_profile_id = Some(profile_id.into());
+                        status.explanation = "Battery percentage is unavailable, so the configured threshold cannot be evaluated.".into();
+                        status.last_result = "Battery percentage is unavailable; threshold condition could not be evaluated.".into();
+                        warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, preset_id = %profile_id, reason = "battery percentage unavailable", "automatic threshold could not be evaluated");
+                        return;
+                    }
+                }
+            }
+        }
+        let profile = automation_profile(&config, profile_id);
+        let Some(profile) = profile else {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "blocked";
+            status.last_transition_ms = Some(now);
+            status.last_profile_id = Some(profile_id.into());
+            status.explanation = format!("Selected saved preset '{profile_id}' no longer exists.");
+            status.last_result =
+                "No hardware settings were changed. Select an existing preset.".into();
+            warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, preset_id = %profile_id, reason = "preset missing", "automatic preset could not be resolved");
+            return;
+        };
+
+        {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "applying";
+            status.last_transition_ms = Some(now);
+            status.last_profile_id = Some(profile.id.clone());
+            status.explanation = format!(
+                "Applying the safe automatic subset of '{}' for {source:?}.",
+                profile.name
+            );
+        }
+        info!(target: "rog_helper::policy", event = "trigger", power_source = ?source, preset_id = %profile.id, "stable power-source rule activated");
+        let control_guard = self.state.hardware_control_lock.lock().await;
+        let current_config = self.read_config();
+        if !current_config.automation.enabled || current_config.automation.manual_override {
+            drop(control_guard);
+            return;
+        }
+        let (result, blocked) = self.apply_automation_profile(profile).await;
+        drop(control_guard);
+        let latest_automation = self.read_config().automation;
+        if latest_automation.manual_override {
+            return;
+        }
+        if !latest_automation.enabled {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "disabled";
+            status.explanation = "Automation was disabled while this rule was running; remaining settings were not applied.".into();
+            status.last_result = result.join("; ");
+            return;
+        }
+        let state = automation_result_state(&result, blocked);
+        let summary = if result.is_empty() {
+            "Preset contains no safely automatable settings.".into()
+        } else {
+            result.join("; ")
+        };
+        let applied = result
+            .iter()
+            .filter(|line| line.contains(" applied and read back"))
+            .collect::<Vec<_>>();
+        let unchanged = result
+            .iter()
+            .filter(|line| line.contains(" unchanged (readback matches)"))
+            .collect::<Vec<_>>();
+        let skipped = result
+            .iter()
+            .filter(|line| line.starts_with("skipped:") || line.starts_with("pending/skipped:"))
+            .collect::<Vec<_>>();
+        let failed = result
+            .iter()
+            .filter(|line| line.starts_with("failed:"))
+            .collect::<Vec<_>>();
+        let authorization_state = if result
+            .iter()
+            .any(|line| line.starts_with("authorization required:"))
+        {
+            "required_not_requested"
+        } else {
+            "not_requested"
+        };
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.state = state;
+        status.last_result = summary.clone();
+        status.explanation = if state == "monitoring" {
+            format!("Automatic {source:?} rule processed; skipped components remain unchanged.")
+        } else {
+            format!(
+                "Automatic {source:?} rule was not fully applied; review the component results."
+            )
+        };
+        info!(target: "rog_helper::policy", event = "apply_result", power_source = ?source, preset_id = %profile.id, applied = ?applied, unchanged = ?unchanged, skipped = ?skipped, failed = ?failed, authorization_state, result = %summary, "automatic profile processing completed");
+    }
+
+    async fn apply_automation_profile(&self, profile: &NamedProfile) -> (Vec<String>, bool) {
+        let mut results = Vec::new();
+        let mut blocked = false;
+        if let Some(desired) = profile.settings.platform_profile.clone() {
+            if self.read_control_state().profile.as_ref() == Some(&desired) {
+                results.push("platform profile unchanged (readback matches)".into());
+            } else if let Some(provider) = &self.asusd {
+                match provider.set_profile(desired.clone()).await {
+                    Ok(()) => {
+                        let readback = provider.get_profile().await;
+                        let result = confirm_profile_readback(
+                            &mut self.state.control.write().expect("rwlock poisoned").profile,
+                            &desired,
+                            readback,
+                        );
+                        match result {
+                            Ok(()) => results.push("platform profile applied and read back".into()),
+                            Err(error) => {
+                                results.push(format!("failed: platform profile readback: {error}"))
+                            }
+                        }
+                    }
+                    Err(error) => results.push(format!("failed: platform profile: {error}")),
+                }
+            } else {
+                results.push("skipped: platform profile backend unavailable".into());
+                blocked = true;
+            }
+        }
+
+        let automation = self.read_config().automation;
+        if !automation.enabled || automation.manual_override {
+            return (results, true);
+        }
+        if let Some(desired) = profile.settings.battery_charge_limit {
+            let limit = BatteryLimitPercent(desired);
+            if self.read_control_state().battery_limit == Some(limit) {
+                results.push("battery limit unchanged (readback matches)".into());
+            } else if self.read_state().caps.battery_limit_backend == "asusd" {
+                if let Some(provider) = &self.asusd {
+                    match provider.set_limit(limit).await {
+                        Ok(()) => match provider.get_limit().await {
+                            Ok(actual) if actual == limit => {
+                                self.state
+                                    .control
+                                    .write()
+                                    .expect("rwlock poisoned")
+                                    .battery_limit = Some(actual);
+                                results.push("battery limit applied and read back".into());
+                            }
+                            Ok(_) => {
+                                results.push("failed: battery limit readback did not match".into())
+                            }
+                            Err(error) => results.push(format!(
+                                "failed: battery limit readback unavailable: {error}"
+                            )),
+                        },
+                        Err(error) => results.push(format!("failed: battery limit: {error}")),
+                    }
+                } else {
+                    results.push("skipped: asusd battery-limit backend disappeared".into());
+                    blocked = true;
+                }
+            } else if let Some(control) = &self.battery_charge_limit {
+                let direct_writable = control.can_write_directly();
+                if battery_automation_requires_authorization(
+                    &self.read_state().caps.battery_limit_backend,
+                    direct_writable,
+                ) {
+                    results.push("authorization required: battery limit needs PolicyKit; automation never opens an authentication prompt".into());
+                    blocked = true;
+                } else if direct_writable {
+                    match control.set_limit(limit) {
+                        Ok(actual) if actual == limit => {
+                            self.state
+                                .control
+                                .write()
+                                .expect("rwlock poisoned")
+                                .battery_limit = Some(actual);
+                            results.push("battery limit applied and read back".into());
+                        }
+                        Ok(_) => {
+                            results.push("failed: battery limit readback did not match".into())
+                        }
+                        Err(error) => results.push(format!("failed: battery limit: {error}")),
+                    }
+                } else {
+                    results.push(
+                        "skipped: battery-limit backend is not an approved direct route".into(),
+                    );
+                    blocked = true;
+                }
+            } else {
+                results.push("skipped: battery-limit backend unavailable".into());
+                blocked = true;
+            }
+        }
+
+        for reason in automation_skipped_components(&profile.settings) {
+            results.push(reason.into());
+            blocked = true;
+        }
+        (results, blocked)
+    }
+
     fn persist_config(&self, mut config: AppConfig) -> Result<AppConfig, String> {
-        config.version = rog_core::CONFIG_VERSION;
+        config.version = config.version.max(rog_core::CONFIG_VERSION);
         validate_config(&config)?;
+        let mut stored = self.state.config.write().expect("rwlock poisoned");
         let path = self.state.config_path.as_ref().ok_or_else(|| {
             "Configuration path is unavailable because HOME and XDG_CONFIG_HOME are not set."
                 .to_string()
         })?;
         save_config_atomic(path, &config)?;
-        *self.state.config.write().expect("rwlock poisoned") = config.clone();
+        *stored = config.clone();
+        Ok(config)
+    }
+
+    fn mutate_config<F>(&self, update: F) -> fdo::Result<AppConfig>
+    where
+        F: FnOnce(&mut AppConfig) -> Result<(), String>,
+    {
+        let mut stored = self.state.config.write().expect("rwlock poisoned");
+        let mut config = stored.clone();
+        update(&mut config).map_err(fdo::Error::InvalidArgs)?;
+        config.version = config.version.max(rog_core::CONFIG_VERSION);
+        validate_config(&config).map_err(fdo::Error::InvalidArgs)?;
+        let path = self.state.config_path.as_ref().ok_or_else(|| {
+            fdo::Error::Failed(
+                "Configuration path is unavailable because HOME and XDG_CONFIG_HOME are not set."
+                    .to_string(),
+            )
+        })?;
+        save_config_atomic(path, &config).map_err(fdo::Error::Failed)?;
+        *stored = config.clone();
         Ok(config)
     }
 
@@ -408,10 +927,16 @@ impl RogHelperDaemon {
         last_action: impl Into<String>,
         boost_until_ms: Option<u64>,
     ) {
+        let last_action = last_action.into();
         let mut guard = self.state.control.write().expect("rwlock poisoned");
         guard.fan_mode = mode;
-        guard.fan_last_action = Some(last_action.into());
+        guard.fan_last_action = Some(last_action.clone());
         guard.fan_boost_until_ms = boost_until_ms;
+        drop(guard);
+        let mut state = self.state.inner.write().expect("rwlock poisoned");
+        state.fan_state.mode = mode;
+        state.fan_state.last_action = Some(last_action);
+        state.fan_state.active_boost_until_ms = boost_until_ms;
     }
 
     fn refresh_cpu_state(&self) -> rog_core::RogResult<()> {
@@ -486,9 +1011,73 @@ impl RogHelperDaemon {
         let config = toml::from_str::<AppConfig>(contents).map_err(|error| {
             fdo::Error::InvalidArgs(format!("configuration is invalid: {error}"))
         })?;
-        self.persist_config(config)
-            .map(|_| ())
-            .map_err(fdo::Error::Failed)
+        self.mutate_config(move |current| {
+            let manual_override = current.automation.manual_override;
+            *current = config;
+            current.automation.manual_override = manual_override;
+            Ok(())
+        })
+        .map(|_| ())
+    }
+
+    fn resume_automation(&self) -> fdo::Result<()> {
+        self.mutate_config(|config| {
+            config.automation.manual_override = false;
+            Ok(())
+        })?;
+        self.state.policy.write().expect("rwlock poisoned").resume();
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.state = if self.read_config().automation.enabled {
+            "monitoring"
+        } else {
+            "disabled"
+        };
+        status.explanation = "Automation resumed by the user; the current rule will be evaluated on the next power sample.".into();
+        info!(target: "rog_helper::policy", event = "resume", "automatic policy resumed explicitly");
+        Ok(())
+    }
+
+    /// Explicitly pause automatic policy until the user resumes it.
+    fn pause_automation(&self) -> fdo::Result<()> {
+        self.mutate_config(|config| {
+            config.automation.manual_override = true;
+            Ok(())
+        })?;
+        self.state
+            .policy
+            .write()
+            .expect("rwlock poisoned")
+            .set_manual_override(true);
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.state = "manual_override";
+        status.explanation =
+            "Automation paused explicitly by the user; resume it from the UI or CLI.".into();
+        info!(target: "rog_helper::policy", event = "manual_override", source = "cli", "automatic policy paused explicitly");
+        Ok(())
+    }
+
+    /// Advertise only profile choices reported by the active asusd provider.
+    async fn get_profile_choices(&self) -> fdo::Result<Vec<String>> {
+        let Some(asusd) = &self.asusd else {
+            return Ok(Vec::new());
+        };
+        let caps = asusd.probe_caps().await.map_err(|error| {
+            fdo::Error::Failed(format!("could not discover ASUS profiles: {error}"))
+        })?;
+        Ok(caps
+            .profile_choices
+            .into_iter()
+            .map(profile_to_str)
+            .map(str::to_string)
+            .collect())
     }
 
     fn reset_configuration(&self) -> fdo::Result<String> {
@@ -496,6 +1085,58 @@ impl RogHelperDaemon {
             .persist_config(AppConfig::default())
             .map_err(fdo::Error::Failed)?;
         config_to_toml(&config).map_err(fdo::Error::Failed)
+    }
+
+    fn list_profiles(&self) -> Vec<(String, String)> {
+        self.read_config()
+            .profiles
+            .into_iter()
+            .map(|profile| (profile.id, profile.name))
+            .collect()
+    }
+
+    fn get_profile(&self, id: &str) -> fdo::Result<String> {
+        let config = self.read_config();
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .ok_or_else(|| fdo::Error::Failed("Saved profile was not found.".into()))?;
+        rog_core::config::profile_to_toml(profile).map_err(fdo::Error::Failed)
+    }
+
+    fn create_profile(&self, name: &str, settings_toml: &str) -> fdo::Result<String> {
+        let settings = toml::from_str::<ProfileSettings>(settings_toml).map_err(|error| {
+            fdo::Error::InvalidArgs(format!("profile settings are invalid: {error}"))
+        })?;
+        let id = new_profile_id();
+        let profile = NamedProfile {
+            schema_version: rog_core::PROFILE_SCHEMA_VERSION,
+            id: id.clone(),
+            name: name.trim().to_string(),
+            settings,
+            future_fields: Default::default(),
+        };
+        self.mutate_config(|config| rog_core::insert_profile(config, profile))?;
+        Ok(id)
+    }
+
+    fn update_profile(&self, id: &str, profile_toml: &str) -> fdo::Result<()> {
+        let profile = toml::from_str::<NamedProfile>(profile_toml).map_err(|error| {
+            fdo::Error::InvalidArgs(format!("saved profile is invalid: {error}"))
+        })?;
+        if profile.id != id {
+            return Err(fdo::Error::InvalidArgs(
+                "profile ID cannot be changed by an update".into(),
+            ));
+        }
+        self.mutate_config(|config| rog_core::replace_profile(config, profile))
+            .map(|_| ())
+    }
+
+    fn delete_profile(&self, id: &str) -> fdo::Result<()> {
+        self.mutate_config(|config| rog_core::remove_profile(config, id))
+            .map(|_| ())
     }
 
     fn get_caps(&self) -> HashMap<String, OwnedValue> {
@@ -534,6 +1175,10 @@ impl RogHelperDaemon {
             ov(lighting_diagnostics.to_report_text()),
         );
         let control = self.read_control_state();
+        m.insert(
+            dbus_keys::state::AUTOMATION.to_string(),
+            ov(automation_status_to_dbus(&self.state)),
+        );
         if let Some(p) = control.profile {
             m.insert(dbus_keys::state::PROFILE.to_string(), ov(profile_to_str(p)));
         }
@@ -601,21 +1246,42 @@ impl RogHelperDaemon {
 
     fn get_fan_curves(&self) -> HashMap<String, OwnedValue> {
         let mut m = HashMap::new();
+        let state = self.read_state();
+        let curves = state
+            .fan_state
+            .fans
+            .iter()
+            .filter_map(|fan| {
+                fan.curve_readback.as_ref().map(|readback| {
+                    let mut row = fan_curve_readback_to_dbus(readback);
+                    row.insert(
+                        dbus_keys::fan_curves::FAN_ID.to_string(),
+                        ov(fan.id.clone()),
+                    );
+                    row
+                })
+            })
+            .collect::<Vec<_>>();
         m.insert(
             dbus_keys::fan_curves::SUPPORTED.to_string(),
-            OwnedValue::from(self.read_state().fan_state.caps.has_fan_curves),
+            OwnedValue::from(state.fan_state.caps.has_fan_curves),
         );
+        m.insert(dbus_keys::fan_curves::CURVES.to_string(), ov(curves));
         m.insert(
             dbus_keys::fan_curves::REASON.to_string(),
-            ov(
-                "Fan curve reading is backend-dependent and not exposed by the active backend yet."
-                    .to_string(),
-            ),
+            ov(if state.fan_state.caps.has_fan_curves {
+                "Current curves are read directly from verified ASUS WMI attributes; reading does not authorize or write hardware."
+            } else {
+                "No verified readable fan-curve backend is active."
+            }
+            .to_string()),
         );
         m
     }
 
     async fn set_fan_auto(&self, fan_id: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let target = (!fan_id.trim().is_empty()).then_some(fan_id);
         let result = with_fan_privileged_fallback(
             || self.hwmon.set_fan_auto(target),
@@ -643,15 +1309,37 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        let remaining_owned = {
+            let mut control = self.state.control.write().expect("rwlock poisoned");
+            if let Some(fan_id) = target.filter(|fan_id| !fan_id.trim().is_empty()) {
+                control
+                    .fan_curve_owned_fan_ids
+                    .retain(|owned| owned != fan_id);
+            } else {
+                control.fan_curve_owned_fan_ids.clear();
+            }
+            control.fan_curve_owned_fan_ids.clone()
+        };
+        let next_mode = if remaining_owned.is_empty() {
+            FanControlMode::Auto
+        } else {
+            FanControlMode::Curve
+        };
         self.update_fan_control_state(
-            FanControlMode::Auto,
-            "Returned fan control to Auto/BIOS mode.",
+            next_mode,
+            if next_mode == FanControlMode::Auto {
+                "Returned fan control to Auto/BIOS mode."
+            } else {
+                "Returned the selected fan to Auto; another daemon-owned curve remains active."
+            },
             None,
         );
         Ok(())
     }
 
     async fn set_fan_manual_percent(&self, fan_id: &str, percent: u64) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let percent = u8::try_from(percent)
             .map_err(|_| fdo::Error::InvalidArgs("fan percent must fit into u8".to_string()))?;
         let target = if self.read_control_state().fan_sync_enabled || fan_id.trim().is_empty() {
@@ -672,6 +1360,8 @@ impl RogHelperDaemon {
     }
 
     async fn set_fan_rpm_target(&self, fan_id: &str, rpm: u64) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let rpm = u32::try_from(rpm)
             .map_err(|_| fdo::Error::InvalidArgs("fan RPM target must fit into u32".to_string()))?;
         self.hwmon
@@ -691,6 +1381,8 @@ impl RogHelperDaemon {
         fan_id: &str,
         curve: HashMap<String, OwnedValue>,
     ) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let curve = fan_curve_from_dbus(fan_id, &curve).map_err(map_rog_error_to_fdo)?;
         let result = with_fan_privileged_fallback(
             || self.hwmon.set_fan_curve(fan_id, curve.clone()),
@@ -718,11 +1410,22 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        {
+            let mut control = self.state.control.write().expect("rwlock poisoned");
+            if !control
+                .fan_curve_owned_fan_ids
+                .iter()
+                .any(|owned| owned == fan_id)
+            {
+                control.fan_curve_owned_fan_ids.push(fan_id.to_string());
+            }
+        }
         self.update_fan_control_state(FanControlMode::Curve, "Applied fan curve.", None);
         Ok(())
     }
 
     fn set_fan_sync(&self, enabled: bool) {
+        self.pause_automation_for_manual_action();
         let mut guard = self.state.control.write().expect("rwlock poisoned");
         guard.fan_sync_enabled = enabled;
         guard.fan_last_action = Some(if enabled {
@@ -738,6 +1441,8 @@ impl RogHelperDaemon {
         percent: u64,
         duration_seconds: u64,
     ) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         if duration_seconds == 0 || duration_seconds > 60 * 60 {
             return Err(fdo::Error::InvalidArgs(
                 "fan boost duration must be 1..=3600 seconds".to_string(),
@@ -785,6 +1490,8 @@ impl RogHelperDaemon {
     }
 
     async fn reset_fans_to_auto(&self) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let result = with_fan_privileged_fallback(
             || self.hwmon.set_fan_auto(None),
             privileged_client::reset_fans_to_auto,
@@ -811,6 +1518,12 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        self.state
+            .control
+            .write()
+            .expect("rwlock poisoned")
+            .fan_curve_owned_fan_ids
+            .clear();
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Reset all controllable fans to Auto/BIOS mode.",
@@ -820,6 +1533,8 @@ impl RogHelperDaemon {
     }
 
     async fn set_lighting(&self, state: HashMap<String, OwnedValue>) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         const ACCEPTED_KEYS: &[&str] = &[
             "brightness",
             "mode",
@@ -1017,25 +1732,50 @@ impl RogHelperDaemon {
                     .map(LightingMode::from_backend_label)
                     .or_else(|| previous.as_ref().map(|request| request.mode.clone()))
                     .unwrap_or(LightingMode::Static);
+                let caps = g615jm_lighting_caps();
+                let supports = |modes: &[LightingMode]| {
+                    modes
+                        .iter()
+                        .any(|candidate| candidate.same_user_mode(&requested_mode))
+                };
                 let request = LightingApplyRequest {
-                    mode: requested_mode,
-                    primary_rgb: rgb
-                        .or_else(|| previous.as_ref().and_then(|request| request.primary_rgb)),
-                    secondary_rgb: secondary_rgb
-                        .or_else(|| previous.as_ref().and_then(|request| request.secondary_rgb)),
+                    primary_rgb: supports(&caps.modes_requiring_primary_rgb)
+                        .then(|| {
+                            rgb.or_else(|| {
+                                previous.as_ref().and_then(|request| request.primary_rgb)
+                            })
+                        })
+                        .flatten(),
+                    secondary_rgb: supports(&caps.modes_supporting_secondary_rgb)
+                        .then(|| {
+                            secondary_rgb.or_else(|| {
+                                previous.as_ref().and_then(|request| request.secondary_rgb)
+                            })
+                        })
+                        .flatten(),
                     brightness: None,
-                    speed: speed
-                        .or_else(|| previous.as_ref().and_then(|request| request.speed.clone())),
-                    direction: direction.or_else(|| {
-                        previous
-                            .as_ref()
-                            .and_then(|request| request.direction.clone())
-                    }),
+                    speed: supports(&caps.modes_supporting_speed)
+                        .then(|| {
+                            speed.or_else(|| {
+                                previous.as_ref().and_then(|request| request.speed.clone())
+                            })
+                        })
+                        .flatten(),
+                    direction: supports(&caps.modes_supporting_direction)
+                        .then(|| {
+                            direction.or_else(|| {
+                                previous
+                                    .as_ref()
+                                    .and_then(|request| request.direction.clone())
+                            })
+                        })
+                        .flatten(),
                     zone: None,
                     apply_to_all: false,
+                    mode: requested_mode,
                 };
                 request
-                    .validate_against(&g615jm_lighting_caps())
+                    .validate_against(&caps)
                     .map_err(map_rog_error_to_fdo)?;
                 let applied = match privileged_client::set_aura_effect(&request).await {
                     Ok(applied) => applied,
@@ -1137,6 +1877,8 @@ impl RogHelperDaemon {
     }
 
     async fn set_profile(&self, profile: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let Some(asusd) = &self.asusd else {
             return Err(fdo::Error::NotSupported(
                 "profile control requires asusd platform interface".to_string(),
@@ -1149,13 +1891,15 @@ impl RogHelperDaemon {
             .await
             .map_err(map_rog_error_to_fdo)?;
 
-        let confirmed = asusd.get_profile().await.unwrap_or(profile);
+        let readback = asusd.get_profile().await;
         let mut guard = self.state.control.write().expect("rwlock poisoned");
-        guard.profile = Some(confirmed);
-        Ok(())
+        confirm_profile_readback(&mut guard.profile, &profile, readback)
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_gpu_mode(&self, mode: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let Some(supergfx) = &self.supergfx else {
             return Err(fdo::Error::NotSupported(
                 "GPU mode control requires supergfxd".to_string(),
@@ -1186,6 +1930,8 @@ impl RogHelperDaemon {
     }
 
     async fn set_battery_limit(&self, limit: u64) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let limit = u8::try_from(limit)
             .map_err(|_| fdo::Error::InvalidArgs("battery limit must fit into u8".to_string()))?;
         let limit = BatteryLimitPercent(limit)
@@ -1240,12 +1986,16 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_turbo(&self, enabled: bool) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         self.apply_cpu_control(CpuControlRequest::Turbo(enabled))
             .await
             .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_power_mode(&self, mode: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let mode = CpuPowerMode::parse(mode).map_err(map_rog_error_to_fdo)?;
         self.apply_cpu_control(CpuControlRequest::PowerMode(mode))
             .await
@@ -1253,18 +2003,24 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_governor(&self, governor: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         self.apply_cpu_control(CpuControlRequest::Governor(governor.to_string()))
             .await
             .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_epp(&self, epp: &str) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         self.apply_cpu_control(CpuControlRequest::Epp(epp.to_string()))
             .await
             .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_cpu_freq_limits(&self, min_mhz: u64, max_mhz: u64) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let min = if min_mhz == 0 {
             None
         } else {
@@ -1289,6 +2045,8 @@ impl RogHelperDaemon {
     }
 
     async fn set_cpu_core_online(&self, core_id: u64, online: bool) -> fdo::Result<()> {
+        self.pause_automation_for_manual_action();
+        let _control_guard = self.state.hardware_control_lock.lock().await;
         let core_id = u32::try_from(core_id).map_err(|_| {
             fdo::Error::InvalidArgs("logical CPU id does not fit into u32".to_string())
         })?;
@@ -1370,10 +2128,12 @@ async fn main() -> anyhow::Result<()> {
             }
         };
     let native_aura_hid = scan_native_aura_hid();
-    let native_aura_supported = native_aura_hid
+    let native_aura_identity_supported = native_aura_hid
         .devices
         .iter()
         .any(|device| device.protocol.is_some());
+    let native_aura_supported =
+        native_aura_identity_supported && !aura_probe_diagnostics.service_detected;
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
         Ok(v) => (v, None),
         Err(e) => {
@@ -1446,7 +2206,13 @@ async fn main() -> anyhow::Result<()> {
         caps.notes
             .push(format!("keyboard backlight probing failed: {err}"));
     }
-    let mut control_state = ControlState::default();
+    // Ownership starts empty. An active curve observed at startup may belong
+    // to firmware or another tool and must not be restored by this daemon on
+    // shutdown merely because it was observed.
+    let mut control_state = ControlState {
+        fan_mode: initial_fan_state.mode,
+        ..ControlState::default()
+    };
 
     if let Some(aura) = &aura {
         caps.endpoints.push(aura.endpoint_tag());
@@ -1480,8 +2246,8 @@ async fn main() -> anyhow::Result<()> {
     native_aura_hid.populate_diagnostics(&mut startup_lighting_diagnostics);
     apply_native_hid_diagnostics_selection(
         &mut startup_lighting_diagnostics,
-        aura.is_some(),
-        native_aura_supported,
+        aura_probe_diagnostics.service_detected,
+        native_aura_identity_supported,
     );
     caps.notes.push(startup_lighting_diagnostics.summary_line());
     if let Some(warning) = &startup_lighting_diagnostics.permission_warning {
@@ -1765,6 +2531,24 @@ async fn main() -> anyhow::Result<()> {
     init_state.fan_state = initial_fan_state;
     init_state.cpu_caps = cpu_caps.clone();
     init_state.cpu = initial_cpu;
+    let mut policy = PolicyState::new(PolicyConfig::default());
+    policy.set_enabled(app_config.automation.enabled);
+    policy.set_manual_override(app_config.automation.manual_override);
+    let automation_status = if !app_config.automation.enabled {
+        AutomationRuntimeStatus::default()
+    } else if app_config.automation.manual_override {
+        AutomationRuntimeStatus {
+            state: "manual_override",
+            explanation: "Automation remains paused after a manual hardware action.".into(),
+            ..AutomationRuntimeStatus::default()
+        }
+    } else {
+        AutomationRuntimeStatus {
+            state: "monitoring",
+            explanation: "Waiting for a stable AC/Battery reading.".into(),
+            ..AutomationRuntimeStatus::default()
+        }
+    };
     let shared = Arc::new(SharedState {
         inner: RwLock::new(init_state),
         control: RwLock::new(control_state),
@@ -1777,6 +2561,9 @@ async fn main() -> anyhow::Result<()> {
         fan_authorization: RwLock::new("not_checked".to_string()),
         lighting_authorization: RwLock::new("not_checked".to_string()),
         native_lighting: RwLock::new(NativeLightingState::default()),
+        policy: RwLock::new(policy),
+        automation_status: RwLock::new(automation_status),
+        hardware_control_lock: tokio::sync::Mutex::new(()),
     });
 
     // Export DBus service on the session bus.
@@ -2011,7 +2798,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(kbd) = &kbd_backlight {
                     if !kbd.can_set_brightness() {
                         warnings.push(format!(
-                            "Keyboard backlight ({}) is read-only (need asusd or a udev rule).",
+                            "Keyboard backlight ({}) requires a supported provider or the optional privileged helper.",
                             kbd.led_name()
                         ));
                     }
@@ -2027,7 +2814,34 @@ async fn main() -> anyhow::Result<()> {
 
                 match hwmon.fan_state() {
                     Ok(fan_state) => {
-                        let current_mode = daemon.read_control_state().fan_mode;
+                        let mut current_mode = daemon.read_control_state().fan_mode;
+                        if current_mode == FanControlMode::Curve {
+                            let old_owned = daemon
+                                .read_control_state()
+                                .fan_curve_owned_fan_ids;
+                            if !old_owned.is_empty() {
+                                let remaining = unresolved_owned_fan_curves(
+                                    &old_owned,
+                                    &fan_state.fans,
+                                );
+                                daemon
+                                    .state
+                                    .control
+                                    .write()
+                                    .expect("rwlock poisoned")
+                                    .fan_curve_owned_fan_ids = remaining.clone();
+                                if remaining.is_empty() {
+                                    daemon.update_fan_control_state(
+                                        FanControlMode::Auto,
+                                        "All daemon-owned fan channels read back in Auto/BIOS mode.",
+                                        None,
+                                    );
+                                    current_mode = FanControlMode::Auto;
+                                } else {
+                                    current_mode = FanControlMode::Curve;
+                                }
+                            }
+                        }
                         let temp_missing = telemetry.cpu_temp_c.is_none() && telemetry.gpu_temp_c.is_none();
                         let critical_temp = telemetry
                             .cpu_temp_c
@@ -2047,8 +2861,15 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 "temperature telemetry disappeared"
                             };
-                            match hwmon.set_fan_auto(None) {
+                            match restore_fans_without_prompt(&hwmon).await {
                                 Ok(()) => {
+                                    daemon
+                                        .state
+                                        .control
+                                        .write()
+                                        .expect("rwlock poisoned")
+                                        .fan_curve_owned_fan_ids
+                                        .clear();
                                     warnings.push(format!(
                                         "fan safety restore: {reason}; returned fans to Auto/BIOS mode"
                                     ));
@@ -2060,8 +2881,17 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 Err(err) => {
                                     warnings.push(format!("fan safety restore failed after {reason}: {err}"));
+                                    let failed_mode = if daemon
+                                        .read_control_state()
+                                        .fan_curve_owned_fan_ids
+                                        .is_empty()
+                                    {
+                                        FanControlMode::ReadOnly
+                                    } else {
+                                        FanControlMode::Curve
+                                    };
                                     daemon.update_fan_control_state(
-                                        FanControlMode::ReadOnly,
+                                        failed_mode,
                                         format!("Safety restore failed after {reason}: {err}"),
                                         None,
                                     );
@@ -2123,9 +2953,12 @@ async fn main() -> anyhow::Result<()> {
 
                 daemon.set_control_state(current_profile, current_gpu_mode, current_battery_limit);
                 daemon.set_telemetry(telemetry, warnings);
+                let policy_telemetry = daemon.read_state().telemetry;
+                daemon.process_automation(&policy_telemetry).await;
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("ctrl-c received; exiting");
+            signal = shutdown_signal() => {
+                signal.context("listen for shutdown signal")?;
+                info!("shutdown signal received; exiting");
                 if matches!(
                     daemon.read_control_state().fan_mode,
                     FanControlMode::ManualPercent
@@ -2133,7 +2966,7 @@ async fn main() -> anyhow::Result<()> {
                         | FanControlMode::Curve
                         | FanControlMode::FullSpeedBoost
                 ) {
-                    if let Err(err) = hwmon.set_fan_auto(None) {
+                    if let Err(err) = restore_fans_without_prompt(&hwmon).await {
                         warn!("fan auto restore on shutdown failed: {err}");
                     }
                 }
@@ -2143,6 +2976,25 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+fn new_profile_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = PROFILE_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("profile-{nanos:x}-{:x}-{sequence:x}", std::process::id())
 }
 
 fn now_ms() -> u64 {
@@ -2354,6 +3206,41 @@ fn state_to_dbus(s: &AppState) -> HashMap<String, OwnedValue> {
         ov(s.warnings.clone()),
     );
     m
+}
+
+fn automation_status_to_dbus(state: &SharedState) -> HashMap<String, OwnedValue> {
+    let status = state
+        .automation_status
+        .read()
+        .expect("rwlock poisoned")
+        .clone();
+    let mut map = HashMap::from([
+        (
+            dbus_keys::state::AUTOMATION_STATE.to_string(),
+            ov(status.state),
+        ),
+        (
+            dbus_keys::state::AUTOMATION_EXPLANATION.to_string(),
+            ov(status.explanation),
+        ),
+        (
+            dbus_keys::state::AUTOMATION_LAST_RESULT.to_string(),
+            ov(status.last_result),
+        ),
+    ]);
+    if let Some(at_ms) = status.last_transition_ms {
+        map.insert(
+            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS.to_string(),
+            OwnedValue::from(at_ms),
+        );
+    }
+    if let Some(profile_id) = status.last_profile_id {
+        map.insert(
+            dbus_keys::state::AUTOMATION_PROFILE_ID.to_string(),
+            ov(profile_id),
+        );
+    }
+    map
 }
 
 fn daemon_info_to_dbus() -> HashMap<String, OwnedValue> {
@@ -2991,6 +3878,16 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY.to_string(),
         OwnedValue::from(fan.supports_auto),
     );
+    if let Some(readback) = &fan.curve_readback {
+        m.insert(
+            dbus_keys::FAN_INFO_CURVE_READBACK_KEY.to_string(),
+            ov(fan_curve_readback_to_dbus(readback)),
+        );
+    }
+    m.insert(
+        dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY.to_string(),
+        OwnedValue::from(fan.rollback_available),
+    );
     m.insert(
         dbus_keys::FAN_INFO_BACKEND_KEY.to_string(),
         ov(fan.backend.clone()),
@@ -3008,6 +3905,43 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         ov(fan.warnings.clone()),
     );
     m
+}
+
+fn fan_curve_readback_to_dbus(
+    readback: &rog_core::FanCurveReadback,
+) -> HashMap<String, OwnedValue> {
+    let points = readback
+        .curve
+        .points
+        .iter()
+        .map(|point| {
+            let mut row = HashMap::new();
+            row.insert(
+                dbus_keys::fan_curves::TEMP_C.to_string(),
+                OwnedValue::from(u64::from(point.temp_c)),
+            );
+            row.insert(
+                dbus_keys::fan_curves::SPEED_PERCENT.to_string(),
+                OwnedValue::from(u64::from(point.duty_percent)),
+            );
+            row
+        })
+        .collect::<Vec<_>>();
+    let mut map = HashMap::new();
+    map.insert(
+        dbus_keys::fan_curves::SOURCE.to_string(),
+        ov("backend_current".to_string()),
+    );
+    map.insert(
+        dbus_keys::fan_curves::ENABLE_MODE.to_string(),
+        OwnedValue::from(u64::from(readback.enable_mode)),
+    );
+    map.insert(
+        dbus_keys::fan_curves::RAW_PWM.to_string(),
+        ov(readback.raw_pwm.clone()),
+    );
+    map.insert(dbus_keys::fan_curves::POINTS.to_string(), ov(points));
+    map
 }
 
 fn insert_feature_access_to_dbus(
@@ -3641,6 +4575,22 @@ fn profile_to_str(profile: PerformanceProfile) -> &'static str {
         PerformanceProfile::Turbo => "Turbo",
         PerformanceProfile::Custom(_) => "Custom",
     }
+}
+
+fn confirm_profile_readback(
+    current: &mut Option<PerformanceProfile>,
+    requested: &PerformanceProfile,
+    readback: rog_core::RogResult<PerformanceProfile>,
+) -> rog_core::RogResult<()> {
+    // A failed readback invalidates the cached confirmation; a mismatch retains the actual value.
+    *current = readback.as_ref().ok().cloned();
+    let actual = readback?;
+    if &actual != requested {
+        return Err(rog_core::RogError::TransientFailure(
+            "performance profile readback did not confirm the requested value".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn apply_supergfx_probe_to_caps(caps: &mut DeviceCaps, probe: &SupergfxCaps) {
@@ -4545,19 +5495,21 @@ impl RogHelperDaemon {
         self.native_aura_hid.populate_diagnostics(&mut diagnostics);
         apply_native_hid_diagnostics_selection(
             &mut diagnostics,
-            self.aura.is_some(),
-            self.native_aura_hid_supported(),
+            self.aura_probe_diagnostics.service_detected,
+            self.native_aura_hid_identity_supported(),
         );
         diagnostics
     }
 
     fn native_aura_hid_supported(&self) -> bool {
-        self.aura.is_none()
-            && self
-                .native_aura_hid
-                .devices
-                .iter()
-                .any(|device| device.protocol.is_some())
+        !self.aura_probe_diagnostics.service_detected && self.native_aura_hid_identity_supported()
+    }
+
+    fn native_aura_hid_identity_supported(&self) -> bool {
+        self.native_aura_hid
+            .devices
+            .iter()
+            .any(|device| device.protocol.is_some())
     }
 
     fn native_hid_lighting_state(&self) -> LightingState {
@@ -4997,11 +5949,151 @@ fn lighting_state_to_dbus(
 mod tests {
     use super::*;
 
+    #[test]
+    fn generated_profile_ids_are_safe_and_distinct() {
+        let first = new_profile_id();
+        let second = new_profile_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("profile-"));
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+    }
+
+    #[test]
+    fn profile_confirmation_never_substitutes_requested_state_for_failed_readback() {
+        let mut current = Some(PerformanceProfile::Silent);
+        let requested = PerformanceProfile::Turbo;
+        assert!(confirm_profile_readback(
+            &mut current,
+            &requested,
+            Err(rog_core::RogError::TransientFailure(
+                "readback unavailable".into()
+            )),
+        )
+        .is_err());
+        assert_eq!(current, None);
+        assert!(confirm_profile_readback(
+            &mut current,
+            &requested,
+            Ok(PerformanceProfile::Balanced)
+        )
+        .is_err());
+        assert_eq!(current, Some(PerformanceProfile::Balanced));
+        assert!(confirm_profile_readback(&mut current, &requested, Ok(requested.clone())).is_ok());
+        assert_eq!(current, Some(requested));
+    }
+
+    #[test]
+    fn automation_selects_source_rule_and_reports_missing_saved_preset() {
+        let preferences = rog_core::AutomationPreferences {
+            ac_profile_id: Some("quiet".into()),
+            battery_profile_id: Some("mobile".into()),
+            ..rog_core::AutomationPreferences::default()
+        };
+        assert_eq!(
+            selected_automation_profile_id(&preferences, PowerSource::Ac),
+            Some("quiet")
+        );
+        assert_eq!(
+            selected_automation_profile_id(&preferences, PowerSource::Battery),
+            Some("mobile")
+        );
+        assert!(automation_profile(&AppConfig::default(), "mobile").is_none());
+    }
+
+    #[test]
+    fn automation_skips_privileged_writes_and_risky_components_without_prompting() {
+        assert!(battery_automation_requires_authorization(
+            "power_supply_sysfs",
+            false
+        ));
+        assert!(!battery_automation_requires_authorization(
+            "power_supply_sysfs",
+            true
+        ));
+        assert!(!battery_automation_requires_authorization("asusd", false));
+
+        let settings = ProfileSettings {
+            gpu_mode: Some(GpuMode::Dedicated),
+            fan_controls: std::collections::BTreeMap::from([(
+                rog_core::ProfileFanRole::Cpu,
+                rog_core::ProfileFanControl::Auto,
+            )]),
+            lighting: Some(rog_core::ProfileLighting {
+                effect: "static".into(),
+                ..rog_core::ProfileLighting::default()
+            }),
+            ..ProfileSettings::default()
+        };
+        let skipped = automation_skipped_components(&settings);
+        assert_eq!(skipped.len(), 3);
+        assert!(skipped.iter().any(|item| item.contains("GPU")));
+        assert!(skipped.iter().any(|item| item.contains("fan")));
+        assert!(skipped.iter().any(|item| item.contains("lighting")));
+    }
+
+    #[test]
+    fn partial_automation_failure_remains_an_error_even_when_other_fields_are_blocked() {
+        let results = vec![
+            "platform profile applied and read back".into(),
+            "failed: battery limit readback did not match".into(),
+        ];
+        assert_eq!(automation_result_state(&results, true), "error");
+        assert_eq!(automation_result_state(&[], true), "blocked");
+    }
+
     fn value_as_str(map: &HashMap<String, OwnedValue>, key: &str) -> String {
         map.get(key)
             .and_then(|value| <&str>::try_from(value).ok())
             .unwrap_or_default()
             .to_string()
+    }
+
+    #[test]
+    fn owned_curve_reconciliation_only_drops_channels_confirmed_auto() {
+        let mut cpu = FanInfo::read_only_from_telemetry(
+            0,
+            &FanTelemetry {
+                hwmon_device: "asus".to_string(),
+                hwmon_path: "fixture".to_string(),
+                input_path: "fixture/fan1_input".to_string(),
+                raw_label: Some("cpu_fan".to_string()),
+                display_label: "CPU Fan".to_string(),
+                rpm: Some(2_000),
+            },
+        );
+        cpu.id = "asus-wmi:cpu".to_string();
+        cpu.curve_readback = Some(rog_core::FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: Vec::new(),
+            },
+            raw_pwm: Vec::new(),
+            enable_mode: 2,
+        });
+        let mut gpu = FanInfo {
+            id: "asus-wmi:gpu".to_string(),
+            ..cpu.clone()
+        };
+        gpu.curve_readback.as_mut().unwrap().enable_mode = 1;
+        let owned = vec!["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()];
+
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu.clone()]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu.clone(), gpu]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
+        assert!(
+            unresolved_owned_fan_curves(&["asus-wmi:cpu".to_string()], &[cpu.clone()]).is_empty()
+        );
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
     }
 
     fn rows_from_value(value: &OwnedValue) -> Vec<HashMap<String, OwnedValue>> {
@@ -5308,6 +6400,37 @@ mod tests {
         assert_eq!(
             value_as_str(&map, "fan_mapping_confidence"),
             "hardware_label"
+        );
+    }
+
+    #[test]
+    fn fan_curve_readback_dbus_preserves_raw_values_and_source() {
+        let readback = rog_core::FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![FanPoint {
+                    temp_c: 40,
+                    duty_percent: 50,
+                }],
+            },
+            raw_pwm: vec![128],
+            enable_mode: 2,
+        };
+        let map = fan_curve_readback_to_dbus(&readback);
+        assert_eq!(
+            value_as_str(&map, dbus_keys::fan_curves::SOURCE),
+            "backend_current"
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_curves::ENABLE_MODE)
+                .and_then(|value| u64::try_from(value).ok()),
+            Some(2)
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_curves::RAW_PWM)
+                .cloned()
+                .and_then(|value| Vec::<u8>::try_from(value).ok()),
+            Some(vec![128])
         );
     }
 
@@ -5828,6 +6951,28 @@ mod tests {
                 permission_denied
             );
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_fan_mapping_never_calls_privileged_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let privileged_calls = AtomicUsize::new(0);
+        let error = with_fan_privileged_fallback(
+            || {
+                Err(rog_core::RogError::NotSupported(
+                    "unsafe fan mapping".to_string(),
+                ))
+            },
+            || async {
+                privileged_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, rog_core::RogError::NotSupported(_)));
+        assert_eq!(privileged_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

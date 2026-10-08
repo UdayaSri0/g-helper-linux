@@ -2,11 +2,13 @@
 
 Use this checklist before calling the repository release-ready.
 
-Latest evidence-based walkthrough: [releases/v0.3.1-readiness.md](releases/v0.3.1-readiness.md).
+Current integration review: [FINAL_INTEGRATION_REVIEW.md](FINAL_INTEGRATION_REVIEW.md).
+Historical walkthrough: [releases/v0.3.1-readiness.md](releases/v0.3.1-readiness.md).
 Unchecked items remain unverified even when the audit records partial automated coverage.
 
-`v0.3.1` is not release-ready until its readiness record contains a passing final-candidate
-validation run. Unchecked installed-runtime, cross-distro, and real-hardware items remain
+A future release needs a passing validation run against its final candidate. The workspace
+package version, rather than a Git commit subject, determines artifact identity.
+Unchecked installed-runtime, cross-distro, and real-hardware items remain
 explicit known limitations and must not be presented as validated support.
 
 ## Documentation
@@ -54,7 +56,7 @@ Current repository note:
   `io.github.roghelper.Daemon`, and uses the packaged unprivileged daemon
 - [ ] `packaging/systemd-system/rog-helper-privileged.service` reviewed against `PRIVILEGED_SECURITY_REVIEW.md`
 - [ ] root-only `packaging/udev/60-rog-helper-aura.rules` and helper `DeviceAllow`/`BindPaths` reviewed; confirm no user access mode/group/uaccess tag is added
-- [ ] system-D-Bus activation/policy and all four PolicyKit actions reviewed
+- [ ] system-D-Bus activation/policy and all five PolicyKit actions reviewed, including Auto-only `fans.recover`
 - [ ] privileged binary is root-owned, executable, and not group/world-writable in each native package
 - [ ] `packaging/scripts/validate-package-payload.py` passes for the staged Debian tree and final
   `.deb`; no `@PRIVILEGED_EXEC@` or other template token remains

@@ -8,7 +8,7 @@ Decoder rule: absent optional keys and keys with the wrong DBus type are treated
 
 | Contract | Daemon encoder | UI decoder | CLI dependency | Primary documentation |
 | --- | --- | --- | --- | --- |
-| `GetState` | `state_to_dbus`, plus `RogHelperDaemon::get_state` | `fetch_state` | None | `DBUS_API.md`, this file |
+| `GetState` | `state_to_dbus`, plus `RogHelperDaemon::get_state` | `fetch_state` | Profile cycling and brightness commands decode actual state using shared keys | `DBUS_API.md`, this file |
 | `GetCaps` | `caps_to_dbus` | `caps_from_dbus`, `caps_text_from_dbus` | None; CLI probes providers directly | `DBUS_API.md` |
 | `GetTelemetry` | `telemetry_to_dbus`, `fan_row_to_dbus` | `telemetry_from_dbus`, `fan_row_from_dbus` | None; `sensors` probes providers directly | `DBUS_API.md` |
 | `GetCpuCaps` | `cpu_caps_to_dbus`, access/path row encoders | `cpu_caps_from_dbus`, access/path row decoders | None | `DBUS_API.md` |
@@ -16,11 +16,15 @@ Decoder rule: absent optional keys and keys with the wrong DBus type are treated
 | `GetSetupStatus` | setup status/row encoders | `setup_status_from_dbus` | None; `setup-check` uses the same core models directly | `DBUS_API.md` |
 | `GetFanCaps` | `fan_caps_to_dbus` | `fan_caps_from_dbus` | None | `DBUS_API.md` |
 | `GetFanState` | `fan_state_to_dbus`, `fan_info_to_dbus` | `fan_state_from_dbus`, `fan_info_from_dbus` | None | `DBUS_API.md` |
-| `GetFanCurves` | inline map in `get_fan_curves` | No current UI decoder | None | `DBUS_API.md` |
-| Lighting nested state | `lighting_state_to_dbus` | `lighting_from_dbus` | None; CLI probes providers directly | `DBUS_API.md` |
-| Configuration and CPU diagnostics | normalized TOML / plain string | DBus proxy call or UI-local presentation | None | `DBUS_API.md`, `CONFIGURATION.md` |
+| `GetFanCurves` | inline map in `get_fan_curves` | No standalone-method decoder; the UI decodes equivalent nested `GetFanState` readbacks | None | `DBUS_API.md` |
+| Lighting nested state | `lighting_state_to_dbus` | `lighting_from_dbus` | Brightness commands check capability, actual brightness, and maximum | `DBUS_API.md` |
+| Automation nested state | `automation_status_to_dbus` | `fetch_state` policy status extraction | Pause/resume invoke semantic daemon methods | `DBUS_API.md` |
+| Configuration and CPU diagnostics | normalized TOML / plain string | DBus proxy call or UI-local presentation | None | `DBUS_API.md`, `ARCHITECTURE.md` |
 
-The CLI intentionally has no dependency on daemon `a{sv}` response keys. Its `services`, `sensors`, `fans`, `caps`, `lighting-diagnostics`, `setup-check`, and `hardware-report` commands are read-only provider/setup probes that remain useful when the session daemon contract is unavailable.
+The CLI's `services`, `sensors`, `fans`, `caps`, `lighting-diagnostics`, `setup-check`, and
+`hardware-report` commands are read-only provider/setup probes that remain useful when the
+session daemon is unavailable. Semantic shortcut commands require the daemon and use shared
+`rog_core::dbus_keys` for profile and lighting state; they never write hardware directly.
 
 ## Complete Response-Key Inventory
 
@@ -28,7 +32,9 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 | Payload | Keys and wire types | UI missing/default behavior |
 | --- | --- | --- |
-| `GetState` | `caps a{sv}`, `telemetry a{sv}`, `warnings as`, `cpu_caps a{sv}`, `cpu a{sv}`, `fan_caps a{sv}`, `fan_state a{sv}`, `lighting_diagnostics_summary s`, `lighting_diagnostics_details s`; optional `lighting a{sv}`, `profile s`, `gpu_mode s`, `battery_limit t` | Missing maps decode to safe unknown/empty models. Missing current controls remain `None`; no write capability is inferred. |
+| `GetState` | `caps a{sv}`, `telemetry a{sv}`, `warnings as`, `cpu_caps a{sv}`, `cpu a{sv}`, `fan_caps a{sv}`, `fan_state a{sv}`, `automation a{sv}`, `lighting_diagnostics_summary s`, `lighting_diagnostics_details s`; optional `lighting a{sv}`, `profile s`, `gpu_mode s`, `battery_limit t` | Missing maps decode to safe unknown/empty models. Missing current controls remain `None`; no write capability is inferred. |
+| Automation nested state | `state s`, `explanation s`, `last_result s`; optional `last_transition_ms t`, `profile_id s` | Missing state uses disabled presentation; explanation/results are empty; unavailable transition/profile remain absent. Daemon remains authoritative. |
+| `GetCaps` battery/GPU extensions | `battery_limit_backend s`, `battery_limit_direct_write b`, `battery_limit_privileged_write b`, `battery_limit_authorization s`, `gpu_backend s`, `gpu_supported_modes as`, `gpu_external_authorization s`, `gpu_switch_state s`, `gpu_switch_hint s`, `requires_logout_for_gpu_switch b`, `control_privilege_matrix aa{sv}` | Missing capability booleans are false; supported modes/matrix empty; backend and transition values retain unavailable/unknown presentation. No write route or GPU mode is inferred. |
 | `GetCaps` | `has_profiles b`, `has_fan_curves b`, `has_fan_reading b`, `has_charge_limit b`, `has_gpu_modes b`, `has_aura b`, `has_kbd_backlight b`, `has_fan_manual_percent b`, `has_fan_manual_rpm_target b`, `has_individual_fan_control b`, `has_fan_sync_control b`, `has_fan_boost b`, `fan_count t`, `fan_backend s`, `requires_reboot_for_gpu_switch b`, `endpoints as`, `notes as`; `profile_access_{status,reason}`, `charge_limit_access_{status,reason}`, `gpu_mode_access_{status,reason}`, `kbd_backlight_access_{status,reason}` as strings | Capabilities `false`, count `0`, strings/collections empty, access `unknown`. Status values are `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, `unknown`. |
 | `GetTelemetry` core | required `timestamp_ms t`; `cpu_temp_c d`, `gpu_temp_c d`, `gpu_usage_percent d`, `gpu_vram_used_bytes t`, `gpu_vram_total_bytes t`, `gpu_core_clock_mhz t`, `gpu_memory_clock_mhz t`, `gpu_power_w d`, `gpu_index u/t`, `gpu_name s`, `gpu_uuid s`, `gpu_pci_bus_id s`, `gpu_telemetry_provider s`, `gpu_telemetry_status s`, `temps_c a{sd}`, `fans_rpm a{su}`, `fan_rows aa{sv}` | Timestamp `0` if absent; every metric stays `None`; maps/lists empty. Legacy `fans_rpm` is converted to rows only when `fan_rows` is absent. |
 | `GetTelemetry` power | `power_source s`, `battery_percent d`, `ac_online b`, `battery_state s`, `battery_health_percent d`, `battery_cycle_count u/t`, `battery_charge_power_w d`, `battery_discharge_power_w d`, `battery_time_to_empty_s t`, `battery_time_to_full_s t` | Missing values stay `None`. Known power source values are `Ac` and `Battery`; an unknown future value stays absent rather than being fabricated as AC. Unknown battery state maps to the domain `Unknown` state. |
@@ -46,8 +52,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | Setup issue row | `severity s`, `title s`, `summary s`, `guidance s` | Unknown severity uses the domain fallback; strings empty. |
 | `GetFanCaps` / nested `fan_caps` | all matching `GetCaps` fan booleans/count/backend/endpoints/notes plus `fan_curve_readable b`, `fan_curve_writable b`, `fan_mapping_confidence s`, `warnings as` | Booleans `false`, count `0`, mapping `unknown`, strings/lists empty. RPM telemetry never implies write support. |
 | `GetFanState` | `fan_caps a{sv}`, `fans aa{sv}`, `mode s`, `sync_enabled b`, `warnings as`; optional `last_action s`, `active_boost_fan_id s`, `active_boost_until_ms t`, `active_curve_summary s` | Empty/read-only fan model, mode `read_only`, sync `false`, optionals absent. |
-| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping `unknown`, measurements absent. |
-| `GetFanCurves` | `supported b`, `reason s` | No current UI/CLI decoder. This response remains documented for external clients. |
+| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, optional `curve_readback a{sv}`, `rollback_available b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping `unknown`, measurements/readback absent. `curve_readback` uses the same row shape as `GetFanCurves`. |
+| `GetFanCurves` | `supported b`, `reason s`, `curves aa{sv}`; each curve row has `fan_id s`, `source s` (`backend_current`), `enable_mode t`, `raw_pwm ay`, and `points aa{sv}` with `temp_c t` and `speed_percent t` | No standalone-method UI/CLI decoder. The UI consumes the equivalent `curve_readback` nested in `GetFanState`; malformed or non-eight-point nested readbacks are discarded. `backend_current` records readback origin, not factory ownership. |
 | Lighting map | `backend s`, `backend_kind s`, `device s`, `brightness t`, `max_brightness t`, `can_set b`, `writable b`, `direct_writable b`, `privileged_writable b`, `authorization_required b`, `authorization s`, `privileged_helper_installed b`, `privileged_helper_reachable b`, `privileged_helper_compatible b`, `polkit_available b`, `privileged_lighting_category_available b`, `write_path_ready b`, optional `mode s`, `supported_modes as`, `supports_brightness b`, `supports_modes b`, `supports_rgb b`, `supports_argb b`, `supports_zones b`, `supports_per_key b`, optional `rgb_hex s`, `secondary_rgb_hex s`, `supports_speed b`, `supported_speeds as`, optional `speed s`, `supported_directions as`, optional `direction s`, `supported_zones as`, optional `active_zone s`, `apply_outcome s`, optional `last_action s`, `status s`, optional `last_error s`, `diagnostics_summary s`, `diagnostics_details s`, `fallback_reason s`, `unavailable_reason s`, `permission_warning s` | Backend/device/status use calm unknown labels, numeric values `0`, capabilities/writable/readiness false, lists empty, optional values absent. Compatibility inference enables brightness only when an older daemon reports `max_brightness > 0`, and modes only when it reports a non-empty mode list. RGB/ARGB/zones/per-key and privileged readiness are never inferred. |
 
 ## Non-map Responses and Setter Requests
@@ -55,6 +61,9 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | Method | Contract |
 | --- | --- |
 | `GetConfiguration`, `ResetConfiguration` | Normalized versioned TOML string. |
+| `ListProfiles`, `GetProfile`, `CreateProfile`, `UpdateProfile`, `DeleteProfile` | Semantic named-profile storage API described in `DBUS_API.md`; saves never apply hardware. IDs are stable, names unique, curves validated, and unknown fields retained. |
+| `GetProfileChoices` | `as` choices advertised by the active asusd provider; empty means unavailable. |
+| `PauseAutomation`, `ResumeAutomation` | No arguments; persisted manual pause and explicit resume are daemon-owned. |
 | `SetConfiguration` | Complete TOML string; validation failure is `InvalidArgs`; no hardware setter runs. |
 | `GetCpuDiagnostics` | Human-readable string; not a machine schema. |
 | `SetLighting` | Request keys `brightness`, `mode`, `rgb_hex`, `secondary_rgb_hex`, `speed`, `direction`, `zone`. Unknown keys/types are rejected; unsupported backend capabilities return `NotSupported`. Native HID requests cross the system bus only as the five high-level `SetAuraEffect` strings, never as paths or bytes. |
@@ -67,7 +76,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 - Preserved compatibility: missing per-core `online` means `true`, because older daemon payloads implied online rows by including them. This is the only deliberate positive missing-field default.
 - Preserved compatibility: older lighting payloads can infer basic brightness/mode capability from `max_brightness` and `supported_modes`; RGB, speed, zones, and writability are never inferred.
 - The daemon always emits lighting `brightness`/`max_brightness` as zero when the provider has no value. Consumers must use `supports_brightness` and `writable`, not numeric presence, as the capability source of truth.
-- The CLI does not duplicate these response-key strings because it does not decode daemon payloads.
+- Semantic CLI commands decode profile/brightness daemon payloads using shared key constants;
+  diagnostics commands retain independent read-only provider probes.
 - Some low-risk leaf-row keys remain flat compatibility constants. New code should use `rog_core::dbus_keys` rather than introduce another literal.
 
 ## Contract Tests
@@ -78,7 +88,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 The complete public method descriptions and accepted setter values remain in [DBUS_API.md](DBUS_API.md).
 
-The separate privileged system API is version 2. Its native Aura surface is exactly
+The separate privileged system API is version 3. Its native Aura surface is exactly
 `SetAuraEffect(sssss) -> b`: mode, primary colour, secondary colour, speed, and direction. No path,
 zone, raw packet, report ID, or command ID crosses DBus. See `DBUS_API.md` for the external asusd
 6.3.8-6.4.0 signature allow-list and the privileged method inventory.

@@ -61,7 +61,7 @@ The classification separates implementation, backend availability, and physical 
 | Update flow | Implemented but limited | Manual GitHub-release check; direct replacement only for a matching writable user-local binary, otherwise the release page opens. It is not a package-manager updater and downloaded binaries lack checksum/signature verification in the UI flow. |
 | Tray | Implemented but desktop-limited | StatusNotifierItem/AppIndicator via `ksni`; cross-desktop visibility is unvalidated. |
 | Hotkeys | Missing | No global-shortcut/input backend or settings exist. |
-| Display refresh | Missing | No DRM, Wayland, compositor, or XRandR provider/API/UI exists. |
+| Display refresh | Partially implemented | UI supports manual X11 RandR changes for a uniquely discovered internal panel; Wayland and automatic AC/Battery changes remain unsupported. |
 
 Primary evidence is in `crates/rog-core/src/{config,model,policy,privileged}.rs`,
 `crates/rog-providers/src/{asusd,aura,aura_hid,cpu,hwmon,kbd_backlight,power_supply,setup,supergfx}.rs`,
@@ -144,8 +144,8 @@ readback is necessary but does not prove physical fan behavior.
 
 - AC/battery automation: adopt debounce, idempotence, ordered semantic actions, explicit manual
   override, and per-source rules using UPower/logind/platform-profile/asusd.
-- Display refresh: research a session-scoped compositor/DRM backend; never port Windows display APIs
-  or assume one internal panel.
+- Display refresh: keep X11 RandR session-scoped and manual; research a separate verified Wayland
+  contract before broadening support. Never port Windows APIs or assume one internal panel.
 - Keyboard timeout: use desktop idle/session APIs with lock and suspend handling, not global input
   snooping.
 - Hotkeys: prefer standard kernel keycodes and desktop portal/session shortcuts; invoke only typed

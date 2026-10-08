@@ -15,6 +15,7 @@ finish-args:
   - --own-name=io.github.roghelper.Daemon
   - --system-talk-name=org.freedesktop.UPower
   - --system-talk-name=org.asuslinux.Daemon
+  - --system-talk-name=xyz.ljones.Asusd
   - --system-talk-name=org.supergfxctl.Daemon
 modules:
   - name: rust-stable
@@ -65,6 +66,7 @@ modules:
       - |
         sed 's#rog-helperd#/app/bin/rog-helperd#g' \
           packaging/dbus-session/io.github.roghelper.Daemon.service \
+          | sed '/^SystemdService=/d' \
           > io.github.roghelper.Daemon.service
         install -Dm0644 \
           io.github.roghelper.Daemon.service \

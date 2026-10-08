@@ -64,6 +64,9 @@ install_user_service "$PAYLOAD_ROOT/usr" "/usr/bin/rog-helperd"
 install_privileged_integration "$PAYLOAD_ROOT/usr" "/usr/libexec/rog-helper-privileged"
 install_license_docs "$PAYLOAD_ROOT/usr"
 
+# Validate the same root integration/mode contract as native Debian packages.
+python3 "$SCRIPT_DIR/validate-package-payload.py" --privileged-only "$PAYLOAD_ROOT"
+
 normalize_tree_timestamps "$PAYLOAD_ROOT"
 
 SOURCE_TARBALL="$RPMBUILD_ROOT/SOURCES/${PACKAGE_NAME}-${VERSION}-rpm-root.tar.xz"

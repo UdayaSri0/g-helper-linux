@@ -157,8 +157,6 @@ def run_validator(command: list[str], description: str) -> None:
         fail(f"{description} failed: {details}")
 
 
-<<<<<<< HEAD
-=======
 def validate_systemd_units(privileged_unit: Path, user_unit: Path) -> None:
     """Parse packaged units without resolving their staged absolute executables.
 
@@ -186,7 +184,6 @@ def validate_systemd_units(privileged_unit: Path, user_unit: Path) -> None:
         )
 
 
->>>>>>> origin/main
 def validate(root: Path, privileged_only: bool) -> None:
     if privileged_only:
         expected = {
@@ -358,22 +355,6 @@ def validate(root: Path, privileged_only: bool) -> None:
                 "AppStream validation",
             ),
             (
-<<<<<<< HEAD
-                "systemd-analyze",
-                [
-                    "systemd-analyze",
-                    "verify",
-                    str(
-                        root
-                        / "usr/lib/systemd/system/rog-helper-privileged.service"
-                    ),
-                    str(root / "usr/lib/systemd/user/rog-helperd.service"),
-                ],
-                "systemd unit validation",
-            ),
-            (
-=======
->>>>>>> origin/main
                 "udevadm",
                 [
                     "udevadm",
@@ -386,13 +367,10 @@ def validate(root: Path, privileged_only: bool) -> None:
         for executable, command, description in external_checks:
             if shutil.which(executable):
                 run_validator(command, description)
-<<<<<<< HEAD
-=======
         validate_systemd_units(
             root / "usr/lib/systemd/system/rog-helper-privileged.service",
             root / "usr/lib/systemd/user/rog-helperd.service",
         )
->>>>>>> origin/main
 
     policy_path = root / "usr/share/polkit-1/actions/io.github.roghelper.policy"
     policy = ET.parse(policy_path).getroot()
@@ -400,6 +378,7 @@ def validate(root: Path, privileged_only: bool) -> None:
         "io.github.roghelper.cpu.control",
         "io.github.roghelper.battery.control",
         "io.github.roghelper.fans.control",
+        "io.github.roghelper.fans.recover",
         "io.github.roghelper.lighting.control",
     }
     actions = policy.findall("./action")
@@ -412,9 +391,12 @@ def validate(root: Path, privileged_only: bool) -> None:
             fail(f"PolicyKit action has no defaults: {action_id}")
         if defaults.findtext("allow_any") != "no":
             fail(f"PolicyKit action permits arbitrary users: {action_id}")
-        if defaults.findtext("allow_inactive") != "auth_admin":
+        recovery_action = action_id == "io.github.roghelper.fans.recover"
+        expected_inactive = "no" if recovery_action else "auth_admin"
+        expected_active = "yes" if recovery_action else "auth_admin"
+        if defaults.findtext("allow_inactive") != expected_inactive:
             fail(f"PolicyKit inactive authorization is too broad: {action_id}")
-        if defaults.findtext("allow_active") != "auth_admin":
+        if defaults.findtext("allow_active") != expected_active:
             fail(f"PolicyKit active authorization is too broad: {action_id}")
 
     aura_rule = (root / "usr/lib/udev/rules.d/60-rog-helper-aura.rules").read_text(
