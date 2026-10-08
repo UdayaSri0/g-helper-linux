@@ -451,6 +451,7 @@ write_sha256sums() {
       done
       find . -maxdepth 1 -type f \
         \( -name "${PACKAGE_NAME}_${version}_*.deb" \
+        -o -name "${PACKAGE_NAME}-${version}-*.rpm" \
         -o -name "${PACKAGE_NAME}-v${version}-*.AppImage" \
         -o -name "${PACKAGE_NAME}-${version}-linux-*.tar.xz" \) \
         -printf '%P\0'

@@ -145,6 +145,7 @@ Capture these commands:
 
 ```bash
 cargo run -p rog-cli -- hardware-report > hardware-report.md
+cargo run -p rog-cli -- issue-report > issue-report.md
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- sensors
@@ -161,6 +162,10 @@ versions and states, provider capabilities, fan/sensor endpoints, mapping confid
 permission/dependency results. Review the output, fill in the manual runtime fields, attach the
 remaining command/screenshot evidence, and do not treat generated capability output as proof that
 a hardware write succeeded.
+
+For a public troubleshooting attachment, prefer `issue-report`: it consolidates backend and
+policy/readiness evidence with default redaction and omits configuration/profile names, process
+telemetry, hostname, and serial numbers. Neither report proves physical write behavior.
 
 Capture these UI views when relevant:
 
@@ -188,11 +193,11 @@ The rows below describe what the first release should eventually have evidence f
 
 | Scenario | How to identify it | Expected behavior | Evidence to capture |
 | --- | --- | --- | --- |
-| `asusd` missing | stop or remove `asusd`, or use a machine without it | profile and charge-limit controls stay visible but clearly explain that `asusd` is required | `services`, `dbus`, `caps`, Dashboard screenshot, Diagnostics screenshot |
+| `asusd` missing | use a machine or isolated test environment without it | profiles explain that `asusd` is required; battery control may use one verified standard power-supply threshold with a direct or typed privileged route | `services`, `dbus`, `caps`, Dashboard screenshot, Diagnostics screenshot |
 | `supergfxd` missing | stop or remove `supergfxd`, or use a machine without it | GPU mode controls stay visible but clearly explain that `supergfxd` is required | `services`, `dbus`, `caps`, GPU screenshot, Diagnostics screenshot |
 | CPU readable but not writable | CPU telemetry works, but CPU sysfs files are not writable by the current user | CPU telemetry remains visible, affected controls are read-only, and Diagnostics lists the blocked paths | `caps`, CPU Diagnostics copy, CPU screenshot, CPU sysfs `ls -l` output |
 | CPU writable | CPU control sysfs paths are writable for the daemon user | at least one quick control and one policy control apply successfully | `caps`, CPU screenshot before/after, Diagnostics copy |
-| keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness is still visible and the control is clearly read-only | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
+| keyboard backlight readable but not writable | keyboard brightness is readable but the LED `brightness` file is not writable | current brightness remains visible; an approved helper route offers authorization on Apply, otherwise the control explains its read-only state | Dashboard or Lighting screenshot, `caps`, LED `ls -l` output |
 | Aura/RGB exposed by asusd | `caps` reports `has_aura: true` and the lighting backend is `asusd-aura` | RGB picker and backend-reported lighting modes are enabled when writable; brightness still works through Aura or sysfs fallback | `caps`, `lighting-diagnostics`, `dbus --filter "asus\|rog\|aura\|kbd\|keyboard\|led\|rgb"`, Lighting screenshot, Diagnostics copy |
 | G615JMR native Aura | lighting backend is `native-aura-hid` and diagnostics match the complete allow-list above | only single-target RGB and the five supported modes are shown; Apply requests PolicyKit; result says accepted without readback; ARGB/zones/per-key remain unavailable | before/after physical observation, `caps`, `lighting-diagnostics`, Lighting screenshot, PolicyKit success/denial, asusd conflict test |
 | asusd present without Aura/RGB | asusd service exists, but `caps` reports `has_aura: false` | RGB picker stays disabled with a clear “not exposed by asusd” or brightness-only fallback message | `caps`, `lighting-diagnostics`, DBus introspection output, Lighting screenshot |

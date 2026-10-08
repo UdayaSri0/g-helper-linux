@@ -155,9 +155,10 @@ Important gaps in the current implementation:
 
 - Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions; the native HID implementation is deliberately limited to the G615JMR target identity and has not yet been physically validated through ROG Helper
-- Live auto mode / policy automation integration
-- Named hardware profiles, durable fan curves, saved automation rules, and automatic application;
-  the current control preferences are deliberately inert
+- Broader automatic preset application: the opt-in daemon policy currently applies only platform
+  profiles and approved non-interactive battery limits; saved fan, lighting, and GPU fields are skipped
+- Supervised physical validation of persisted fan curves and the narrow Aura backend; saving a
+  named preset is storage-only and never applies hardware
 - Generated strongly typed external DBus payloads (the current backwards-compatible `a{sv}` API
   now shares internal key constants and decoding semantics)
 - Complete tested hardware support matrix
@@ -212,7 +213,16 @@ cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|aura|kbd|keyboard|led|rgb|supergfx|power|upower"
 cargo run -p rog-cli -- caps
 cargo run -p rog-cli -- lighting-diagnostics
+cargo run -p rog-cli -- issue-report
 ```
+
+For a copy-friendly issue attachment, run `rog-helper issue-report > issue-report.md`.
+It prints read-only Markdown redacted by default: package/build identity, distro/kernel/DMI model,
+services, capabilities, fan/Aura discovery, helper readiness, policy state/timestamp, warning count, and display/shortcut
+backend. It excludes hostname, serial numbers, configuration/profile names, process telemetry,
+and unrelated session DBus content. Review the report before sharing. The embedded build commit
+identifies the base revision and may not include local edits; source archives may report unknown.
+Freeform policy results and warnings stay in local diagnostics rather than the shareable report.
 
 ## Release Installs
 
@@ -429,10 +439,13 @@ Current release behavior to expect:
 
 - missing `asusd` -> profile control explains that `asusd` is required; charge-limit control may
   remain available through one exact standard `power_supply` threshold
-- asusd without the verified Aura contract -> the daemon may select the allow-listed native G615JMR target backend; otherwise RGB stays disabled while brightness-only sysfs support remains available
+- asusd without the verified Aura contract -> RGB stays unavailable while brightness-only sysfs
+  support may remain available; a detected ASUS daemon suppresses native HID to avoid conflicting ownership
 - missing `supergfxd` -> GPU mode controls stay visible but explain that `supergfxd` is required
-- readable-but-not-writable CPU sysfs -> CPU telemetry still works, writes become read-only, and Diagnostics lists the blocked paths
-- readable-but-not-writable keyboard backlight sysfs -> current brightness can still be shown while writes remain unavailable
+- readable-but-not-writable CPU sysfs -> CPU telemetry still works; supported controls may offer a
+  typed PolicyKit helper route, otherwise remain read-only with blocked-path diagnostics
+- readable-but-not-writable keyboard backlight sysfs -> current brightness remains visible;
+  the canonical approved ASUS LED may use the typed helper, otherwise writes remain unavailable
 - dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
 - update checks are manual and UI-side; in-place replacement is attempted only for safe user-local direct-binary installs and otherwise falls back to the latest release page
 

@@ -5,8 +5,8 @@
     "semantic_hash": ""
   },
   "crates/rog-cli/src/main.rs": {
-    "mtime": 1791448147.8863688,
-    "ast_hash": "c4a8be4067c330e2284b5e0f307c47bb",
+    "mtime": 1791448222.1087415,
+    "ast_hash": "ac16155e541662ada94a505bd21041d1",
     "semantic_hash": ""
   },
   "crates/rog-core/src/dbus_keys.rs": {

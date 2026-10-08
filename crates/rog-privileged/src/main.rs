@@ -92,6 +92,9 @@ struct PrivilegedService {
     keyboard_backlight: Option<KbdBacklightSysfs>,
     battery_charge_limit: Option<BatteryChargeLimitControl>,
     fan_safety_marker: PathBuf,
+    // Covers the recovery marker and provider writes as one transaction.
+    // The guarded flag rejects pending authorized mutations after shutdown.
+    fan_transaction: Arc<Mutex<bool>>,
     native_aura: Arc<AsyncMutex<NativeAuraControlState>>,
 }
 
@@ -107,6 +110,7 @@ impl PrivilegedService {
                 .ok()
                 .flatten(),
             fan_safety_marker: PathBuf::from(FAN_SAFETY_MARKER),
+            fan_transaction: Arc::new(Mutex::new(false)),
             native_aura: Arc::new(AsyncMutex::new(NativeAuraControlState::default())),
         }
     }
@@ -264,6 +268,7 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
+        let _transaction = self.lock_fan_mutation().map_err(map_fan_error)?;
         if let Some(fan_id) = target {
             self.fans
                 .set_fan_auto(Some(fan_id))
@@ -310,12 +315,13 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
+        let _transaction = self.lock_fan_mutation().map_err(map_fan_error)?;
         self.mark_fan_control_active(fan_id)
             .map_err(map_fan_error)?;
         if let Err(error) = self.fans.set_fan_curve(fan_id, curve) {
             // Recovery uses the exact marker set. If any armed channel is
             // absent or fails to reset, the marker remains for a later retry.
-            let _ = self.restore_fans_if_armed();
+            let _ = self.restore_fans_if_armed_unlocked();
             return Err(map_fan_error(error));
         }
         Ok(())
@@ -338,6 +344,7 @@ impl PrivilegedService {
             )));
         }
         self.authorize_fans(connection, &header).await?;
+        let _transaction = self.lock_fan_mutation().map_err(map_fan_error)?;
         self.reset_all_fans_to_auto().map_err(map_fan_error)
     }
 
@@ -583,13 +590,44 @@ impl PrivilegedService {
 
     fn reset_all_fans_to_auto(&self) -> rog_core::RogResult<()> {
         if self.fan_safety_marker_exists()? {
-            self.restore_fans_if_armed()
+            self.restore_fans_if_armed_unlocked()
         } else {
             self.fans.set_fan_auto(None)
         }
     }
 
     fn restore_fans_if_armed(&self) -> rog_core::RogResult<()> {
+        let _transaction = self.lock_fan_transaction()?;
+        self.restore_fans_if_armed_unlocked()
+    }
+
+    fn lock_fan_transaction(&self) -> rog_core::RogResult<std::sync::MutexGuard<'_, bool>> {
+        self.fan_transaction
+            .lock()
+            .map_err(|_| RogError::Unexpected("fan transaction lock is unavailable".to_string()))
+    }
+
+    fn lock_fan_mutation(&self) -> rog_core::RogResult<std::sync::MutexGuard<'_, bool>> {
+        let transaction = self.lock_fan_transaction()?;
+        if *transaction {
+            return Err(RogError::TemporarilyUnavailable(
+                "privileged helper is shutting down; fan mutation was not applied".to_string(),
+            ));
+        }
+        Ok(transaction)
+    }
+
+    fn shutdown_fans(&self) -> rog_core::RogResult<()> {
+        let mut transaction = self.lock_fan_transaction()?;
+        *transaction = true;
+        // Keep the shutdown gate closed even when recovery fails, preserving
+        // the marker for the next helper start.
+        self.restore_fans_if_armed_unlocked()
+    }
+
+    // Caller holds fan_transaction; separate helper avoids recursive locking
+    // during rollback or Auto restoration.
+    fn restore_fans_if_armed_unlocked(&self) -> rog_core::RogResult<()> {
         if !self.fan_safety_marker_exists()? {
             return Ok(());
         }
@@ -1400,7 +1438,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    if let Err(error) = idle_service.restore_fans_if_armed() {
+    if let Err(error) = idle_service.shutdown_fans() {
         warn!("could not restore fans before privileged helper shutdown; recovery marker retained: {error}");
     }
     drop(connection);
@@ -1424,6 +1462,90 @@ mod tests {
         require_authorized, PrivilegedErrorCode, POLKIT_ACTION_BATTERY_CONTROL,
         POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL,
     };
+
+    #[test]
+    fn fan_transactions_share_a_lock_and_preserve_all_armed_channels() {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-helper-fan-transaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let mut service = PrivilegedService::new();
+        service.fan_safety_marker = directory.join("fan-control-active");
+        // No hardware endpoints exist in this fixture.
+        service.fans = HwmonTelemetryProvider::new(directory.join("hwmon"));
+        let other = service.clone();
+        let transaction = service.lock_fan_transaction().unwrap();
+        assert!(matches!(
+            other.fan_transaction.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        service.mark_fan_control_active("asus-wmi:cpu").unwrap();
+        drop(transaction);
+        let worker = std::thread::spawn(move || {
+            let _transaction = other.lock_fan_transaction().unwrap();
+            other.mark_fan_control_active("asus-wmi:gpu").unwrap();
+        });
+        worker.join().unwrap();
+        assert_eq!(
+            read_fan_safety_marker(&service.fan_safety_marker).unwrap(),
+            vec!["asus-wmi:cpu", "asus-wmi:gpu"]
+        );
+        // Recovery cannot verify these absent channels and must keep the marker.
+        assert!(service.restore_fans_if_armed().is_err());
+        assert!(service.fan_safety_marker.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pending_authorized_fan_mutation_is_rejected_after_shutdown() {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-helper-fan-shutdown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let mut service = PrivilegedService::new();
+        service.fan_safety_marker = directory.join("fan-control-active");
+        service.fans = HwmonTelemetryProvider::new(directory.join("hwmon"));
+        // This clone represents a DBus call awaiting authorization. Its next
+        // step after authorization must acquire the mutation guard.
+        let pending_call = service.clone();
+        assert!(pending_call.lock_fan_mutation().is_ok());
+        service.shutdown_fans().unwrap();
+        assert!(pending_call
+            .lock_fan_mutation()
+            .unwrap_err()
+            .to_string()
+            .contains("shutting down"));
+        assert!(!service.fan_safety_marker.exists());
+        // Auto-only recovery remains possible during shutdown.
+        service.restore_fans_if_armed().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn fan_recovery_fails_closed_when_transaction_lock_is_poisoned() {
+        let service = PrivilegedService::new();
+        let other = service.clone();
+        let worker = std::thread::spawn(move || {
+            let _transaction = other.lock_fan_transaction().unwrap();
+            panic!("fixture poisons transaction lock");
+        });
+        assert!(worker.join().is_err());
+        assert!(service
+            .restore_fans_if_armed()
+            .unwrap_err()
+            .to_string()
+            .contains("fan transaction lock is unavailable"));
+    }
 
     #[test]
     fn helper_advertises_only_implemented_write_categories() {

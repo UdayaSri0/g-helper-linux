@@ -158,6 +158,12 @@ cargo run -p rog-ui
 
 Optional diagnostics:
 
+`cargo run -p rog-cli -- issue-report` produces a consolidated read-only Markdown issue report,
+redacted by default. It uses whitelisted daemon identity/readiness/policy fields and provider
+discovery, excludes configuration/profile names and process telemetry, and redacts home paths and
+control characters. Its embedded build commit denotes the base revision, not proof that a binary
+has no local edits; archive builds may have unknown commit metadata. Review before sharing.
+
 ```bash
 cargo run -p rog-cli -- services
 cargo run -p rog-cli -- dbus --filter "asus|rog|supergfx|power|upower"

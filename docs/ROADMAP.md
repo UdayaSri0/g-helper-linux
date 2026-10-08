@@ -231,10 +231,10 @@ Implemented:
 - profile CRUD over session DBus with atomic persistence only; profile saving never applies hardware
 - confirmed reset to defaults
 
-Still missing:
+Remaining limitations:
 
-- saved automation rules and daemon policy execution
-- automatic hardware application, intentionally deferred until an explicit safety model exists
+- automation applies only the approved platform-profile and battery-limit subset
+- persisted fan and lighting settings require live capability validation and remain skipped by automation
 
 ### Typed daemon API payloads
 
@@ -252,7 +252,7 @@ Status after Prompt 07:
 
 - manual internal-display refresh discovery/control through X11 RandR only; Wayland and
   AC/Battery switching remain unavailable until a reliable session-bound contract exists
-- global hotkeys that invoke existing semantic daemon actions
+- desktop-owned shortcut bindings to semantic CLI actions; no global shortcut registration or input capture
 - keyboard timeout control through a verified Linux backend (no timeout ABI found; software
   idle behavior is omitted to avoid conflict with desktop power management)
 

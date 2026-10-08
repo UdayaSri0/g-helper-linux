@@ -192,6 +192,11 @@ Important note:
 - `fan_state` -> nested `a{sv}` fan state map
 - `lighting_diagnostics_summary` -> `s`
 - `lighting_diagnostics_details` -> `s`
+- `automation` -> nested `a{sv}` policy status map
+
+The automation map contains `state`, `explanation`, and `last_result` strings, plus optional
+`last_transition_ms` (`t`) and `profile_id` (`s`). States are `disabled`, `monitoring`, `applying`,
+`manual_override`, `blocked`, or `error`; results retain partial-failure and skipped-field explanations.
 
 Optional keys:
 

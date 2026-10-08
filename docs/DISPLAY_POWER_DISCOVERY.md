@@ -9,7 +9,8 @@ connected. The panel output name is discovered from the live RandR response; it 
 or hard-coded. The DRM sysfs connector and RandR output names differ on this host, so they are
 not joined by a guessed monitor name.
 
-The UI implements only manual X11 refresh selection. It offers rates advertised for the
+The shared `rog-providers::display` backend implements manual X11 refresh selection, invoked by
+the UI in its active desktop session. It offers rates advertised for the
 currently active internal-panel resolution, re-discovers before applying, runs `xrandr` with
 fixed argument positions (no shell), reads the active rate back, and attempts to restore the
 previous rate when the command fails or the requested mode is not confirmed. It does not

@@ -13,8 +13,8 @@ EOF
 }
 
 post_upgrade() {
-  systemctl daemon-reload >/dev/null 2>&1 || true
   post_install
+  systemctl try-restart rog-helper-privileged.service >/dev/null 2>&1 || true
 }
 
 post_remove() {

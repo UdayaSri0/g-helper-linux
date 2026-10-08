@@ -37,7 +37,7 @@ current codebase:
   `--own-name=io.github.roghelper.Daemon` so the UI can reach the bundled
   session-bus daemon
 - `--system-talk-name=org.freedesktop.UPower`,
-  `--system-talk-name=org.asuslinux.Daemon`, and
+  `--system-talk-name=xyz.ljones.Asusd`, and
   `--system-talk-name=org.supergfxctl.Daemon` for the host services already
   used by the provider layer
 
@@ -46,6 +46,8 @@ current codebase:
 The Flatpak build is intentionally honest about sandbox tradeoffs:
 
 - the host `systemd --user` unit is not installed or enabled from Flatpak
+- the bundled session activation file uses its `/app/bin/rog-helperd` executable without a host
+  `SystemdService` reference
 - direct sysfs writes are not available, so CPU tuning, per-core toggles, and
   keyboard-backlight writes remain unavailable or read-only
 - `asusd` and `supergfxd` access still depends on the host services being

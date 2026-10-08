@@ -748,19 +748,20 @@ impl RogHelperDaemon {
                 results.push("platform profile unchanged (readback matches)".into());
             } else if let Some(provider) = &self.asusd {
                 match provider.set_profile(desired.clone()).await {
-                    Ok(()) => match provider.get_profile().await {
-                        Ok(actual) if actual == desired => {
-                            self.state.control.write().expect("rwlock poisoned").profile =
-                                Some(actual);
-                            results.push("platform profile applied and read back".into());
+                    Ok(()) => {
+                        let readback = provider.get_profile().await;
+                        let result = confirm_profile_readback(
+                            &mut self.state.control.write().expect("rwlock poisoned").profile,
+                            &desired,
+                            readback,
+                        );
+                        match result {
+                            Ok(()) => results.push("platform profile applied and read back".into()),
+                            Err(error) => {
+                                results.push(format!("failed: platform profile readback: {error}"))
+                            }
                         }
-                        Ok(_) => {
-                            results.push("failed: platform profile readback did not match".into());
-                        }
-                        Err(error) => results.push(format!(
-                            "failed: platform profile readback unavailable: {error}"
-                        )),
-                    },
+                    }
                     Err(error) => results.push(format!("failed: platform profile: {error}")),
                 }
             } else {
@@ -1890,10 +1891,10 @@ impl RogHelperDaemon {
             .await
             .map_err(map_rog_error_to_fdo)?;
 
-        let confirmed = asusd.get_profile().await.unwrap_or(profile);
+        let readback = asusd.get_profile().await;
         let mut guard = self.state.control.write().expect("rwlock poisoned");
-        guard.profile = Some(confirmed);
-        Ok(())
+        confirm_profile_readback(&mut guard.profile, &profile, readback)
+            .map_err(map_rog_error_to_fdo)
     }
 
     async fn set_gpu_mode(&self, mode: &str) -> fdo::Result<()> {
@@ -2797,7 +2798,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(kbd) = &kbd_backlight {
                     if !kbd.can_set_brightness() {
                         warnings.push(format!(
-                            "Keyboard backlight ({}) is read-only (need asusd or a udev rule).",
+                            "Keyboard backlight ({}) requires a supported provider or the optional privileged helper.",
                             kbd.led_name()
                         ));
                     }
@@ -4576,6 +4577,22 @@ fn profile_to_str(profile: PerformanceProfile) -> &'static str {
     }
 }
 
+fn confirm_profile_readback(
+    current: &mut Option<PerformanceProfile>,
+    requested: &PerformanceProfile,
+    readback: rog_core::RogResult<PerformanceProfile>,
+) -> rog_core::RogResult<()> {
+    // A failed readback invalidates the cached confirmation; a mismatch retains the actual value.
+    *current = readback.as_ref().ok().cloned();
+    let actual = readback?;
+    if &actual != requested {
+        return Err(rog_core::RogError::TransientFailure(
+            "performance profile readback did not confirm the requested value".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn apply_supergfx_probe_to_caps(caps: &mut DeviceCaps, probe: &SupergfxCaps) {
     caps.gpu_backend = "supergfxd".to_string();
     caps.gpu_supported_modes = probe.raw_supported_modes.clone();
@@ -5941,6 +5958,30 @@ mod tests {
         assert!(first
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+    }
+
+    #[test]
+    fn profile_confirmation_never_substitutes_requested_state_for_failed_readback() {
+        let mut current = Some(PerformanceProfile::Silent);
+        let requested = PerformanceProfile::Turbo;
+        assert!(confirm_profile_readback(
+            &mut current,
+            &requested,
+            Err(rog_core::RogError::TransientFailure(
+                "readback unavailable".into()
+            )),
+        )
+        .is_err());
+        assert_eq!(current, None);
+        assert!(confirm_profile_readback(
+            &mut current,
+            &requested,
+            Ok(PerformanceProfile::Balanced)
+        )
+        .is_err());
+        assert_eq!(current, Some(PerformanceProfile::Balanced));
+        assert!(confirm_profile_readback(&mut current, &requested, Ok(requested.clone())).is_ok());
+        assert_eq!(current, Some(requested));
     }
 
     #[test]

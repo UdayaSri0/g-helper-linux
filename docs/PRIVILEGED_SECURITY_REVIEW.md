@@ -4,6 +4,44 @@ This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura li
 battery privilege migration. It is a source and packaging audit, not a claim of hardware
 certification. No UI or session-daemon process runs as root.
 
+## Prompt 09 integration addendum
+
+This addendum reviews the working-tree integration changes based on `Dev` commit
+`c56648526c2e3f10501503b4c3480fddba47e5b1`. The workspace package version is still 0.3.1;
+the baseline commit subject `v0.3.9` is not an artifact version. Earlier check counts and dated
+observations in this document are historical evidence, not this candidate's validation totals.
+
+Root fan marker access, arm/disarm, custom writes, and recovery now share a transaction lock.
+Concurrent requests cannot independently overwrite the armed recovery set, and poisoned locking
+fails closed before fan writes. Root-helper shutdown closes the mutation gate while restoring
+armed channels; a request still awaiting authorization cannot apply a new curve after recovery.
+The existing unprivileged daemon distinguishes observed curves from control ownership;
+read-only curve discovery alone does not authorize shutdown Auto writes.
+The root-owned atomic recovery marker, fixed semantic IDs, Auto-only recovery operation, and
+PolicyKit category checks remain intact.
+
+Manual platform-profile application now reports readback failure/mismatch rather than fabricating
+confirmed state. The session display backend moved into providers and remains unprivileged,
+explicitly manual, and bound to the active desktop environment. Neither change adds a root method.
+
+The copy-friendly issue report uses an explicit diagnostic allow-list and default redaction.
+Configuration/profile names, process telemetry, serials/hostname, unrelated session DBus content,
+freeform policy results/warnings, and broad Aura DBus discovery strings are excluded. Detailed
+error explanations remain local diagnostics. This narrows sharing without changing the root ABI.
+
+No path/raw-command/raw-HID method, retained authorization, broadened udev access, or physical
+hardware-validation claim was added. Final command and package evidence is tracked in
+[FINAL_INTEGRATION_REVIEW.md](FINAL_INTEGRATION_REVIEW.md); unavailable native packaging tools
+remain explicit gaps rather than passing checks.
+
+Final candidate verification passed formatting, build, all 274 Rust tests, and warnings-denied
+clippy. Debian/tarball ownership and mode checks passed: root/root or 0/0 archive ownership,
+helper executable 0755, and integration metadata 0644. Offline analysis of the rendered packaged
+helper service scored 3.5 and passed; a prior unrendered-template check failed on its placeholder
+and is not a valid runtime-unit result. Package lifecycle tests passed modeled fresh/reinstall,
+synthetic API-v1 upgrade, remove, and purge cases. These checks do not substitute for actual APT
+installation, native RPM/Arch/Flatpak/AppImage runtime testing, or physical hardware validation.
+
 ## 1. Trust boundary
 
 ```text

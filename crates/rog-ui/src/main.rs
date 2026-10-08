@@ -33,7 +33,7 @@ use tracing::{debug, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 
 mod dbus_decode;
-mod display;
+use rog_providers::display;
 mod fan_widgets;
 mod shell;
 mod theme;

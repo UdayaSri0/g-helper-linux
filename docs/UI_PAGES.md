@@ -299,7 +299,8 @@ Current behavior:
 
 - canonical file: `$XDG_CONFIG_HOME/rog-helper/config.toml`, or `$HOME/.config/rog-helper/config.toml`
 - the UI reads startup behavior locally, then uses the daemon configuration API for writes
-- preferred hardware values and saved profiles are desired settings, not current hardware state, and are never auto-applied at boot/login
+- preferred hardware values and saved profiles are desired settings, not current hardware state;
+  saving does not apply them, while explicitly enabled AC/Battery rules may apply the supported subset
 - malformed configuration falls back safely; unknown/future fields are retained through serialization; writes replace atomically
 - saved fan curves use semantic roles and eight-point validation; capability and safety are checked again before any future apply
 - unsupported lighting effect labels remain stored and are marked unavailable rather than substituted

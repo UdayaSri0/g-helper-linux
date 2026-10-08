@@ -359,6 +359,20 @@ File: `crates/rog-providers/src/traits.rs`
   - the traits remain broader than current backend coverage; `FanProvider` has a runtime
     implementation for the narrow ASUS WMI curve/Auto subset, not for generic duty or RPM targets
 
+## `display`
+
+File: `crates/rog-providers/src/display.rs`
+
+- Session-bound X11 RandR discovery and manual refresh selection, invoked by the unprivileged UI
+  in its active desktop environment.
+- Discovers exactly one connected internal panel and advertises only rates for its active mode.
+- Revalidates before Apply, uses fixed executable/arguments without a shell, reads back the active
+  rate, and attempts previous-rate rollback on failure.
+- Wayland, external-only targets, and AC/Battery display automation remain unsupported.
+- Unit-tested backend contract; physical refresh changes have not been validated in this stage.
+
+See [DISPLAY_POWER_DISCOVERY.md](DISPLAY_POWER_DISCOVERY.md) for research and limitations.
+
 ## Summary
 
 The provider layer already covers a meaningful amount of real system integration, but it is still uneven:

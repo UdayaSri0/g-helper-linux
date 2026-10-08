@@ -11,6 +11,26 @@ cargo run -p rog-cli -- setup-check
 The report verifies live APIs where possible and lists binary, systemd, DBus, and sysfs evidence.
 It does not elevate privileges or apply any repair automatically.
 
+For a consolidated issue attachment, use:
+
+```bash
+rog-helper issue-report > issue-report.md
+# From the source tree:
+cargo run -p rog-cli -- issue-report > issue-report.md
+```
+
+This read-only Markdown report is redacted by default. It combines package version, build commit,
+inferred installation route, distro/kernel, DMI vendor/model/board/BIOS, relevant services,
+capabilities, fan mapping/readback, Aura identity/descriptor, daemon identity, helper readiness,
+automation state/timestamp, warning count, and session display/desktop-shortcut status. It omits hostnames,
+serials, configuration and profile names, process telemetry, and unrelated session DBus content;
+home-directory paths and control characters are redacted. Review the output before sharing.
+An inferred installation route is evidence, not authoritative package-manager provenance. The
+embedded commit identifies the base revision, may omit local edits, and may be unknown in archives.
+Missing backend services remain diagnostic results rather than requiring hardware writes.
+Freeform policy results, warning text, and broad Aura DBus discovery content are omitted from the
+shareable report. Use local UI diagnostics or the targeted CLI diagnostics for detailed errors.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:

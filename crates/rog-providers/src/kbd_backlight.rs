@@ -216,7 +216,7 @@ impl KbdBacklightSysfs {
         let mut f = OpenOptions::new().write(true).open(&p).map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 RogError::PermissionDenied(format!(
-                    "{} not writable (need asusd or a udev rule): {e}",
+                    "{} not writable (use a supported provider or the optional privileged helper): {e}",
                     p.display()
                 ))
             } else {

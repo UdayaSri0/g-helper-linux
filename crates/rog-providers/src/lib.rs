@@ -5,6 +5,7 @@ pub mod aura;
 pub mod aura_hid;
 pub mod cpu;
 pub mod dbus;
+pub mod display;
 pub mod hwmon;
 pub mod kbd_backlight;
 pub mod lighting;

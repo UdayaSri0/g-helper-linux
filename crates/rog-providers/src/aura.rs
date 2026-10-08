@@ -4,7 +4,7 @@ use std::time::Duration;
 use regex::Regex;
 use rog_core::{
     LightingBackendKind, LightingCaps, LightingDirection, LightingMode, LightingSpeed,
-    LightingState, LightingZone, RgbColor, RogError, RogResult, PRIVILEGED_DBUS_NAME,
+    LightingState, LightingZone, RgbColor, RogError, RogResult,
 };
 use tokio::time::timeout;
 use tracing::debug;
@@ -988,7 +988,8 @@ fn service_candidates_from_names(names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let re = Regex::new("(?i)asus|rog|aura|keyboard|kbd|led|rgb").unwrap();
     for name in names {
-        if !name.starts_with(':') && name != PRIVILEGED_DBUS_NAME && re.is_match(name) {
+        if !name.starts_with(':') && !name.starts_with("io.github.roghelper.") && re.is_match(name)
+        {
             push_unique(&mut out, name.clone());
         }
     }
@@ -1670,7 +1671,9 @@ mod tests {
     #[test]
     fn own_privileged_service_is_not_an_asusd_probe_candidate() {
         let names = vec![
-            PRIVILEGED_DBUS_NAME.to_string(),
+            rog_core::PRIVILEGED_DBUS_NAME.to_string(),
+            "io.github.roghelper.Daemon".to_string(),
+            "io.github.roghelper.UI".to_string(),
             ASUSD_SERVICE.to_string(),
             "org.example.KeyboardRgb".to_string(),
             ":1.42".to_string(),

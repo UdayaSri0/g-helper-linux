@@ -9,7 +9,8 @@ The project is split into four main runtime layers, plus a shared model layer an
 1. UI (`rog-helper-ui`)
    - Unprivileged GTK4/libadwaita desktop application
    - Tray support via `ksni`
-   - Talks only to the session daemon
+   - Sends hardware controls to the session daemon
+   - Invokes the shared session-display provider in its active X11 session for manual display changes
 2. Daemon (`rog-helperd`)
    - Unprivileged user-session service
    - Owns current application state
@@ -43,6 +44,7 @@ Diagnostics CLI:
   - Direct provider and environment inspection
   - Useful when the daemon or UI is unavailable
   - `setup-check` reports the same service-readiness and permission concepts from a terminal
+  - Semantic profile, brightness, and automation commands invoke the session daemon for desktop-owned shortcuts
 
 ## Runtime Data Flow
 
@@ -70,6 +72,11 @@ More concretely:
   - `nvidia-smi` as an optional read-only NVIDIA telemetry source
 
 Hardware I/O is not implemented in the UI.
+
+Manual display refresh is a session-specific exception to daemon routing: the UI invokes
+`rog-providers::display` in its active X11 environment. The provider discovers the internal panel,
+validates advertised same-mode rates, performs readback, and attempts rollback. GTK widgets only
+stage requests. This operation is manual and does not introduce another automation runtime.
 
 Setup readiness follows the same boundary. Structured `SetupStatus`, `DependencyStatus`,
 `PermissionStatus`, and `SetupIssue` types live in `rog-core`; live discovery is implemented in
@@ -115,11 +122,13 @@ Configuration ownership is divided by section:
 - `ui`: UI/lifecycle behavior such as close, login startup, and tray hints
 - `dashboard`: optional panels and compact layout
 - `controls`: remembered charge-limit/profile/fan-sync preferences
+- `profiles`: versioned semantic named presets, including validated per-role fan curves and lighting preferences
+- `automation`: opt-in AC/Battery preset rules, threshold, and persistent manual-override state
 
-Version 1 serializes as:
+The current schema is version 3. A minimal configuration serializes as:
 
 ```toml
-version = 1
+version = 3
 
 [ui]
 close_behavior = "minimize_to_tray"
@@ -138,9 +147,15 @@ compact = false
 # preferred_charge_limit = 80   # optional, validated to 40..=100
 # last_manual_profile = "Turbo" # optional, remembered only
 fan_sync_enabled = false
+
+[automation]
+enabled = false
+manual_override = false
 ```
 
-Control preferences are inert metadata. Loading configuration never applies a hardware action.
+Control preferences and saved presets are inert metadata. Configuration replacement never invokes
+a hardware setter. When explicitly enabled, the daemon policy runtime can apply the supported
+preset subset after a stable power-source sample; it preserves manual override until explicit Resume.
 The previous `rog-helper/ui.toml` is migrated only when `config.toml` is absent; the legacy file is
 left untouched. Writes use a temporary file in the destination directory, `sync_all`, and atomic
 rename, so a failed replacement does not destroy the last good file. Malformed files fall back to
@@ -241,7 +256,8 @@ The UI is intentionally unprivileged.
 Current safety boundary:
 
 - The UI does not directly touch system DBus, sysfs, or procfs for control operations.
-- The daemon mediates control actions.
+- The daemon mediates hardware control actions; the shared display provider is invoked in the
+  active UI session for manual X11 display changes.
 - The UI enables, disables, or hides controls based on reported capabilities.
 
 Current permission reality:
@@ -313,9 +329,10 @@ wire format. See [DBUS_API.md](DBUS_API.md) for the public API and
 
 The current architecture has several known limitations:
 
-- Policy automation exists as a model in `rog-core`, but it is not wired into runtime daemon behavior
+- Policy automation applies only platform profiles and approved non-interactive battery limits;
+  fan, lighting, privileged-only, and potentially disruptive GPU fields remain skipped
 - ASUS WMI eight-point fan curves are implemented end-to-end in code for the exact verified ABI,
-  but physical apply/recovery validation and persistent editable curves remain outstanding
+  but physical apply/recovery validation remains outstanding; editable curves can be saved as presets
 - Aura/RGB lighting supports one exact asusd contract and one exact native G615JMR target contract;
   broader hardware coverage and physical target validation remain outstanding
 - The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules

@@ -109,11 +109,13 @@
   "107": "G-Helper Reference and Linux Baseline Audit",
   "108": "FanInfo",
   "109": "Hotkeys and ergonomic controls",
+  "110": "Vec",
   "111": "rog-helper v0.3.1",
   "112": "v0.3.1 Release Readiness",
   "113": "test-debian-maintainer-scripts.sh",
   "114": "Display and Power Convenience Discovery",
   "115": "test-install-dev.sh",
   "116": "check-deb-package.sh",
-  "117": "install-dev.sh"
+  "117": "install-dev.sh",
+  "118": "Self"
 }

@@ -33,6 +33,9 @@ cp -a usr %{buildroot}/
 /bin/systemctl daemon-reload >/dev/null 2>&1 || :
 /bin/udevadm control --reload-rules >/dev/null 2>&1 || :
 /bin/udevadm trigger --subsystem-match=hidraw --action=change >/dev/null 2>&1 || :
+if [ "$1" -gt 1 ]; then
+  /bin/systemctl try-restart rog-helper-privileged.service >/dev/null 2>&1 || :
+fi
 
 %preun
 if [ "$1" -eq 0 ]; then

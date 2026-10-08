@@ -297,7 +297,8 @@ Current behavior:
 - saved lighting labels are capability-checked and retained if unsupported; saved fan roles/curves are not treated as evidence of a current mapping
 - a failed save leaves the previous good file in place and reports an error toast
 - Reset synchronizes rog-helper's managed autostart entry with the default lifecycle setting
-- remembered hardware values do not trigger writes on application or daemon startup
+- remembered control preferences do not trigger writes; explicitly enabled AC/Battery rules may
+  apply the approved preset subset after a stable power-source sample
 
 ### Diagnostics
 

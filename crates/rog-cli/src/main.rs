@@ -26,6 +26,8 @@ use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
 use tracing::{info, warn};
 
+mod issue_report;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rog-helper",
@@ -124,6 +126,8 @@ enum Cmd {
     },
     /// Print a read-only Markdown record for hardware validation.
     HardwareReport,
+    /// Print a redacted, read-only Markdown issue report for copying into an issue.
+    IssueReport,
     /// Report optional privileged-helper and PolicyKit availability through rog-helperd.
     PrivilegedStatus,
     /// Semantic profile actions routed through rog-helperd.
@@ -185,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             confirm_g615jmr_physical_write,
         } => cmd_lighting_test(safe_sequence, confirm_g615jmr_physical_write).await?,
         Cmd::HardwareReport => cmd_hardware_report().await?,
+        Cmd::IssueReport => issue_report::print().await?,
         Cmd::PrivilegedStatus => cmd_privileged_status().await?,
         Cmd::Profile {
             command: ProfileCmd::Cycle,

@@ -5,7 +5,7 @@ pkgdesc="Linux-native ASUS ROG control app"
 arch=("x86_64")
 url="https://github.com/UdayaSri0/g-helper-linux"
 license=("MIT" "Apache-2.0")
-depends=("gtk4" "libadwaita" "hicolor-icon-theme")
+depends=("gtk4" "libadwaita" "hicolor-icon-theme" "dbus" "polkit" "systemd")
 makedepends=("appstream" "cargo" "desktop-file-utils" "git" "python-pillow")
 optdepends=(
   "asusd: ASUS platform profile and battery-limit control"
