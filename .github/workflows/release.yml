@@ -81,12 +81,20 @@ jobs:
           packaging/scripts/test-install-dev.sh
           packaging/scripts/test-debian-maintainer-scripts.sh
 
+      # dist/ was mistakenly committed in an older version. Always start with
+      # an empty generated-output directory so unrelated .deb files cannot
+      # contaminate release validation, checksums, or uploaded assets.
+      - name: Clean Release Output
+        run: rm -rf -- dist
+
       - name: Build Release Assets
         run: ROG_HELPER_BUILD_APPIMAGE=0 ROG_HELPER_BUILD_RPM=0 packaging/scripts/build-release-assets.sh dist
 
       - name: Validate Final Debian Package
         run: |
           packages=(dist/rog-helper_*.deb)
+          printf 'Debian release candidates:\\n'
+          printf '  %s\\n' "${packages[@]}"
           [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
           packaging/scripts/check-deb-package.sh "${packages[0]}"
           packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
