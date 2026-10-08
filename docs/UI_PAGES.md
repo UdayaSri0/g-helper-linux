@@ -45,6 +45,10 @@ For each page, it lists:
 Current behavior:
 
 - disabled quick actions remain capability-driven; remediation guidance lives on Setup & Access rather than being duplicated below Dashboard controls
+- Cooling labels detected rows as RPM endpoints. Unlabeled ACPI input remains Mapping uncertain and
+  is not asserted to be another physical fan; verified ASUS CPU/GPU/Mid semantic IDs remain separate.
+- Fan cards show Support and Access independently. Authentication required or denied never receives
+  the green authorized-control treatment. Fresh zero is displayed; stale/error samples are Unknown.
 - Quick Performance uses a two-column dashboard tile grid where space permits and wraps without changing capability gating
 - System Overview uses five columns at wide widths, an intentional 3+2 arrangement at medium widths, and one column at narrow widths; it never falls into a 4+1 layout
 - Cooling Snapshot is content-driven and ends directly after its last detected fan row

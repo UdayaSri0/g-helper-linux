@@ -6,9 +6,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use rog_core::{
-    dbus_keys, DeviceCaps, FanCaps, FanInfo, FeatureAccessState, FeatureAvailability,
-    LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed, PRIVILEGED_API_VERSION,
-    PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
+    dbus_keys, native_aura_readiness_reason, DeviceCaps, FanCaps, FanInfo, FeatureAccessState,
+    FeatureAvailability, LightingBackendKind, LightingDiagnostics, LightingMode, LightingSpeed,
+    PRIVILEGED_API_VERSION, PRIVILEGED_DBUS_INTERFACE, PRIVILEGED_DBUS_NAME, PRIVILEGED_DBUS_PATH,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{AuraProbeDiagnostics, AuraProvider};
@@ -21,6 +21,7 @@ use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::lighting::build_lighting_diagnostics;
 use rog_providers::nvidia_smi::{NvidiaSmiProbe, NvidiaSmiTelemetryProvider};
+use rog_providers::power_supply::PowerSupplySysfsProvider;
 use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::SupergfxProvider;
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
@@ -687,28 +688,11 @@ async fn cmd_setup_check() -> anyhow::Result<()> {
         FanCaps::from_fans(&[])
     });
     let cpu_caps = CpuTelemetryProvider::default().probe_caps();
-    let lighting_probe = probe_lighting_diagnostics().await;
-
-    let mut caps = DeviceCaps::unknown();
-    caps.has_aura = lighting_probe.diagnostics.rgb_backend_detected;
-    caps.has_kbd_backlight = lighting_probe.kbd_detected;
-    let sysfs_writable = lighting_probe
-        .kbd_backlight
-        .as_ref()
-        .map(KbdBacklightSysfs::can_set_brightness)
-        .unwrap_or(false);
-    caps.kbd_backlight_access = lighting_access_from_backend_flags(
-        caps.has_aura,
-        lighting_probe.kbd_backlight.is_some(),
-        sysfs_writable,
-        lighting_probe.kbd_detected,
-        lighting_probe.kbd_probe_error.as_deref(),
-    );
-    let keyboard_paths = lighting_probe
-        .kbd_backlight
-        .as_ref()
-        .map(|kbd| vec![kbd.brightness_path().display().to_string()])
-        .unwrap_or_default();
+    let (caps, lighting_diagnostics) = probe_device_caps().await?;
+    let keyboard_paths = lighting_diagnostics
+        .keyboard_backlight_brightness_path
+        .into_iter()
+        .collect();
 
     let status = probe_setup_status(
         RogHelperdProbe::ProbeSession,
@@ -932,6 +916,7 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
     }
     caps.has_kbd_backlight = lighting_probe.kbd_detected;
     caps.has_aura = lighting_probe.diagnostics.rgb_backend_detected;
+    caps.lighting_backend = lighting_probe.diagnostics.active_backend.clone();
     let sysfs_writable = lighting_probe
         .kbd_backlight
         .as_ref()
@@ -1066,8 +1051,70 @@ async fn probe_device_caps() -> anyhow::Result<(DeviceCaps, LightingDiagnostics)
             "Install and start asusd to enable charge-limit control.",
             "Charge-limit control needs asusd, but the system backend could not be reached right now.",
         );
-        caps.notes
-            .push("asusd not detected; profile/charge controls disabled.".to_string());
+        caps.notes.push(
+            "asusd not detected; profile controls unavailable; probing the standard battery threshold fallback."
+                .to_string(),
+        );
+    }
+
+    if !caps.has_charge_limit {
+        match PowerSupplySysfsProvider::default().charge_limit_control() {
+            Ok(Some(control)) => {
+                let direct = control.can_write_directly();
+                let (helper_status, helper_api_version) = probe_lighting_helper_status().await;
+                let helper_categories = helper_status
+                    .get(dbus_keys::privileged_status::CATEGORIES_AVAILABLE)
+                    .cloned()
+                    .and_then(|value| Vec::<String>::try_from(value).ok())
+                    .unwrap_or_default();
+                let helper_ready = map_bool(
+                    &helper_status,
+                    dbus_keys::privileged_status::HELPER_COMPATIBLE,
+                )
+                .unwrap_or(false)
+                    && helper_api_version == Some(PRIVILEGED_API_VERSION)
+                    && map_bool(
+                        &helper_status,
+                        dbus_keys::privileged_status::POLKIT_AVAILABLE,
+                    )
+                    .unwrap_or(false)
+                    && helper_categories
+                        .iter()
+                        .any(|category| category == "battery");
+                caps.has_charge_limit = true;
+                caps.battery_limit_backend = "power_supply_sysfs".to_string();
+                caps.battery_limit_direct_write = direct;
+                caps.battery_limit_privileged_write = !direct && helper_ready;
+                caps.battery_limit_authorization = if direct {
+                    "not_required"
+                } else if helper_ready {
+                    "required"
+                } else {
+                    "unavailable"
+                }
+                .to_string();
+                caps.charge_limit_access = FeatureAvailability::new(
+                    if direct || helper_ready {
+                        FeatureAccessState::Available
+                    } else {
+                        FeatureAccessState::PermissionDenied
+                    },
+                    if direct {
+                        "Battery charge-limit control is directly writable through the verified Linux power-supply threshold endpoint."
+                    } else if helper_ready {
+                        "Battery charge-limit control uses the verified Linux power-supply threshold endpoint and requires administrator authentication only when Apply is used."
+                    } else {
+                        "Battery charge-limit support is verified, but no authorized write route is currently available."
+                    },
+                );
+                caps.endpoints
+                    .push("power_supply:charge_control_end_threshold".to_string());
+            }
+            Ok(None) => {}
+            Err(error) => caps
+                .notes
+                .push(format!("battery charge-limit fallback rejected: {error}")),
+        }
     }
 
     let (supergfx, supergfx_connect_error) = match SupergfxProvider::connect_system().await {
@@ -1957,37 +2004,6 @@ async fn probe_lighting_helper_status() -> (HashMap<String, zbus::zvariant::Owne
         Err(_) => None,
     };
     (status, helper_api)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn native_aura_readiness_reason(
-    supported_count: usize,
-    asusd_owned: bool,
-    helper_compatible: bool,
-    lighting_category: bool,
-    polkit_available: bool,
-    alias_present: bool,
-    alias_matches: bool,
-) -> &'static str {
-    if supported_count == 0 {
-        "identity_mismatch"
-    } else if supported_count > 1 {
-        "ambiguous_candidates"
-    } else if asusd_owned {
-        "suppressed_by_asusd_owner"
-    } else if !helper_compatible {
-        "helper_incompatible_or_unreachable"
-    } else if !lighting_category {
-        "lighting_category_missing"
-    } else if !polkit_available {
-        "polkit_missing"
-    } else if !alias_present {
-        "aura_alias_missing"
-    } else if !alias_matches {
-        "aura_alias_mismatch"
-    } else {
-        "ready_for_supervised_write"
-    }
 }
 
 fn systemctl_unit_status(service: &str) -> Option<String> {
