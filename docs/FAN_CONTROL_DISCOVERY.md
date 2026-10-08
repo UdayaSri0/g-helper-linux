@@ -1,9 +1,26 @@
 # Fan-control backend discovery
 
-Date: 2026-10-02
+Date: 2026-10-06
 
 This report records a read-only investigation on the target ASUS laptop. No sysfs value was written,
 no DBus setter was called, no module was changed, and no permission was modified.
+
+## Read-only runtime snapshot (2026-10-06)
+
+The same machine was re-probed with the locally built `rog-helper fans`, `fan-caps`, and
+`hardware-report` commands. Host: ASUS ROG Strix G16 `G615JMR_G615JMR`, board `G615JMR`, BIOS
+`G615JMR.318`; Linux Mint 22.3, kernel `7.0.0-38-generic`, Cinnamon on X11. `asusd` and
+`supergfxd` are not available. The session observed four RPM rows: unlabeled `Fan 1` at 2520 RPM,
+CPU at 2500 RPM, GPU at 2800 RPM, and Mid at 3300 RPM. The three ASUS-labeled channels each exposed
+eight current curve points with `enable_mode=2`; their raw PWM values and converted percentages are
+listed by `rog-helper fans` diagnostics.
+
+The current user session reports `fan_curve_writable=false`, `direct_write_ready=false`, and
+`helper_write_ready=false`. The helper is not API-compatible with this source checkout, so this run
+did not authorize or attempt a write. Although the privileged package's PolicyKit policy can be
+inspected statically, no PolicyKit dialog was opened. Auto restoration, restart recovery, suspend,
+resume, and firmware profile transitions were not exercised. These are read-only discovery results,
+not a fan write-validation record.
 
 ## Target evidence
 
@@ -88,11 +105,11 @@ exact marker set armed for retry. `RuntimeDirectoryPreserve=yes` retains that st
 restart and stop/start cycles.
 
 Automatic daemon safety restoration tries direct Auto first, then the helper's marker-gated recovery
-method. Recovery performs the `io.github.roghelper.fans.control` PolicyKit check without allowing
-user interaction: it never opens a prompt and succeeds only when the caller is already authorized.
-It cannot enable a curve or act without a root-owned marker. A hard failure that prevents both the
-kernel and the restarted helper from running cannot be recovered in-process; firmware reboot behavior
-remains the final safety boundary.
+method. Recovery performs the dedicated `io.github.roghelper.fans.recover` PolicyKit check without
+allowing user interaction. The packaged policy permits it only for an active local session, and it
+acts only on the helper's root-owned marker. It cannot enable a curve or act without a marker. A hard
+failure that prevents both the kernel and the restarted helper from running cannot be recovered
+in-process; firmware reboot behavior remains the final safety boundary.
 
 ## Safety validation and remaining hardware work
 
@@ -110,6 +127,9 @@ remains the final safety boundary.
   readback conversion, Auto reset, fallback preference, authorization denial, helper unavailability,
   enable-last ordering, injected mid-transaction failure, readback mismatch, and rollback failure.
   Complete recovery-marker startup/idle/shutdown lifecycle coverage remains follow-up test work.
+- A read-only runtime re-probe on 2026-10-06 confirmed the target identity, four RPM rows, and
+  current eight-point readbacks, but the installed helper API mismatch left every fan write route
+  unavailable. This does not validate Apply or Auto on hardware.
 - Remaining hardware work is the supervised matrix below, especially real sysfs rollback behavior,
   helper interruption, suspend/resume, and firmware ownership interactions.
 
@@ -124,13 +144,17 @@ hysteresis was also rejected because it would fight firmware with a new active t
 
 ## Manual hardware validation still required
 
-1. Stop the privileged helper and confirm RPM telemetry plus current-curve import remain readable.
-2. Start the helper and confirm helper readiness is reported without an authorization prompt.
-3. Confirm permission-blocked verified channels report `authorization_required`.
+1. With the current helper stopped, record read-only discovery, CPU/GPU/Mid mapping, all four RPM
+   values, and all readable current curves; confirm RPM telemetry and curve import remain available.
+2. Install/start a source-compatible helper, then confirm helper readiness without an authorization
+   prompt. The currently installed helper is API-incompatible, so this step is presently blocked.
+3. Confirm permission-blocked verified channels report `authorization_required` and are not
+   advertised as writable until the compatible helper route is ready.
 4. Apply one conservative eight-point draft while thermally supervised; do not stress the machine.
 5. Record all eight temperature/PWM readbacks, raw and percentage values, and enabled state.
 6. Use Restore Auto and confirm firmware/profile-controlled behavior resumes.
-7. Cancel and deny separate PolicyKit prompts; confirm values remain unchanged and telemetry lives.
+7. First complete a successful interactive PolicyKit authorization, then separately cancel and deny
+   the prompts; confirm denial/cancellation leave values unchanged and telemetry remains available.
 8. Restart the user daemon with a curve active; confirm the helper remains the safety owner.
 9. Stop the helper cleanly with a curve active; confirm all-channel Auto and marker removal.
 10. Kill and restart the helper with its marker armed; confirm startup recovery and marker removal.

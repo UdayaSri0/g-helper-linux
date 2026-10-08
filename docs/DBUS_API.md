@@ -211,7 +211,7 @@ than daemon startup failures.
 | `Ping` | none | `b` | Reachability only |
 | `GetVersion` | none | `s` | Package version |
 | `GetCapabilities` | none | `(u, as)` | API version and implemented privileged categories: `cpu`, `battery`, `fans`, and `lighting` |
-| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects every action outside the four-item allow-list and never prompts |
+| `CanPerform` | PolicyKit action `s` | `b` | Non-interactive diagnostic check; rejects actions outside the five-item allow-list and never prompts |
 | `SetCpuTurbo` | `b` | `()` | Validated turbo toggle |
 | `SetCpuPowerMode` | `s` | `()` | Validated preset mapped to detected governor/EPP choices |
 | `SetCpuGovernor` | `s` | `()` | Value must be in every affected policy's detected allow-list |
@@ -221,7 +221,7 @@ than daemon startup failures.
 | `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
 | `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
 | `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
-| `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: requires the caller to pass a non-interactive `fans.control` PolicyKit check, acts solely on root-owned armed semantic IDs, and can only restore Auto |
+| `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: checks `fans.recover`, acts solely on root-owned armed semantic IDs in an active local session, and can only restore Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 | `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
 | `SetBatteryChargeLimit` | `t` | `t` actual value | Validates 20..=100, discovers one exact Battery threshold internally, writes, and returns readback |

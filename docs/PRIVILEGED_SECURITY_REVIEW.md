@@ -1,14 +1,8 @@
 # Privileged Architecture Security Review
 
-<<<<<<< HEAD
 This review covers the `Dev` implementation after the CPU, fan, keyboard/Aura lighting, and
 battery privilege migration. It is a source and packaging audit, not a claim of hardware
 certification. No UI or session-daemon process runs as root.
-=======
-This review covers commit `0145a261dcbfe57bea452c3256d3b8caef49ff0b` (v0.3.1 baseline) after
-the CPU, fan, keyboard/Aura lighting, and battery privilege migration. It is a source and packaging
-audit, not a claim of hardware certification. No UI or session-daemon process runs as root.
->>>>>>> origin/main
 
 ## 1. Trust boundary
 
@@ -50,7 +44,7 @@ name, path, or authorization token supplied as a method argument.
 | `Ping` | none | none; diagnostic | No write |
 | `GetVersion` | none | none; diagnostic | No write |
 | `GetCapabilities` | none | none; diagnostic | No write |
-| `CanPerform` | one of four allow-listed action IDs | non-interactive check of caller | No write and no prompt |
+| `CanPerform` | one of five allow-listed action IDs | non-interactive check of caller | No write and no prompt |
 | `SetCpuTurbo` | boolean | `cpu.control` | Fixed detected turbo attribute |
 | `SetCpuPowerMode` | `Quiet`, `Balanced`, or `Performance` | `cpu.control` | Detected governor/EPP attributes |
 | `SetCpuGovernor` | detected exact token | `cpu.control` | Detected policy governors |
@@ -60,13 +54,9 @@ name, path, or authorization token supplied as a method argument.
 | `SetFanAuto` | empty/all or fixed `asus-wmi:{cpu,gpu,mid}` ID | `fans.control` | Verified ASUS WMI reset ABI |
 | `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
-| `RecoverFansIfArmed` | none | `fans.control`, non-interactive | Auto only for exact IDs in the root-owned marker; never prompts |
+| `RecoverFansIfArmed` | none | `fans.recover`, non-interactive | Auto only for exact IDs in the root-owned marker; active local session only; never prompts |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
-<<<<<<< HEAD
-| `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction/zone | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
-=======
 | `SetAuraEffect` | allow-listed mode, two validated RGB strings, allow-listed speed/direction | `lighting.control` | Fixed ASUS Aura HID reports through `/dev/rog-helper-aura` |
->>>>>>> origin/main
 | `SetBatteryChargeLimit` | percentage | `battery.control` | One exact standard battery threshold |
 
 There is no generic filesystem-write, process-execution, GPU, PCI, kernel-module, ACPI, USB, HID,
@@ -78,6 +68,7 @@ environment, or arbitrary-byte privileged method.
 |---|---|---|
 | `io.github.roghelper.cpu.control` | all CPU writes | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.fans.control` | ASUS fan curve/Auto writes | any: no; inactive/active: `auth_admin` |
+| `io.github.roghelper.fans.recover` | marker-gated Auto recovery only | any/inactive: no; active: yes |
 | `io.github.roghelper.lighting.control` | keyboard brightness fallback and allow-listed native Aura effect | any: no; inactive/active: `auth_admin` |
 | `io.github.roghelper.battery.control` | standard threshold fallback | any: no; inactive/active: `auth_admin` |
 
@@ -152,10 +143,11 @@ across restart and stop/start cycles. Marker replacement uses a same-directory t
 file, `sync_all`, atomic rename, and directory sync. The marker records exact semantic fan IDs;
 recovery leaves that exact set armed if any recorded channel is missing or fails Auto.
 
-API v3 exposes `RecoverFansIfArmed`, which performs the `fans.control` PolicyKit check with user
-interaction disabled. It never opens an authentication prompt and only an already-authorized caller
-can ask it to consume the root-owned marker and return those allow-listed channels to Auto. It cannot
-enable custom control.
+API v3 exposes `RecoverFansIfArmed`, which performs the dedicated `fans.recover` PolicyKit check
+with user interaction disabled. The packaged policy permits this narrow Auto-only operation for an
+active local session, so daemon recovery does not depend on prior interactive authorization or a
+reused D-Bus sender identity. The method can consume only the root-owned marker and return those
+allow-listed channels to Auto. It cannot enable custom control.
 
 Deliberate exceptions:
 

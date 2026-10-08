@@ -20,12 +20,11 @@ use rog_core::{
     parse_legacy_ui_config, validate_config, AppConfig, AuthorizationState, BatteryState,
     CloseBehavior, ContractStatus, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess,
     CpuControlKind, CpuCoreTelemetry, CpuPathAccess, CpuTelemetry, DependencyKind, DependencyState,
-    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanCurve,
+    DependencyStatus, DeviceCaps, ErrorCategory, FanCaps, FanControlMode, FanCurve, FanCurvePolicy,
     FanCurvePreset, FanCurveReadback, FanDomain, FanInfo, FanMappingConfidence, FanPoint, FanState,
-    FanTelemetry, FeatureAccessState, FeatureAvailability,
-    GpuSwitchState, PermissionKind, PermissionState, PermissionStatus, PowerSource,
-    PrivilegedCategory, PrivilegedStatus, RgbColor, SetupIssue, SetupSeverity, SetupStatus,
-    TelemetrySnapshot, TopProcessMem,
+    FanTelemetry, FeatureAccessState, FeatureAvailability, GpuSwitchState, PermissionKind,
+    PermissionState, PermissionStatus, PowerSource, PrivilegedCategory, PrivilegedStatus, RgbColor,
+    SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -225,8 +224,6 @@ struct SharedUiState {
     battery_limit: Option<u8>,
     battery_limit_edit: EditableDraft<u8>,
     keyboard_brightness_edit: EditableDraft<u64>,
-<<<<<<< HEAD
-=======
     cpu_turbo_edit: EditableDraft<bool>,
     cpu_power_mode_edit: EditableDraft<String>,
     cpu_freq_limits_edit: EditableDraft<(Option<u32>, Option<u32>)>,
@@ -235,7 +232,6 @@ struct SharedUiState {
     profile_edit: EditableDraft<String>,
     gpu_mode_edit: EditableDraft<String>,
     fan_sync_edit: EditableDraft<bool>,
->>>>>>> origin/main
     lighting: Option<LightingInfo>,
     fan_state: FanState,
     pending_profile: Option<String>,
@@ -294,8 +290,6 @@ impl Default for SharedUiState {
             battery_limit: None,
             battery_limit_edit: EditableDraft::default(),
             keyboard_brightness_edit: EditableDraft::default(),
-<<<<<<< HEAD
-=======
             cpu_turbo_edit: EditableDraft::default(),
             cpu_power_mode_edit: EditableDraft::default(),
             cpu_freq_limits_edit: EditableDraft::default(),
@@ -304,7 +298,6 @@ impl Default for SharedUiState {
             profile_edit: EditableDraft::default(),
             gpu_mode_edit: EditableDraft::default(),
             fan_sync_edit: EditableDraft::default(),
->>>>>>> origin/main
             lighting: None,
             fan_state: FanState::from_fans(Vec::new()),
             pending_profile: None,
@@ -4274,14 +4267,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     {
         let shared = shared.clone();
         fan_sync_switch.connect_state_set(move |_, enabled| {
-            if let Err(error) = persist_settings_change(&shared, |settings| {
-                settings.controls.fan_sync_enabled = enabled;
-            }) {
-                if let Ok(mut st) = shared.lock() {
-                    st.pending_toast = Some((error, true));
-                }
-                return glib::Propagation::Stop;
-            }
             if let Ok(mut st) = shared.lock() {
                 st.fan_sync_edit.set_user_draft(enabled);
                 if let Some(enabled) = st.fan_sync_edit.begin_apply() {
@@ -4471,6 +4456,24 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     curve_status.add_css_class("dim-label");
     let curve_preview = CurvePreview::new();
     let curve_target_fan = Rc::new(RefCell::new(None::<String>));
+    let curve_temp_inputs = Rc::new(
+        (0..8)
+            .map(|_| gtk::SpinButton::with_range(30.0, 100.0, 1.0))
+            .collect::<Vec<_>>(),
+    );
+    let curve_duty_inputs = Rc::new(
+        (0..8)
+            .map(|_| gtk::SpinButton::with_range(0.0, 100.0, 1.0))
+            .collect::<Vec<_>>(),
+    );
+    for (index, (temp, duty)) in curve_temp_inputs
+        .iter()
+        .zip(curve_duty_inputs.iter())
+        .enumerate()
+    {
+        temp.set_value([35.0, 45.0, 55.0, 65.0, 75.0, 85.0, 90.0, 95.0][index]);
+        duty.set_value([15.0, 25.0, 35.0, 50.0, 70.0, 90.0, 100.0, 100.0][index]);
+    }
     let curve_source = gtk::Label::new(Some("Draft source: Balanced preset"));
     curve_source.set_xalign(0.0);
     curve_source.add_css_class("dim-label");
@@ -4509,16 +4512,71 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     curve_card.append(&curve_status);
     curve_card.append(&curve_source);
     curve_card.append(&curve_presets);
+    let curve_editor = gtk::Grid::new();
+    curve_editor.set_column_spacing(8);
+    curve_editor.set_row_spacing(4);
+    curve_editor.attach(&gtk::Label::new(Some("Point")), 0, 0, 1, 1);
+    curve_editor.attach(&gtk::Label::new(Some("Temperature (°C)")), 1, 0, 1, 1);
+    curve_editor.attach(&gtk::Label::new(Some("Fan duty (%)")), 2, 0, 1, 1);
+    for index in 0_usize..8 {
+        curve_editor.attach(
+            &gtk::Label::new(Some(&format!("{}", index + 1))),
+            0,
+            (index + 1) as i32,
+            1,
+            1,
+        );
+        curve_editor.attach(&curve_temp_inputs[index], 1, (index + 1) as i32, 1, 1);
+        curve_editor.attach(&curve_duty_inputs[index], 2, (index + 1) as i32, 1, 1);
+    }
+    curve_card.append(&curve_editor);
     curve_card.append(curve_preview.widget());
     curve_card.append(&curve_points);
+    let curve_validation = gtk::Label::new(Some("Draft curve is valid."));
+    curve_validation.set_xalign(0.0);
+    curve_validation.set_wrap(true);
+    curve_validation.add_css_class("dim-label");
+    curve_card.append(&curve_validation);
     curve_card.append(&curve_actions);
     fans_root.append(&curve_card);
+    {
+        let preview = curve_preview.clone();
+        let points_label = curve_points.clone();
+        let validation_label = curve_validation.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let refresh = Rc::new(move || {
+            let points = temps
+                .iter()
+                .zip(duties.iter())
+                .map(|(temp, duty)| (temp.value_as_int() as u8, duty.value_as_int() as u8))
+                .collect::<Vec<_>>();
+            preview.set_points(points.clone());
+            points_label.set_text(&fan_curve_points_text(&points));
+            match validate_ui_fan_curve(&points) {
+                Ok(()) => validation_label.set_text("Draft curve is valid; hardware is unchanged."),
+                Err(error) => validation_label.set_text(&format!("Invalid draft: {error}")),
+            }
+        });
+        for input in curve_temp_inputs.iter().chain(curve_duty_inputs.iter()) {
+            let refresh = refresh.clone();
+            input.connect_value_changed(move |_| refresh());
+        }
+    }
     {
         let shared = shared.clone();
         let preview = curve_preview.clone();
         let target_fan = curve_target_fan.clone();
+        let validation_label = curve_validation.clone();
         curve_apply.connect_clicked(move |_| {
             if let Ok(mut state) = shared.lock() {
+                let points = preview.points();
+                if let Err(error) = validate_ui_fan_curve(&points) {
+                    state.action_error = Some(format!("Invalid fan-curve draft: {error}"));
+                    validation_label.set_text(&format!("Invalid draft: {error}"));
+                    state.mark_render_dirty();
+                    return;
+                }
                 let imported_target = target_fan.borrow().clone();
                 let fan_id = if let Some(imported_target) = imported_target {
                     state
@@ -4526,9 +4584,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                         .fans
                         .iter()
                         .find(|fan| {
-                            fan.id == imported_target
-                                && fan.supports_curve
-                                && fan.controllable
+                            fan.id == imported_target && fan.supports_curve && fan.controllable
                         })
                         .map(|fan| fan.id.clone())
                 } else {
@@ -4540,10 +4596,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                         .map(|fan| fan.id.clone())
                 };
                 if let Some(fan_id) = fan_id {
-                    state.pending_fan_action = Some(PendingFanAction::Curve {
-                        fan_id,
-                        points: preview.points(),
-                    });
+                    state.pending_fan_action = Some(PendingFanAction::Curve { fan_id, points });
                     state.action_error = None;
                 }
             }
@@ -4558,9 +4611,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let source = curve_source.clone();
         let points_label = curve_points.clone();
         let target_fan = curve_target_fan.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
         button.connect_clicked(move |_| {
             let points = fan_curve_preset(name);
             preview.set_points(points.clone());
+            for (index, (temp, duty)) in points.iter().enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
             *target_fan.borrow_mut() = None;
             source.set_text(&format!("Draft source: {} preset", fan_preset_label(name)));
             points_label.set_text(&fan_curve_points_text(&points));
@@ -4572,6 +4631,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let source = curve_source.clone();
         let points_label = curve_points.clone();
         let target_fan = curve_target_fan.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
+        let validation_label = curve_validation.clone();
         curve_import.connect_clicked(move |_| {
             let imported = shared.lock().ok().and_then(|state| {
                 state
@@ -4593,8 +4655,20 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     })
             });
             if let Some((fan_id, enable_mode, points)) = imported {
-                preview.set_points(points.clone());
+                if points.len() == 8 && validate_ui_fan_curve(&points).is_ok() {
+                    for (index, (temp, duty)) in points.iter().enumerate() {
+                        temps[index].set_value(f64::from(*temp));
+                        duties[index].set_value(f64::from(*duty));
+                    }
+                } else {
+                    preview.set_points(points.clone());
+                    points_label.set_text(&fan_curve_points_text(&points));
+                }
                 *target_fan.borrow_mut() = Some(fan_id.clone());
+                validation_label.set_text(&match validate_ui_fan_curve(&points) {
+                    Ok(()) => "Imported draft is valid; hardware is unchanged.".to_string(),
+                    Err(error) => format!("Imported curve is not safe to apply: {error}"),
+                });
                 source.set_text(&format!(
                     "Draft source: current backend curve ({fan_id}, enable mode {enable_mode}); importing did not write hardware"
                 ));
@@ -4607,9 +4681,15 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let source = curve_source.clone();
         let points_label = curve_points.clone();
         let target_fan = curve_target_fan.clone();
+        let temps = curve_temp_inputs.clone();
+        let duties = curve_duty_inputs.clone();
         curve_reset.connect_clicked(move |_| {
             let points = fan_curve_preset("balanced");
             preview.set_points(points.clone());
+            for (index, (temp, duty)) in points.iter().enumerate() {
+                temps[index].set_value(f64::from(*temp));
+                duties[index].set_value(f64::from(*duty));
+            }
             *target_fan.borrow_mut() = None;
             source.set_text("Draft source: Balanced preset (draft reset only; hardware unchanged)");
             points_label.set_text(&fan_curve_points_text(&points));
@@ -4885,8 +4965,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             battery_limit,
             battery_limit_edit,
             keyboard_brightness_edit,
-<<<<<<< HEAD
-=======
             cpu_turbo_edit,
             cpu_power_mode_edit,
             cpu_freq_limits_edit,
@@ -4895,7 +4973,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             profile_edit,
             gpu_mode_edit,
             fan_sync_edit,
->>>>>>> origin/main
             lighting,
             fan_state,
             lighting_error_txt,
@@ -4948,8 +5025,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.battery_limit,
                 st.battery_limit_edit.clone(),
                 st.keyboard_brightness_edit.clone(),
-<<<<<<< HEAD
-=======
                 st.cpu_turbo_edit.clone(),
                 st.cpu_power_mode_edit.clone(),
                 st.cpu_freq_limits_edit.clone(),
@@ -4958,7 +5033,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.profile_edit.clone(),
                 st.gpu_mode_edit.clone(),
                 st.fan_sync_edit.clone(),
->>>>>>> origin/main
                 st.lighting.clone(),
                 st.fan_state.clone(),
                 st.lighting_error.clone(),
@@ -5575,6 +5649,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
         curve_preview.set_enabled(fan_state.caps.fan_curve_writable);
+        for input in curve_temp_inputs.iter().chain(curve_duty_inputs.iter()) {
+            input.set_sensitive(fan_state.caps.fan_curve_writable);
+        }
         for button in [&curve_quiet, &curve_balanced, &curve_performance] {
             button.set_sensitive(fan_state.caps.fan_curve_writable);
         }
@@ -6919,15 +6996,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let reported_identity = LightingControlIdentity::from(l);
             let identity_changed =
                 lighting_draft_identity.borrow().as_ref() != Some(&reported_identity);
-<<<<<<< HEAD
-            let draft_is_clean =
-                lighting_draft.borrow().as_ref() == lighting_baseline.borrow().as_ref();
-            let draft_matches_reported = lighting_draft
-                .borrow()
-                .as_ref()
-                .is_some_and(|draft| draft == &LightingDraft::from_info(l));
-=======
->>>>>>> origin/main
             let dashboard_brightness_dirty = keyboard_brightness_edit.is_dirty();
             if dashboard_brightness_dirty {
                 if let (Some(brightness), Some(draft)) = (
@@ -6937,13 +7005,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     draft.brightness = brightness;
                 }
             }
-<<<<<<< HEAD
-            let should_sync_draft = dashboard_brightness_dirty
-                || identity_changed
-                || lighting_baseline.borrow().is_none()
-                || draft_is_clean
-                || draft_matches_reported;
-=======
             let reported_draft = LightingDraft::from_info(l);
             let should_sync_draft = should_sync_lighting_draft(
                 lighting_baseline.borrow().as_ref(),
@@ -6952,7 +7013,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 identity_changed,
                 dashboard_brightness_dirty,
             );
->>>>>>> origin/main
             if successful_apply {
                 last_lighting_apply_success.set(lighting_apply_success_revision);
             }
@@ -7555,17 +7615,34 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     .and_then(|mut st| st.pending_fan_action.take());
                 if let Some(action) = pending_fan_action {
                     let sync_action = matches!(action, PendingFanAction::Sync(_));
+                    let sync_setting = match &action {
+                        PendingFanAction::Sync(enabled) => Some(*enabled),
+                        _ => None,
+                    };
                     match apply_fan_action(action).await {
                         Ok(()) => {
+                            let mut success_message = "Fan setting applied".to_string();
+                            if let Some(enabled) = sync_setting {
+                                if let Err(error) = persist_settings_change(&shared, |settings| {
+                                    settings.controls.fan_sync_enabled = enabled;
+                                }) {
+                                    success_message = format!(
+                                        "Fan sync changed, but its preference could not be saved: {error}"
+                                    );
+                                }
+                            }
                             if let Ok(mut st) = shared.lock() {
                                 st.action_error = None;
-                                st.pending_toast = Some(("Fan setting applied".to_string(), false));
+                                st.pending_toast = Some((success_message, false));
                             }
                         }
                         Err(e) => {
                             if let Ok(mut st) = shared.lock() {
                                 if sync_action {
-                                    st.fan_sync_edit.apply_failed();
+                                    st.fan_sync_edit.reset();
+                                    let reported_sync = st.fan_state.sync_enabled;
+                                    st.settings.controls.fan_sync_enabled = reported_sync;
+                                    st.pending_config_save = Some(st.settings.clone());
                                 }
                                 st.action_error = Some(e.clone());
                                 st.pending_toast = Some((e, true));
@@ -7764,8 +7841,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                     .filter(|info| info.supports_brightness)
                                     .map(|info| info.brightness),
                             );
-<<<<<<< HEAD
-=======
                             st.cpu_turbo_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.turbo_boost_enabled),
                             );
@@ -7781,7 +7856,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                             st.cpu_epp_edit.update_reported(
                                 cpu.as_ref().and_then(|data| data.epp.clone()),
                             );
->>>>>>> origin/main
                             st.lighting = lighting;
                             st.fan_sync_edit
                                 .update_reported(Some(fan_state.sync_enabled));
@@ -12985,6 +13059,25 @@ fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
         .collect()
 }
 
+fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
+    let curve = FanCurve {
+        domain: FanDomain::Cpu,
+        points: points
+            .iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c: *temp_c,
+                duty_percent: *duty_percent,
+            })
+            .collect(),
+    };
+    curve
+        .validate_safe(FanCurvePolicy {
+            exact_point_count: Some(8),
+            ..FanCurvePolicy::default()
+        })
+        .map_err(|error| error.to_string())
+}
+
 fn fan_preset_label(name: &str) -> &'static str {
     match name {
         "quiet" => FanCurvePreset::Quiet.label(),
@@ -13084,7 +13177,10 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
                     .points
                     .iter()
                     .zip(&readback.raw_pwm)
-                    .map(|(point, raw)| format!("{}C/{}%[raw={raw}]", point.temp_c, point.duty_percent))
+                    .map(|(point, raw)| format!(
+                        "{}C/{}%[raw={raw}]",
+                        point.temp_c, point.duty_percent
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -13658,6 +13754,22 @@ mod tests {
         T: Into<Value<'static>>,
     {
         OwnedValue::try_from(value.into()).expect("OwnedValue conversion should succeed")
+    }
+
+    #[test]
+    fn fan_curve_ui_accepts_only_safe_eight_point_drafts_and_presets() {
+        for preset in ["quiet", "balanced", "performance"] {
+            assert!(validate_ui_fan_curve(&fan_curve_preset(preset)).is_ok());
+        }
+        let mut invalid = fan_curve_preset("balanced");
+        invalid.pop();
+        assert!(validate_ui_fan_curve(&invalid).is_err());
+        let mut invalid = fan_curve_preset("balanced");
+        invalid[1].0 = invalid[0].0;
+        assert!(validate_ui_fan_curve(&invalid).is_err());
+        let mut invalid = fan_curve_preset("balanced");
+        invalid[5].1 = 50;
+        assert!(validate_ui_fan_curve(&invalid).is_err());
     }
 
     #[test]
@@ -14595,8 +14707,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn fan_sync_draft_survives_stale_poll_while_apply_is_pending() {
         let mut sync = EditableDraft::default();
         sync.update_reported(Some(false));
@@ -14613,7 +14723,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> origin/main
     fn editable_draft_reset_discards_pending_change() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));
@@ -14634,8 +14743,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn cpu_quick_control_drafts_survive_poll_after_focus_loss() {
         let mut turbo = EditableDraft::default();
         let mut preset = EditableDraft::default();
@@ -14685,7 +14792,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> origin/main
     fn clean_programmatic_sync_does_not_create_a_draft() {
         let mut edit = EditableDraft::default();
         edit.update_reported(Some(80_u8));

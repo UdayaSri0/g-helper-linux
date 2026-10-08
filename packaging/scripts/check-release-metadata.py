@@ -189,6 +189,7 @@ def main() -> int:
         "io.github.roghelper.cpu.control",
         "io.github.roghelper.battery.control",
         "io.github.roghelper.fans.control",
+        "io.github.roghelper.fans.recover",
         "io.github.roghelper.lighting.control",
     }
     require(action_ids == expected_actions, "privileged PolicyKit action set drift")
@@ -200,8 +201,12 @@ def main() -> int:
         defaults = action.find("defaults")
         require(defaults is not None, f"{action_id}: missing PolicyKit defaults")
         require(defaults.findtext("allow_any") == "no", f"{action_id}: arbitrary users must not be authorized")
-        require(defaults.findtext("allow_inactive") == "auth_admin", f"{action_id}: inactive policy drift")
-        require(defaults.findtext("allow_active") == "auth_admin", f"{action_id}: retained authorization is forbidden")
+        if action_id == "io.github.roghelper.fans.recover":
+            require(defaults.findtext("allow_inactive") == "no", f"{action_id}: inactive recovery must be denied")
+            require(defaults.findtext("allow_active") == "yes", f"{action_id}: active recovery must be non-interactive")
+        else:
+            require(defaults.findtext("allow_inactive") == "auth_admin", f"{action_id}: inactive policy drift")
+            require(defaults.findtext("allow_active") == "auth_admin", f"{action_id}: retained authorization is forbidden")
 
     resource_path = ROOT / "crates/rog-ui/resources/rog-ui.gresource.xml"
     resource_root = ET.parse(resource_path).getroot()

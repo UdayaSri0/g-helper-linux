@@ -377,9 +377,10 @@ Current page. The internal page identifier remains `fans` for compatibility.
 - 5/10/15 minute boost actions remain disabled because no verified manual-percent backend exists
 - Return to Auto action
 - a conservative eight-point preview/apply flow when the verified ASUS WMI curve backend is
-  available, including local Quiet/Balanced/Performance drafts, read-only Import Current, visible
-  draft provenance, Reset Draft, and a separate Return to Auto action; the preview is disabled when
-  curve support is unavailable
+  available, including eight bounded editable temperature/duty rows, local
+  Quiet/Balanced/Performance drafts, read-only Import Current, visible draft provenance, shared
+  safety validation before queueing Apply, Reset Draft, and a separate Return to Auto action; the
+  editor is read-only/disabled when no writable route is available
 - individual fan cards with RPM, backend, read-only/controllable badges, endpoint details, notes, and warnings
 - copyable fan diagnostics with IDs, RPM, percentages, endpoints, notes, and warnings
 - collapsed diagnostics section by default

@@ -271,15 +271,15 @@ fn aggregate_fan_auto_failures(failures: Vec<(String, RogError)>) -> Option<RogE
     if failures.is_empty() {
         return None;
     }
-    let permission_only = failures
+    let permission_blocked = failures
         .iter()
-        .all(|(_, error)| matches!(error, RogError::PermissionDenied(_)));
+        .any(|(_, error)| matches!(error, RogError::PermissionDenied(_)));
     let details = failures
         .into_iter()
         .map(|(fan_id, error)| format!("{fan_id}: {error}"))
         .collect::<Vec<_>>()
         .join("; ");
-    Some(if permission_only {
+    Some(if permission_blocked {
         RogError::PermissionDenied(format!(
             "fan Auto reset requires privileged access: {details}"
         ))
@@ -696,18 +696,18 @@ fn hwmon_device_identity(hwpath: &Path) -> Option<PathBuf> {
 
 fn verified_asus_curve_layout(path: &Path, channel: u32) -> bool {
     let enable = path.join(format!("pwm{channel}_enable"));
-    if validate_asus_curve_endpoint(&enable).is_err() || !matches!(read_u32(&enable), Some(1 | 2)) {
+    // Discovery verifies the stable endpoint layout and identity, not mutable
+    // values. Value validity belongs to readback/snapshot so a malformed raw
+    // value produces a precise pre-write failure instead of hiding the channel.
+    if validate_asus_curve_endpoint(&enable).is_err() {
         return false;
     }
-    let expected_points_are_valid = (1..=ASUS_WMI_CURVE_POINTS).all(|point| {
+    let expected_points_exist = (1..=ASUS_WMI_CURVE_POINTS).all(|point| {
         let temp = path.join(format!("pwm{channel}_auto_point{point}_temp"));
         let pwm = path.join(format!("pwm{channel}_auto_point{point}_pwm"));
-        validate_asus_curve_endpoint(&temp).is_ok()
-            && validate_asus_curve_endpoint(&pwm).is_ok()
-            && matches!(read_u32(&temp), Some(0..=100))
-            && matches!(read_u32(&pwm), Some(0..=255))
+        validate_asus_curve_endpoint(&temp).is_ok() && validate_asus_curve_endpoint(&pwm).is_ok()
     });
-    if !expected_points_are_valid {
+    if !expected_points_exist {
         return false;
     }
     let Ok(entries) = fs::read_dir(path) else {
@@ -878,11 +878,13 @@ fn select_verified_channels<'a>(
 }
 
 fn write_asus_curve_transaction(channel: &AsusCurveChannel, curve: &FanCurve) -> RogResult<()> {
-    let current = read_asus_curve(channel).ok();
+    // Snapshot all eight raw values before the first write. A read failure
+    // aborts the request instead of silently falling back to lossy percents.
+    let current = read_asus_curve(channel)?;
     write_asus_curve_transaction_with(
         channel,
         curve,
-        current.as_ref(),
+        Some(&current),
         write_and_verify,
         reset_asus_channel_to_auto,
     )
@@ -1510,6 +1512,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn incomplete_raw_snapshot_aborts_before_any_curve_write() {
+        let (root, curve_path) = verified_asus_fixture("snapshot-failure");
+        let pwm8 = curve_path.join("pwm1_auto_point8_pwm");
+        fs::write(&pwm8, "not-a-number\n").unwrap();
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read(&path).unwrap()))
+            .collect::<Vec<_>>();
+        let requested = FanCurve {
+            domain: FanDomain::Cpu,
+            points: (0..ASUS_WMI_CURVE_POINTS)
+                .map(|point| FanPoint {
+                    temp_c: 35 + point as u8 * 5,
+                    duty_percent: 20 + point as u8 * 10,
+                })
+                .collect(),
+        };
+
+        let error = HwmonTelemetryProvider::new(root.clone())
+            .set_fan_curve("asus-wmi:cpu", requested)
+            .expect_err("an incomplete raw snapshot must stop the write");
+        assert!(error.to_string().contains("readback is unavailable"));
+        for (path, contents) in before {
+            assert_eq!(fs::read(path).unwrap(), contents);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn verified_mapping_rejects_missing_or_wrong_label() {
         for (name, label) in [("missing-label", None), ("wrong-label", Some("gpu_fan\n"))] {
             let (root, _) = verified_asus_fixture(name);
@@ -1621,7 +1654,7 @@ mod tests {
             ),
         ])
         .expect("mixed failures must be reported");
-        assert!(matches!(mixed, RogError::Unexpected(_)));
+        assert!(matches!(mixed, RogError::PermissionDenied(_)));
         assert!(aggregate_fan_auto_failures(Vec::new()).is_none());
     }
 

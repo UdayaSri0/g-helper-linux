@@ -493,7 +493,7 @@ fn fan_permission_status(caps: &FanCaps) -> PermissionStatus {
     if caps.has_individual_fan_control
         || caps.has_fan_manual_percent
         || caps.has_fan_manual_rpm_target
-        || caps.has_fan_curves
+        || caps.fan_curve_writable
     {
         return PermissionStatus {
             kind: PermissionKind::FanControls,
@@ -739,6 +739,20 @@ mod tests {
         let mut caps = FanCaps::from_fans(&[]);
         caps.has_fan_reading = true;
         caps.fan_count = 2;
+        assert_eq!(
+            fan_permission_status(&caps).state,
+            PermissionState::ReadOnly
+        );
+    }
+
+    #[test]
+    fn readable_curves_without_a_write_route_are_read_only() {
+        let mut caps = FanCaps::from_fans(&[]);
+        caps.has_fan_reading = true;
+        caps.has_fan_curves = true;
+        caps.fan_curve_readable = true;
+        caps.fan_curve_writable = false;
+        caps.fan_count = 3;
         assert_eq!(
             fan_permission_status(&caps).state,
             PermissionState::ReadOnly

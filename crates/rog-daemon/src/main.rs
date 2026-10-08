@@ -159,6 +159,22 @@ async fn restore_fans_without_prompt(hwmon: &HwmonTelemetryProvider) -> rog_core
     }
 }
 
+fn unresolved_owned_fan_curves(owned_fan_ids: &[String], fans: &[FanInfo]) -> Vec<String> {
+    owned_fan_ids
+        .iter()
+        .filter(|fan_id| {
+            !fans.iter().any(|fan| {
+                fan.id == **fan_id
+                    && fan
+                        .curve_readback
+                        .as_ref()
+                        .is_some_and(|readback| readback.enable_mode != 1)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
     use rog_core::PrivilegedErrorCode as Code;
     match error.code {
@@ -223,6 +239,7 @@ struct ControlState {
     battery_limit: Option<BatteryLimitPercent>,
     fan_sync_enabled: bool,
     fan_mode: FanControlMode,
+    fan_curve_owned_fan_ids: Vec<String>,
     fan_last_action: Option<String>,
     fan_boost_until_ms: Option<u64>,
 }
@@ -235,6 +252,7 @@ impl Default for ControlState {
             battery_limit: None,
             fan_sync_enabled: false,
             fan_mode: FanControlMode::Auto,
+            fan_curve_owned_fan_ids: Vec::new(),
             fan_last_action: None,
             fan_boost_until_ms: None,
         }
@@ -691,9 +709,29 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        let remaining_owned = {
+            let mut control = self.state.control.write().expect("rwlock poisoned");
+            if let Some(fan_id) = target.filter(|fan_id| !fan_id.trim().is_empty()) {
+                control
+                    .fan_curve_owned_fan_ids
+                    .retain(|owned| owned != fan_id);
+            } else {
+                control.fan_curve_owned_fan_ids.clear();
+            }
+            control.fan_curve_owned_fan_ids.clone()
+        };
+        let next_mode = if remaining_owned.is_empty() {
+            FanControlMode::Auto
+        } else {
+            FanControlMode::Curve
+        };
         self.update_fan_control_state(
-            FanControlMode::Auto,
-            "Returned fan control to Auto/BIOS mode.",
+            next_mode,
+            if next_mode == FanControlMode::Auto {
+                "Returned fan control to Auto/BIOS mode."
+            } else {
+                "Returned the selected fan to Auto; another daemon-owned curve remains active."
+            },
             None,
         );
         Ok(())
@@ -766,6 +804,16 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        {
+            let mut control = self.state.control.write().expect("rwlock poisoned");
+            if !control
+                .fan_curve_owned_fan_ids
+                .iter()
+                .any(|owned| owned == fan_id)
+            {
+                control.fan_curve_owned_fan_ids.push(fan_id.to_string());
+            }
+        }
         self.update_fan_control_state(FanControlMode::Curve, "Applied fan curve.", None);
         Ok(())
     }
@@ -859,6 +907,12 @@ impl RogHelperDaemon {
             self.set_fan_state(state);
         }
         result.map_err(map_rog_error_to_fdo)?;
+        self.state
+            .control
+            .write()
+            .expect("rwlock poisoned")
+            .fan_curve_owned_fan_ids
+            .clear();
         self.update_fan_control_state(
             FanControlMode::Auto,
             "Reset all controllable fans to Auto/BIOS mode.",
@@ -2109,21 +2163,32 @@ async fn main() -> anyhow::Result<()> {
                 match hwmon.fan_state() {
                     Ok(fan_state) => {
                         let mut current_mode = daemon.read_control_state().fan_mode;
-                        let readbacks = fan_state
-                            .fans
-                            .iter()
-                            .filter_map(|fan| fan.curve_readback.as_ref())
-                            .collect::<Vec<_>>();
-                        if current_mode == FanControlMode::Curve
-                            && !readbacks.is_empty()
-                            && readbacks.iter().all(|readback| readback.enable_mode != 1)
-                        {
-                            daemon.update_fan_control_state(
-                                FanControlMode::Auto,
-                                "Backend readback returned to Auto/BIOS mode.",
-                                None,
-                            );
-                            current_mode = FanControlMode::Auto;
+                        if current_mode == FanControlMode::Curve {
+                            let old_owned = daemon
+                                .read_control_state()
+                                .fan_curve_owned_fan_ids;
+                            if !old_owned.is_empty() {
+                                let remaining = unresolved_owned_fan_curves(
+                                    &old_owned,
+                                    &fan_state.fans,
+                                );
+                                daemon
+                                    .state
+                                    .control
+                                    .write()
+                                    .expect("rwlock poisoned")
+                                    .fan_curve_owned_fan_ids = remaining.clone();
+                                if remaining.is_empty() {
+                                    daemon.update_fan_control_state(
+                                        FanControlMode::Auto,
+                                        "All daemon-owned fan channels read back in Auto/BIOS mode.",
+                                        None,
+                                    );
+                                    current_mode = FanControlMode::Auto;
+                                } else {
+                                    current_mode = FanControlMode::Curve;
+                                }
+                            }
                         }
                         let temp_missing = telemetry.cpu_temp_c.is_none() && telemetry.gpu_temp_c.is_none();
                         let critical_temp = telemetry
@@ -2146,6 +2211,13 @@ async fn main() -> anyhow::Result<()> {
                             };
                             match restore_fans_without_prompt(&hwmon).await {
                                 Ok(()) => {
+                                    daemon
+                                        .state
+                                        .control
+                                        .write()
+                                        .expect("rwlock poisoned")
+                                        .fan_curve_owned_fan_ids
+                                        .clear();
                                     warnings.push(format!(
                                         "fan safety restore: {reason}; returned fans to Auto/BIOS mode"
                                     ));
@@ -2157,8 +2229,17 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 Err(err) => {
                                     warnings.push(format!("fan safety restore failed after {reason}: {err}"));
+                                    let failed_mode = if daemon
+                                        .read_control_state()
+                                        .fan_curve_owned_fan_ids
+                                        .is_empty()
+                                    {
+                                        FanControlMode::ReadOnly
+                                    } else {
+                                        FanControlMode::Curve
+                                    };
                                     daemon.update_fan_control_state(
-                                        FanControlMode::ReadOnly,
+                                        failed_mode,
                                         format!("Safety restore failed after {reason}: {err}"),
                                         None,
                                     );
@@ -5159,6 +5240,52 @@ mod tests {
             .and_then(|value| <&str>::try_from(value).ok())
             .unwrap_or_default()
             .to_string()
+    }
+
+    #[test]
+    fn owned_curve_reconciliation_only_drops_channels_confirmed_auto() {
+        let mut cpu = FanInfo::read_only_from_telemetry(
+            0,
+            &FanTelemetry {
+                hwmon_device: "asus".to_string(),
+                hwmon_path: "fixture".to_string(),
+                input_path: "fixture/fan1_input".to_string(),
+                raw_label: Some("cpu_fan".to_string()),
+                display_label: "CPU Fan".to_string(),
+                rpm: Some(2_000),
+            },
+        );
+        cpu.id = "asus-wmi:cpu".to_string();
+        cpu.curve_readback = Some(rog_core::FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: Vec::new(),
+            },
+            raw_pwm: Vec::new(),
+            enable_mode: 2,
+        });
+        let mut gpu = FanInfo {
+            id: "asus-wmi:gpu".to_string(),
+            ..cpu.clone()
+        };
+        gpu.curve_readback.as_mut().unwrap().enable_mode = 1;
+        let owned = vec!["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()];
+
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu.clone()]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu.clone(), gpu]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
+        assert!(
+            unresolved_owned_fan_curves(&["asus-wmi:cpu".to_string()], &[cpu.clone()]).is_empty()
+        );
+        assert_eq!(
+            unresolved_owned_fan_curves(&owned, &[cpu]),
+            vec!["asus-wmi:gpu".to_string()]
+        );
     }
 
     fn rows_from_value(value: &OwnedValue) -> Vec<HashMap<String, OwnedValue>> {

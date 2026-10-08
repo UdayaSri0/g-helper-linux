@@ -47,6 +47,26 @@ Current source requires helper API v3 and validates the complete packaged payloa
 This record describes the implementation allow-list and existing read-only discovery evidence. It
 does not satisfy the validation requirements below and must not be advertised as working hardware.
 
+### Structured fan discovery record (read-only; no physical writes)
+
+| Field | G615JMR target observation on 2026-10-06 |
+| --- | --- |
+| Model / DMI / BIOS | ASUS ROG Strix G16 `G615JMR_G615JMR`; board `G615JMR`; BIOS `G615JMR.318` |
+| Distro / kernel / desktop | Linux Mint 22.3; `7.0.0-38-generic`; Cinnamon on X11 |
+| Fan backend | In-tree `asus_wmi` / `asus_custom_fan_curve`; privileged route unavailable in this session |
+| Detected channels | CPU, GPU, Mid with kernel hardware labels, plus one separate unlabeled ACPI RPM row |
+| RPM telemetry | Read on all four rows; current snapshot 2500 / 2800 / 3300 / 2520 RPM (CPU / GPU / Mid / unlabeled) |
+| Curve read | Three ASUS channels, eight paired points each; `enable_mode=2`; raw PWM and converted percentages available |
+| Curve write | Not available in this runtime: current session reports `fan_curve_writable=false`, `direct_write_ready=false`, `helper_write_ready=false` |
+| Auto restoration | Implemented against the verified driver command; not physically tested |
+| PolicyKit | Policy is installed/static source; no prompt/write attempted because installed helper API was incompatible |
+| Suspend / resume / recovery | Not tested |
+| Hysteresis | Unsupported; no verified ASUS Linux ABI |
+| Validation boundary | Read-only discovery only; no curve Apply or Auto write has been physically validated |
+
+This snapshot documents the exact environment that was inspected. It is not a completed machine
+validation record and must not be generalized to other ASUS models or to successful fan writes.
+
 The developer-only `lighting-test --safe-sequence` command provides a fixed, supervised checklist.
 Its default invocation is preflight-only and performs no write. Even with the exact confirmation flag,
 PolicyKit success or `accepted_no_readback` is not a validation result: a human must record each Static

@@ -386,7 +386,8 @@ Cooling is the user-facing name of the existing internal `fans` page and backend
 - asks for explicit acknowledgement before first manual fan control
 - shows a disabled safe-curve preview when curves are unsupported; on the verified backend it offers
   local Quiet/Balanced/Performance drafts, read-only Import Current, explicit draft provenance,
-  Reset Draft, validated Apply, and a separate Return to Auto action
+  eight bounded temperature/duty draft rows, pre-submit shared-policy validation, Reset Draft,
+  validated Apply, and a separate Return to Auto action
 - keeps raw diagnostics collapsed by default while preserving Copy fan diagnostics
 - keeps RPM target and curve behavior capability-driven; unsupported backends remain read-only with diagnostics
 - never writes directly to sysfs or hardware from the UI
@@ -405,7 +406,7 @@ Related note:
 
 ### Planned or future capabilities
 
-- graphical fan-curve editor beyond the current validated DBus/API surface
+- direct drag handles on the fan-curve graph; the current editor uses eight bounded numeric draft rows
 - auto mode / rules editor
 - exported diagnostics bundle
 - more specialized conflict detection and service-management UI
