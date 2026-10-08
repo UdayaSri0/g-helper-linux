@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  # Enables a safe, explicit re-dispatch after repairing a release tag.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

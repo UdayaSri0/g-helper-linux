@@ -1,0 +1,69 @@
+# One-time recovery for an unpublished v0.4.0 whose original tag points to
+# the validated pre-CI-fix commit. Only an explicitly titled merge to main runs.
+name: Recover unpublished v0.4.0
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  redispatch-release:
+    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): recover v0.4.0')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact recovery commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Repoint only the still-unpublished v0.4.0 tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_OLD_TAG_OBJECT: 0183f9fe56567114ac3a3335238518f0a59c96ea
+          EXPECTED_OLD_COMMIT: 89b56f35df7ad0e6feff5b74eafbad28e4bc3451
+        run: |
+          set -euo pipefail
+
+          if gh release view v0.4.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::v0.4.0 is already published. Refusing to alter the tag."
+            exit 1
+          fi
+
+          current_tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v0.4.0" --jq '.object.sha')"
+          if [[ "$current_tag_object" != "$EXPECTED_OLD_TAG_OBJECT" ]]; then
+            echo "::error::Tag has changed since release review. Refusing forced update."
+            exit 1
+          fi
+
+          original_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$current_tag_object" --jq '.object.sha')"
+          if [[ "$original_commit" != "$EXPECTED_OLD_COMMIT" ]]; then
+            echo "::error::Tag target differs from the reviewed blocked release."
+            exit 1
+          fi
+
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -fa v0.4.0 "$GITHUB_SHA" -m 'rog-helper v0.4.0 — release workflow recovery'
+
+          # The lease prevents clobbering any concurrent tag update.
+          git push "--force-with-lease=refs/tags/v0.4.0:$current_tag_object" origin refs/tags/v0.4.0
+
+          new_tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v0.4.0" --jq '.object.sha')"
+          new_target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$new_tag_object" --jq '.object.sha')"
+          test "$new_target" = "$GITHUB_SHA"
+          echo "Retagged unpublished v0.4.0 to $new_target"
+
+      - name: Dispatch original release workflow on repaired tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref v0.4.0
+          echo "Dispatched the normal Release workflow at v0.4.0"
