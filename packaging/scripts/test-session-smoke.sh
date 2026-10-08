@@ -32,21 +32,21 @@ for attempt in {1..40}; do
   sleep 0.2
 done
 [[ "$ready" -eq 1 ]]
-rg -q 'GetProfileChoices' "$ROG_HELPER_SMOKE_ROOT/introspection.txt"
-rg -q 'PauseAutomation' "$ROG_HELPER_SMOKE_ROOT/introspection.txt"
+grep -Fq 'GetProfileChoices' "$ROG_HELPER_SMOKE_ROOT/introspection.txt"
+grep -Fq 'PauseAutomation' "$ROG_HELPER_SMOKE_ROOT/introspection.txt"
 gdbus call --session --dest io.github.roghelper.Daemon --object-path /io/github/roghelper/Daemon \
   --method io.github.roghelper.Daemon1.GetPrivilegedStatus >"$ROG_HELPER_SMOKE_ROOT/helper-status.txt"
-rg -q "'privileged_helper_reachable': <false>" "$ROG_HELPER_SMOKE_ROOT/helper-status.txt"
+grep -Fq "'privileged_helper_reachable': <false>" "$ROG_HELPER_SMOKE_ROOT/helper-status.txt"
 "$cli" automation pause
 "$cli" automation resume
 if "$cli" profile cycle >"$ROG_HELPER_SMOKE_ROOT/profile-cycle.txt" 2>&1; then
   echo "profile cycling unexpectedly succeeded without asusd" >&2
   exit 1
 fi
-rg -q 'unavailable' "$ROG_HELPER_SMOKE_ROOT/profile-cycle.txt"
+grep -Fq 'unavailable' "$ROG_HELPER_SMOKE_ROOT/profile-cycle.txt"
 "$cli" issue-report >"$ROG_HELPER_SMOKE_ROOT/issue-report.md"
-rg -q 'Build base commit:' "$ROG_HELPER_SMOKE_ROOT/issue-report.md"
-rg -q 'Policy engine state' "$ROG_HELPER_SMOKE_ROOT/issue-report.md"
+grep -Fq 'Build base commit:' "$ROG_HELPER_SMOKE_ROOT/issue-report.md"
+grep -Fq 'Policy engine state' "$ROG_HELPER_SMOKE_ROOT/issue-report.md"
 if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
   ui_status=0
   timeout --signal=TERM 5 "$ui" >"$ROG_HELPER_SMOKE_ROOT/ui.log" 2>&1 || ui_status=$?
