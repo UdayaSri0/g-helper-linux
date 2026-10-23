@@ -4750,7 +4750,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     fans_pills.set_column_spacing(8);
     fans_pills.set_row_spacing(8);
     let fan_backend_label = fans_status_pill("backend: checking");
-    let fan_count_label = fans_status_pill("0 fans detected");
+    let fan_count_label = fans_status_pill("0 RPM endpoints detected");
     let fan_mode_label = fans_status_pill("Checking mode");
     let fan_mapping_label = fans_status_pill("Mapping OK");
     fans_pills.insert(&fan_backend_label, -1);
@@ -6793,9 +6793,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         fan_backend_label.set_text(&format!("backend: {}", fan_state.caps.fan_backend));
         update_backend_pill_class(&fan_backend_label, &fan_state.caps.fan_backend);
         let fan_word = if fan_state.caps.fan_count == 1 {
-            "fan"
+            "RPM endpoint"
         } else {
-            "fans"
+            "RPM endpoints"
         };
         fan_count_label.set_text(&format!("{} {fan_word} detected", fan_state.caps.fan_count));
         fan_mode_label.set_text(fan_mode_label_text(fan_state.mode));
@@ -7029,11 +7029,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             } else {
                 "Unavailable"
             });
-            diag_sensor_fans.set_text(if t.fan_rows.iter().any(|fan| fan.rpm.is_some()) {
-                "Reporting"
-            } else {
-                "Unavailable"
-            });
+            diag_sensor_fans.set_text(
+                if t.fan_rows
+                    .iter()
+                    .any(|fan| fresh_telemetry_rpm(fan, now_ms()).is_some())
+                {
+                    "Fresh numeric samples available"
+                } else {
+                    "Unknown/Unavailable"
+                },
+            );
             diag_sensor_battery.set_text(if t.battery_percent.is_some() {
                 "Reporting"
             } else {
@@ -7271,8 +7276,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 fans_card.set_unit(None);
                 fans_card.set_subtitle(Some("No fan RPM sensors exposed"));
             } else {
-                let reporting_count = t.fan_rows.iter().filter(|fan| fan.rpm.is_some()).count();
-                let max_rpm = t.fan_rows.iter().filter_map(|fan| fan.rpm).max();
+                let sample_now_ms = now_ms();
+                let reporting_count = t
+                    .fan_rows
+                    .iter()
+                    .filter(|fan| fresh_telemetry_rpm(fan, sample_now_ms).is_some())
+                    .count();
+                let max_rpm = t
+                    .fan_rows
+                    .iter()
+                    .filter_map(|fan| fresh_telemetry_rpm(fan, sample_now_ms))
+                    .max();
                 if let Some(max_rpm) = max_rpm {
                     fans_card.set_value(max_rpm.to_string());
                     fans_card.set_unit(Some("RPM"));
@@ -7281,12 +7295,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     fans_card.set_unit(None);
                 }
                 let count = t.fan_rows.len();
-                let fan_word = if count == 1 { "fan" } else { "fans" };
+                let endpoint_word = if count == 1 {
+                    "RPM endpoint"
+                } else {
+                    "RPM endpoints"
+                };
                 if reporting_count == count {
-                    fans_card.set_subtitle(Some(&format!("{count} {fan_word} reporting")));
+                    fans_card
+                        .set_subtitle(Some(&format!("{count} readable numeric {endpoint_word}")));
                 } else {
                     fans_card.set_subtitle(Some(&format!(
-                        "{reporting_count} of {count} {fan_word} reporting"
+                        "{reporting_count} of {count} {endpoint_word} readable"
                     )));
                 }
             }
@@ -7294,7 +7313,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             for (index, (row, title, rpm, state)) in dashboard_fan_rows.iter().enumerate() {
                 if let Some(fan) = t.fan_rows.get(index) {
                     title.set_text(&fan.display_label);
-                    if let Some(value) = fan.rpm {
+                    if let Some(value) = fresh_telemetry_rpm(fan, now_ms()) {
                         rpm.set_text(&format!("{value} RPM"));
                         set_dashboard_status(state, state, "●", "status-ok");
                     } else {
@@ -7461,9 +7480,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .map(|fan| {
                         (
                             fan.display_label.clone(),
-                            fan.rpm
+                            fresh_telemetry_rpm(fan, now_ms())
                                 .map(|rpm| format!("{rpm} rpm"))
-                                .unwrap_or_else(|| "(unavailable)".to_string()),
+                                .unwrap_or_else(|| "Unknown/Unavailable".to_string()),
                         )
                     })
                     .collect()
@@ -11013,7 +11032,7 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
     if let Some(rows) = dbus_decode::rows(&map, dbus_keys::TELEMETRY_FAN_ROWS_KEY) {
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            if let Some(fan) = fan_row_from_dbus(&row) {
+            if let Some(fan) = fan_row_from_dbus(&row, t.timestamp_ms) {
                 out.push(fan);
             }
         }
@@ -11023,12 +11042,18 @@ fn telemetry_from_dbus(map: HashMap<String, OwnedValue>) -> TelemetrySnapshot {
             .fans_rpm
             .iter()
             .map(|(label, rpm)| FanTelemetry {
+                stable_id: format!("legacy:{label}"),
                 hwmon_device: String::new(),
                 hwmon_path: String::new(),
                 input_path: String::new(),
                 raw_label: None,
                 display_label: label.clone(),
                 rpm: Some(*rpm),
+                source: "legacy_fans_rpm".to_string(),
+                sampled_at_ms: t.timestamp_ms,
+                freshness: "fresh".to_string(),
+                telemetry_available: true,
+                telemetry_reason: "legacy_numeric".to_string(),
             })
             .collect();
     }
@@ -13290,8 +13315,12 @@ fn update_setup_permission_row(
             match permission.state {
                 PermissionState::Writable => "status-ok",
                 PermissionState::Unknown | PermissionState::Unsupported => "status-info",
-                PermissionState::ReadOnly => "status-warning",
-                PermissionState::Unavailable => "status-error",
+                PermissionState::AuthorizationRequired | PermissionState::ReadOnly => {
+                    "status-warning"
+                }
+                PermissionState::AuthorizationDenied
+                | PermissionState::HelperMissing
+                | PermissionState::Unavailable => "status-error",
             },
         );
         row.set_subtitle(&permission.summary);
@@ -13994,6 +14023,11 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         .cloned()
         .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
         .and_then(|curve| fan_curve_readback_from_dbus(&id, curve));
+    let current_rpm = u32v(&map, dbus_keys::FAN_INFO_CURRENT_RPM_KEY);
+    let sampled_at_ms = map
+        .get(dbus_keys::FAN_INFO_SAMPLED_AT_MS_KEY)
+        .and_then(u64_from_value)
+        .unwrap_or_else(|| current_rpm.map(|_| now_ms()).unwrap_or(0));
     Some(FanInfo {
         id,
         index: u32v(&map, dbus_keys::FAN_INFO_INDEX_KEY).unwrap_or(0),
@@ -14001,7 +14035,20 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         mapping_confidence: s(&map, dbus_keys::FAN_INFO_MAPPING_CONFIDENCE_KEY)
             .map(|value| FanMappingConfidence::parse(&value))
             .unwrap_or(FanMappingConfidence::Unknown),
-        current_rpm: u32v(&map, dbus_keys::FAN_INFO_CURRENT_RPM_KEY),
+        current_rpm,
+        telemetry_source: s(&map, dbus_keys::FAN_INFO_TELEMETRY_SOURCE_KEY)
+            .unwrap_or_else(|| "unknown".to_string()),
+        sampled_at_ms,
+        freshness: s(&map, dbus_keys::FAN_INFO_FRESHNESS_KEY).unwrap_or_else(|| {
+            if current_rpm.is_some() {
+                "fresh"
+            } else {
+                "unknown"
+            }
+            .to_string()
+        }),
+        telemetry_reason: s(&map, dbus_keys::FAN_INFO_TELEMETRY_REASON_KEY)
+            .unwrap_or_else(|| "legacy_contract".to_string()),
         min_rpm: u32v(&map, dbus_keys::FAN_INFO_MIN_RPM_KEY),
         max_rpm: u32v(&map, dbus_keys::FAN_INFO_MAX_RPM_KEY),
         current_percent: u8v(&map, dbus_keys::FAN_INFO_CURRENT_PERCENT_KEY),
@@ -14071,7 +14118,10 @@ fn fan_curve_readback_from_dbus(
     })
 }
 
-fn fan_row_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<FanTelemetry> {
+fn fan_row_from_dbus(
+    map: &HashMap<String, OwnedValue>,
+    snapshot_timestamp_ms: u64,
+) -> Option<FanTelemetry> {
     let hwmon_device = map
         .get(dbus_keys::FAN_ROW_HWMON_DEVICE_KEY)
         .and_then(|value| <&str>::try_from(value).ok())
@@ -14089,7 +14139,16 @@ fn fan_row_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<FanTelemetry> 
         .and_then(|value| <&str>::try_from(value).ok())
         .map(|value| value.to_string())?;
 
+    let rpm = map
+        .get(dbus_keys::FAN_ROW_RPM_KEY)
+        .and_then(u64_from_value)
+        .and_then(|value| u32::try_from(value).ok());
     Some(FanTelemetry {
+        stable_id: map
+            .get(dbus_keys::FAN_ROW_STABLE_ID_KEY)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or("unknown")
+            .to_string(),
         hwmon_device,
         hwmon_path,
         input_path,
@@ -14098,10 +14157,34 @@ fn fan_row_from_dbus(map: &HashMap<String, OwnedValue>) -> Option<FanTelemetry> 
             .and_then(|value| <&str>::try_from(value).ok())
             .map(|value| value.to_string()),
         display_label,
-        rpm: map
-            .get(dbus_keys::FAN_ROW_RPM_KEY)
+        rpm,
+        source: map
+            .get(dbus_keys::FAN_ROW_SOURCE_KEY)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or("unknown")
+            .to_string(),
+        sampled_at_ms: map
+            .get(dbus_keys::FAN_ROW_SAMPLED_AT_MS_KEY)
             .and_then(u64_from_value)
-            .and_then(|value| u32::try_from(value).ok()),
+            .unwrap_or(snapshot_timestamp_ms),
+        freshness: map
+            .get(dbus_keys::FAN_ROW_FRESHNESS_KEY)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or(if rpm.is_some() { "fresh" } else { "unknown" })
+            .to_string(),
+        telemetry_available: map
+            .get(dbus_keys::FAN_ROW_TELEMETRY_AVAILABLE_KEY)
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(rpm.is_some()),
+        telemetry_reason: map
+            .get(dbus_keys::FAN_ROW_TELEMETRY_REASON_KEY)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or(if rpm.is_some() {
+                "legacy_numeric"
+            } else {
+                "legacy_contract"
+            })
+            .to_string(),
     })
 }
 
@@ -14452,6 +14535,8 @@ fn caps_from_dbus(map: &HashMap<String, OwnedValue>) -> DeviceCaps {
         has_fan_boost: b(dbus_keys::caps::HAS_FAN_BOOST),
         fan_count: dbus_decode::unsigned_u32(map, dbus_keys::caps::FAN_COUNT).unwrap_or(0),
         fan_backend: dbus_decode::string(map, dbus_keys::caps::FAN_BACKEND).unwrap_or_default(),
+        lighting_backend: dbus_decode::string(map, dbus_keys::caps::LIGHTING_BACKEND)
+            .unwrap_or_else(|| "none".to_string()),
         gpu_backend: dbus_decode::string(map, dbus_keys::caps::GPU_BACKEND)
             .unwrap_or_else(|| "none".to_string()),
         battery_limit_backend: dbus_decode::string(map, dbus_keys::caps::BATTERY_LIMIT_BACKEND)
@@ -14616,10 +14701,18 @@ fn caps_text_from_dbus(map: HashMap<String, OwnedValue>) -> String {
             let operation = s(&row, "operation").unwrap_or_else(|| "unknown".to_string());
             let backend = s(&row, "current_backend").unwrap_or_else(|| "none".to_string());
             let access = s(&row, "access").unwrap_or_else(|| "unknown".to_string());
-            let supported = b(&row, "supported").unwrap_or(false);
+            let supported = b(&row, "feature_supported").unwrap_or(false);
+            let mapping_verified = b(&row, "mapping_verified").unwrap_or(false);
+            let telemetry_available = b(&row, "telemetry_available").unwrap_or(false);
+            let direct_writable = b(&row, "direct_writable").unwrap_or(false);
+            let helper_ready = b(&row, "privileged_helper_ready").unwrap_or(false);
+            let authorization =
+                s(&row, "authorization_state").unwrap_or_else(|| "unknown".to_string());
+            let can_apply = b(&row, "can_apply").unwrap_or(false);
+            let reason = s(&row, "reason").unwrap_or_else(|| "unknown".to_string());
             let decision = s(&row, "implementation_decision").unwrap_or_default();
             lines.push(format!(
-                "  {operation}: supported={supported}, backend={backend}, access={access}"
+                "  {operation}: feature_supported={supported}, mapping_verified={mapping_verified}, telemetry_available={telemetry_available}, direct_writable={direct_writable}, privileged_helper_ready={helper_ready}, authorization_state={authorization}, can_apply={can_apply}, reason={reason}, backend={backend}, legacy_access={access}"
             ));
             if !decision.is_empty() {
                 lines.push(format!("    decision: {decision}"));
@@ -14652,13 +14745,20 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
     lines.push("===============".to_string());
 
     let detected = telemetry.fan_rows.len();
+    let sample_now_ms = now_ms();
     let reporting = telemetry
         .fan_rows
         .iter()
-        .filter(|fan| fan.rpm.is_some())
+        .filter(|fan| fresh_telemetry_rpm(fan, sample_now_ms).is_some())
         .count();
     lines.push(format!("fan_inputs_detected: {detected}"));
-    lines.push(format!("fan_inputs_reporting_rpm: {reporting}"));
+    let nonzero = telemetry
+        .fan_rows
+        .iter()
+        .filter(|fan| fresh_telemetry_rpm(fan, sample_now_ms).is_some_and(|rpm| rpm > 0))
+        .count();
+    lines.push(format!("readable_numeric_fan_inputs: {reporting}"));
+    lines.push(format!("nonzero_fan_inputs: {nonzero}"));
 
     if telemetry.fan_rows.is_empty() {
         lines.push("".to_string());
@@ -14673,9 +14773,20 @@ fn fan_diagnostics_text(telemetry: &TelemetrySnapshot) -> String {
         lines.push(format!(
             "{}: {}",
             fan.display_label,
-            fan.rpm
+            fresh_telemetry_rpm(fan, sample_now_ms)
                 .map(|rpm| format!("{rpm} rpm"))
-                .unwrap_or_else(|| "(unavailable)".to_string())
+                .unwrap_or_else(|| "Unknown/Unavailable".to_string())
+        ));
+        lines.push(format!("  stable_id: {}", text_or_unknown(&fan.stable_id)));
+        lines.push(format!("  source: {}", text_or_unknown(&fan.source)));
+        lines.push(format!("  sampled_at_ms: {}", fan.sampled_at_ms));
+        lines.push(format!(
+            "  freshness: {}",
+            effective_telemetry_freshness(fan, sample_now_ms)
+        ));
+        lines.push(format!(
+            "  telemetry_reason: {}",
+            effective_telemetry_reason(fan, sample_now_ms)
         ));
         lines.push(format!(
             "  hwmon_device: {}",
@@ -14882,13 +14993,35 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         lines.push("No fan sensors are exposed by the active backend.".to_string());
     }
     for fan in &state.fans {
+        let sample_now_ms = now_ms();
+        let fresh_rpm = fresh_fan_rpm(fan, sample_now_ms);
+        let sample_stale = fan.sampled_at_ms > 0
+            && sample_now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS;
         lines.push(format!(
             "{} [{}]: {}",
             fan.label,
             fan.id,
-            fan.current_rpm
+            fresh_rpm
                 .map(|rpm| format!("{rpm} rpm"))
-                .unwrap_or_else(|| "RPM unavailable".to_string())
+                .unwrap_or_else(|| "RPM Unknown/Unavailable".to_string())
+        ));
+        lines.push(format!("  telemetry_source: {}", fan.telemetry_source));
+        lines.push(format!("  sampled_at_ms: {}", fan.sampled_at_ms));
+        lines.push(format!(
+            "  freshness: {}",
+            if sample_stale {
+                "stale"
+            } else {
+                &fan.freshness
+            }
+        ));
+        lines.push(format!(
+            "  telemetry_reason: {}",
+            if sample_stale && fan.rpm_readable {
+                "stale_sample"
+            } else {
+                &fan.telemetry_reason
+            }
         ));
         lines.push(format!(
             "  percent: {}",
@@ -14929,7 +15062,7 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         }
         lines.push(format!(
             "  rpm_readable: {}; pwm_endpoint_verified: {}; direct_write: {}; privileged_write: {}; authorization: {}; access: {}",
-            fan.rpm_readable,
+            fresh_rpm.is_some(),
             fan.pwm_endpoint_verified,
             fan.direct_write,
             fan.privileged_write,
@@ -15161,10 +15294,11 @@ fn update_fan_visual_slots(slots: &[FanVisualSlot], fans: &[FanInfo]) {
         if let Some(fan) = fans.get(idx) {
             slot.root.set_visible(true);
             slot.label.set_text(&fan.label);
-            slot.rpm.set_text(&fan_rpm_text(fan.current_rpm));
+            slot.rpm.set_text(&fan_rpm_text(fan, now_ms()));
             slot.status.set_text(fan_status_text(fan));
             update_status_pill_class(&slot.status, fan);
-            slot.rotor.set_state(fan.current_rpm, rotor_status(fan));
+            slot.rotor
+                .set_state(fresh_fan_rpm(fan, now_ms()), rotor_status(fan));
             slot.root.set_tooltip_text(Some(&fan_card_tooltip(fan)));
         } else {
             slot.root.set_visible(false);
@@ -15179,7 +15313,7 @@ fn update_fan_card_slots(slots: &[FanCardSlot], fans: &[FanInfo]) {
             slot.root.set_visible(true);
             slot.title.set_text(&fan.label);
             slot.id.set_text(&fan.id);
-            slot.rpm.set_text(&fan_rpm_text(fan.current_rpm));
+            slot.rpm.set_text(&fan_rpm_text(fan, now_ms()));
             slot.percent.set_text(
                 &fan.current_percent
                     .map(|percent| format!("Backend-reported speed: {percent}%"))
@@ -15188,23 +15322,24 @@ fn update_fan_card_slots(slots: &[FanCardSlot], fans: &[FanInfo]) {
             slot.status.set_text(fan_status_text(fan));
             update_status_pill_class(&slot.status, fan);
             slot.backend.set_text(&format!(
-                "{} | {}",
-                fan.backend,
-                if fan.controllable {
-                    "control endpoint writable"
+                "Support: {} · Backend: {}",
+                if fan.pwm_endpoint_verified {
+                    "verified fan-curve mapping"
                 } else {
-                    "control endpoint not writable"
-                }
+                    "telemetry only; mapping unverified"
+                },
+                fan.backend
             ));
             slot.details.set_text(&fan_endpoint_details(fan));
             let warning_text = fan_warning_text(fan);
             slot.warning.set_text(&warning_text);
             slot.warning.set_visible(!warning_text.is_empty());
-            slot.rotor.set_state(fan.current_rpm, rotor_status(fan));
+            slot.rotor
+                .set_state(fresh_fan_rpm(fan, now_ms()), rotor_status(fan));
             slot.root.set_tooltip_text(Some(&fan_card_tooltip(fan)));
             slot.root.remove_css_class("fan-card-read-only");
             slot.root.remove_css_class("fan-card-controllable");
-            if fan.controllable {
+            if fan_access_is_authorized(fan) {
                 slot.root.add_css_class("fan-card-controllable");
             } else {
                 slot.root.add_css_class("fan-card-read-only");
@@ -15216,21 +15351,75 @@ fn update_fan_card_slots(slots: &[FanCardSlot], fans: &[FanInfo]) {
     }
 }
 
-fn fan_rpm_text(rpm: Option<u32>) -> String {
-    rpm.map(|rpm| format!("{rpm} RPM"))
-        .unwrap_or_else(|| "-- RPM".to_string())
+const FAN_SAMPLE_MAX_AGE_MS: u64 = 5_000;
+
+fn fresh_telemetry_rpm(fan: &FanTelemetry, now_ms: u64) -> Option<u32> {
+    let age = now_ms.saturating_sub(fan.sampled_at_ms);
+    (fan.telemetry_available
+        && fan.freshness == "fresh"
+        && fan.sampled_at_ms > 0
+        && age <= FAN_SAMPLE_MAX_AGE_MS)
+        .then_some(fan.rpm)
+        .flatten()
+}
+
+fn effective_telemetry_freshness<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+    if fan.sampled_at_ms > 0 && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS {
+        "stale"
+    } else {
+        text_or_unknown(&fan.freshness)
+    }
+}
+
+fn effective_telemetry_reason<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+    if fan.telemetry_available
+        && fan.sampled_at_ms > 0
+        && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS
+    {
+        "stale_sample"
+    } else {
+        text_or_unknown(&fan.telemetry_reason)
+    }
+}
+
+fn fresh_fan_rpm(fan: &FanInfo, now_ms: u64) -> Option<u32> {
+    let age = now_ms.saturating_sub(fan.sampled_at_ms);
+    (fan.rpm_readable
+        && fan.freshness == "fresh"
+        && fan.sampled_at_ms > 0
+        && age <= FAN_SAMPLE_MAX_AGE_MS)
+        .then_some(fan.current_rpm)
+        .flatten()
+}
+
+fn fan_rpm_text(fan: &FanInfo, now_ms: u64) -> String {
+    fresh_fan_rpm(fan, now_ms)
+        .map(|rpm| format!("{rpm} RPM"))
+        .unwrap_or_else(|| "Unknown RPM".to_string())
 }
 
 fn fan_status_text(fan: &FanInfo) -> &'static str {
     if fan_mapping_uncertain(fan) {
         "Mapping uncertain"
-    } else if fan.controllable {
-        "Controllable"
-    } else if fan.current_rpm.is_some() {
-        "Telemetry only"
     } else {
-        "Unavailable"
+        match fan.access_state.as_str() {
+            "direct" => "Direct access",
+            "curve_control_available" => "Authorized",
+            "authorization_required" => "Authentication required",
+            "authorization_denied" => "Authorization denied",
+            "helper_missing" => "Privileged helper missing",
+            "unsafe_read_only" | "read_only" | "telemetry_only" => "Telemetry only",
+            _ if fan.current_rpm.is_some() => "Telemetry only",
+            _ => "Unavailable",
+        }
     }
+}
+
+fn fan_access_is_authorized(fan: &FanInfo) -> bool {
+    matches!(
+        fan.access_state.as_str(),
+        "direct" | "curve_control_available"
+    )
 }
 
 fn rotor_status(fan: &FanInfo) -> RotorStatus {
@@ -15238,7 +15427,7 @@ fn rotor_status(fan: &FanInfo) -> RotorStatus {
         RotorStatus::Error
     } else if fan_mapping_uncertain(fan) {
         RotorStatus::Warning
-    } else if fan.controllable {
+    } else if fan_access_is_authorized(fan) {
         RotorStatus::Controllable
     } else if fan.backend.contains("read-only") {
         RotorStatus::ReadOnly
@@ -15265,6 +15454,22 @@ fn fan_endpoint_details(fan: &FanInfo) -> String {
     let mut lines = Vec::new();
     lines.push(format!("id: {}", fan.id));
     lines.push(format!("backend: {}", fan.backend));
+    lines.push(format!("telemetry_source: {}", fan.telemetry_source));
+    lines.push(format!("sampled_at_ms: {}", fan.sampled_at_ms));
+    let stale =
+        fan.sampled_at_ms > 0 && now_ms().saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS;
+    lines.push(format!(
+        "freshness: {}",
+        if stale { "stale" } else { &fan.freshness }
+    ));
+    lines.push(format!(
+        "telemetry_reason: {}",
+        if stale && fan.rpm_readable {
+            "stale_sample"
+        } else {
+            &fan.telemetry_reason
+        }
+    ));
     lines.push(format!(
         "manual_percent: {}; rpm_target: {}; curve: {}; auto: {}",
         fan.supports_manual_percent,
@@ -15286,12 +15491,18 @@ fn fan_endpoint_details(fan: &FanInfo) -> String {
 }
 
 fn fan_card_tooltip(fan: &FanInfo) -> String {
-    if fan.controllable {
+    if fan_access_is_authorized(fan) {
         format!("{} is controllable through {}.", fan.label, fan.backend)
     } else {
         format!(
-            "{} is read-only. Fan RPM telemetry is available, but no writable fan-control endpoint was confirmed.",
-            fan.label
+            "{} access: {}. RPM telemetry: {}.",
+            fan.label,
+            fan_status_text(fan),
+            if fresh_fan_rpm(fan, now_ms()).is_some() {
+                "fresh numeric sample"
+            } else {
+                "Unknown/Unavailable"
+            }
         )
     }
 }
@@ -15305,7 +15516,7 @@ fn update_status_pill_class(label: &gtk::Label, fan: &FanInfo) {
         label.add_css_class("fans-status-pill-error");
     } else if fan_mapping_uncertain(fan) {
         label.add_css_class("fans-status-pill-warning");
-    } else if fan.controllable {
+    } else if fan_access_is_authorized(fan) {
         label.add_css_class("fans-status-pill-controllable");
     } else {
         label.add_css_class("fans-status-pill-read-only");
@@ -15543,12 +15754,18 @@ mod tests {
     #[test]
     fn fan_curve_access_labels_distinguish_capability_and_permission_states() {
         let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
             hwmon_device: "asus".to_string(),
             hwmon_path: "/sys/class/hwmon/hwmon0".to_string(),
             input_path: "/sys/class/hwmon/hwmon0/fan1_input".to_string(),
             raw_label: Some("cpu_fan".to_string()),
             display_label: "CPU".to_string(),
             rpm: Some(2400),
+            source: "/sys/class/hwmon/hwmon0/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
         };
         let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
         fan.supports_curve = true;
@@ -15602,6 +15819,89 @@ mod tests {
             assert!(fan_curve_access_label(Some(&fan)).contains(expected));
         }
         assert!(fan_curve_access_label(None).contains("Unsupported"));
+    }
+
+    #[test]
+    fn fan_card_status_uses_operation_access_not_generic_controllable_flag() {
+        let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "/sys/class/hwmon/hwmon8".to_string(),
+            input_path: "/sys/class/hwmon/hwmon8/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(0),
+            source: "/sys/class/hwmon/hwmon8/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+        fan.mapping_confidence = FanMappingConfidence::HardwareLabel;
+        fan.pwm_endpoint_verified = true;
+        fan.controllable = true;
+        fan.access_state = "authorization_denied".to_string();
+
+        assert_eq!(fan_status_text(&fan), "Authorization denied");
+        assert!(!fan_access_is_authorized(&fan));
+    }
+
+    #[test]
+    fn fan_diagnostics_calls_numeric_zero_readable_not_spinning() {
+        let sampled_at_ms = now_ms();
+        let mut telemetry = TelemetrySnapshot::empty_now(sampled_at_ms);
+        telemetry.fan_rows.push(FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "/sys/class/hwmon/hwmon8".to_string(),
+            input_path: "/sys/class/hwmon/hwmon8/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(0),
+            source: "/sys/class/hwmon/hwmon8/fan1_input".to_string(),
+            sampled_at_ms,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        });
+
+        let report = fan_diagnostics_text(&telemetry);
+
+        assert!(report.contains("readable_numeric_fan_inputs: 1"));
+        assert!(report.contains("nonzero_fan_inputs: 0"));
+        assert!(!report.contains("fan_inputs_reporting_rpm"));
+    }
+
+    #[test]
+    fn fan_rpm_text_displays_only_fresh_numeric_samples() {
+        let sampled_at_ms = 10_000;
+        let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "fixture".to_string(),
+            input_path: "fixture/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(0),
+            source: "fixture/fan1_input".to_string(),
+            sampled_at_ms,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+
+        assert_eq!(fan_rpm_text(&fan, sampled_at_ms), "0 RPM");
+        fan.current_rpm = Some(2400);
+        assert_eq!(fan_rpm_text(&fan, sampled_at_ms + 1), "2400 RPM");
+        assert_eq!(
+            fan_rpm_text(&fan, sampled_at_ms + FAN_SAMPLE_MAX_AGE_MS + 1),
+            "Unknown RPM"
+        );
+        fan.telemetry_reason = "malformed_numeric".to_string();
+        fan.rpm_readable = false;
+        assert_eq!(fan_rpm_text(&fan, sampled_at_ms), "Unknown RPM");
     }
 
     #[test]
@@ -16304,6 +16604,10 @@ mod tests {
         assert_eq!(fan.raw_label.as_deref(), Some("gpu"));
         assert_eq!(fan.display_label, "GPU Fan");
         assert_eq!(fan.rpm, Some(2875));
+        assert_eq!(fan.sampled_at_ms, 10);
+        assert_eq!(fan.freshness, "fresh");
+        assert!(fan.telemetry_available);
+        assert_eq!(fan.telemetry_reason, "legacy_numeric");
         assert_eq!(telemetry.gpu_core_clock_mhz, Some(2100));
         assert_eq!(telemetry.gpu_memory_clock_mhz, Some(7000));
         assert_eq!(telemetry.gpu_usage_percent, Some(32.0));

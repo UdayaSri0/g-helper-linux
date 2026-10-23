@@ -38,7 +38,7 @@ pub async fn probe_setup_status(
             RogHelperdProbe::ProbeSession => probe_session_daemon().await,
         }
     };
-    let (daemon, asusd, supergfxd, upower, nvidia_smi) = tokio::join!(
+    let (daemon, mut asusd, supergfxd, upower, nvidia_smi) = tokio::join!(
         bounded_probe(
             DependencyKind::RogHelperd,
             vec!["application communication".to_string()],
@@ -68,6 +68,7 @@ pub async fn probe_setup_status(
             probe_nvidia_smi(),
         ),
     );
+    reconcile_asusd_requirements(&mut asusd, caps);
 
     let dependencies = vec![daemon, asusd, supergfxd, upower, nvidia_smi];
     let permissions = vec![
@@ -419,6 +420,33 @@ fn cpu_permission_status(caps: &CpuCaps) -> PermissionStatus {
             PermissionState::Unsupported,
             "No writable CPU policy interface is exposed by this platform.".to_string(),
         )
+    } else if relevant
+        .iter()
+        .any(|entry| entry.status == CpuAccessState::AuthorizationDenied)
+    {
+        (
+            PermissionState::AuthorizationDenied,
+            "Supported CPU controls are available through the typed helper, but administrator authorization was denied. Apply again to retry."
+                .to_string(),
+        )
+    } else if relevant
+        .iter()
+        .any(|entry| entry.status == CpuAccessState::AuthorizationRequired)
+    {
+        (
+            PermissionState::AuthorizationRequired,
+            "Administrator authentication required for supported CPU controls; authentication starts only when Apply is used."
+                .to_string(),
+        )
+    } else if relevant
+        .iter()
+        .any(|entry| entry.status == CpuAccessState::HelperMissing)
+    {
+        (
+            PermissionState::HelperMissing,
+            "Supported CPU controls require the typed privileged helper because direct sysfs writes are blocked."
+                .to_string(),
+        )
     } else if writable == relevant.len() {
         (
             PermissionState::Writable,
@@ -447,6 +475,14 @@ fn cpu_permission_status(caps: &CpuCaps) -> PermissionStatus {
         state,
         summary,
         paths,
+    }
+}
+
+fn reconcile_asusd_requirements(status: &mut DependencyStatus, caps: &DeviceCaps) {
+    if caps.has_charge_limit && caps.battery_limit_backend == "power_supply_sysfs" {
+        status
+            .required_for
+            .retain(|feature| feature != "battery charge limit");
     }
 }
 
@@ -554,6 +590,18 @@ fn build_issues(
 
     for permission in permissions {
         let (severity, guidance) = match permission.state {
+            PermissionState::AuthorizationRequired => (
+                SetupSeverity::Info,
+                "Use Apply for the selected operation to start the normal administrator authentication flow.",
+            ),
+            PermissionState::AuthorizationDenied => (
+                SetupSeverity::Warning,
+                "Authorization was denied. No access change is applied automatically; use Apply again to retry.",
+            ),
+            PermissionState::HelperMissing => (
+                SetupSeverity::Warning,
+                "Install the packaged typed privileged helper; do not run the graphical UI as root or broaden device permissions.",
+            ),
             PermissionState::ReadOnly => (
                 SetupSeverity::Warning,
                 "The application remains unprivileged. Review the permission documentation for the detected backend; no permission changes are applied automatically.",
@@ -715,6 +763,52 @@ mod tests {
         let status = cpu_permission_status(&caps);
         assert_eq!(status.state, PermissionState::ReadOnly);
         assert_eq!(status.paths, vec!["/sys/example"]);
+    }
+
+    #[test]
+    fn cpu_permission_reports_administrator_authentication_required() {
+        let mut caps = CpuCaps::unknown();
+        caps.control_access.push(CpuControlAccess {
+            kind: CpuControlKind::Governor,
+            status: CpuAccessState::AuthorizationRequired,
+            reason: "Administrator access required".to_string(),
+            direct_write: false,
+            privileged_write: true,
+            authorization: rog_core::CpuAuthorization::Required,
+            paths: vec![CpuPathAccess {
+                path: "/sys/example".to_string(),
+                readable: true,
+                writable: false,
+            }],
+        });
+
+        let status = cpu_permission_status(&caps);
+
+        assert_eq!(status.state, PermissionState::AuthorizationRequired);
+        assert!(status
+            .summary
+            .contains("Administrator authentication required"));
+    }
+
+    #[test]
+    fn verified_sysfs_battery_fallback_removes_asusd_battery_requirement() {
+        let mut dependency = DependencyStatus {
+            kind: DependencyKind::Asusd,
+            state: DependencyState::NotAvailable,
+            summary: "No compatible asusd platform API was found.".to_string(),
+            required_for: vec![
+                "performance profiles".to_string(),
+                "battery charge limit".to_string(),
+            ],
+            evidence: Vec::new(),
+        };
+        let mut caps = DeviceCaps::unknown();
+        caps.has_charge_limit = true;
+        caps.battery_limit_backend = "power_supply_sysfs".to_string();
+
+        reconcile_asusd_requirements(&mut dependency, &caps);
+
+        assert_eq!(dependency.required_for, vec!["performance profiles"]);
     }
 
     #[test]

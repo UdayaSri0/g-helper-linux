@@ -1,5 +1,23 @@
 # Permissions
 
+## Capability and per-operation access
+
+Detection is not authorization. Every control surface must keep these dimensions separate:
+
+- `feature_supported`: a verified backend implements the requested operation
+- `mapping_verified`: the operation targets a known semantic device/channel
+- `telemetry_available`: a fresh numeric read succeeded; numeric zero is valid telemetry
+- `direct_writable`: the unprivileged daemon can write the validated endpoint directly
+- `privileged_helper_ready`: a compatible typed helper, PolicyKit, and operation category are ready
+- `authorization_state`: `not_checked`, `required`, `authorized`, `denied`, or `unavailable` for that operation
+- `can_apply`: the selected operation has a safe direct or typed privileged route
+- `reason`: a stable reason code, with explanatory UI text layered above it
+
+Opening or refreshing Setup & Access performs only non-authorizing probes. It must not produce a
+PolicyKit dialog. Authentication is requested only by an explicit Apply action. A CPU authorization
+probe does not authorize battery, fan, or lighting operations; each domain retains its own last
+operation state. `Auto / BIOS Default` describes firmware control mode, not access permission.
+
 This document explains the current permission model used by the repository.
 
 ## Why the UI Is Unprivileged

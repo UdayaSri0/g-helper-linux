@@ -67,6 +67,53 @@ does not satisfy the validation requirements below and must not be advertised as
 This snapshot documents the exact environment that was inspected. It is not a completed machine
 validation record and must not be generalized to other ASUS models or to successful fan writes.
 
+### G615JMR follow-up observation (2026-10-08; read-only)
+
+The normal-user probe exposed four RPM endpoints: one unlabeled `acpi_fan` endpoint and the verified
+ASUS WMI CPU/GPU/Mid mappings. All four returned a fresh numeric zero in the captured idle snapshot;
+`sensors` and direct sysfs agreed. This confirms source-to-display fidelity for that instant only. It
+does not prove that four physical fans exist, that any fan was stopped, or that changing/nonzero RPM
+has been validated. The canonical ACPI device identity was `PNP0C0B:00`; ASUS semantic IDs must remain
+`asus-wmi:cpu`, `asus-wmi:gpu`, and `asus-wmi:mid` across volatile `hwmonN` renumbering.
+
+The same read-only run found a compatible v0.4.0 privileged helper and PolicyKit with authorization
+`not_checked`, a verified native Aura candidate (`0b05:19b6`, interface `00`) with a matching alias,
+and a Battery `charge_control_end_threshold` selected through `power_supply_sysfs`. `asusd` and
+`supergfxd` were absent optional providers. No hardware write or authentication prompt was attempted.
+
+## G615JMR verification checklist
+
+Read-only phase (required first):
+
+- Record package/commit, kernel, BIOS, DMI model/board, and whether `asusd`/`supergfxd` are present.
+- Capture `rog-helper privileged-status`, `sensors`, `fans`, `fan-caps`, `caps`,
+  `lighting-diagnostics`, `hardware-report`, and `issue-report` as the normal user.
+- Capture each hwmon `name`, `fan*_label`, `fan*_input`, and canonical `device` link at the same time.
+- Re-sample at idle and during a normal user-approved workload without changing firmware fan mode;
+  confirm a real 0-to-nonzero transition is reflected with fresh timestamps.
+- Confirm CPU/GPU/Mid retain semantic IDs after reboot/hwmon renumbering and keep the ACPI row
+  quarantined as unverified unless independent identity evidence is recorded.
+- Confirm Setup refresh produces no PolicyKit dialog and missing optional providers are guidance only.
+- Confirm native Aura identity, descriptor hash, interface `00`, unique alias target, helper API/category,
+  and PolicyKit readiness; reject interface `01`, descriptor mismatch, ambiguity, or alias mismatch.
+- Confirm the selected battery endpoint belongs to exactly one `type=Battery` device and read its
+  current threshold; do not infer support from a filename on an unverified device.
+
+Separately approved explicit Apply phase (one operation at a time):
+
+- CPU: apply one reversible value, authenticate on the click, read it back, and restore the original.
+- Fan curve: only the three verified ASUS semantic channels; save readback, apply a conservative
+  validated eight-point curve, verify readback, then explicitly restore Auto/BIOS Default. Never write
+  `fan*_input`, guess PWM semantics, or use the unknown ACPI endpoint.
+- Battery: apply one allowed threshold through the selected provider, verify readback, then restore the
+  original value.
+- Native Aura: run the fixed supervised safe sequence, record each visible effect as observed/not
+  observed/uncertain, and restore neutral Static white. `accepted_no_readback` alone is not validation.
+- GPU mode: test only through `supergfxd`, respecting logout/reboot state; never substitute root access.
+
+Stop on denial, cancellation, failed readback, identity change, alias mismatch, or thermal concern.
+Attach the exact per-operation result before changing any support claim or validation flag.
+
 The developer-only `lighting-test --safe-sequence` command provides a fixed, supervised checklist.
 Its default invocation is preflight-only and performs no write. Even with the exact confirmation flag,
 PolicyKit success or `accepted_no_readback` is not a validation result: a human must record each Static

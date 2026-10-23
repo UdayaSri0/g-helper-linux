@@ -81,7 +81,7 @@ impl HwmonTelemetryProvider {
             }
 
             // Fans
-            fan_rows.extend(read_fan_inputs(&hwname, &hwpath));
+            fan_rows.extend(read_fan_inputs(&hwname, &hwpath, ts));
         }
 
         finalize_fan_display_labels(&mut fan_rows);
@@ -405,7 +405,7 @@ fn read_temp_inputs(hwname: &str, hwpath: &Path) -> Vec<(String, f32)> {
     out
 }
 
-fn read_fan_inputs(hwname: &str, hwpath: &Path) -> Vec<FanTelemetry> {
+fn read_fan_inputs(hwname: &str, hwpath: &Path, sampled_at_ms: u64) -> Vec<FanTelemetry> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(hwpath) else {
         return out;
@@ -419,11 +419,25 @@ fn read_fan_inputs(hwname: &str, hwpath: &Path) -> Vec<FanTelemetry> {
             continue;
         }
         let raw_label = fan_label(hwpath, fname);
-        let rpm = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u32>().ok());
+        let (rpm, telemetry_reason) = match fs::read_to_string(&path) {
+            Ok(raw) => match raw.trim().parse::<u32>() {
+                Ok(value) => (Some(value), "fresh_numeric"),
+                Err(_) => (None, "malformed_numeric"),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                (None, "permission_denied")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, "source_removed"),
+            Err(_) => (None, "read_error"),
+        };
+        let stable_id = format!(
+            "{}:fan{}",
+            stable_hwmon_id(hwpath),
+            fan_index_from_input_name(fname).unwrap_or(0)
+        );
 
         out.push(FanTelemetry {
+            stable_id,
             hwmon_device: hwname.to_string(),
             hwmon_path: hwpath.display().to_string(),
             input_path: path.display().to_string(),
@@ -433,6 +447,11 @@ fn read_fan_inputs(hwname: &str, hwpath: &Path) -> Vec<FanTelemetry> {
                 .map(friendly_fan_label)
                 .unwrap_or_default(),
             rpm,
+            source: path.display().to_string(),
+            sampled_at_ms,
+            freshness: "fresh".to_string(),
+            telemetry_available: rpm.is_some(),
+            telemetry_reason: telemetry_reason.to_string(),
         });
     }
     out.sort_by(|a, b| {
@@ -463,7 +482,18 @@ fn read_fan_infos(_hwname: &str, hwpath: &Path) -> Vec<FanInfo> {
         };
 
         let raw_label = fan_label(hwpath, fname);
-        let rpm = read_u32(&path);
+        let (rpm, telemetry_reason) = match fs::read_to_string(&path) {
+            Ok(raw) => match raw.trim().parse::<u32>() {
+                Ok(value) => (Some(value), "fresh_numeric"),
+                Err(_) => (None, "malformed_numeric"),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                (None, "permission_denied")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, "source_removed"),
+            Err(_) => (None, "read_error"),
+        };
+        let sampled_at_ms = now_ms();
         let min_rpm = read_u32(&hwpath.join(format!("fan{index}_min")));
         let max_rpm = read_u32(&hwpath.join(format!("fan{index}_max")));
         let fan_target = hwpath.join(format!("fan{index}_target"));
@@ -533,6 +563,10 @@ fn read_fan_infos(_hwname: &str, hwpath: &Path) -> Vec<FanInfo> {
                 FanMappingConfidence::Unknown
             },
             current_rpm: rpm,
+            telemetry_source: path.display().to_string(),
+            sampled_at_ms,
+            freshness: "fresh".to_string(),
+            telemetry_reason: telemetry_reason.to_string(),
             min_rpm,
             max_rpm,
             current_percent,
@@ -1066,7 +1100,21 @@ fn path_exists(path: &Path) -> bool {
 }
 
 fn stable_hwmon_id(path: &Path) -> String {
-    path.file_name()
+    let hwmon = if path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.starts_with("fan") && value.ends_with("_input"))
+    {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    let device = hwmon.join("device");
+    fs::canonicalize(&device)
+        .ok()
+        .as_deref()
+        .and_then(Path::file_name)
+        .or_else(|| hwmon.file_name())
         .and_then(|value| value.to_str())
         .unwrap_or("hwmon")
         .to_string()
@@ -1260,12 +1308,18 @@ mod tests {
 
     fn fan(display_label: &str, raw_label: Option<&str>) -> FanTelemetry {
         FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
             hwmon_device: "asus".to_string(),
             hwmon_path: "/sys/class/hwmon/hwmon0".to_string(),
             input_path: "/sys/class/hwmon/hwmon0/fan1_input".to_string(),
             raw_label: raw_label.map(|value| value.to_string()),
             display_label: display_label.to_string(),
             rpm: Some(4200),
+            source: "/sys/class/hwmon/hwmon0/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
         }
     }
 
@@ -1293,6 +1347,26 @@ mod tests {
         assert_eq!(friendly_fan_label("mid_fan"), "Mid Fan");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn stable_hwmon_identity_does_not_depend_on_hwmon_number() {
+        let root = temp_hwmon_root("stable-id");
+        let device = root.join("devices/PNP0C0B:00");
+        let hwmon0 = root.join("hwmon0");
+        let hwmon7 = root.join("hwmon7");
+        fs::create_dir_all(&device).unwrap();
+        fs::create_dir_all(&hwmon0).unwrap();
+        fs::create_dir_all(&hwmon7).unwrap();
+        symlink(&device, hwmon0.join("device")).unwrap();
+        symlink(&device, hwmon7.join("device")).unwrap();
+
+        assert_eq!(stable_hwmon_id(&hwmon0), "PNP0C0B:00");
+        assert_eq!(stable_hwmon_id(&hwmon0), stable_hwmon_id(&hwmon7));
+        assert_eq!(stable_hwmon_id(&hwmon0.join("fan1_input")), "PNP0C0B:00");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn list_fans_reports_read_only_telemetry_without_pwm() {
         let root = temp_hwmon_root("readonly");
@@ -1310,6 +1384,37 @@ mod tests {
         assert_eq!(fans[0].current_rpm, Some(2400));
         assert!(!fans[0].controllable);
         assert!(!fans[0].supports_manual_percent);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_distinguishes_fresh_zero_from_malformed_fan_input() {
+        let root = temp_hwmon_root("fan-sample-state");
+        let hwmon0 = root.join("hwmon0");
+        fs::create_dir_all(&hwmon0).unwrap();
+        fs::write(hwmon0.join("name"), "asus\n").unwrap();
+        fs::write(hwmon0.join("fan1_input"), "0\n").unwrap();
+        fs::write(hwmon0.join("fan2_input"), "not-a-number\n").unwrap();
+
+        let snapshot = HwmonTelemetryProvider::new(root.clone())
+            .read_snapshot()
+            .unwrap();
+
+        assert_eq!(snapshot.fan_rows[0].rpm, Some(0));
+        assert!(snapshot.fan_rows[0].telemetry_available);
+        assert_eq!(snapshot.fan_rows[0].telemetry_reason, "fresh_numeric");
+        assert_eq!(snapshot.fan_rows[1].rpm, None);
+        assert!(!snapshot.fan_rows[1].telemetry_available);
+        assert_eq!(snapshot.fan_rows[1].telemetry_reason, "malformed_numeric");
+        assert_eq!(snapshot.fans_rpm.len(), 1);
+
+        fs::write(hwmon0.join("fan1_input"), "2400\n").unwrap();
+        let changed = HwmonTelemetryProvider::new(root.clone())
+            .read_snapshot()
+            .unwrap();
+        assert_eq!(changed.fan_rows[0].rpm, Some(2400));
+        assert_eq!(changed.fan_rows[0].telemetry_reason, "fresh_numeric");
 
         let _ = fs::remove_dir_all(root);
     }

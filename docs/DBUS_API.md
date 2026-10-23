@@ -118,6 +118,15 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
 | `SetFanSync` | `b` | `()` | Compatibility state only; not advertised on the current curve-only backend |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Compatibility method; currently rejects because no verified manual-percent backend exists |
+
+`GetCaps.control_privilege_matrix` is additive and capability-driven. Each row exposes
+`feature_supported`, `mapping_verified`, `telemetry_available`, `direct_writable`,
+`privileged_helper_ready`, `authorization_state`, `can_apply`, and a stable `reason` code. Older
+support/access keys remain during compatible evolution.
+
+Fan telemetry rows add `stable_id`, `source`, `sampled_at_ms`, `freshness`,
+`telemetry_available`, and `telemetry_reason`. Fan-state rows mirror source/timestamp/freshness/reason.
+A numeric zero is a valid fresh sample; consumers must not reuse it after the freshness window.
 | `ResetFansToAuto` | none | `()` | Requests all verified ASUS WMI channels return to Auto and reports any failure |
 
 ### `GetDaemonInfo` Response

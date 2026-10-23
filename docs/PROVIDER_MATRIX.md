@@ -1,5 +1,19 @@
 # Provider Matrix
 
+## Selection and access rules
+
+| Domain | Preferred provider | Safe fallback | Access boundary |
+| --- | --- | --- | --- |
+| Performance profile | verified `asusd` API | none | Missing `asusd` affects profiles only |
+| Battery limit | verified `asusd` API | exactly one Battery `charge_control_end_threshold` | Direct write or typed battery-helper Apply with readback |
+| GPU mode | `supergfxd` | none | `supergfxd` remains authoritative |
+| ASUS fan curves | exact ASUS WMI CPU/GPU/Mid mapping | typed fan helper for the same verified channels | Unknown ACPI/hwmon rows remain telemetry-only |
+| Native Aura | verified `asusd` Aura API | allow-listed G615JMR identity + descriptor + alias + typed lighting helper | No arbitrary HID path or packet API |
+
+Optional missing providers are setup guidance, not an overall application-health failure. Provider
+selection is reported independently from support, mapping verification, helper readiness, and the
+authorization result of the last explicit operation.
+
 This document summarizes the current provider modules in `crates/rog-providers/src/`.
 
 For each module, it describes:
