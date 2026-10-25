@@ -57,6 +57,36 @@ Missing backend services remain diagnostic results rather than requiring hardwar
 Freeform policy results, warning text, and broad Aura DBus discovery content are omitted from the
 shareable report. Use local UI diagnostics or the targeted CLI diagnostics for detailed errors.
 
+## Choosing an issue form
+
+Use **Bug report** for a reproducible software problem. Include the exact steps, expected and
+actual results, environment details, and a focused redacted diagnostic report when useful.
+
+Use **Feature request** for a user need or proposed behavior. Describe the use case, benefits,
+alternatives, and any hardware or platform constraints; priority selection is not required.
+
+Use **Hardware compatibility / validation report** for model-specific discovery, physical tests,
+unsupported features, or untested features. Report the evidence level accurately:
+
+- **Read-only discovery** means an endpoint, service, or capability was detected; it does not prove
+  that hardware control works.
+- **Physical functionality tested** means a safe user-observable function was tested and observed.
+- **Verified hardware write with post-write evidence** means a supported write completed and was
+  read back or physically observed, with the evidence recorded.
+- **Unsupported** means the feature is not supported by the hardware/backend or is deliberately
+  unavailable for safety. **Untested** means no conclusion was reached.
+
+Do not perform a potentially dangerous fan, power, GPU, or lighting operation just to complete a
+report. For any public attachment, remove API tokens, passwords, usernames, personal information,
+hostnames, serial numbers, private filesystem paths, unrelated logs or command output, and other
+sensitive hardware or system identifiers. Review `rog-helper issue-report` output before sharing it:
+it is read-only and redacted by default, but it is not a substitute for reviewing the final text.
+
+For suspected security vulnerabilities, do not open a public issue. Use the private security
+advisory link in the issue chooser. The repository currently has no published `SECURITY.md` policy;
+if GitHub's private advisory route is unavailable for your account, contact the maintainer privately
+before disclosing sensitive details.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:
