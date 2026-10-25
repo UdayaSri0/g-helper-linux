@@ -1,5 +1,6 @@
 /target
 .issue-orchestrator/
+__pycache__/
 **/*.rs.bk
 
 # Editors
