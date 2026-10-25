@@ -15363,7 +15363,7 @@ fn fresh_telemetry_rpm(fan: &FanTelemetry, now_ms: u64) -> Option<u32> {
         .flatten()
 }
 
-fn effective_telemetry_freshness<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+fn effective_telemetry_freshness(fan: &FanTelemetry, now_ms: u64) -> &str {
     if fan.sampled_at_ms > 0 && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS {
         "stale"
     } else {
@@ -15371,7 +15371,7 @@ fn effective_telemetry_freshness<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a 
     }
 }
 
-fn effective_telemetry_reason<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+fn effective_telemetry_reason(fan: &FanTelemetry, now_ms: u64) -> &str {
     if fan.telemetry_available
         && fan.sampled_at_ms > 0
         && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS

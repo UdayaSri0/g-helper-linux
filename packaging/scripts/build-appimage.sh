@@ -155,8 +155,22 @@ print_appimage_build_deps() {
 }
 
 supported_mksquashfs_compressors() {
-  mksquashfs -help 2>&1 | awk '
-    /Compressors available:/ {capture=1; next}
+  mksquashfs -help-option comp 2>&1 | awk '
+    /Compressors available:/ {
+      line = $0
+      sub(/^.*Compressors available:[[:space:]]*/, "", line)
+      if (line != "") {
+        gsub(/[.,]/, " ", line)
+        gsub(/\(default\)/, "", line)
+        count = split(line, parts, /[[:space:]]+/)
+        for (part_index = 1; part_index <= count; part_index++) {
+          if (parts[part_index] ~ /^[[:alnum:]][[:alnum:]-]*$/) print parts[part_index]
+        }
+        exit
+      }
+      capture = 1
+      next
+    }
     capture && /^[[:space:]]+[[:alnum:]][[:alnum:]-]*([[:space:]]+\(.*\))?[[:space:]]*$/ {
       gsub(/^[[:space:]]+/, "", $0)
       print $1
