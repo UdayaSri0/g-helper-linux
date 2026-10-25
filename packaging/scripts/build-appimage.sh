@@ -163,9 +163,9 @@ supported_mksquashfs_compressors() {
         gsub(/\(default\)/, "", line)
         gsub(/[.,]/, "\\n", line)
         count = split(line, parts, "\\n")
-        for (index = 1; index <= count; index++) {
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[index])
-          if (parts[index] ~ /^[[:alnum:]][[:alnum:]-]*$/) print parts[index]
+        for (part_index = 1; part_index <= count; part_index++) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[part_index])
+          if (parts[part_index] ~ /^[[:alnum:]][[:alnum:]-]*$/) print parts[part_index]
         }
         exit
       }
