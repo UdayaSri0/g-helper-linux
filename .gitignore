@@ -1,4 +1,5 @@
 /target
+.issue-orchestrator/
 **/*.rs.bk
 
 # Editors
