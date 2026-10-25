@@ -16776,11 +16776,8 @@ mod tests {
             ..UpdateState::default()
         };
 
-        let failed = update_check_failed_state(
-            &metadata,
-            "Unable to reach GitHub right now.",
-            &previous,
-        );
+        let failed =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &previous);
 
         assert_eq!(failed.status_text, "Could not check for updates");
         assert_eq!(failed.update_action_label, "Open Releases");
@@ -16794,11 +16791,8 @@ mod tests {
     #[test]
     fn failed_then_successful_update_check_requires_fresh_release_state() {
         let metadata = update_test_metadata();
-        let failed = update_check_failed_state(
-            &metadata,
-            "GitHub returned 503",
-            &UpdateState::default(),
-        );
+        let failed =
+            update_check_failed_state(&metadata, "GitHub returned 503", &UpdateState::default());
         assert!(!failed.supports_in_place_update);
         assert!(failed.downloadable_asset.is_none());
 
@@ -16830,11 +16824,8 @@ mod tests {
         assert!(startup.downloadable_asset.is_none());
         assert_eq!(startup.release_page_url, metadata.releases_url);
 
-        let offline = update_check_failed_state(
-            &metadata,
-            "Unable to reach GitHub right now.",
-            &startup,
-        );
+        let offline =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &startup);
         assert_eq!(offline.update_action_label, "Open Releases");
         assert!(!offline.supports_in_place_update);
         assert!(offline.downloadable_asset.is_none());
