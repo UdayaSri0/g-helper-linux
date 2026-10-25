@@ -10147,17 +10147,18 @@ fn update_check_failed_state(
     error: &str,
     previous_state: &UpdateState,
 ) -> UpdateState {
-    let mut state = previous_state.clone();
-    if state.release_page_url.is_none() {
-        state.release_page_url = app_metadata.releases_url.clone();
+    UpdateState {
+        status_text: "Could not check for updates".to_string(),
+        last_result_text: friendly_update_error(error),
+        last_checked_unix: Some(now_unix_timestamp()),
+        release_page_url: app_metadata
+            .releases_url
+            .clone()
+            .or_else(|| previous_state.release_page_url.clone()),
+        update_action_label: "Open Releases".to_string(),
+        update_action_subtitle: "Open the latest release page in your browser.".to_string(),
+        ..UpdateState::default()
     }
-    if state.update_action_label.is_empty() {
-        state.update_action_label = "Open Releases".to_string();
-    }
-    state.status_text = "Could not check for updates".to_string();
-    state.last_checked_unix = Some(now_unix_timestamp());
-    state.last_result_text = friendly_update_error(error);
-    state
 }
 
 async fn apply_update_action(
@@ -16739,6 +16740,96 @@ mod tests {
 
         let comparison = compare_versions("0.16.0", "v0.16");
         assert_eq!(comparison, Some(std::cmp::Ordering::Equal));
+    }
+
+    fn update_test_metadata() -> AppMetadata {
+        AppMetadata {
+            binary_name: "rog-helper-ui".to_string(),
+            version: "0.4.0".to_string(),
+            license: "MIT OR Apache-2.0".to_string(),
+            authors: "test".to_string(),
+            repository_url: Some("https://github.com/UdayaSri0/g-helper-linux".to_string()),
+            maintainer_name: "test".to_string(),
+            maintainer_url: None,
+            issues_url: None,
+            releases_url: Some(
+                "https://github.com/UdayaSri0/g-helper-linux/releases/latest".to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn failed_update_check_invalidates_cached_replacement_state() {
+        let metadata = update_test_metadata();
+        let previous = UpdateState {
+            latest_version: Some("0.5.0".to_string()),
+            release_notes_preview: Some("notes".to_string()),
+            release_notes_full: Some("full notes".to_string()),
+            release_page_url: Some("https://example.invalid/old-release".to_string()),
+            downloadable_asset: Some(ReleaseAsset {
+                name: "rog-helper-ui".to_string(),
+                download_url: "https://example.invalid/rog-helper-ui".to_string(),
+            }),
+            update_action_label: "Update Now".to_string(),
+            update_action_subtitle: "Replace the current binary.".to_string(),
+            supports_in_place_update: true,
+            ..UpdateState::default()
+        };
+
+        let failed =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &previous);
+
+        assert_eq!(failed.status_text, "Could not check for updates");
+        assert_eq!(failed.update_action_label, "Open Releases");
+        assert!(!failed.supports_in_place_update);
+        assert!(failed.downloadable_asset.is_none());
+        assert!(failed.latest_version.is_none());
+        assert!(failed.release_notes_full.is_none());
+        assert_eq!(failed.release_page_url, metadata.releases_url);
+    }
+
+    #[test]
+    fn failed_then_successful_update_check_requires_fresh_release_state() {
+        let metadata = update_test_metadata();
+        let failed =
+            update_check_failed_state(&metadata, "GitHub returned 503", &UpdateState::default());
+        assert!(!failed.supports_in_place_update);
+        assert!(failed.downloadable_asset.is_none());
+
+        let successful = UpdateState {
+            latest_version: Some("0.5.0".to_string()),
+            release_page_url: Some(
+                "https://github.com/UdayaSri0/g-helper-linux/releases/tag/v0.5.0".to_string(),
+            ),
+            downloadable_asset: Some(ReleaseAsset {
+                name: "rog-helper-ui".to_string(),
+                download_url: "https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.5.0/rog-helper-ui".to_string(),
+            }),
+            update_action_label: "Update Now".to_string(),
+            supports_in_place_update: true,
+            ..UpdateState::default()
+        };
+
+        assert!(successful.supports_in_place_update);
+        assert!(successful.downloadable_asset.is_some());
+        assert_eq!(successful.update_action_label, "Update Now");
+    }
+
+    #[test]
+    fn startup_and_offline_update_states_keep_manual_release_fallback_only() {
+        let metadata = update_test_metadata();
+        let startup = initial_update_state(&metadata);
+        assert_eq!(startup.update_action_label, "Open Releases");
+        assert!(!startup.supports_in_place_update);
+        assert!(startup.downloadable_asset.is_none());
+        assert_eq!(startup.release_page_url, metadata.releases_url);
+
+        let offline =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &startup);
+        assert_eq!(offline.update_action_label, "Open Releases");
+        assert!(!offline.supports_in_place_update);
+        assert!(offline.downloadable_asset.is_none());
+        assert_eq!(offline.release_page_url, metadata.releases_url);
     }
 
     #[test]
