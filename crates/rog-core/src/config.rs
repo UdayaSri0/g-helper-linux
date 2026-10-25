@@ -716,13 +716,17 @@ pub fn validate_profile(profile: &NamedProfile) -> Result<(), String> {
             if curve.schema_version == 0 {
                 return Err("Saved fan curve schema version must be greater than zero.".into());
             }
-            crate::validate_fan_curve_points(
-                &curve.points,
-                crate::FanCurvePolicy {
+            let policy = match curve.provenance {
+                FanCurveProvenance::UserDefined => crate::FanCurvePolicy::verified_asus_write(),
+                // Factory curves are read-only evidence and may end at a
+                // firmware-specific temperature; never turn them into a
+                // hardware write merely by importing them.
+                FanCurveProvenance::Imported => crate::FanCurvePolicy {
                     exact_point_count: Some(8),
                     ..crate::FanCurvePolicy::default()
                 },
-            )
+            };
+            crate::validate_fan_curve_points(&curve.points, policy)
             .map_err(|error| format!("Saved fan curve is unsafe: {error}"))?;
         }
     }

@@ -298,10 +298,7 @@ impl PrivilegedService {
                 .collect(),
         };
         curve
-            .validate_safe(FanCurvePolicy {
-                exact_point_count: Some(ASUS_WMI_CURVE_POINTS),
-                ..Default::default()
-            })
+            .validate_safe(FanCurvePolicy::verified_asus_write())
             .map_err(map_fan_error)?;
         if !self
             .fans
