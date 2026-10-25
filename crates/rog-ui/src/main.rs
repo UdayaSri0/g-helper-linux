@@ -14839,10 +14839,7 @@ fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
             .collect(),
     };
     curve
-        .validate_safe(FanCurvePolicy {
-            exact_point_count: Some(8),
-            ..FanCurvePolicy::default()
-        })
+        .validate_safe(FanCurvePolicy::verified_asus_write())
         .map_err(|error| error.to_string())
 }
 

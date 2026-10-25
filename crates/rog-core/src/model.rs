@@ -553,6 +553,11 @@ pub struct FanCurvePolicy {
     pub safe_floor: Option<SafeFloor>,
     /// Exact number of points required by a verified backend ABI, when known.
     pub exact_point_count: Option<usize>,
+    /// Require an explicit high-temperature endpoint before a curve may be
+    /// sent to a hardware write route. Read-only factory curves may use a
+    /// firmware-specific endpoint.
+    pub require_terminal_coverage: bool,
+    pub terminal_temp_c: u8,
 }
 
 impl Default for FanCurvePolicy {
@@ -569,6 +574,21 @@ impl Default for FanCurvePolicy {
                 min_duty_percent: 70,
             }),
             exact_point_count: None,
+            require_terminal_coverage: false,
+            terminal_temp_c: 95,
+        }
+    }
+}
+
+impl FanCurvePolicy {
+    /// Fail-closed policy for the currently supported ASUS WMI write route.
+    /// This is a write gate, not a claim about every ASUS firmware curve.
+    pub fn verified_asus_write() -> Self {
+        Self {
+            exact_point_count: Some(8),
+            require_terminal_coverage: true,
+            terminal_temp_c: 95,
+            ..Self::default()
         }
     }
 }
@@ -763,6 +783,14 @@ pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) ->
         }
         last_temp = Some(point.temp_c);
         last_duty = Some(point.duty_percent);
+    }
+    if policy.require_terminal_coverage
+        && last_temp.map_or(true, |temp| temp < policy.terminal_temp_c)
+    {
+        return Err(RogError::InvalidInput(format!(
+            "fan curve must include a terminal point at or above {}C before hardware writes",
+            policy.terminal_temp_c
+        )));
     }
     Ok(())
 }
@@ -3326,6 +3354,37 @@ mod tests {
             assert!(accepted.validate_safe(FanCurvePolicy::default()).is_ok());
             assert!(rejected.validate_safe(FanCurvePolicy::default()).is_err());
         }
+    }
+
+    #[test]
+    fn hardware_write_policy_rejects_curve_without_terminal_coverage() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: (0..8)
+                .map(|index| FanPoint {
+                    temp_c: 30 + index * 5,
+                    duty_percent: 10,
+                })
+                .collect(),
+        };
+        let error = curve
+            .validate_safe(FanCurvePolicy::verified_asus_write())
+            .unwrap_err();
+        assert!(error.to_string().contains("terminal point"));
+    }
+
+    #[test]
+    fn read_only_policy_accepts_firmware_curve_ending_below_write_gate() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: (0..8)
+                .map(|index| FanPoint {
+                    temp_c: 40 + index * 5,
+                    duty_percent: 20 + index * 5,
+                })
+                .collect(),
+        };
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_ok());
     }
 
     #[test]

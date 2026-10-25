@@ -200,10 +200,7 @@ impl HwmonTelemetryProvider {
             .write_lock
             .lock()
             .map_err(|_| RogError::Unexpected("fan write lock is unavailable".to_string()))?;
-        let policy = rog_core::FanCurvePolicy {
-            exact_point_count: Some(ASUS_WMI_CURVE_POINTS),
-            ..Default::default()
-        };
+        let policy = rog_core::FanCurvePolicy::verified_asus_write();
         curve.validate_safe(policy)?;
         let channels = self.verified_asus_curve_channels()?;
         let channel = select_verified_channels(&channels, Some(fan_id))?
@@ -915,6 +912,12 @@ fn write_asus_curve_transaction(channel: &AsusCurveChannel, curve: &FanCurve) ->
     // Snapshot all eight raw values before the first write. A read failure
     // aborts the request instead of silently falling back to lossy percents.
     let current = read_asus_curve(channel)?;
+    if current.enable_mode == 1 {
+        return Err(RogError::TemporarilyUnavailable(
+            "re-applying a curve while custom mode is active is blocked until an atomic transition is verified"
+                .to_string(),
+        ));
+    }
     write_asus_curve_transaction_with(
         channel,
         curve,
@@ -1705,8 +1708,8 @@ mod tests {
             domain: FanDomain::Cpu,
             points: (0..8)
                 .map(|point| FanPoint {
-                    temp_c: 40 + point * 5,
-                    duty_percent: 20 + point * 10,
+                    temp_c: [35, 45, 55, 65, 75, 85, 90, 95][point as usize],
+                    duty_percent: [20, 30, 40, 50, 60, 70, 90, 100][point as usize],
                 })
                 .collect(),
         };
@@ -1730,6 +1733,44 @@ mod tests {
                 .trim(),
             "3"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_custom_curve_reapply_is_blocked_before_any_write() {
+        let (root, curve_path) = verified_asus_fixture("active-reapply");
+        fs::write(curve_path.join("pwm1_enable"), "1\n").unwrap();
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read_to_string(path).unwrap()))
+            .collect::<Vec<_>>();
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
+            ]
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
+            .collect(),
+        };
+        let error = HwmonTelemetryProvider::new(root.clone())
+            .set_fan_curve("asus-wmi:cpu", curve)
+            .unwrap_err();
+        assert!(error.to_string().contains("re-applying"));
+        for (path, contents) in before {
+            assert_eq!(fs::read_to_string(path).unwrap(), contents);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
