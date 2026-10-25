@@ -727,7 +727,7 @@ pub fn validate_profile(profile: &NamedProfile) -> Result<(), String> {
                 },
             };
             crate::validate_fan_curve_points(&curve.points, policy)
-            .map_err(|error| format!("Saved fan curve is unsafe: {error}"))?;
+                .map_err(|error| format!("Saved fan curve is unsafe: {error}"))?;
         }
     }
     Ok(())
