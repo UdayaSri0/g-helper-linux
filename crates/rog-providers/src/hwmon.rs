@@ -952,7 +952,11 @@ where
         write_and_verify,
         |channel| {
             reset_asus_channel_to_auto(channel)?;
-            recovered()
+            recovered().map_err(|error| {
+                RogError::TransientFailure(format!(
+                    "Auto recovery succeeded, but recovery marker cleanup failed and the marker was retained ({error})"
+                ))
+            })
         },
     )
 }
@@ -962,11 +966,11 @@ fn write_asus_curve_transaction_with<W, R>(
     curve: &FanCurve,
     current: Option<&FanCurveReadback>,
     mut write_and_readback: W,
-    mut restore_auto: R,
+    restore_auto: R,
 ) -> RogResult<()>
 where
     W: FnMut(&Path, u32) -> RogResult<()>,
-    R: FnMut(&AsusCurveChannel) -> RogResult<()>,
+    R: FnOnce(&AsusCurveChannel) -> RogResult<()>,
 {
     let result = (|| {
         for (offset, point) in curve.points.iter().enumerate() {
@@ -1004,6 +1008,13 @@ where
                 error,
                 "Auto recovery succeeded after the failed transaction; staged point values may remain but custom mode is not active",
             )),
+            Err(RogError::TransientFailure(cleanup))
+                if cleanup.starts_with("Auto recovery succeeded, but recovery marker cleanup failed") =>
+            {
+                Err(RogError::Unexpected(format!(
+                    "fan curve write failed ({error}); {cleanup}"
+                )))
+            }
             Err(rollback) => Err(RogError::Unexpected(format!(
                 "fan curve write failed ({error}); Auto rollback also failed and hardware state may be partial or unknown ({rollback})"
             ))),
@@ -2078,6 +2089,23 @@ mod tests {
         assert!(error.to_string().contains("Auto rollback also failed"));
         assert!(error.to_string().contains("rollback failure"));
         assert!(error.to_string().contains("partial or unknown"));
+
+        let error = write_asus_curve_transaction_with(
+            &channel,
+            &curve,
+            None,
+            |_, _| Err(RogError::Unexpected("injected write failure".to_string())),
+            |_| {
+                Err(RogError::TransientFailure(
+                    "Auto recovery succeeded, but recovery marker cleanup failed and the marker was retained (injected cleanup failure)"
+                        .to_string(),
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Auto recovery succeeded"));
+        assert!(error.to_string().contains("marker cleanup failed"));
+        assert!(!error.to_string().contains("partial or unknown"));
     }
 
     #[test]
