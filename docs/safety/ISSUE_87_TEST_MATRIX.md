@@ -4,8 +4,10 @@
 | --- | --- | --- | --- |
 | Curve endpoint gate | Pure `rog-core` low-duty curve ending at 65°C is rejected by write policy | None permitted in automated tests | Software covered; physical blocked |
 | Factory/read-only curve | Default policy accepts firmware-specific low endpoint for inspection | Read-only discovery only | Covered conservatively |
-| Active re-apply | Fake hwmon with `enable_mode=1` proves zero writes | Supervised firmware semantics | Software covered; physical blocked |
-| Partial point write | Existing fake-hwmon transaction/readback tests | Controlled supervised rollback | Existing software coverage; physical blocked |
+| Active re-apply | Provider and privileged-helper fake hwmon tests prove replacement and identical curves cause zero endpoint writes and do not arm recovery | Supervised firmware semantics | Software covered; physical blocked |
+| Malformed mode | Missing or unexpected enable state rejects before preparation or writes | None permitted in automated tests | Software covered |
+| Partial point write | Failure injection covers every temperature/PWM stage and final enable, with recovery outcome reporting | Controlled supervised rollback | Software covered; physical blocked |
+| Privileged recovery scope | Pre-write rejection preserves unrelated armed channels; transaction hooks scope marker cleanup to the touched channel | Helper restart on hardware | Pre-write regression covered; post-write hardware behavior blocked |
 | Ownership/lease recovery | Not yet implemented | Not tested | Open #80/#82 |
 | Missing sensors/stalls | Not yet complete | Not tested | Open #81 |
 | CPU rollback | Not yet started | Not tested | Open #83 |

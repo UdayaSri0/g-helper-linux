@@ -196,6 +196,23 @@ impl HwmonTelemetryProvider {
     }
 
     pub fn set_fan_curve(&self, fan_id: &str, curve: FanCurve) -> RogResult<()> {
+        self.set_fan_curve_with_hooks(fan_id, curve, || Ok(()), || Ok(()))
+    }
+
+    /// Apply a verified curve after calling `prepare` at the last safe point:
+    /// after the complete snapshot and active-mode rejection, but before the
+    /// first hardware write.
+    pub fn set_fan_curve_with_hooks<F, R>(
+        &self,
+        fan_id: &str,
+        curve: FanCurve,
+        prepare: F,
+        recovered: R,
+    ) -> RogResult<()>
+    where
+        F: FnOnce() -> RogResult<()>,
+        R: FnOnce() -> RogResult<()>,
+    {
         let _guard = self
             .write_lock
             .lock()
@@ -218,7 +235,7 @@ impl HwmonTelemetryProvider {
                 "fan curve domain does not match the selected fan id".to_string(),
             ));
         }
-        write_asus_curve_transaction(channel, &curve)
+        write_asus_curve_transaction(channel, &curve, prepare, recovered)
     }
 
     /// Read the current curve from an exactly verified ASUS WMI channel.
@@ -908,7 +925,16 @@ fn select_verified_channels<'a>(
     }
 }
 
-fn write_asus_curve_transaction(channel: &AsusCurveChannel, curve: &FanCurve) -> RogResult<()> {
+fn write_asus_curve_transaction<F, R>(
+    channel: &AsusCurveChannel,
+    curve: &FanCurve,
+    prepare: F,
+    recovered: R,
+) -> RogResult<()>
+where
+    F: FnOnce() -> RogResult<()>,
+    R: FnOnce() -> RogResult<()>,
+{
     // Snapshot all eight raw values before the first write. A read failure
     // aborts the request instead of silently falling back to lossy percents.
     let current = read_asus_curve(channel)?;
@@ -918,12 +944,16 @@ fn write_asus_curve_transaction(channel: &AsusCurveChannel, curve: &FanCurve) ->
                 .to_string(),
         ));
     }
+    prepare()?;
     write_asus_curve_transaction_with(
         channel,
         curve,
         Some(&current),
         write_and_verify,
-        reset_asus_channel_to_auto,
+        |channel| {
+            reset_asus_channel_to_auto(channel)?;
+            recovered()
+        },
     )
 }
 
@@ -970,13 +1000,31 @@ where
     })();
     if let Err(error) = result {
         return match restore_auto(channel) {
-            Ok(()) => Err(error),
+            Ok(()) => Err(with_error_context(
+                error,
+                "Auto recovery succeeded after the failed transaction; staged point values may remain but custom mode is not active",
+            )),
             Err(rollback) => Err(RogError::Unexpected(format!(
-                "fan curve write failed ({error}); Auto rollback also failed ({rollback})"
+                "fan curve write failed ({error}); Auto rollback also failed and hardware state may be partial or unknown ({rollback})"
             ))),
         };
     }
     Ok(())
+}
+
+fn with_error_context(error: RogError, context: &str) -> RogError {
+    let message = |value: String| format!("{value}; {context}");
+    match error {
+        RogError::DependencyMissing(value) => RogError::DependencyMissing(message(value)),
+        RogError::NotSupported(value) => RogError::NotSupported(message(value)),
+        RogError::PermissionDenied(value) => RogError::PermissionDenied(message(value)),
+        RogError::InvalidInput(value) => RogError::InvalidInput(message(value)),
+        RogError::TransientFailure(value) => RogError::TransientFailure(message(value)),
+        RogError::TemporarilyUnavailable(value) => {
+            RogError::TemporarilyUnavailable(message(value))
+        }
+        RogError::Unexpected(value) => RogError::Unexpected(message(value)),
+    }
 }
 
 fn reset_asus_channel_to_auto(channel: &AsusCurveChannel) -> RogResult<()> {
@@ -1651,6 +1699,90 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn missing_or_unexpected_enable_mode_never_prepares_or_writes() {
+        for (name, mode) in [("missing-mode", None), ("unexpected-mode", Some("9\n"))] {
+            let (root, curve_path) = verified_asus_fixture(name);
+            let enable = curve_path.join("pwm1_enable");
+            if let Some(mode) = mode {
+                fs::write(&enable, mode).unwrap();
+            } else {
+                fs::remove_file(&enable).unwrap();
+            }
+            let before = fs::read_dir(&curve_path)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_type().unwrap().is_file())
+                .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
+                .collect::<Vec<_>>();
+            let requested = FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![
+                    (35, 20), (45, 30), (55, 40), (65, 50),
+                    (75, 60), (85, 70), (90, 90), (95, 100),
+                ]
+                .into_iter()
+                .map(|(temp_c, duty_percent)| FanPoint { temp_c, duty_percent })
+                .collect(),
+            };
+            let mut prepared = false;
+            let error = HwmonTelemetryProvider::new(root.clone())
+                .set_fan_curve_with_hooks(
+                    "asus-wmi:cpu",
+                    requested,
+                    || {
+                        prepared = true;
+                        Ok(())
+                    },
+                    || panic!("preflight failure must not run recovery bookkeeping"),
+                )
+                .unwrap_err();
+            assert!(!prepared);
+            assert!(matches!(error, RogError::NotSupported(_) | RogError::TemporarilyUnavailable(_)));
+            for (path, contents) in before {
+                assert_eq!(fs::read(path).unwrap(), contents);
+            }
+            if mode.is_none() {
+                assert!(!enable.exists(), "a missing enable endpoint must not be created");
+            }
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_marker_prepare_failure_aborts_before_endpoint_writes() {
+        let (root, curve_path) = verified_asus_fixture("prepare-failure");
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read(&path).unwrap()))
+            .collect::<Vec<_>>();
+        let requested = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                (35, 20), (45, 30), (55, 40), (65, 50),
+                (75, 60), (85, 70), (90, 90), (95, 100),
+            ]
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint { temp_c, duty_percent })
+            .collect(),
+        };
+        let error = HwmonTelemetryProvider::new(root.clone())
+            .set_fan_curve_with_hooks(
+                "asus-wmi:cpu",
+                requested,
+                || Err(RogError::Unexpected("injected marker failure".to_string())),
+                || panic!("prepare failure must not run recovery bookkeeping"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("marker failure"));
+        for (path, contents) in before {
+            assert_eq!(fs::read(path).unwrap(), contents);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn verified_mapping_rejects_missing_or_wrong_label() {
         for (name, label) in [("missing-label", None), ("wrong-label", Some("gpu_fan\n"))] {
             let (root, _) = verified_asus_fixture(name);
@@ -1741,10 +1873,6 @@ mod tests {
     fn active_custom_curve_reapply_is_blocked_before_any_write() {
         let (root, curve_path) = verified_asus_fixture("active-reapply");
         fs::write(curve_path.join("pwm1_enable"), "1\n").unwrap();
-        let before = asus_channel_paths(&curve_path, 1)
-            .into_iter()
-            .map(|path| (path.clone(), fs::read_to_string(path).unwrap()))
-            .collect::<Vec<_>>();
         let curve = FanCurve {
             domain: FanDomain::Cpu,
             points: vec![
@@ -1764,12 +1892,47 @@ mod tests {
             })
             .collect(),
         };
-        let error = HwmonTelemetryProvider::new(root.clone())
-            .set_fan_curve("asus-wmi:cpu", curve)
-            .unwrap_err();
-        assert!(error.to_string().contains("re-applying"));
-        for (path, contents) in before {
-            assert_eq!(fs::read_to_string(path).unwrap(), contents);
+        for (offset, point) in curve.points.iter().enumerate() {
+            let index = offset + 1;
+            fs::write(
+                curve_path.join(format!("pwm1_auto_point{index}_temp")),
+                format!("{}\n", point.temp_c),
+            )
+            .unwrap();
+            fs::write(
+                curve_path.join(format!("pwm1_auto_point{index}_pwm")),
+                format!("{}\n", (u32::from(point.duty_percent) * 255 + 50) / 100),
+            )
+            .unwrap();
+        }
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read_to_string(path).unwrap()))
+            .collect::<Vec<_>>();
+        let provider = HwmonTelemetryProvider::new(root.clone());
+        let identical = read_asus_curve(&provider.verified_asus_curve_channels().unwrap()[0])
+            .unwrap()
+            .curve;
+        let mut replacement = curve.clone();
+        replacement.points[0].duty_percent += 1;
+        for requested in [replacement, identical] {
+            let mut prepared = false;
+            let error = provider
+                .set_fan_curve_with_hooks(
+                    "asus-wmi:cpu",
+                    requested,
+                    || {
+                        prepared = true;
+                        Ok(())
+                    },
+                    || panic!("active rejection must not run recovery bookkeeping"),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("re-applying"));
+            assert!(!prepared, "active-mode rejection must not arm recovery");
+            for (path, contents) in &before {
+                assert_eq!(fs::read_to_string(path).unwrap(), *contents);
+            }
         }
         let _ = fs::remove_dir_all(root);
     }
@@ -1844,7 +2007,7 @@ mod tests {
     }
 
     #[test]
-    fn readback_mismatch_or_partial_write_attempts_auto_rollback() {
+    fn every_curve_write_failure_stops_and_attempts_auto_rollback() {
         let channel = AsusCurveChannel {
             fan_id: "asus-wmi:cpu".to_string(),
             channel: 1,
@@ -1861,31 +2024,44 @@ mod tests {
                 })
                 .collect(),
         };
-        let mut writes = 0;
-        let mut rollbacks = 0;
-        let error = write_asus_curve_transaction_with(
-            &channel,
-            &curve,
-            None,
-            |_, _| {
-                writes += 1;
-                if writes == 5 {
-                    Err(RogError::Unexpected(
-                        "injected readback mismatch".to_string(),
-                    ))
-                } else {
+        for fail_at in 1..=17 {
+            let mut writes = 0;
+            let mut rollbacks = 0;
+            let mut attempted = Vec::new();
+            let error = write_asus_curve_transaction_with(
+                &channel,
+                &curve,
+                None,
+                |path, _| {
+                    writes += 1;
+                    attempted.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                    if writes == fail_at {
+                        Err(RogError::Unexpected(format!(
+                            "injected failure at stage {fail_at}"
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_| {
+                    rollbacks += 1;
                     Ok(())
-                }
-            },
-            |_| {
-                rollbacks += 1;
-                Ok(())
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("readback mismatch"));
-        assert_eq!(writes, 5);
-        assert_eq!(rollbacks, 1);
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(&format!("stage {fail_at}")));
+            assert!(error.to_string().contains("Auto recovery succeeded"));
+            assert_eq!(writes, fail_at);
+            assert_eq!(rollbacks, 1);
+            let expected = if fail_at == 17 {
+                "pwm1_enable".to_string()
+            } else {
+                let point = (fail_at + 1) / 2;
+                let suffix = if fail_at % 2 == 1 { "temp" } else { "pwm" };
+                format!("pwm1_auto_point{point}_{suffix}")
+            };
+            assert_eq!(attempted.last(), Some(&expected));
+        }
 
         let error = write_asus_curve_transaction_with(
             &channel,
@@ -1901,6 +2077,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("Auto rollback also failed"));
         assert!(error.to_string().contains("rollback failure"));
+        assert!(error.to_string().contains("partial or unknown"));
     }
 
     #[test]
