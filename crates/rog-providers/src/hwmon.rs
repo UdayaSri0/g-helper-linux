@@ -1689,8 +1689,8 @@ mod tests {
             domain: FanDomain::Cpu,
             points: (0..ASUS_WMI_CURVE_POINTS)
                 .map(|point| FanPoint {
-                    temp_c: 35 + point as u8 * 5,
-                    duty_percent: 20 + point as u8 * 10,
+                    temp_c: [35, 45, 55, 65, 75, 85, 90, 95][point],
+                    duty_percent: [20, 30, 40, 50, 60, 70, 90, 100][point],
                 })
                 .collect(),
         };
