@@ -1454,11 +1454,11 @@ async fn shutdown_signal() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rog_providers::hwmon::ASUS_WMI_CURVE_POINTS;
     use rog_core::{
         require_authorized, PrivilegedErrorCode, POLKIT_ACTION_BATTERY_CONTROL,
         POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL,
     };
+    use rog_providers::hwmon::ASUS_WMI_CURVE_POINTS;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
