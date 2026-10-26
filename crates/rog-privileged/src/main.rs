@@ -910,22 +910,19 @@ fn map_fan_error(error: RogError) -> fdo::Error {
             PrivilegedErrorCode::PermissionDenied,
             "the verified fan endpoint could not be written",
         ),
-        RogError::TemporarilyUnavailable(message) => PrivilegedError::new(
-            PrivilegedErrorCode::HardwareUnavailable,
-            message,
-        ),
+        RogError::TemporarilyUnavailable(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::HardwareUnavailable, message)
+        }
         RogError::DependencyMissing(_) => PrivilegedError::new(
             PrivilegedErrorCode::BackendFailure,
             "the verified fan backend is unavailable",
         ),
-        RogError::TransientFailure(message) => PrivilegedError::new(
-            PrivilegedErrorCode::BackendFailure,
-            message,
-        ),
-        RogError::Unexpected(message) => PrivilegedError::new(
-            PrivilegedErrorCode::Unexpected,
-            message,
-        ),
+        RogError::TransientFailure(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::BackendFailure, message)
+        }
+        RogError::Unexpected(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::Unexpected, message)
+        }
     };
     map_privileged_error(privileged)
 }
@@ -1519,11 +1516,20 @@ mod tests {
         let curve = FanCurve {
             domain: FanDomain::Cpu,
             points: vec![
-                (35, 20), (45, 30), (55, 40), (65, 50),
-                (75, 60), (85, 70), (90, 90), (95, 100),
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
             ]
             .into_iter()
-            .map(|(temp_c, duty_percent)| FanPoint { temp_c, duty_percent })
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
             .collect(),
         };
         let error = service

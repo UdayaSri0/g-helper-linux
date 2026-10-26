@@ -1031,9 +1031,7 @@ fn with_error_context(error: RogError, context: &str) -> RogError {
         RogError::PermissionDenied(value) => RogError::PermissionDenied(message(value)),
         RogError::InvalidInput(value) => RogError::InvalidInput(message(value)),
         RogError::TransientFailure(value) => RogError::TransientFailure(message(value)),
-        RogError::TemporarilyUnavailable(value) => {
-            RogError::TemporarilyUnavailable(message(value))
-        }
+        RogError::TemporarilyUnavailable(value) => RogError::TemporarilyUnavailable(message(value)),
         RogError::Unexpected(value) => RogError::Unexpected(message(value)),
     }
 }
@@ -1728,11 +1726,20 @@ mod tests {
             let requested = FanCurve {
                 domain: FanDomain::Cpu,
                 points: vec![
-                    (35, 20), (45, 30), (55, 40), (65, 50),
-                    (75, 60), (85, 70), (90, 90), (95, 100),
+                    (35, 20),
+                    (45, 30),
+                    (55, 40),
+                    (65, 50),
+                    (75, 60),
+                    (85, 70),
+                    (90, 90),
+                    (95, 100),
                 ]
                 .into_iter()
-                .map(|(temp_c, duty_percent)| FanPoint { temp_c, duty_percent })
+                .map(|(temp_c, duty_percent)| FanPoint {
+                    temp_c,
+                    duty_percent,
+                })
                 .collect(),
             };
             let mut prepared = false;
@@ -1748,12 +1755,18 @@ mod tests {
                 )
                 .unwrap_err();
             assert!(!prepared);
-            assert!(matches!(error, RogError::NotSupported(_) | RogError::TemporarilyUnavailable(_)));
+            assert!(matches!(
+                error,
+                RogError::NotSupported(_) | RogError::TemporarilyUnavailable(_)
+            ));
             for (path, contents) in before {
                 assert_eq!(fs::read(path).unwrap(), contents);
             }
             if mode.is_none() {
-                assert!(!enable.exists(), "a missing enable endpoint must not be created");
+                assert!(
+                    !enable.exists(),
+                    "a missing enable endpoint must not be created"
+                );
             }
             let _ = fs::remove_dir_all(root);
         }
@@ -1770,11 +1783,20 @@ mod tests {
         let requested = FanCurve {
             domain: FanDomain::Cpu,
             points: vec![
-                (35, 20), (45, 30), (55, 40), (65, 50),
-                (75, 60), (85, 70), (90, 90), (95, 100),
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
             ]
             .into_iter()
-            .map(|(temp_c, duty_percent)| FanPoint { temp_c, duty_percent })
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
             .collect(),
         };
         let error = HwmonTelemetryProvider::new(root.clone())
