@@ -785,7 +785,7 @@ pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) ->
         last_duty = Some(point.duty_percent);
     }
     if policy.require_terminal_coverage
-        && last_temp.map_or(true, |temp| temp < policy.terminal_temp_c)
+        && last_temp.is_none_or(|temp| temp < policy.terminal_temp_c)
     {
         return Err(RogError::InvalidInput(format!(
             "fan curve must include a terminal point at or above {}C before hardware writes",
