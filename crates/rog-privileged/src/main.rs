@@ -22,7 +22,7 @@ use rog_providers::aura_hid::{
     G615JM_REPORT_DESCRIPTOR_SHA256,
 };
 use rog_providers::cpu::CpuTelemetryProvider;
-use rog_providers::hwmon::{HwmonTelemetryProvider, ASUS_WMI_CURVE_POINTS};
+use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
 use sha2::{Digest, Sha256};
@@ -1454,6 +1454,7 @@ async fn shutdown_signal() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rog_providers::hwmon::ASUS_WMI_CURVE_POINTS;
     use rog_core::{
         require_authorized, PrivilegedErrorCode, POLKIT_ACTION_BATTERY_CONTROL,
         POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL,
