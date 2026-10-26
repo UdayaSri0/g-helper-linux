@@ -1698,7 +1698,7 @@ mod tests {
         let error = HwmonTelemetryProvider::new(root.clone())
             .set_fan_curve("asus-wmi:cpu", requested)
             .expect_err("an incomplete raw snapshot must stop the write");
-        assert!(error.to_string().contains("readback is unavailable"));
+        assert!(error.to_string().contains("PWM readback is unavailable"));
         for (path, contents) in before {
             assert_eq!(fs::read(path).unwrap(), contents);
         }
