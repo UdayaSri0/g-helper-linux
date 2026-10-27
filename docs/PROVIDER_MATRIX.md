@@ -7,7 +7,7 @@
 | Performance profile | verified `asusd` API | none | Missing `asusd` affects profiles only |
 | Battery limit | verified `asusd` API | exactly one Battery `charge_control_end_threshold` | Direct write or typed battery-helper Apply with readback |
 | GPU mode | `supergfxd` | none | `supergfxd` remains authoritative |
-| ASUS fan curves | exact ASUS WMI CPU/GPU/Mid mapping | typed fan helper for the same verified channels | Unknown ACPI/hwmon rows remain telemetry-only |
+| ASUS fan curves | exact ASUS WMI CPU/GPU/Mid ABI mapping plus approved physical-write record | typed fan helper enforcing the same record | Production write records are empty; telemetry and curve import remain read-only |
 | Native Aura | verified `asusd` Aura API | allow-listed G615JMR identity + descriptor + alias + typed lighting helper | No arbitrary HID path or packet API |
 
 Optional missing providers are setup guidance, not an overall application-health failure. Provider
@@ -43,7 +43,8 @@ File: `crates/rog-providers/src/asusd.rs`
   - only profile and charge-limit coverage are implemented
   - Aura / RGB discovery and verified contract routing are implemented separately
   - fan curve support is modeled in the daemon/API, but this provider does not write ASUS fan curves until an asusd curve interface is discoverable and tested
-  - current fan-curve writes use the separately verified ASUS WMI `hwmon` backend, not `asusd`
+  - the custom-curve transaction uses the separately recognized ASUS WMI `hwmon` backend, not
+    `asusd`, and remains policy-disabled without an approved production record
   - if asusd is present without a fan-curve interface, fan curves are reported as unsupported rather than broken
   - interface compatibility across `asusd` versions is still a live concern
 
@@ -143,7 +144,7 @@ File: `crates/rog-providers/src/hwmon.rs`
 - Purpose
   - temperature and fan-RPM telemetry from Linux hwmon sysfs
 - Read / Write
-  - Read + narrowly validated ASUS WMI fan writes
+  - Read + policy-gated ASUS WMI fan transactions; no production machine is currently authorized
 - Dependencies
   - `/sys/class/hwmon`
 - External services and paths
@@ -171,12 +172,14 @@ File: `crates/rog-providers/src/hwmon.rs`
     exact eight-pair layout, expected enable mode, canonical-device relationship, and labelled mapping
   - verified current curves preserve raw PWM values and expose consistently rounded percentages;
     reading never uses the privileged helper
-  - a complete readable and validated ASUS WMI curve ABI can enable direct or typed privileged writes
+  - a complete readable ASUS WMI curve ABI can enable readback and Import Current, but cannot by
+    itself enable direct or typed privileged custom writes
   - generic hwmon fan writes remain withheld; only the exact ASUS WMI curve layout, ranges,
     fan/channel mapping, permissions, and firmware Auto restore contract may enable control
   - permission-denied and candidate paths remain diagnostics, not fatal startup errors
-  - current priority is: verified directly writable ASUS WMI, typed helper for its permission denial,
-    read-only telemetry/curve discovery, then unsupported diagnostics
+  - custom Apply requires an exact approved model/board/BIOS/kernel/driver/channel support record;
+    current priority is authorized direct write, the typed helper for permission denial, read-only
+    telemetry/curve discovery, then unsupported diagnostics
   - no verified ASUS hysteresis backend exists; application presets are UI drafts, and saved curves
     remain outside this provider
 

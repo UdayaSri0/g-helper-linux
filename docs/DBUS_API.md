@@ -101,7 +101,7 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `GetPrivilegedStatus` | none | `a{sv}` | Bounded optional-helper, compatibility, PolicyKit, authorization, and category diagnostics |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
-| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves only for exactly verified ASUS WMI channels; never prompts or writes |
+| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves for structurally recognized ASUS WMI channels; never prompts, writes, or implies physical validation |
 | `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then the allow-listed G615JMR target through the typed helper, then sysfs brightness |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
@@ -112,10 +112,10 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
-| `SetFanAuto` | `s` | `()` | Uses only verified ASUS WMI curve channels; empty string means all safely mapped channels |
+| `SetFanAuto` | `s` | `()` | Uses only narrowly mapped ASUS WMI reset channels; empty string means all safely mapped channels |
 | `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
 | `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
-| `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
+| `SetFanCurve` | `sa{sv}` | `()` | Re-evaluates exact runtime identity against the approved physical-write policy, validates the eight-point curve, then uses the authorized direct endpoint or typed privileged fallback; production records are currently empty |
 | `SetFanSync` | `b` | `()` | Compatibility state only; not advertised on the current curve-only backend |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Compatibility method; currently rejects because no verified manual-percent backend exists |
 
@@ -127,7 +127,7 @@ support/access keys remain during compatible evolution.
 Fan telemetry rows add `stable_id`, `source`, `sampled_at_ms`, `freshness`,
 `telemetry_available`, and `telemetry_reason`. Fan-state rows mirror source/timestamp/freshness/reason.
 A numeric zero is a valid fresh sample; consumers must not reuse it after the freshness window.
-| `ResetFansToAuto` | none | `()` | Requests all verified ASUS WMI channels return to Auto and reports any failure |
+| `ResetFansToAuto` | none | `()` | Requests all narrowly mapped ASUS WMI channels return to Auto and reports any failure |
 
 ### `GetDaemonInfo` Response
 
@@ -268,9 +268,9 @@ than daemon startup failures.
 | `SetCpuEpp` | `s` | `()` | Value must be in every affected policy's detected allow-list |
 | `SetCpuFrequencyLimits` | `tt` | `()` | MHz limits; zero means omitted; bounds and ordering are validated |
 | `SetCpuCoreOnline` | `tb` | `()` | Validated logical CPU ID; boot CPU 0 cannot be offlined |
-| `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
-| `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
-| `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
+| `SetFanAuto` | `s` | `()` | Semantic, narrowly mapped ASUS WMI fan Auto/reset operation |
+| `SetFanCurve` | `sa(yy)` | `()` | Semantic eight-point ASUS WMI curve; custom Apply requires a current `verified_write` hardware-policy decision |
+| `ResetFansToAuto` | none | `()` | Restores all narrowly mapped ASUS WMI fan channels to firmware Auto |
 | `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: checks `fans.recover`, acts solely on root-owned armed semantic IDs in an active local session, and can only restore Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 | `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
@@ -363,9 +363,18 @@ actions.
 Its nested `fan_caps` map adds these read-only discovery keys without renaming existing keys:
 
 - `fan_curve_readable` -> `b`: at least one supported curve layout was completely readable
-- `fan_curve_writable` -> `b`: a backend-specific safe write contract is active
+- `fan_curve_writable` -> `b`: custom Apply is currently authorized by an exact approved support
+  record and a ready write route; ABI detection or endpoint writability alone leaves this false
 - `fan_mapping_confidence` -> `s`: `unknown`, `heuristic`, or `hardware_label`
 - `endpoints`, `notes`, `warnings` include read-only candidate-path evidence
+
+Fan policy diagnostics distinguish `curve_abi_detected`, `fan_curve_readable`, `backend_writable`,
+`helper_ready`,
+`privileged_write` (helper readiness), `physical_validation_recorded`,
+`custom_curve_authorized`, and `recovery_available`. `write_support_state` is one of `read_only`,
+`unverified`, `unsupported`, or `verified_write`; `write_support_reason` and
+`write_support_explanation` state why Apply is blocked. Consumers must default missing policy fields
+to fail-closed values.
 
 Each fan map includes:
 
@@ -376,17 +385,22 @@ Each fan map includes:
 - `supports_manual_rpm_target`
 - `supports_curve`
 - `supports_auto`
+- physical-write policy state, reason code/explanation, and the separate observed-ABI, readback,
+  endpoint-writable, helper-ready, physical-validation, Apply-authorization, and recovery facts
 - optional `curve_readback`, containing `source=backend_current`, `enable_mode`, eight converted
   `points`, and eight lossless `raw_pwm` values
 - `rollback_available`
 - `backend`
 - `endpoints`, `notes`, `warnings`
 
-Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no verified backend is active. Candidate generic hwmon files never authorize a write.
+Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no approved support
+record matches. The privileged helper repeats the policy check; PolicyKit success, candidate generic
+hwmon files, and a successful capability probe never authorize a write.
 
 `GetFanCurves` returns `supported`, `reason`, and `curves`. Each curve row contains `fan_id`,
 `source`, `enable_mode`, `raw_pwm`, and `points`. The read uses no privileged method. Import Current
-is a UI draft operation; Reset Draft is local, while Restore Auto is the typed hardware action.
+is a UI draft operation and never activates the curve; Reset Draft is local, while Restore Auto is
+the separate typed recovery action.
 `backend_current` identifies the readback origin only; it does not claim that firmware authored the
 curve or that the values are immutable factory defaults.
 Presets and hysteresis are not DBus hardware concepts: presets are local drafts and hysteresis is
