@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/package-common.sh"
+source "$SCRIPT_DIR/appimage-gtk-plugin.sh"
 
 OUTPUT_DIR="${1:-$REPO_ROOT/dist}"
 APPDIR="${OUTPUT_DIR}/AppDir"
@@ -13,6 +14,7 @@ TOOLS_DIR="${ROG_HELPER_APPIMAGE_TOOLS_DIR:-$REPO_ROOT/.cache/appimage-tools}"
 LINUXDEPLOY_URL="${ROG_HELPER_LINUXDEPLOY_URL:-https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage}"
 APPIMAGE_PLUGIN_URL="${ROG_HELPER_LINUXDEPLOY_APPIMAGE_PLUGIN_URL:-https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage}"
 GTK_PLUGIN_URL="${ROG_HELPER_LINUXDEPLOY_GTK_PLUGIN_URL:-https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/3b67a1d1c1b0c8268f57f2bce40fe2d33d409cea/linuxdeploy-plugin-gtk.sh}"
+GTK_PLUGIN_SHA256="b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171"
 APPIMAGE_PATH="$OUTPUT_DIR/${PACKAGE_NAME}-v${VERSION}-${ARCH}.AppImage"
 MODE="${1:-build}"
 LINUXDEPLOY_STDOUT_LOG="$OUTPUT_DIR/linuxdeploy.stdout.log"
@@ -129,6 +131,12 @@ require_appimage_build_deps() {
       missing+=("pkg-config:$module")
     fi
   done
+
+  if pkg-config --exists gtk4; then
+    if ! require_gtk4_library "$(pkg-config --variable=libdir gtk4)"; then
+      missing+=("libgtk-4.so.1")
+    fi
+  fi
 
   if ((${#missing[@]} != 0)); then
     echo "missing AppImage build dependencies:" >&2
@@ -366,15 +374,23 @@ on_appimage_exit() {
 download_tool() {
   local url="$1"
   local dest="$2"
+  local expected_sha256="${3:-}"
   local tmp
 
   mkdir -p "$(dirname -- "$dest")"
   if [[ -x "$dest" ]]; then
-    return 0
+    if [[ -z "$expected_sha256" ]] || [[ "$(sha256sum "$dest" | awk '{print $1}')" == "$expected_sha256" ]]; then
+      return 0
+    fi
   fi
 
   tmp="$(mktemp "$(dirname -- "$dest")/.${dest##*/}.XXXXXX")"
   curl --fail --location --retry 3 --show-error --silent "$url" -o "$tmp"
+  if [[ -n "$expected_sha256" ]] && [[ "$(sha256sum "$tmp" | awk '{print $1}')" != "$expected_sha256" ]]; then
+    rm -f "$tmp"
+    echo "checksum mismatch for $url" >&2
+    return 1
+  fi
   chmod 0755 "$tmp"
   mv "$tmp" "$dest"
 }
@@ -426,7 +442,10 @@ normalize_tree_timestamps "$APPDIR"
 
 download_tool "$LINUXDEPLOY_URL" "$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
 download_tool "$APPIMAGE_PLUGIN_URL" "$TOOLS_DIR/linuxdeploy-plugin-appimage-x86_64.AppImage"
-download_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
+download_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/gtk-plugin-source.sh" "$GTK_PLUGIN_SHA256"
+patch_linuxdeploy_gtk_plugin \
+  "$TOOLS_DIR/gtk-plugin-source.sh" \
+  "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
 ln -sf "linuxdeploy-plugin-appimage-x86_64.AppImage" "$TOOLS_DIR/linuxdeploy-plugin-appimage"
 ln -sf "linuxdeploy-plugin-gtk.sh" "$TOOLS_DIR/linuxdeploy-plugin-gtk"
 
