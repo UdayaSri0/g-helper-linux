@@ -427,6 +427,14 @@ mod tests {
             fs::remove_dir_all(root).unwrap();
         }
         let (root, paths) = fixture();
+        fs::write(root.join("dmi/sys_vendor"), "OTHER VENDOR").unwrap();
+        let unsupported = evaluate(&paths, TEST_FAN_WRITE_RECORDS, context());
+        assert_eq!(unsupported.state, FanWriteSupportState::Unsupported);
+        assert_eq!(unsupported.reason, "manufacturer_not_supported");
+        assert!(!unsupported.custom_curve_authorized);
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, paths) = fixture();
         fs::remove_file(root.join("dmi/product_name")).unwrap();
         let missing = evaluate(&paths, TEST_FAN_WRITE_RECORDS, context());
         assert_eq!(missing.reason, "identity_incomplete");

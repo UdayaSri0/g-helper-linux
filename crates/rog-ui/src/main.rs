@@ -6894,7 +6894,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         for button in [&curve_quiet, &curve_balanced, &curve_performance] {
             button.set_sensitive(selected_editable && !curve_apply_in_progress);
         }
-        curve_import.set_sensitive(selected_fan.is_some_and(|fan| fan.curve_readback.is_some()));
+        curve_import.set_sensitive(selected_fan.is_some_and(fan_curve_import_available));
         curve_auto.set_sensitive(
             !curve_apply_in_progress && selected_fan.is_some_and(fan_auto_recovery_available),
         );
@@ -14966,6 +14966,10 @@ fn fan_curve_draft_editable(fan: &FanInfo) -> bool {
     fan.fan_write_policy.abi_detected
 }
 
+fn fan_curve_import_available(fan: &FanInfo) -> bool {
+    fan.curve_readback.is_some()
+}
+
 fn fan_curve_apply_authorized(fan: &FanInfo) -> bool {
     fan.fan_write_policy.custom_curve_authorized && fan.controllable
 }
@@ -15980,10 +15984,30 @@ mod tests {
             recovery_available: true,
             ..FanWritePolicyDecision::default()
         };
+        fan.curve_readback = Some(FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: fan_curve_preset("balanced")
+                    .into_iter()
+                    .map(|(temp_c, duty_percent)| FanPoint {
+                        temp_c,
+                        duty_percent,
+                    })
+                    .collect(),
+            },
+            raw_pwm: vec![40; 8],
+            enable_mode: 2,
+        });
 
+        assert!(fan_curve_import_available(&fan));
         assert!(fan_curve_tab_available(std::slice::from_ref(&fan), &fan.id));
         assert!(fan_curve_draft_editable(&fan));
         assert!(!fan_curve_apply_authorized(&fan));
+        assert!(!fan_curve_apply_enabled(
+            fan_curve_apply_authorized(&fan),
+            true,
+            true
+        ));
         assert!(fan_auto_recovery_available(&fan));
     }
 

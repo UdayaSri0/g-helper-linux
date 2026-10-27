@@ -1839,6 +1839,12 @@ mod tests {
         assert!(fans[0].pwm_endpoint_verified);
         assert!(fans[0].supports_curve);
         assert!(fans[0].supports_auto);
+        assert_eq!(
+            fans[0].fan_write_policy.state,
+            rog_core::FanWriteSupportState::Unverified
+        );
+        assert!(!fans[0].fan_write_policy.custom_curve_authorized);
+        assert!(fans[0].curve_readback.is_some());
         assert!(!fans[0].supports_manual_percent);
         assert!(!fans[0].supports_manual_rpm_target);
         let readback = fans[0].curve_readback.as_ref().unwrap();
