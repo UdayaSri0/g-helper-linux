@@ -217,7 +217,9 @@ These are used by the daemon and surfaced in the UI diagnostics view.
 Important implementation note:
 
 - `has_profiles`, `has_charge_limit`, `has_gpu_modes`, `has_fan_reading`, `has_kbd_backlight`, and `has_aura` are actively populated today.
-- `has_fan_curves` becomes true only for a verified backend; generic hwmon candidates do not count.
+- `has_fan_curves` describes structurally recognized curve readback, not write authorization;
+  generic hwmon candidates do not count and `fan_curve_writable` remains false without an exact
+  approved physical-write record.
 
 That means the capability model is broader than the current provider coverage.
 
@@ -265,11 +267,11 @@ Current permission reality:
 - The daemon is also unprivileged.
 - Some system DBus services may reject writes.
 - Some sysfs files may be readable but not writable by the user.
-- CPU controls, verified fan controls, canonical keyboard backlight writes, and a standard battery
+- CPU controls, policy-authorized fan controls, canonical keyboard backlight writes, and a standard battery
   threshold may require typed privileged fallbacks; telemetry remains unprivileged and
   missing-helper systems degrade to read-only behavior.
 
-The privileged boundary handles supported CPU controls, verified ASUS fan controls, the canonical
+The privileged boundary handles supported CPU controls, policy-authorized ASUS fan controls, the canonical
 ASUS WMI keyboard brightness endpoint, one unambiguous standard Linux battery charge threshold,
 and one exact G615JMR target Aura HID contract (matched by DMI prefix `G615JM`)
 only after the preferred backend/direct route is unavailable or fails with write permission.
@@ -289,7 +291,9 @@ only when Apply crosses the typed privileged boundary. Native RGB readiness is i
 optional sysfs brightness fallback, allowing one coherent page when RGB and brightness use
 different safe routes. GPU and profile rows report
 `external-service` access rather than implying that root access to ROG Helper would help. Battery,
-CPU, fan, and keyboard rows distinguish direct, privileged, read-only, and unsupported states.
+CPU, fan, and keyboard rows distinguish direct, privileged, read-only, and unsupported states. Fan
+rows additionally separate ABI detection, curve readability, endpoint writability, helper readiness,
+physical validation, current Apply authorization, recovery availability, and the policy decision.
 User configuration and login integration report direct user-session access and are never routed
 through the root helper.
 `rog-helperd` refreshes the non-authorizing helper capability probe when lighting/status is read
@@ -301,7 +305,9 @@ validated domain operation to a fixed internal endpoint and authorize the origin
 caller with the matching application-specific PolicyKit action.
 
 The helper runs in a hardened systemd sandbox and uses four non-retained PolicyKit actions. CPU,
-fan, keyboard LED, and battery endpoint identities are revalidated at write time. The rationale for
+fan, keyboard LED, and battery endpoint identities are revalidated at write time. Custom fan Apply
+also recollects trusted DMI/board/BIOS/kernel/driver/channel identity and requires an exact approved
+production support record at both the provider and privileged boundary. The rationale for
 UID 0, writable sysfs exceptions, enabled/rejected directives, and residual risks is maintained in
 [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md).
 
@@ -331,8 +337,9 @@ The current architecture has several known limitations:
 
 - Policy automation applies only platform profiles and approved non-interactive battery limits;
   fan, lighting, privileged-only, and potentially disruptive GPU fields remain skipped
-- ASUS WMI eight-point fan curves are implemented end-to-end in code for the exact verified ABI,
-  but physical apply/recovery validation remains outstanding; editable curves can be saved as presets
+- ASUS WMI eight-point fan readback and transactions are implemented for an exact recognized ABI,
+  but the production write-record table is empty because physical apply/recovery validation remains
+  outstanding; editable curves can be saved as presets and imported without enabling them
 - Aura/RGB lighting supports one exact asusd contract and one exact native G615JMR target contract;
   broader hardware coverage and physical target validation remain outstanding
 - The daemon remains mostly in one large source file; UI state/update wiring remains in `main.rs`, while the shell, theme, reusable widgets, fan drawing, and generic DBus decoding are separate modules

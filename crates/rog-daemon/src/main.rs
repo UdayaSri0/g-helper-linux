@@ -3998,15 +3998,36 @@ fn apply_fan_privilege_to_state(
             .privileged_categories_available
             .contains(&rog_core::PrivilegedCategory::Fans);
     for fan in &mut state.fans {
-        if !fan.pwm_endpoint_verified || (!fan.supports_curve && !fan.supports_auto) {
+        fan.fan_write_policy.helper_ready = helper_ready;
+        if !fan.pwm_endpoint_verified
+            || (!fan.supports_curve
+                && !fan.supports_auto
+                && !fan.fan_write_policy.abi_detected
+                && !fan.fan_write_policy.recovery_available)
+        {
+            continue;
+        }
+        if fan.fan_write_policy.state != rog_core::FanWriteSupportState::VerifiedWrite {
+            fan.controllable = false;
+            fan.privileged_write = false;
+            fan.authorization = "not_applicable".to_string();
+            fan.access_state = match &fan.fan_write_policy.state {
+                rog_core::FanWriteSupportState::Unverified => "unverified",
+                rog_core::FanWriteSupportState::Unsupported => "unsupported",
+                rog_core::FanWriteSupportState::ReadOnly => "read_only",
+                rog_core::FanWriteSupportState::VerifiedWrite => "unsafe_read_only",
+            }
+            .to_string();
             continue;
         }
         if fan.direct_write {
+            fan.fan_write_policy.custom_curve_authorized = true;
             fan.controllable = true;
             fan.privileged_write = false;
             fan.authorization = "not_required".to_string();
             fan.access_state = "direct".to_string();
         } else if helper_ready {
+            fan.fan_write_policy.custom_curve_authorized = true;
             fan.controllable = true;
             fan.privileged_write = true;
             fan.authorization = authorization.to_string();
@@ -4017,6 +4038,7 @@ fn apply_fan_privilege_to_state(
             }
             .to_string();
         } else {
+            fan.fan_write_policy.custom_curve_authorized = false;
             fan.controllable = false;
             fan.privileged_write = false;
             fan.authorization = "unavailable".to_string();
@@ -4050,6 +4072,7 @@ fn fan_caps_to_dbus(c: &FanCaps) -> HashMap<String, OwnedValue> {
         "fan_curve_writable".to_string(),
         OwnedValue::from(c.fan_curve_writable),
     );
+    insert_fan_write_policy(&mut m, &c.fan_write_policy);
     m.insert(
         "has_fan_manual_percent".to_string(),
         OwnedValue::from(c.has_fan_manual_percent),
@@ -4212,6 +4235,11 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY.to_string(),
         OwnedValue::from(fan.supports_auto),
     );
+    m.insert(
+        dbus_keys::fan_caps::FAN_CURVE_READABLE.to_string(),
+        OwnedValue::from(fan.fan_write_policy.curve_readable),
+    );
+    insert_fan_write_policy(&mut m, &fan.fan_write_policy);
     if let Some(readback) = &fan.curve_readback {
         m.insert(
             dbus_keys::FAN_INFO_CURVE_READBACK_KEY.to_string(),
@@ -4239,6 +4267,49 @@ fn fan_info_to_dbus(fan: &FanInfo) -> HashMap<String, OwnedValue> {
         ov(fan.warnings.clone()),
     );
     m
+}
+
+fn insert_fan_write_policy(
+    map: &mut HashMap<String, OwnedValue>,
+    policy: &rog_core::FanWritePolicyDecision,
+) {
+    use dbus_keys::fan_caps as keys;
+    map.insert(
+        keys::CURVE_ABI_DETECTED.to_string(),
+        OwnedValue::from(policy.abi_detected),
+    );
+    map.insert(
+        keys::BACKEND_WRITABLE.to_string(),
+        OwnedValue::from(policy.backend_writable),
+    );
+    map.insert(
+        keys::HELPER_READY.to_string(),
+        OwnedValue::from(policy.helper_ready),
+    );
+    map.insert(
+        keys::PHYSICAL_VALIDATION_RECORDED.to_string(),
+        OwnedValue::from(policy.physical_validation_recorded),
+    );
+    map.insert(
+        keys::CUSTOM_CURVE_AUTHORIZED.to_string(),
+        OwnedValue::from(policy.custom_curve_authorized),
+    );
+    map.insert(
+        keys::RECOVERY_AVAILABLE.to_string(),
+        OwnedValue::from(policy.recovery_available),
+    );
+    map.insert(
+        keys::WRITE_SUPPORT_STATE.to_string(),
+        ov(policy.state.as_str().to_string()),
+    );
+    map.insert(
+        keys::WRITE_SUPPORT_REASON.to_string(),
+        ov(policy.reason.clone()),
+    );
+    map.insert(
+        keys::WRITE_SUPPORT_EXPLANATION.to_string(),
+        ov(policy.explanation.clone()),
+    );
 }
 
 fn fan_curve_readback_to_dbus(
@@ -7050,6 +7121,97 @@ mod tests {
         assert_eq!(
             value_as_str(&map, "fan_mapping_confidence"),
             "hardware_label"
+        );
+    }
+
+    #[test]
+    fn helper_readiness_never_promotes_unverified_fan_writes() {
+        let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "fixture".to_string(),
+            input_path: "fixture/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(2000),
+            source: "fixture/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+        fan.id = "asus-wmi:cpu".to_string();
+        fan.pwm_endpoint_verified = true;
+        fan.supports_curve = true;
+        fan.supports_auto = true;
+        fan.fan_write_policy = rog_core::FanWritePolicyDecision {
+            state: rog_core::FanWriteSupportState::Unverified,
+            reason: "no_matching_record".to_string(),
+            explanation: "no approved physical validation record".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: false,
+            custom_curve_authorized: false,
+            recovery_available: true,
+            ..rog_core::FanWritePolicyDecision::default()
+        };
+        let mut state = FanState::from_fans(vec![fan]);
+        let status = rog_core::PrivilegedStatus {
+            system_bus_connected: true,
+            privileged_helper_installed: true,
+            privileged_helper_reachable: true,
+            privileged_helper_compatible: true,
+            privileged_helper_version: Some("test".to_string()),
+            polkit_available: true,
+            authorization_backend: "polkit".to_string(),
+            authorization_state: rog_core::AuthorizationState::NotChecked,
+            privileged_categories_available: vec![rog_core::PrivilegedCategory::Fans],
+        };
+
+        apply_fan_privilege_to_state(&mut state, &status, "not_checked");
+
+        let fan = &state.fans[0];
+        assert!(!fan.controllable);
+        assert!(!fan.privileged_write);
+        assert_eq!(fan.authorization, "not_applicable");
+        assert_eq!(fan.access_state, "unverified");
+        assert!(fan.fan_write_policy.helper_ready);
+        assert!(!state.caps.fan_curve_writable);
+        assert!(fan.fan_write_policy.recovery_available);
+    }
+
+    #[test]
+    fn fan_policy_dbus_exposes_physical_validation_and_recovery_facts() {
+        let mut caps = FanCaps::from_fans(&[]);
+        caps.fan_write_policy = rog_core::FanWritePolicyDecision {
+            state: rog_core::FanWriteSupportState::Unverified,
+            reason: "no_matching_record".to_string(),
+            explanation: "no approved physical validation record".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: false,
+            custom_curve_authorized: false,
+            recovery_available: true,
+            ..rog_core::FanWritePolicyDecision::default()
+        };
+
+        let map = fan_caps_to_dbus(&caps);
+        assert_eq!(
+            value_as_str(&map, dbus_keys::fan_caps::WRITE_SUPPORT_STATE),
+            "unverified"
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_caps::CUSTOM_CURVE_AUTHORIZED)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(false)
+        );
+        assert_eq!(
+            map.get(dbus_keys::fan_caps::RECOVERY_AVAILABLE)
+                .and_then(|value| bool::try_from(value).ok()),
+            Some(true)
         );
     }
 
