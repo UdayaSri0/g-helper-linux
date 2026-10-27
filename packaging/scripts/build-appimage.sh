@@ -5,16 +5,21 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/package-common.sh"
 source "$SCRIPT_DIR/appimage-gtk-plugin.sh"
+source "$SCRIPT_DIR/appimage-tool-integrity.sh"
 
 OUTPUT_DIR="${1:-$REPO_ROOT/dist}"
 APPDIR="${OUTPUT_DIR}/AppDir"
 VERSION="$(package_version)"
 ARCH="$(release_arch)"
 TOOLS_DIR="${ROG_HELPER_APPIMAGE_TOOLS_DIR:-$REPO_ROOT/.cache/appimage-tools}"
-LINUXDEPLOY_URL="${ROG_HELPER_LINUXDEPLOY_URL:-https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage}"
-APPIMAGE_PLUGIN_URL="${ROG_HELPER_LINUXDEPLOY_APPIMAGE_PLUGIN_URL:-https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage}"
+LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_SHA256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
 GTK_PLUGIN_URL="${ROG_HELPER_LINUXDEPLOY_GTK_PLUGIN_URL:-https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/3b67a1d1c1b0c8268f57f2bce40fe2d33d409cea/linuxdeploy-plugin-gtk.sh}"
 GTK_PLUGIN_SHA256="b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
+APPIMAGE_RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
 APPIMAGE_PATH="$OUTPUT_DIR/${PACKAGE_NAME}-v${VERSION}-${ARCH}.AppImage"
 MODE="${1:-build}"
 LINUXDEPLOY_STDOUT_LOG="$OUTPUT_DIR/linuxdeploy.stdout.log"
@@ -85,17 +90,6 @@ resolve_optional_appimage_command() {
   fi
 
   case "$name" in
-    appimagetool)
-      for candidate in \
-        "$TOOLS_DIR/appimagetool-x86_64.AppImage" \
-        /usr/bin/appimagetool \
-        /usr/local/bin/appimagetool; do
-        if [[ -x "$candidate" ]]; then
-          printf '%s\n' "$candidate"
-          return 0
-        fi
-      done
-      ;;
     gtk4-query-immodules)
       for candidate in \
         /usr/lib/*/gtk-4.0/gtk4-query-immodules \
@@ -287,9 +281,10 @@ print_appdir_summary() {
   print_dir_listing "usr/share/metainfo contents" "$APPDIR/usr/share/metainfo" 1
 }
 
-print_linuxdeploy_tooling() {
+print_appimage_tooling() {
   local linuxdeploy_path="$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
-  local appimage_plugin_path="$TOOLS_DIR/linuxdeploy-plugin-appimage-x86_64.AppImage"
+  local appimagetool_path="$TOOLS_DIR/appimagetool-x86_64.AppImage"
+  local runtime_path="$TOOLS_DIR/runtime-x86_64"
   local gtk_plugin_path="$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
   local resolved
   local compressors
@@ -297,8 +292,6 @@ print_linuxdeploy_tooling() {
   log_section "AppImage Tooling"
   print_tool_status "linuxdeploy" "$linuxdeploy_path"
   APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy_path" --version 2>&1 | sed 's#^#  #'
-  print_tool_status "plugin-appimage" "$appimage_plugin_path"
-  APPIMAGE_EXTRACT_AND_RUN=1 "$appimage_plugin_path" --plugin-api-version 2>&1 | sed 's#^#  plugin-api=#'
   print_tool_status "plugin-gtk" "$gtk_plugin_path"
   "$gtk_plugin_path" --plugin-api-version 2>&1 | sed 's#^#  plugin-api=#'
 
@@ -337,11 +330,9 @@ print_linuxdeploy_tooling() {
     "$resolved" --version 2>&1 | head -n 1 | sed 's#^#  #'
   fi
 
-  resolved="$(resolve_optional_appimage_command appimagetool 2>/dev/null || true)"
-  print_tool_status "appimagetool" "$resolved"
-  if [[ -z "$resolved" ]]; then
-    echo "  appimagetool is not called directly; linuxdeploy-plugin-appimage manages it."
-  fi
+  print_tool_status "appimagetool" "$appimagetool_path"
+  APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_path" --version 2>&1 | sed 's#^#  #'
+  print_tool_status "AppImage runtime" "$runtime_path"
 
   APPIMAGE_EXTRACT_AND_RUN=1 PATH="$TOOLS_DIR:$PATH" "$linuxdeploy_path" --list-plugins \
     2>&1 | tee "$LINUXDEPLOY_PLUGINS_LOG"
@@ -369,30 +360,6 @@ on_appimage_exit() {
   echo "build-appimage.sh exited with code $exit_code" >&2
   print_appdir_summary || true
   print_failure_logs || true
-}
-
-download_tool() {
-  local url="$1"
-  local dest="$2"
-  local expected_sha256="${3:-}"
-  local tmp
-
-  mkdir -p "$(dirname -- "$dest")"
-  if [[ -x "$dest" ]]; then
-    if [[ -z "$expected_sha256" ]] || [[ "$(sha256sum "$dest" | awk '{print $1}')" == "$expected_sha256" ]]; then
-      return 0
-    fi
-  fi
-
-  tmp="$(mktemp "$(dirname -- "$dest")/.${dest##*/}.XXXXXX")"
-  curl --fail --location --retry 3 --show-error --silent "$url" -o "$tmp"
-  if [[ -n "$expected_sha256" ]] && [[ "$(sha256sum "$tmp" | awk '{print $1}')" != "$expected_sha256" ]]; then
-    rm -f "$tmp"
-    echo "checksum mismatch for $url" >&2
-    return 1
-  fi
-  chmod 0755 "$tmp"
-  mv "$tmp" "$dest"
 }
 
 if [[ "$MODE" == "--check-deps" ]] || [[ "$MODE" == "--check" ]]; then
@@ -440,17 +407,17 @@ install -Dm0755 \
 
 normalize_tree_timestamps "$APPDIR"
 
-download_tool "$LINUXDEPLOY_URL" "$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
-download_tool "$APPIMAGE_PLUGIN_URL" "$TOOLS_DIR/linuxdeploy-plugin-appimage-x86_64.AppImage"
-download_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/gtk-plugin-source.sh" "$GTK_PLUGIN_SHA256"
+download_verified_tool "$LINUXDEPLOY_URL" "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" "$LINUXDEPLOY_SHA256"
+download_verified_tool "$APPIMAGETOOL_URL" "$TOOLS_DIR/appimagetool-x86_64.AppImage" "$APPIMAGETOOL_SHA256"
+download_verified_tool "$APPIMAGE_RUNTIME_URL" "$TOOLS_DIR/runtime-x86_64" "$APPIMAGE_RUNTIME_SHA256"
+download_verified_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/gtk-plugin-source.sh" "$GTK_PLUGIN_SHA256"
 patch_linuxdeploy_gtk_plugin \
   "$TOOLS_DIR/gtk-plugin-source.sh" \
   "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
-ln -sf "linuxdeploy-plugin-appimage-x86_64.AppImage" "$TOOLS_DIR/linuxdeploy-plugin-appimage"
 ln -sf "linuxdeploy-plugin-gtk.sh" "$TOOLS_DIR/linuxdeploy-plugin-gtk"
 
 rm -f "$LINUXDEPLOY_STDOUT_LOG" "$LINUXDEPLOY_STDERR_LOG" "$LINUXDEPLOY_PLUGINS_LOG"
-print_linuxdeploy_tooling
+print_appimage_tooling
 print_appdir_summary
 
 rm -f "$APPIMAGE_PATH"
@@ -464,24 +431,17 @@ linuxdeploy_cmd=(
   --executable "$APPDIR/usr/bin/rog-helperd"
   --executable "$APPDIR/usr/bin/rog-helper"
   --plugin gtk
-  --output appimage
 )
-log_section "linuxdeploy Command"
+log_section "linuxdeploy Deployment Command"
 printf '  env'
 printf ' %q' \
   "APPIMAGE_EXTRACT_AND_RUN=1" \
   "ARCH=$ARCH" \
   "DEPLOY_GTK_VERSION=4" \
   "MKSQUASHFS_OPTIONS=-comp $APPIMAGE_COMPRESSION" \
-  "LDAI_COMP=$APPIMAGE_COMPRESSION" \
-  "LDAI_OUTPUT=$APPIMAGE_PATH" \
-  "LDAI_VERSION=v${VERSION}" \
   "PATH=$TOOLS_DIR:$PATH"
 if [[ -n "$APPIMAGE_DEBUG" ]]; then
   printf ' %q' "DEBUG=$APPIMAGE_DEBUG"
-fi
-if [[ -n "$APPIMAGE_OUTPUT_VERBOSE" ]]; then
-  printf ' %q' "LDAI_VERBOSE=$APPIMAGE_OUTPUT_VERBOSE"
 fi
 printf '\n'
 printf '  '
@@ -493,19 +453,36 @@ printf '\n'
   export ARCH
   export DEPLOY_GTK_VERSION=4
   export MKSQUASHFS_OPTIONS="-comp $APPIMAGE_COMPRESSION"
-  export LDAI_COMP="$APPIMAGE_COMPRESSION"
-  export LDAI_OUTPUT="$APPIMAGE_PATH"
-  export LDAI_VERSION="v${VERSION}"
   if [[ -n "$APPIMAGE_DEBUG" ]]; then
     export DEBUG="$APPIMAGE_DEBUG"
-  fi
-  if [[ -n "$APPIMAGE_OUTPUT_VERBOSE" ]]; then
-    export LDAI_VERBOSE="$APPIMAGE_OUTPUT_VERBOSE"
   fi
   PATH="$TOOLS_DIR:$PATH" \
     "${linuxdeploy_cmd[@]}" \
       > >(tee "$LINUXDEPLOY_STDOUT_LOG") \
       2> >(tee "$LINUXDEPLOY_STDERR_LOG" >&2)
+)
+
+log_section "Verified appimagetool Command"
+printf '  env ARCH=%q VERSION=%q APPIMAGE_EXTRACT_AND_RUN=1 ' "$ARCH" "v${VERSION}"
+printf '%q ' "$TOOLS_DIR/appimagetool-x86_64.AppImage" \
+  --comp "$APPIMAGE_COMPRESSION" --runtime-file "$TOOLS_DIR/runtime-x86_64" \
+  "$APPDIR" "$APPIMAGE_PATH"
+printf '\n'
+(
+  cd "$REPO_ROOT"
+  export APPIMAGE_EXTRACT_AND_RUN=1 ARCH VERSION="v${VERSION}"
+  appimagetool_args=(
+    --comp "$APPIMAGE_COMPRESSION"
+    --runtime-file "$TOOLS_DIR/runtime-x86_64"
+    "$APPDIR"
+    "$APPIMAGE_PATH"
+  )
+  if [[ -n "$APPIMAGE_OUTPUT_VERBOSE" ]]; then
+    appimagetool_args+=(--verbose)
+  fi
+  "$TOOLS_DIR/appimagetool-x86_64.AppImage" "${appimagetool_args[@]}" \
+    > >(tee -a "$LINUXDEPLOY_STDOUT_LOG") \
+    2> >(tee -a "$LINUXDEPLOY_STDERR_LOG" >&2)
 )
 
 normalize_tree_timestamps "$APPDIR"

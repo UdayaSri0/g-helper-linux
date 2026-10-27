@@ -46,6 +46,8 @@ jobs:
           packaging/scripts/test-install-dev.sh
           packaging/scripts/test-debian-maintainer-scripts.sh
           packaging/scripts/test-appimage-gtk-plugin.sh
+          packaging/scripts/test-appimage-tool-integrity.sh
+          python3 packaging/scripts/test-release-workflow.py
           python3 packaging/scripts/test-package-integration.py
           bash packaging/scripts/test-session-smoke.sh
 

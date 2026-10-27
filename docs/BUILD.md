@@ -422,7 +422,10 @@ This emits `rog-helper-v<version>-x86_64.AppImage` in `dist/` and leaves the sta
 
 Current AppImage notes:
 
-- the script downloads pinned `linuxdeploy`, `linuxdeploy-plugin-appimage`, and `linuxdeploy-plugin-gtk` helpers into a local cache directory if they are missing
+- the script verifies SHA-256 pins for linuxdeploy, the GTK plugin source, appimagetool, and its AppImage runtime before use; cached files are checked on every build and a mismatch stops the build without replacement
+- linuxdeploy and appimagetool use immutable release tags whose asset digests are recorded in `packaging/scripts/build-appimage.sh`; the runtime is pinned to the dated `20251108` release, and the GTK plugin source is pinned to a commit and digest
+- release asset digests are taken from each publisher's GitHub Releases API `digest` field; the GTK script digest was reviewed against the pinned raw file
+- AppImage creation invokes verified appimagetool directly with the verified runtime, so the unverified linuxdeploy AppImage output plugin is not executed
 - on Ubuntu/Debian hosts, install the extra AppImage host tools with:
 
   ```bash
@@ -436,9 +439,8 @@ Current AppImage notes:
   packaging/scripts/build-appimage.sh --check-deps
   ```
 
-- the script defaults to `zstd` AppImage compression because current
-  `linuxdeploy-plugin-appimage` packaging paths on GitHub runners do not
-  reliably support `xz`; set `ROG_HELPER_APPIMAGE_COMPRESSION` to override it
+- the script defaults to `zstd` AppImage compression; set
+  `ROG_HELPER_APPIMAGE_COMPRESSION` to override it
   on hosts where you have verified another compressor works
 
 - if `linuxdeploy` still fails, the script now leaves `linuxdeploy.stdout.log`,
@@ -448,6 +450,12 @@ Current AppImage notes:
 - the AppImage bundles the UI, daemon, CLI, desktop launcher, hicolor icons, AppStream metadata, session D-Bus activation file, and the user-service unit
 - the AppImage does not install menu integration or enable the user service on the host system
 - the build currently targets `x86_64` only
+
+Release builds and Fedora RPM builds run with read-only repository permissions
+and upload artifacts. A separate publishing job receives `contents: write`,
+downloads only those artifacts, and does not execute the generated packages.
+The release workflow pins each third-party GitHub Action to a reviewed commit
+SHA, and checkout does not persist its token in build jobs.
 
 ## systemd --user
 
