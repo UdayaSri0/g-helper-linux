@@ -184,8 +184,11 @@ async fn run_bounded_output(
     match output {
         Ok(result) => result.map_err(BoundedOutputError::Command),
         Err(_) => {
-            child.kill().await.map_err(BoundedOutputError::Command)?;
+            let kill_error = child.start_kill().err();
             child.wait().await.map_err(BoundedOutputError::Command)?;
+            if let Some(error) = kill_error {
+                return Err(BoundedOutputError::Command(error));
+            }
             Err(BoundedOutputError::TimedOut)
         }
     }
@@ -298,6 +301,25 @@ fn parse_mib(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    async fn wait_for_pid(pid_file: &std::path::Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                    if let Ok(pid) = pid.trim().parse() {
+                        return pid;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake nvidia-smi did not report its pid")
+    }
 
     #[tokio::test]
     async fn timed_out_command_is_reaped() {
@@ -359,6 +381,48 @@ mod tests {
                 .code(),
             Some(7)
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_the_direct_nvidia_smi_child() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rog-helper-nvidia-smi-cancel-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).unwrap();
+        let pid_file = temp_dir.join("pid");
+        let fake_nvidia_smi = temp_dir.join("nvidia-smi");
+        std::fs::write(
+            &fake_nvidia_smi,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$PID_FILE\"\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_nvidia_smi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let task = tokio::spawn({
+            let fake_nvidia_smi = fake_nvidia_smi.clone();
+            let pid_file = pid_file.clone();
+            async move {
+                let mut command = Command::new(fake_nvidia_smi);
+                command.env("PID_FILE", pid_file);
+                run_bounded_output(&mut command, Duration::from_secs(30)).await
+            }
+        });
+        let pid = wait_for_pid(&pid_file).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(tokio::time::timeout(Duration::from_secs(1), async {
+            while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok());
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
