@@ -1495,6 +1495,7 @@ fn print_fan_caps(caps: &FanCaps) {
     println!("  has_fan_curves: {}", caps.has_fan_curves);
     println!("  fan_curve_readable: {}", caps.fan_curve_readable);
     println!("  fan_curve_writable: {}", caps.fan_curve_writable);
+    print_fan_write_policy("  ", &caps.fan_write_policy);
     println!(
         "  fan_mapping_confidence: {}",
         caps.fan_mapping_confidence.as_str()
@@ -1551,6 +1552,7 @@ fn print_fan_info(fan: &FanInfo) {
     println!("    authorization: {}", fan.authorization);
     println!("    access_state: {}", fan.access_state);
     println!("    rollback_available: {}", fan.rollback_available);
+    print_fan_write_policy("    ", &fan.fan_write_policy);
     if let Some(readback) = &fan.curve_readback {
         println!("    current_curve_source: backend_current");
         println!("    enable_mode: {}", readback.enable_mode);
@@ -1583,6 +1585,28 @@ fn print_fan_info(fan: &FanInfo) {
     for warning in &fan.warnings {
         println!("    warning: {warning}");
     }
+}
+
+fn print_fan_write_policy(prefix: &str, policy: &rog_core::FanWritePolicyDecision) {
+    println!("{prefix}curve_abi_detected: {}", policy.abi_detected);
+    println!("{prefix}curve_readable: {}", policy.curve_readable);
+    println!("{prefix}backend_writable: {}", policy.backend_writable);
+    println!("{prefix}helper_ready: {}", policy.helper_ready);
+    println!(
+        "{prefix}physical_validation_recorded: {}",
+        policy.physical_validation_recorded
+    );
+    println!(
+        "{prefix}custom_curve_authorized: {}",
+        policy.custom_curve_authorized
+    );
+    println!("{prefix}recovery_available: {}", policy.recovery_available);
+    println!("{prefix}write_support_state: {}", policy.state.as_str());
+    println!("{prefix}write_support_reason: {}", policy.reason);
+    println!(
+        "{prefix}write_support_explanation: {}",
+        policy.explanation
+    );
 }
 
 async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {

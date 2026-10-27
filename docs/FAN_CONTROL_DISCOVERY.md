@@ -63,23 +63,24 @@ ASUS kernel interface, not sufficient evidence for a safe application write cont
 - `fan_count=4` (three ASUS-labelled rows plus one separate unlabeled ACPI row)
 - `fan_mapping_confidence=unknown` overall; the three ASUS rows individually report `hardware_label`
 - `fan_curve_readable=true`
-- `fan_curve_writable=true` only when the verified direct or privileged route is available
+- `fan_curve_writable=true` only when the current environment matches an approved physical-write
+  record and the direct or privileged route is ready; the production record table is currently empty
 - `has_fan_curves=true` only for safely mapped ASUS WMI channels with the complete eight-point ABI
-- manual percentage, RPM target, operational sync control, and boost remain false; individual Auto/curve
-  control is true only for the verified labelled channels
+- manual percentage, RPM target, operational sync control, boost, and custom curve Apply remain false;
+  Auto recovery is a separate operation on the structurally mapped channels
 
 Generic `pwmN`, `pwmN_enable`, and `fanN_target` discovery remains diagnostic-only. Manual percent,
 RPM-target control, fan sync, and boost are not exposed on this machine because no verified endpoint
 implements those semantics.
 
-The implemented ASUS WMI route additionally requires the `asus` RPM device and
+The structurally recognized ASUS WMI ABI additionally requires the `asus` RPM device and
 `asus_custom_fan_curve` device to resolve to the same kernel device, exact CPU/GPU/Mid hardware
 labels, eight complete readable point pairs, and enable state 1 or 2. IDs are semantic
 (`asus-wmi:cpu`, `asus-wmi:gpu`, `asus-wmi:mid`) and callers never provide a path.
 
-Curve writes validate all eight points, write and read back every temperature and PWM value, and
+An authorized curve write would validate all eight points, write and read back every temperature and PWM value, and
 enable the curve only after the complete payload succeeds. Any partial failure attempts the driver's
-factory-default/Auto command. Auto and reset use the verified driver command directly. Permission
+factory-default/Auto command. Auto and reset use the narrowly recognized driver command directly. Permission
 failures fall back to `rog-helper-privileged` and PolicyKit action
 `io.github.roghelper.fans.control`; telemetry does not contact PolicyKit.
 
@@ -115,9 +116,10 @@ in-process; firmware reboot behavior remains the final safety boundary.
 
 - Shared validation enforces exact point count, temperature and percentage bounds, strictly
   increasing temperatures, non-decreasing duty, and conservative high-temperature floors.
-- Provider writes are serialized. Discovery reads the complete layout before each write; each
+- Authorized provider writes are serialized. Discovery reads the complete layout before each write; each
   staged value is read back, enable happens last, and any failure invokes Auto reset.
-- The daemon tries the unprivileged provider first and falls back only on `PermissionDenied`.
+- Before either route, the runtime identity must exactly match an approved model/board/BIOS/kernel/
+  driver/channel record. The daemon tries the unprivileged provider first and falls back only on `PermissionDenied`.
   Unsupported or unsafe mappings never invoke the helper.
 - The UI distinguishes direct, authorization-required, authorization-denied, helper-missing,
   unsafe/read-only, telemetry-only, and unsupported states. Curve Apply is enabled only when an
@@ -181,7 +183,8 @@ hysteresis was also rejected because it would fight firmware with a new active t
 - [Windows G-Helper behavioral reference at `54c5bd00da82`](https://github.com/seerge/g-helper/tree/54c5bd00da82e20a0361228e5758f692b3b9560b/app)
 - [Original ASUS custom fan-curve driver patch discussion](https://lkml.iu.edu/hypermail/linux/kernel/2109.0/03504.html)
 
-**FAN WRITES IMPLEMENTED: NARROWLY.** Only verified ASUS WMI eight-point curves and Auto/reset are
-implemented. Generic PWM, manual percent, RPM target, software curves, sync, and boost remain
-unsupported. Hardware testing is required before claiming hardware-validated fan support or making
-fan curves a dependency of persistent profiles or automation.
+**CUSTOM FAN APPLY IS DISABLED IN PRODUCTION.** The ASUS WMI eight-point transaction is implemented,
+but the production physical-write record table is empty. Auto/reset remains a separate, narrowly
+scoped recovery operation. Generic PWM, manual percent, RPM target, software curves, sync, and boost
+remain unsupported. Hardware testing and maintainer approval are required before adding the first
+production record or claiming hardware-validated fan support.
