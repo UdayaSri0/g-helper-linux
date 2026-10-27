@@ -19,7 +19,6 @@ copy_lib_tree() {
 gtk4_libdir="$GTK4_LIBDIR"
 gtk4_path="$gtk4_libdir"
         copy_lib_tree "$gtk4_libdir" "$APPDIR/"
-test -f "$APPDIR/usr/lib/gtk-4.0/runtime-resource"
 EOF
 }
 
@@ -40,7 +39,9 @@ test -f "$WORK_DIR/AppDir/usr/lib/gtk-4.0/runtime-resource"
 # An absent optional modules directory is skipped, but a real copy failure remains fatal.
 make_fixture
 patch_linuxdeploy_gtk_plugin "$WORK_DIR/plugin" "$WORK_DIR/patched"
-GTK4_LIBDIR="$WORK_DIR/absent" APPDIR="$WORK_DIR/AppDir" bash "$WORK_DIR/patched"
+mkdir -p "$WORK_DIR/AppDir-absent"
+GTK4_LIBDIR="$WORK_DIR/absent" APPDIR="$WORK_DIR/AppDir-absent" bash "$WORK_DIR/patched"
+test ! -e "$WORK_DIR/AppDir-absent/usr/lib/gtk-4.0/runtime-resource"
 make_fixture
 patch_linuxdeploy_gtk_plugin "$WORK_DIR/plugin" "$WORK_DIR/patched"
 if FAIL_COPY=1 run_fixture "$WORK_DIR/modules" "$WORK_DIR/AppDir"; then
