@@ -45,6 +45,7 @@ jobs:
         run: |
           packaging/scripts/test-install-dev.sh
           packaging/scripts/test-debian-maintainer-scripts.sh
+          packaging/scripts/test-appimage-gtk-plugin.sh
           python3 packaging/scripts/test-package-integration.py
           bash packaging/scripts/test-session-smoke.sh
 
