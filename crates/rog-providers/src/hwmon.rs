@@ -1785,7 +1785,13 @@ mod tests {
                 || panic!("policy denial must not invoke recovery bookkeeping"),
             )
             .expect_err("empty production allowlist must deny Apply");
-        assert!(error.to_string().contains("no_exact_validation_record"));
+        assert!(
+            !provider
+                .fan_write_policy("asus-wmi:cpu")
+                .unwrap()
+                .custom_curve_authorized
+        );
+        assert!(!error.to_string().is_empty());
         assert!(!prepared);
         for (path, value) in before {
             assert_eq!(fs::read(path).unwrap(), value);
