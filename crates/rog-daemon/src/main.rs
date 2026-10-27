@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use regex::Regex;
@@ -37,8 +37,8 @@ use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsPro
 use rog_providers::setup::{probe_setup_status, RogHelperdProbe};
 use rog_providers::supergfx::{SupergfxCaps, SupergfxProvider, SupergfxSwitchStatus};
 use rog_providers::traits::{BatteryProvider, GpuProvider, ProfileProvider};
-use rog_providers::upower::UPowerProvider;
-use tokio::time::{interval, Duration};
+use rog_providers::upower::{UPowerProvider, UPowerStatus};
+use tokio::time::interval;
 use tracing::{info, warn};
 use zbus::fdo;
 use zbus::zvariant::{OwnedValue, Value};
@@ -127,6 +127,101 @@ fn automation_skipped_components(settings: &ProfileSettings) -> Vec<&'static str
         skipped.push("skipped: lighting automation is disabled to avoid PolicyKit prompts and unobservable HID writes");
     }
     skipped
+}
+
+struct ProviderRetry {
+    next_attempt: Instant,
+    delay: Duration,
+}
+
+impl ProviderRetry {
+    fn new(now: Instant) -> Self {
+        Self {
+            next_attempt: now,
+            delay: Duration::from_secs(1),
+        }
+    }
+
+    fn failed(&mut self, now: Instant) {
+        self.next_attempt = now + self.delay;
+        self.delay = (self.delay * 2).min(Duration::from_secs(30));
+    }
+
+    fn succeeded(&mut self, now: Instant) {
+        self.next_attempt = now;
+        self.delay = Duration::from_secs(1);
+    }
+
+    fn seconds_until_retry(&self, now: Instant) -> u64 {
+        let wait = self.next_attempt.saturating_duration_since(now);
+        wait.as_secs() + u64::from(wait.subsec_nanos() > 0)
+    }
+}
+
+async fn reconnect_optional_provider<T, E, Connect, ConnectFuture>(
+    provider: &mut Option<T>,
+    retry: &mut ProviderRetry,
+    now: Instant,
+    connect: Connect,
+) -> Result<bool, String>
+where
+    E: std::fmt::Display,
+    Connect: FnOnce() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<T, E>>,
+{
+    if provider.is_some() || now < retry.next_attempt {
+        return Ok(false);
+    }
+    match connect().await {
+        Ok(connected) => {
+            *provider = Some(connected);
+            Ok(true)
+        }
+        Err(error) => {
+            retry.failed(now);
+            Err(error.to_string())
+        }
+    }
+}
+
+async fn initialize_optional_provider<T, E, Connect, ConnectFuture>(
+    now: Instant,
+    connect: Connect,
+) -> (Option<T>, ProviderRetry, Option<String>)
+where
+    E: std::fmt::Display,
+    Connect: FnOnce() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<T, E>>,
+{
+    let mut provider = None;
+    let mut retry = ProviderRetry::new(now);
+    let error = reconnect_optional_provider(&mut provider, &mut retry, now, connect)
+        .await
+        .err();
+    (provider, retry, error)
+}
+
+fn apply_upower_status(telemetry: &mut TelemetrySnapshot, status: Option<UPowerStatus>) {
+    let Some(status) = status else {
+        return;
+    };
+    telemetry.power_source = status.power_source;
+    telemetry.battery_percent = status.battery_percent;
+    telemetry.ac_online = status.ac_online;
+    telemetry.battery_state = status.battery_state.or(telemetry.battery_state);
+    telemetry.battery_health_percent = status
+        .battery_health_percent
+        .or(telemetry.battery_health_percent);
+    telemetry.battery_cycle_count = status.battery_cycle_count.or(telemetry.battery_cycle_count);
+    telemetry.battery_charge_power_w = status
+        .battery_charge_power_w
+        .or(telemetry.battery_charge_power_w);
+    telemetry.battery_discharge_power_w = status
+        .battery_discharge_power_w
+        .or(telemetry.battery_discharge_power_w);
+    telemetry.battery_time_to_empty_s = status.battery_time_to_empty_s;
+    telemetry.battery_time_to_full_s = status.battery_time_to_full_s;
+    telemetry.timestamp_ms = telemetry.timestamp_ms.max(status.timestamp_ms);
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2149,9 +2244,11 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let upower = UPowerProvider::connect_system()
-        .await
-        .context("connect to UPower")?;
+    let (mut upower, mut upower_retry, upower_startup_error) =
+        initialize_optional_provider(Instant::now(), UPowerProvider::connect_system).await;
+    if let Some(error) = upower_startup_error {
+        warn!("UPower unavailable at startup; retrying: {error}");
+    }
     let hwmon = HwmonTelemetryProvider::default();
     let cpu = CpuTelemetryProvider::default();
     let nvidia = NvidiaSmiTelemetryProvider::default();
@@ -2812,28 +2909,44 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                match upower.read_status().await {
-                    Ok(st) => {
-                        telemetry.power_source = st.power_source;
-                        telemetry.battery_percent = st.battery_percent;
-                        telemetry.ac_online = st.ac_online;
-                        telemetry.battery_state = st.battery_state.or(telemetry.battery_state);
-                        telemetry.battery_health_percent =
-                            telemetry.battery_health_percent.or(st.battery_health_percent);
-                        telemetry.battery_cycle_count =
-                            telemetry.battery_cycle_count.or(st.battery_cycle_count);
-                        telemetry.battery_charge_power_w =
-                            st.battery_charge_power_w.or(telemetry.battery_charge_power_w);
-                        telemetry.battery_discharge_power_w =
-                            st.battery_discharge_power_w.or(telemetry.battery_discharge_power_w);
-                        telemetry.battery_time_to_empty_s = st.battery_time_to_empty_s;
-                        telemetry.battery_time_to_full_s = st.battery_time_to_full_s;
-                        // Use UPower's timestamp as the authoritative timestamp if hwmon failed.
-                        telemetry.timestamp_ms = telemetry.timestamp_ms.max(st.timestamp_ms);
+                let upower_connect_error = if upower.is_none() {
+                    reconnect_optional_provider(
+                        &mut upower,
+                        &mut upower_retry,
+                        Instant::now(),
+                        UPowerProvider::connect_system,
+                    )
+                    .await
+                    .err()
+                } else {
+                    None
+                };
+                if let Some(provider) = &upower {
+                    match provider.read_status().await {
+                        Ok(status) => {
+                            upower_retry.succeeded(Instant::now());
+                            apply_upower_status(&mut telemetry, Some(status));
+                        }
+                        Err(error) => {
+                            upower = None;
+                            upower_retry.failed(Instant::now());
+                            let retry_seconds = upower_retry.seconds_until_retry(Instant::now());
+                            warnings.push(format!(
+                                "UPower read failed; reconnect scheduled in {}s: {error}",
+                                retry_seconds
+                            ));
+                        }
                     }
-                    Err(e) => {
-                        warnings.push(format!("UPower unavailable: {e}"));
-                    }
+                } else {
+                    let retry_seconds = upower_retry.seconds_until_retry(Instant::now());
+                    warnings.push(match upower_connect_error {
+                        Some(error) => format!(
+                            "UPower/system D-Bus unavailable; retrying in {retry_seconds}s: {error}"
+                        ),
+                        None => format!(
+                            "UPower disconnected; retry scheduled in {retry_seconds}s"
+                        ),
+                    });
                 }
 
                 if let Some(kbd) = &kbd_backlight {
@@ -6527,6 +6640,8 @@ fn lighting_state_to_dbus(
 mod tests {
     use super::*;
 
+    struct FakeUpower(rog_providers::upower::UPowerStatus);
+
     #[test]
     fn generated_profile_ids_are_safe_and_distinct() {
         let first = new_profile_id();
@@ -8013,5 +8128,115 @@ mod tests {
 
         let ready = ready_lighting_helper();
         assert_eq!(lighting_unavailable_status(&ready), "read_only");
+    }
+
+    #[tokio::test]
+    async fn upower_startup_failure_preserves_local_telemetry_and_recovers() {
+        let now = std::time::Instant::now();
+        let (mut provider, mut retry, startup_error) =
+            initialize_optional_provider(now, || async {
+                Err::<FakeUpower, _>("system D-Bus unavailable")
+            })
+            .await;
+        assert_eq!(startup_error, Some("system D-Bus unavailable".to_string()));
+        assert!(provider.is_none());
+        assert_eq!(retry.seconds_until_retry(now), 1);
+        let early_retry = reconnect_optional_provider(&mut provider, &mut retry, now, || async {
+            Err("retry was attempted too early")
+        })
+        .await;
+        assert_eq!(early_retry, Ok(false));
+
+        let mut telemetry = TelemetrySnapshot::empty_now(10);
+        telemetry.cpu_temp_c = Some(58.0);
+        telemetry.fans_rpm.insert("fan1".to_string(), 2300);
+        telemetry.mem_total_bytes = Some(8_000_000);
+        apply_upower_status(&mut telemetry, None);
+        assert_eq!(telemetry.cpu_temp_c, Some(58.0));
+        assert_eq!(telemetry.fans_rpm.get("fan1"), Some(&2300));
+        assert_eq!(telemetry.mem_total_bytes, Some(8_000_000));
+        assert_eq!(telemetry.power_source, None);
+
+        let retry_at = retry.next_attempt;
+        let recovered =
+            reconnect_optional_provider(&mut provider, &mut retry, retry_at, || async {
+                Ok::<_, &str>(FakeUpower(rog_providers::upower::UPowerStatus {
+                    power_source: Some(PowerSource::Ac),
+                    battery_percent: Some(80.0),
+                    ac_online: Some(true),
+                    battery_state: None,
+                    battery_health_percent: None,
+                    battery_cycle_count: None,
+                    battery_charge_power_w: None,
+                    battery_discharge_power_w: None,
+                    battery_time_to_empty_s: None,
+                    battery_time_to_full_s: None,
+                    timestamp_ms: 11,
+                }))
+            })
+            .await
+            .unwrap();
+        assert!(recovered);
+        retry.succeeded(retry_at);
+        apply_upower_status(&mut telemetry, provider.as_ref().map(|provider| provider.0));
+        assert_eq!(telemetry.power_source, Some(PowerSource::Ac));
+        assert_eq!(telemetry.battery_percent, Some(80.0));
+        assert_eq!(telemetry.cpu_temp_c, Some(58.0));
+        assert_eq!(telemetry.fans_rpm.get("fan1"), Some(&2300));
+    }
+
+    #[test]
+    fn upower_retry_backoff_is_bounded() {
+        let now = std::time::Instant::now();
+        let mut retry = ProviderRetry::new(now);
+        for _ in 0..20 {
+            retry.failed(now);
+        }
+        assert_eq!(retry.delay, std::time::Duration::from_secs(30));
+        assert!(retry.next_attempt >= now + std::time::Duration::from_secs(30));
+        assert_eq!(retry.seconds_until_retry(now), 30);
+    }
+
+    #[tokio::test]
+    async fn failed_upower_reads_keep_exponential_reconnect_backoff() {
+        let now = std::time::Instant::now();
+        let mut provider = None;
+        let mut retry = ProviderRetry::new(now);
+        let mut attempt_at = now;
+        let mut expected_delay = 1;
+
+        for _ in 0..8 {
+            let connected =
+                reconnect_optional_provider(&mut provider, &mut retry, attempt_at, || async {
+                    Ok::<_, &str>(FakeUpower(fake_upower_status()))
+                })
+                .await
+                .unwrap();
+            assert!(connected);
+            assert_eq!(retry.delay, std::time::Duration::from_secs(expected_delay));
+
+            provider = None;
+            retry.failed(attempt_at);
+            assert_eq!(retry.seconds_until_retry(attempt_at), expected_delay);
+            expected_delay = (expected_delay * 2).min(30);
+            attempt_at = retry.next_attempt;
+        }
+        assert_eq!(retry.delay, std::time::Duration::from_secs(30));
+    }
+
+    fn fake_upower_status() -> rog_providers::upower::UPowerStatus {
+        rog_providers::upower::UPowerStatus {
+            power_source: Some(PowerSource::Ac),
+            battery_percent: Some(80.0),
+            ac_online: Some(true),
+            battery_state: None,
+            battery_health_percent: None,
+            battery_cycle_count: None,
+            battery_charge_power_w: None,
+            battery_discharge_power_w: None,
+            battery_time_to_empty_s: None,
+            battery_time_to_full_s: None,
+            timestamp_ms: 11,
+        }
     }
 }
