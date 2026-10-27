@@ -300,6 +300,13 @@ impl PrivilegedService {
         curve
             .validate_safe(FanCurvePolicy::verified_asus_write())
             .map_err(map_fan_error)?;
+        let policy = self.fans.fan_write_policy(fan_id).map_err(map_fan_error)?;
+        if !policy.custom_curve_authorized {
+            return Err(map_fan_error(RogError::NotSupported(format!(
+                "custom fan-curve Apply is blocked: {} ({})",
+                policy.explanation, policy.reason
+            ))));
+        }
         if !self
             .fans
             .list_fans()
@@ -1502,7 +1509,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn privileged_active_mode_rejection_does_not_write_or_recover_other_channels() {
+    fn privileged_policy_rejection_does_not_write_or_recover_other_channels() {
         let (directory, curve_path) = privileged_fan_fixture("active-rejection");
         let mut service = PrivilegedService::new();
         service.fans = HwmonTelemetryProvider::new(directory.join("hwmon"));
@@ -1536,7 +1543,9 @@ mod tests {
         let error = service
             .apply_fan_curve_locked("asus-wmi:cpu", curve)
             .unwrap_err();
-        assert!(error.to_string().contains("re-applying"));
+        assert!(error
+            .to_string()
+            .contains("custom fan-curve Apply is blocked"));
         for (path, contents) in before {
             assert_eq!(fs::read(path).unwrap(), contents);
         }
@@ -1849,6 +1858,7 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: true,
             supports_auto: true,
+            fan_write_policy: rog_core::FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: true,
             backend: "asus-wmi-curve".to_string(),
@@ -1943,6 +1953,7 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: true,
             supports_auto: true,
+            fan_write_policy: rog_core::FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: true,
             backend: "asus-wmi-curve".to_string(),

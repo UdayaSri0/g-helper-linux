@@ -318,6 +318,15 @@ pub mod fan_caps {
     pub const FAN_CURVE_READABLE: &str = "fan_curve_readable";
     pub const FAN_CURVE_WRITABLE: &str = "fan_curve_writable";
     pub const FAN_MAPPING_CONFIDENCE: &str = "fan_mapping_confidence";
+    pub const CURVE_ABI_DETECTED: &str = "curve_abi_detected";
+    pub const BACKEND_WRITABLE: &str = "backend_writable";
+    pub const HELPER_READY: &str = "helper_ready";
+    pub const PHYSICAL_VALIDATION_RECORDED: &str = "physical_validation_recorded";
+    pub const CUSTOM_CURVE_AUTHORIZED: &str = "custom_curve_authorized";
+    pub const RECOVERY_AVAILABLE: &str = "recovery_available";
+    pub const WRITE_SUPPORT_STATE: &str = "write_support_state";
+    pub const WRITE_SUPPORT_REASON: &str = "write_support_reason";
+    pub const WRITE_SUPPORT_EXPLANATION: &str = "write_support_explanation";
 }
 
 pub mod fan_state {

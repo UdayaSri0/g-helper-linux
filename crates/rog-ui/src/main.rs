@@ -22,11 +22,11 @@ use rog_core::{
     CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
     CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, ErrorCategory,
     FanCaps, FanControlMode, FanCurve, FanCurvePolicy, FanCurvePreset, FanCurveReadback, FanDomain,
-    FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, GpuSwitchState, NamedProfile, PerformanceProfile, PermissionKind,
-    PermissionState, PermissionStatus, PowerSource, PrivilegedCategory, PrivilegedStatus,
-    ProfileSettings, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
-    TopProcessMem,
+    FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FanWritePolicyDecision,
+    FanWriteSupportState, FeatureAccessState, FeatureAvailability, GpuSwitchState, NamedProfile,
+    PerformanceProfile, PermissionKind, PermissionState, PermissionStatus, PowerSource,
+    PrivilegedCategory, PrivilegedStatus, ProfileSettings, RgbColor, SetupIssue, SetupSeverity,
+    SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -5424,15 +5424,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                             .fan_state
                             .fans
                             .iter()
-                            .find(|fan| fan.supports_curve && fan.controllable)
+                            .find(|fan| {
+                                fan.fan_write_policy.custom_curve_authorized && fan.controllable
+                            })
                             .map(|fan| fan.id.clone())
                     })
                     .filter(|id| {
-                        state
-                            .fan_state
-                            .fans
-                            .iter()
-                            .any(|fan| fan.id == *id && fan.supports_curve && fan.controllable)
+                        state.fan_state.fans.iter().any(|fan| {
+                            fan.id == *id
+                                && fan.fan_write_policy.custom_curve_authorized
+                                && fan.controllable
+                        })
                     });
                 if let Some(fan_id) = fan_id {
                     state.pending_fan_action = Some(PendingFanAction::Curve {
@@ -5644,7 +5646,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .fan_state
                     .fans
                     .iter()
-                    .any(|fan| fan.id == fan_id && fan.supports_auto && fan.controllable)
+                    .any(|fan| fan.id == fan_id && fan_auto_recovery_available(fan))
                 {
                     state.pending_fan_action = Some(PendingFanAction::Auto { fan_id });
                     state.action_error = None;
@@ -6848,12 +6850,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         }
         let selected_fan = selected_id.as_deref().and_then(|id| {
-            fan_state
-                .fans
-                .iter()
-                .find(|fan| fan.id == id && fan.supports_curve)
+            fan_state.fans.iter().find(|fan| {
+                fan.id == id && (fan.fan_write_policy.abi_detected || fan.curve_readback.is_some())
+            })
         });
-        let selected_writable = selected_fan.is_some_and(|fan| fan.controllable);
+        let selected_writable = selected_fan.is_some_and(fan_curve_apply_authorized);
+        let selected_editable = selected_fan.is_some_and(fan_curve_draft_editable);
         let curve_apply_in_progress = curve_apply_pending.borrow().is_some();
         let fan_authorization_required =
             selected_fan.is_some_and(|fan| fan.access_state == "authorization_required");
@@ -6873,24 +6875,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         fan_boost_10.set_sensitive(fan_state.caps.has_fan_boost);
         fan_boost_15.set_sensitive(fan_state.caps.has_fan_boost);
         fan_stop_boost.set_sensitive(matches!(fan_state.mode, FanControlMode::FullSpeedBoost));
-        fan_auto_button.set_sensitive(fan_state.caps.has_individual_fan_control);
+        fan_auto_button.set_sensitive(
+            fan_state
+                .fans
+                .iter()
+                .any(|fan| fan.supports_auto && fan.fan_write_policy.recovery_available),
+        );
         fan_mode_combo.set_sensitive(
             fan_state.caps.has_fan_manual_percent
                 || fan_state.caps.fan_curve_writable
                 || fan_state.caps.has_fan_boost,
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
-        curve_preview.set_enabled(selected_writable && !curve_apply_in_progress);
+        curve_preview.set_enabled(selected_editable && !curve_apply_in_progress);
         for input in curve_temp_inputs.iter().chain(curve_duty_inputs.iter()) {
-            input.set_sensitive(selected_writable && !curve_apply_in_progress);
+            input.set_sensitive(selected_editable && !curve_apply_in_progress);
         }
         for button in [&curve_quiet, &curve_balanced, &curve_performance] {
-            button.set_sensitive(selected_writable && !curve_apply_in_progress);
+            button.set_sensitive(selected_editable && !curve_apply_in_progress);
         }
-        curve_import.set_sensitive(selected_fan.is_some_and(|fan| fan.curve_readback.is_some()));
+        curve_import.set_sensitive(selected_fan.is_some_and(fan_curve_import_available));
         curve_auto.set_sensitive(
-            !curve_apply_in_progress
-                && selected_fan.is_some_and(|fan| fan.supports_auto && fan.controllable),
+            !curve_apply_in_progress && selected_fan.is_some_and(fan_auto_recovery_available),
         );
         curve_apply.set_sensitive(fan_curve_apply_enabled(
             selected_writable && !curve_apply_in_progress,
@@ -6902,7 +6908,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             "Apply curve"
         });
-        curve_reset.set_sensitive(selected_writable && !curve_apply_in_progress);
+        curve_reset.set_sensitive(selected_editable && !curve_apply_in_progress);
         curve_status.set_text(&fan_curve_access_label(selected_fan));
         if let Some(fan) = selected_fan {
             let rpm = fan
@@ -13135,7 +13141,10 @@ fn fan_privileged_access_state(
         return AccessUiState::UnsupportedHardware;
     }
     let safe_mapping = fan_state.fans.iter().any(|fan| {
-        fan.pwm_endpoint_verified && (fan.supports_auto || fan.supports_curve || fan.controllable)
+        fan.pwm_endpoint_verified
+            && (fan.fan_write_policy.abi_detected
+                || fan.fan_write_policy.recovery_available
+                || fan.controllable)
     });
     if !safe_mapping {
         return AccessUiState::UnsafeMapping;
@@ -14182,6 +14191,7 @@ fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
             .unwrap_or(false),
         fan_curve_writable: dbus_decode::boolean(&map, dbus_keys::fan_caps::FAN_CURVE_WRITABLE)
             .unwrap_or(false),
+        fan_write_policy: fan_write_policy_from_dbus(&map),
         has_fan_manual_percent: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_MANUAL_PERCENT)
             .unwrap_or(false),
         has_fan_manual_rpm_target: dbus_decode::boolean(
@@ -14288,6 +14298,7 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
         supports_curve: b(&map, dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY),
         supports_auto: b(&map, dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY),
+        fan_write_policy: fan_write_policy_from_dbus(&map),
         curve_readback,
         rollback_available: b(&map, dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY),
         backend: s(&map, dbus_keys::FAN_INFO_BACKEND_KEY).unwrap_or_else(|| "unknown".to_string()),
@@ -14295,6 +14306,40 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         notes: vec_string(&map, dbus_keys::FAN_INFO_NOTES_KEY),
         warnings: vec_string(&map, dbus_keys::FAN_INFO_WARNINGS_KEY),
     })
+}
+
+fn fan_write_policy_from_dbus(map: &HashMap<String, OwnedValue>) -> FanWritePolicyDecision {
+    use dbus_keys::fan_caps as keys;
+    let boolean = |key| {
+        map.get(key)
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(false)
+    };
+    let string = |key| {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let state = match string(keys::WRITE_SUPPORT_STATE).as_str() {
+        "unverified" => FanWriteSupportState::Unverified,
+        "unsupported" => FanWriteSupportState::Unsupported,
+        "verified_write" => FanWriteSupportState::VerifiedWrite,
+        _ => FanWriteSupportState::ReadOnly,
+    };
+    FanWritePolicyDecision {
+        state,
+        reason: string(keys::WRITE_SUPPORT_REASON),
+        explanation: string(keys::WRITE_SUPPORT_EXPLANATION),
+        abi_detected: boolean(keys::CURVE_ABI_DETECTED),
+        curve_readable: dbus_decode::boolean(map, keys::FAN_CURVE_READABLE).unwrap_or(false),
+        backend_writable: boolean(keys::BACKEND_WRITABLE),
+        helper_ready: boolean(keys::HELPER_READY),
+        physical_validation_recorded: boolean(keys::PHYSICAL_VALIDATION_RECORDED),
+        custom_curve_authorized: boolean(keys::CUSTOM_CURVE_AUTHORIZED),
+        recovery_available: boolean(keys::RECOVERY_AVAILABLE),
+        ..FanWritePolicyDecision::default()
+    }
 }
 
 fn fan_curve_readback_from_dbus(
@@ -15091,44 +15136,75 @@ fn fan_curve_access_label(fan: Option<&FanInfo>) -> String {
     let Some(fan) = fan else {
         return "Unsupported · no verified fan-curve channel is mapped".to_string();
     };
-    match fan.access_state.as_str() {
-        "direct" if fan.controllable => {
-            "Direct curve control is available; the UI remains unprivileged.".to_string()
+    match &fan.fan_write_policy.state {
+        FanWriteSupportState::Unverified => format!(
+            "Unverified · custom Apply is blocked. {}",
+            fan.fan_write_policy.explanation
+        ),
+        FanWriteSupportState::Unsupported => format!(
+            "Unsupported · custom Apply is blocked. {}",
+            fan.fan_write_policy.explanation
+        ),
+        FanWriteSupportState::ReadOnly if !fan.fan_write_policy.custom_curve_authorized => {
+            format!("Read only · {}", fan.fan_write_policy.explanation)
         }
-        "curve_control_available" if fan.controllable => {
-            "Authorized curve control is available for this session.".to_string()
-        }
-        "authorization_required" => {
-            "Authorization required · PolicyKit is requested only when Apply is pressed."
+        _ => match fan.access_state.as_str() {
+            "direct" if fan.controllable => {
+                "Direct curve control is available; the UI remains unprivileged.".to_string()
+            }
+            "curve_control_available" if fan.controllable => {
+                "Authorized curve control is available for this session.".to_string()
+            }
+            "authorization_required" => {
+                "Authorization required · PolicyKit is requested only when Apply is pressed."
+                    .to_string()
+            }
+            "authorization_denied" => {
+                "Authorization denied · the draft is retained; Apply may be retried.".to_string()
+            }
+            "helper_missing" => {
+                "Privileged helper missing · curve readback remains available, writes are unavailable."
                 .to_string()
-        }
-        "authorization_denied" => {
-            "Authorization denied · the draft is retained; Apply may be retried.".to_string()
-        }
-        "helper_missing" => {
-            "Privileged helper missing · curve readback remains available, writes are unavailable."
-                .to_string()
-        }
-        "unsafe_read_only" => "Unsafe or unverified mapping · this fan is read-only.".to_string(),
-        "telemetry_only" | "read_only" => {
-            "Telemetry only · RPM is visible, but this channel has no verified curve write route."
-                .to_string()
-        }
-        _ if fan.supports_curve && fan.curve_readback.is_some() => {
-            "Curve is readable but currently read-only.".to_string()
-        }
-        _ if fan.supports_curve => {
-            "Curve capability reported; write access is unavailable.".to_string()
-        }
-        _ => "Unsupported · this fan has no verified curve capability.".to_string(),
+            }
+            "unsafe_read_only" => {
+                "Unsafe or unverified mapping · this fan is read-only.".to_string()
+            }
+            "telemetry_only" | "read_only" => {
+                "Telemetry only · RPM is visible, but this channel has no verified curve write route."
+                    .to_string()
+            }
+            _ if fan.supports_curve && fan.curve_readback.is_some() => {
+                "Curve is readable but currently read-only.".to_string()
+            }
+            _ if fan.supports_curve => {
+                "Curve capability reported; write access is unavailable.".to_string()
+            }
+            _ => "Unsupported · this fan has no verified curve capability.".to_string(),
+        },
     }
+}
+
+fn fan_curve_draft_editable(fan: &FanInfo) -> bool {
+    fan.fan_write_policy.abi_detected
+}
+
+fn fan_curve_import_available(fan: &FanInfo) -> bool {
+    fan.curve_readback.is_some()
+}
+
+fn fan_curve_apply_authorized(fan: &FanInfo) -> bool {
+    fan.fan_write_policy.custom_curve_authorized && fan.controllable
+}
+
+fn fan_auto_recovery_available(fan: &FanInfo) -> bool {
+    fan.supports_auto && fan.fan_write_policy.recovery_available
 }
 
 fn fan_curve_tab_available(fans: &[FanInfo], fan_id: &str) -> bool {
     matches!(fan_id, "asus-wmi:cpu" | "asus-wmi:gpu" | "asus-wmi:mid")
         && fans
             .iter()
-            .any(|fan| fan.id == fan_id && fan.supports_curve)
+            .any(|fan| fan.id == fan_id && fan.fan_write_policy.abi_detected)
 }
 
 fn profile_fan_role_available(
@@ -15144,9 +15220,9 @@ fn profile_fan_role_available(
     fans.iter().any(|fan| {
         fan.id == id
             && if curve {
-                fan.supports_curve
+                fan.fan_write_policy.abi_detected
             } else {
-                fan.supports_auto
+                fan_auto_recovery_available(fan)
             }
     })
 }
@@ -15197,6 +15273,7 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         "fan_curve_writable: {}",
         state.caps.fan_curve_writable
     ));
+    append_fan_write_policy_diagnostics(&mut lines, "", &state.caps.fan_write_policy);
     lines.push(format!("boost: {}", state.caps.has_fan_boost));
     if let Some(until) = state.active_boost_until_ms {
         let remaining = until.saturating_sub(now_ms()) / 1000;
@@ -15263,6 +15340,7 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
             "  direct_write: {}; helper_ready: {}; authorization: {}; rollback_available: {}",
             fan.direct_write, fan.privileged_write, fan.authorization, fan.rollback_available
         ));
+        append_fan_write_policy_diagnostics(&mut lines, "  ", &fan.fan_write_policy);
         if let Some(readback) = &fan.curve_readback {
             lines.push(format!(
                 "  current_curve: source=backend_current, enable_mode={}, points={}",
@@ -15324,6 +15402,44 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn append_fan_write_policy_diagnostics(
+    lines: &mut Vec<String>,
+    prefix: &str,
+    policy: &FanWritePolicyDecision,
+) {
+    lines.push(format!(
+        "{prefix}curve_abi_detected: {}",
+        policy.abi_detected
+    ));
+    lines.push(format!("{prefix}curve_readable: {}", policy.curve_readable));
+    lines.push(format!(
+        "{prefix}backend_writable: {}",
+        policy.backend_writable
+    ));
+    lines.push(format!("{prefix}helper_ready: {}", policy.helper_ready));
+    lines.push(format!(
+        "{prefix}physical_validation_recorded: {}",
+        policy.physical_validation_recorded
+    ));
+    lines.push(format!(
+        "{prefix}custom_curve_authorized: {}",
+        policy.custom_curve_authorized
+    ));
+    lines.push(format!(
+        "{prefix}recovery_available: {}",
+        policy.recovery_available
+    ));
+    lines.push(format!(
+        "{prefix}write_support_state: {}",
+        policy.state.as_str()
+    ));
+    lines.push(format!("{prefix}write_support_reason: {}", policy.reason));
+    lines.push(format!(
+        "{prefix}write_support_explanation: {}",
+        policy.explanation
+    ));
 }
 
 fn fan_mode_label_text(mode: FanControlMode) -> &'static str {
@@ -15989,7 +16105,20 @@ mod tests {
         };
         let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
         fan.supports_curve = true;
+        fan.supports_auto = true;
         fan.id = "asus-wmi:cpu".to_string();
+        fan.fan_write_policy = FanWritePolicyDecision {
+            state: FanWriteSupportState::VerifiedWrite,
+            reason: "test_fixture".to_string(),
+            explanation: "test-only verified policy".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: true,
+            custom_curve_authorized: true,
+            recovery_available: true,
+            ..FanWritePolicyDecision::default()
+        };
         assert!(fan_curve_tab_available(
             std::slice::from_ref(&fan),
             "asus-wmi:cpu"
@@ -15999,7 +16128,7 @@ mod tests {
             rog_core::ProfileFanRole::Cpu,
             true
         ));
-        assert!(!profile_fan_role_available(
+        assert!(profile_fan_role_available(
             std::slice::from_ref(&fan),
             rog_core::ProfileFanRole::Cpu,
             false
@@ -16038,7 +16167,110 @@ mod tests {
             fan.controllable = state == "direct";
             assert!(fan_curve_access_label(Some(&fan)).contains(expected));
         }
+        fan.fan_write_policy.state = FanWriteSupportState::Unverified;
+        fan.fan_write_policy.custom_curve_authorized = false;
+        fan.fan_write_policy.physical_validation_recorded = false;
+        fan.fan_write_policy.explanation = "no approved physical validation record".to_string();
+        assert!(fan_curve_access_label(Some(&fan)).contains("Unverified"));
         assert!(fan_curve_access_label(None).contains("Unsupported"));
+    }
+
+    #[test]
+    fn unverified_curve_keeps_local_drafting_and_recovery_without_apply() {
+        let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "fixture".to_string(),
+            input_path: "fixture/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(2000),
+            source: "fixture/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+        fan.id = "asus-wmi:cpu".to_string();
+        fan.supports_auto = true;
+        fan.fan_write_policy = FanWritePolicyDecision {
+            state: FanWriteSupportState::Unverified,
+            reason: "no_matching_record".to_string(),
+            explanation: "physical fan-write support is unverified".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: false,
+            custom_curve_authorized: false,
+            recovery_available: true,
+            ..FanWritePolicyDecision::default()
+        };
+        fan.curve_readback = Some(FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: fan_curve_preset("balanced")
+                    .into_iter()
+                    .map(|(temp_c, duty_percent)| FanPoint {
+                        temp_c,
+                        duty_percent,
+                    })
+                    .collect(),
+            },
+            raw_pwm: vec![40; 8],
+            enable_mode: 2,
+        });
+
+        assert!(fan_curve_import_available(&fan));
+        assert!(fan_curve_tab_available(std::slice::from_ref(&fan), &fan.id));
+        assert!(fan_curve_draft_editable(&fan));
+        assert!(!fan_curve_apply_authorized(&fan));
+        assert!(!fan_curve_apply_enabled(
+            fan_curve_apply_authorized(&fan),
+            true,
+            true
+        ));
+        assert!(fan_auto_recovery_available(&fan));
+    }
+
+    #[test]
+    fn fan_write_policy_dbus_decoder_preserves_fail_closed_decision() {
+        use dbus_keys::fan_caps as keys;
+        let map = HashMap::from([
+            (
+                keys::WRITE_SUPPORT_STATE.to_string(),
+                ov("unverified".to_string()),
+            ),
+            (
+                keys::WRITE_SUPPORT_REASON.to_string(),
+                ov("no_matching_record".to_string()),
+            ),
+            (
+                keys::WRITE_SUPPORT_EXPLANATION.to_string(),
+                ov("no approved physical validation record".to_string()),
+            ),
+            (keys::CURVE_ABI_DETECTED.to_string(), OwnedValue::from(true)),
+            (keys::FAN_CURVE_READABLE.to_string(), OwnedValue::from(true)),
+            (keys::BACKEND_WRITABLE.to_string(), OwnedValue::from(true)),
+            (
+                keys::PHYSICAL_VALIDATION_RECORDED.to_string(),
+                OwnedValue::from(false),
+            ),
+            (
+                keys::CUSTOM_CURVE_AUTHORIZED.to_string(),
+                OwnedValue::from(false),
+            ),
+            (keys::RECOVERY_AVAILABLE.to_string(), OwnedValue::from(true)),
+        ]);
+
+        let policy = fan_write_policy_from_dbus(&map);
+        assert_eq!(policy.state, FanWriteSupportState::Unverified);
+        assert!(policy.abi_detected);
+        assert!(policy.curve_readable);
+        assert!(policy.backend_writable);
+        assert!(!policy.physical_validation_recorded);
+        assert!(!policy.custom_curve_authorized);
+        assert!(policy.recovery_available);
     }
 
     #[test]
