@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_or_pending_readiness_skips_the_mode_operation() {
+    async fn failed_or_mocked_pending_replies_skip_the_mode_operation() {
         let called = std::cell::Cell::new(0);
 
         let failed = run_if_switch_ready(
@@ -603,16 +603,19 @@ mod tests {
         assert!(matches!(failed, Err(RogError::Unexpected(_))));
         assert_eq!(called.get(), 0);
 
-        let pending = run_if_switch_ready(
-            async { Ok(Some("logout required".to_string())) },
-            || async {
-                called.set(called.get() + 1);
-                Ok(())
-            },
-        )
-        .await;
-        assert!(matches!(pending, Err(RogError::TemporarilyUnavailable(_))));
-        assert_eq!(called.get(), 0);
+        for reply in ["Logout", "Reboot", "SwitchToIntegrated", "FutureAction"] {
+            let status = switch_status_from_action(reply);
+            let pending = run_if_switch_ready(
+                async move { Ok((status.state != GpuSwitchState::Ready).then_some(status.hint)) },
+                || async {
+                    called.set(called.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+            assert!(matches!(pending, Err(RogError::TemporarilyUnavailable(_))));
+            assert_eq!(called.get(), 0, "reply {reply} must not reach SetMode");
+        }
 
         run_if_switch_ready(async { Ok(None) }, || async {
             called.set(called.get() + 1);
