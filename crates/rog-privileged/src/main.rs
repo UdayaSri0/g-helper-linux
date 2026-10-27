@@ -300,10 +300,7 @@ impl PrivilegedService {
         curve
             .validate_safe(FanCurvePolicy::verified_asus_write())
             .map_err(map_fan_error)?;
-        let policy = self
-            .fans
-            .fan_write_policy(fan_id)
-            .map_err(map_fan_error)?;
+        let policy = self.fans.fan_write_policy(fan_id).map_err(map_fan_error)?;
         if !policy.custom_curve_authorized {
             return Err(map_fan_error(RogError::NotSupported(format!(
                 "custom fan-curve Apply is blocked: {} ({})",
@@ -1546,7 +1543,9 @@ mod tests {
         let error = service
             .apply_fan_curve_locked("asus-wmi:cpu", curve)
             .unwrap_err();
-        assert!(error.to_string().contains("custom fan-curve Apply is blocked"));
+        assert!(error
+            .to_string()
+            .contains("custom fan-curve Apply is blocked"));
         for (path, contents) in before {
             assert_eq!(fs::read(path).unwrap(), contents);
         }

@@ -268,19 +268,14 @@ impl FanCurvePreset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FanWriteSupportState {
+    #[default]
     ReadOnly,
     Unverified,
     Unsupported,
     VerifiedWrite,
-}
-
-impl Default for FanWriteSupportState {
-    fn default() -> Self {
-        Self::ReadOnly
-    }
 }
 
 impl FanWriteSupportState {
@@ -3480,10 +3475,14 @@ mod tests {
         cpu.id = "asus-wmi:cpu".to_string();
         cpu.supports_manual_percent = false;
         cpu.supports_curve = true;
+        cpu.fan_write_policy.abi_detected = true;
+        cpu.fan_write_policy.curve_readable = true;
         let mut gpu = cpu.clone();
         gpu.id = "asus-wmi:gpu".to_string();
         let caps = FanCaps::from_fans(&[cpu, gpu]);
         assert!(caps.has_fan_curves);
+        assert!(caps.fan_curve_readable);
+        assert!(!caps.fan_curve_writable);
         assert!(!caps.has_fan_sync_control);
         assert!(!caps.has_fan_boost);
     }

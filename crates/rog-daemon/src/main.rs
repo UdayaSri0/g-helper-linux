@@ -4297,7 +4297,10 @@ fn insert_fan_write_policy(
         keys::WRITE_SUPPORT_STATE.to_string(),
         ov(policy.state.as_str().to_string()),
     );
-    map.insert(keys::WRITE_SUPPORT_REASON.to_string(), ov(policy.reason.clone()));
+    map.insert(
+        keys::WRITE_SUPPORT_REASON.to_string(),
+        ov(policy.reason.clone()),
+    );
     map.insert(
         keys::WRITE_SUPPORT_EXPLANATION.to_string(),
         ov(policy.explanation.clone()),

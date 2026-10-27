@@ -169,13 +169,16 @@ pub fn evaluate(
     let identity = match paths.read() {
         Ok(identity) => identity,
         Err(error) => {
+            let explanation = format!(
+                "Custom Apply is blocked because runtime identity evidence is incomplete: {error}."
+            );
             return decision(
                 FanWriteSupportState::Unverified,
                 "identity_incomplete",
-                &format!("Custom Apply is blocked because runtime identity evidence is incomplete: {error}."),
+                &explanation,
                 context,
                 false,
-            )
+            );
         }
     };
     if !identity.system_vendor.to_ascii_lowercase().contains("asus")

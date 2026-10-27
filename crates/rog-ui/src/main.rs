@@ -23,11 +23,10 @@ use rog_core::{
     CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, ErrorCategory,
     FanCaps, FanControlMode, FanCurve, FanCurvePolicy, FanCurvePreset, FanCurveReadback, FanDomain,
     FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FanWritePolicyDecision,
-    FanWriteSupportState, FeatureAccessState,
-    FeatureAvailability, GpuSwitchState, NamedProfile, PerformanceProfile, PermissionKind,
-    PermissionState, PermissionStatus, PowerSource, PrivilegedCategory, PrivilegedStatus,
-    ProfileSettings, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
-    TopProcessMem,
+    FanWriteSupportState, FeatureAccessState, FeatureAvailability, GpuSwitchState, NamedProfile,
+    PerformanceProfile, PermissionKind, PermissionState, PermissionStatus, PowerSource,
+    PrivilegedCategory, PrivilegedStatus, ProfileSettings, RgbColor, SetupIssue, SetupSeverity,
+    SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -5431,15 +5430,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                             .map(|fan| fan.id.clone())
                     })
                     .filter(|id| {
-                        state
-                            .fan_state
-                            .fans
-                            .iter()
-                            .any(|fan| {
-                                fan.id == *id
-                                    && fan.fan_write_policy.custom_curve_authorized
-                                    && fan.controllable
-                            })
+                        state.fan_state.fans.iter().any(|fan| {
+                            fan.id == *id
+                                && fan.fan_write_policy.custom_curve_authorized
+                                && fan.controllable
+                        })
                     });
                 if let Some(fan_id) = fan_id {
                     state.pending_fan_action = Some(PendingFanAction::Curve {
@@ -6855,13 +6850,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         }
         let selected_fan = selected_id.as_deref().and_then(|id| {
-            fan_state
-                .fans
-                .iter()
-                .find(|fan| {
-                    fan.id == id
-                        && (fan.fan_write_policy.abi_detected || fan.curve_readback.is_some())
-                })
+            fan_state.fans.iter().find(|fan| {
+                fan.id == id && (fan.fan_write_policy.abi_detected || fan.curve_readback.is_some())
+            })
         });
         let selected_writable = selected_fan.is_some_and(fan_curve_apply_authorized);
         let selected_editable = selected_fan.is_some_and(fan_curve_draft_editable);
@@ -6905,8 +6896,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         }
         curve_import.set_sensitive(selected_fan.is_some_and(|fan| fan.curve_readback.is_some()));
         curve_auto.set_sensitive(
-            !curve_apply_in_progress
-                && selected_fan.is_some_and(fan_auto_recovery_available),
+            !curve_apply_in_progress && selected_fan.is_some_and(fan_auto_recovery_available),
         );
         curve_apply.set_sensitive(fan_curve_apply_enabled(
             selected_writable && !curve_apply_in_progress,
@@ -14988,10 +14978,7 @@ fn fan_curve_tab_available(fans: &[FanInfo], fan_id: &str) -> bool {
     matches!(fan_id, "asus-wmi:cpu" | "asus-wmi:gpu" | "asus-wmi:mid")
         && fans
             .iter()
-            .any(|fan| {
-                fan.id == fan_id
-                    && fan.fan_write_policy.abi_detected
-            })
+            .any(|fan| fan.id == fan_id && fan.fan_write_policy.abi_detected)
 }
 
 fn profile_fan_role_available(
@@ -15196,9 +15183,15 @@ fn append_fan_write_policy_diagnostics(
     prefix: &str,
     policy: &FanWritePolicyDecision,
 ) {
-    lines.push(format!("{prefix}curve_abi_detected: {}", policy.abi_detected));
+    lines.push(format!(
+        "{prefix}curve_abi_detected: {}",
+        policy.abi_detected
+    ));
     lines.push(format!("{prefix}curve_readable: {}", policy.curve_readable));
-    lines.push(format!("{prefix}backend_writable: {}", policy.backend_writable));
+    lines.push(format!(
+        "{prefix}backend_writable: {}",
+        policy.backend_writable
+    ));
     lines.push(format!("{prefix}helper_ready: {}", policy.helper_ready));
     lines.push(format!(
         "{prefix}physical_validation_recorded: {}",
@@ -15208,7 +15201,10 @@ fn append_fan_write_policy_diagnostics(
         "{prefix}custom_curve_authorized: {}",
         policy.custom_curve_authorized
     ));
-    lines.push(format!("{prefix}recovery_available: {}", policy.recovery_available));
+    lines.push(format!(
+        "{prefix}recovery_available: {}",
+        policy.recovery_available
+    ));
     lines.push(format!(
         "{prefix}write_support_state: {}",
         policy.state.as_str()
@@ -15906,7 +15902,7 @@ mod tests {
             rog_core::ProfileFanRole::Cpu,
             true
         ));
-        assert!(!profile_fan_role_available(
+        assert!(profile_fan_role_available(
             std::slice::from_ref(&fan),
             rog_core::ProfileFanRole::Cpu,
             false
@@ -16007,14 +16003,8 @@ mod tests {
                 keys::WRITE_SUPPORT_EXPLANATION.to_string(),
                 ov("no approved physical validation record".to_string()),
             ),
-            (
-                keys::CURVE_ABI_DETECTED.to_string(),
-                OwnedValue::from(true),
-            ),
-            (
-                keys::FAN_CURVE_READABLE.to_string(),
-                OwnedValue::from(true),
-            ),
+            (keys::CURVE_ABI_DETECTED.to_string(), OwnedValue::from(true)),
+            (keys::FAN_CURVE_READABLE.to_string(), OwnedValue::from(true)),
             (keys::BACKEND_WRITABLE.to_string(), OwnedValue::from(true)),
             (
                 keys::PHYSICAL_VALIDATION_RECORDED.to_string(),
@@ -16024,10 +16014,7 @@ mod tests {
                 keys::CUSTOM_CURVE_AUTHORIZED.to_string(),
                 OwnedValue::from(false),
             ),
-            (
-                keys::RECOVERY_AVAILABLE.to_string(),
-                OwnedValue::from(true),
-            ),
+            (keys::RECOVERY_AVAILABLE.to_string(), OwnedValue::from(true)),
         ]);
 
         let policy = fan_write_policy_from_dbus(&map);

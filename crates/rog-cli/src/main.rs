@@ -1603,10 +1603,7 @@ fn print_fan_write_policy(prefix: &str, policy: &rog_core::FanWritePolicyDecisio
     println!("{prefix}recovery_available: {}", policy.recovery_available);
     println!("{prefix}write_support_state: {}", policy.state.as_str());
     println!("{prefix}write_support_reason: {}", policy.reason);
-    println!(
-        "{prefix}write_support_explanation: {}",
-        policy.explanation
-    );
+    println!("{prefix}write_support_explanation: {}", policy.explanation);
 }
 
 async fn cmd_lighting_diagnostics() -> anyhow::Result<()> {

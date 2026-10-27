@@ -1798,10 +1798,12 @@ mod tests {
     fn runtime_identity_change_after_discovery_denies_apply() {
         let (root, curve_path) = verified_asus_fixture("identity-change");
         let provider = verified_test_provider(&root);
-        assert!(provider
-            .fan_write_policy("asus-wmi:cpu")
-            .unwrap()
-            .custom_curve_authorized);
+        assert!(
+            provider
+                .fan_write_policy("asus-wmi:cpu")
+                .unwrap()
+                .custom_curve_authorized
+        );
         fs::write(root.join("identity/dmi/bios_version"), "TEST.101").unwrap();
         let before = fs::read(curve_path.join("pwm1_enable")).unwrap();
         let requested = FanCurve {
@@ -1815,9 +1817,7 @@ mod tests {
                 })
                 .collect(),
         };
-        assert!(provider
-            .set_fan_curve("asus-wmi:cpu", requested)
-            .is_err());
+        assert!(provider.set_fan_curve("asus-wmi:cpu", requested).is_err());
         assert_eq!(fs::read(curve_path.join("pwm1_enable")).unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
