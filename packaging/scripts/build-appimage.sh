@@ -442,9 +442,9 @@ normalize_tree_timestamps "$APPDIR"
 
 download_tool "$LINUXDEPLOY_URL" "$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
 download_tool "$APPIMAGE_PLUGIN_URL" "$TOOLS_DIR/linuxdeploy-plugin-appimage-x86_64.AppImage"
-download_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/linuxdeploy-plugin-gtk.upstream.sh" "$GTK_PLUGIN_SHA256"
+download_tool "$GTK_PLUGIN_URL" "$TOOLS_DIR/gtk-plugin-source.sh" "$GTK_PLUGIN_SHA256"
 patch_linuxdeploy_gtk_plugin \
-  "$TOOLS_DIR/linuxdeploy-plugin-gtk.upstream.sh" \
+  "$TOOLS_DIR/gtk-plugin-source.sh" \
   "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
 ln -sf "linuxdeploy-plugin-appimage-x86_64.AppImage" "$TOOLS_DIR/linuxdeploy-plugin-appimage"
 ln -sf "linuxdeploy-plugin-gtk.sh" "$TOOLS_DIR/linuxdeploy-plugin-gtk"
