@@ -3149,7 +3149,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     launch_on_login_switch.set_valign(gtk::Align::Center);
     let launch_on_login_row = adw::ActionRow::builder()
         .title("Launch on Login")
-        .subtitle("Start rog-helper when the user session starts.")
+        .subtitle(autostart_status_message())
         .build();
     launch_on_login_row.add_suffix(&launch_on_login_switch);
     launch_on_login_row.set_activatable(false);
@@ -10817,24 +10817,127 @@ fn xdg_config_home() -> Result<PathBuf, String> {
 }
 
 fn autostart_enabled() -> Result<bool, String> {
+    Ok(autostart_status()?.enabled)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AutostartStatus {
+    enabled: bool,
+    message: Option<&'static str>,
+}
+
+fn autostart_status_message() -> String {
+    match autostart_status() {
+        Ok(status) => status
+            .message
+            .unwrap_or("Start rog-helper when the user session starts.")
+            .to_string(),
+        Err(error) => format!("Autostart status unavailable: {error}"),
+    }
+}
+
+fn autostart_status() -> Result<AutostartStatus, String> {
     let path = autostart_file_path()?;
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AutostartStatus {
+                enabled: false,
+                message: None,
+            })
+        }
         Err(error) => return Err(format!("Unable to read autostart entry: {error}")),
     };
 
-    let mut disabled = false;
-    for line in contents.lines().map(str::trim) {
-        if key_value_is(line, "Hidden", "true")
+    let expected = autostart_desktop_entry_for_current_installation(&rog_core::UiPreferences {
+        start_minimized_to_tray: contents
+            .lines()
+            .any(|line| line.trim().starts_with("Exec=") && line.contains(START_MINIMIZED_ARG)),
+        ..rog_core::UiPreferences::default()
+    })?;
+    let expected_exec = expected
+        .lines()
+        .find(|line| line.starts_with("Exec="))
+        .unwrap_or_default();
+    let target_exists = if expected_exec.starts_with("Exec=flatpak run ") {
+        true
+    } else {
+        desktop_entry_exec_path(expected_exec).is_some_and(|target| target.is_file())
+    };
+    Ok(autostart_status_for_entry(
+        &contents,
+        expected_exec,
+        target_exists,
+    ))
+}
+
+fn autostart_status_for_entry(
+    contents: &str,
+    expected_exec: &str,
+    target_exists: bool,
+) -> AutostartStatus {
+    if !is_rog_helper_autostart(contents) {
+        return AutostartStatus {
+            enabled: false,
+            message: Some("A different autostart entry uses the rog-helper filename."),
+        };
+    }
+    let disabled = contents.lines().map(str::trim).any(|line| {
+        key_value_is(line, "Hidden", "true")
             || key_value_is(line, "X-GNOME-Autostart-enabled", "false")
-        {
-            disabled = true;
-            break;
+    });
+    let matches_install =
+        target_exists && contents.lines().any(|line| line.trim() == expected_exec);
+    AutostartStatus {
+        enabled: !disabled && matches_install,
+        message: (!matches_install)
+            .then_some("Saved autostart entry is stale or its executable is unavailable."),
+    }
+}
+
+fn desktop_entry_exec_path(exec: &str) -> Option<PathBuf> {
+    let argument = exec.strip_prefix("Exec=\"")?;
+    let mut path = String::new();
+    let mut escaped = false;
+    for ch in argument.chars() {
+        if escaped {
+            path.push(ch);
+            escaped = false;
+        } else {
+            match ch {
+                '\\' => escaped = true,
+                '"' => return Some(PathBuf::from(path)),
+                _ => path.push(ch),
+            }
         }
     }
+    None
+}
 
-    Ok(!disabled)
+fn is_rog_helper_autostart(contents: &str) -> bool {
+    contents.contains("X-Rog-Helper-Autostart=true")
+        || [false, true]
+            .into_iter()
+            .any(|minimized| contents == legacy_autostart_desktop_entry(minimized))
+}
+
+fn legacy_autostart_desktop_entry(minimized: bool) -> String {
+    let exec = if minimized {
+        format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
+    } else {
+        APP_BINARY_NAME.to_string()
+    };
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=rog-helper\n\
+         Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux\n\
+         Exec={exec}\n\
+         Icon={APP_ICON_NAME}\n\
+         Terminal=false\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
 }
 
 fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
@@ -10847,11 +10950,29 @@ fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
 
 fn sync_autostart(settings: &rog_core::UiPreferences) -> Result<(), String> {
     let path = autostart_file_path()?;
-    if !settings.launch_on_login {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
+    let entry = if settings.launch_on_login {
+        Some(autostart_desktop_entry_for_current_installation(settings)?)
+    } else {
+        None
+    };
+    sync_autostart_entry(&path, settings.launch_on_login, entry.as_deref())
+}
+
+fn sync_autostart_entry(path: &Path, enabled: bool, entry: Option<&str>) -> Result<(), String> {
+    if !enabled {
+        match fs::read_to_string(path) {
+            Ok(contents) if is_rog_helper_autostart(&contents) => {
+                fs::remove_file(path)
+                    .map_err(|error| format!("Unable to remove autostart entry: {error}"))?;
+            }
+            Ok(_) => {
+                return Err(
+                    "Autostart path is owned by another desktop entry; it was preserved."
+                        .to_string(),
+                )
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("Unable to remove autostart entry: {error}")),
+            Err(error) => return Err(format!("Unable to inspect autostart entry: {error}")),
         }
         return Ok(());
     }
@@ -10861,28 +10982,129 @@ fn sync_autostart(settings: &rog_core::UiPreferences) -> Result<(), String> {
         .ok_or_else(|| "Unable to determine the autostart directory.".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Unable to create autostart directory: {error}"))?;
-    fs::write(&path, autostart_desktop_entry(settings))
-        .map_err(|error| format!("Unable to save autostart entry: {error}"))
+    if let Ok(contents) = fs::read_to_string(path) {
+        if !is_rog_helper_autostart(&contents) {
+            return Err(
+                "Autostart path is owned by another desktop entry; it was preserved.".to_string(),
+            );
+        }
+    }
+    fs::write(
+        path,
+        entry.ok_or_else(|| "Autostart entry was not generated.".to_string())?,
+    )
+    .map_err(|error| format!("Unable to save autostart entry: {error}"))
 }
 
+#[cfg(test)]
 fn autostart_desktop_entry(settings: &rog_core::UiPreferences) -> String {
-    let exec = if settings.start_minimized_to_tray {
-        format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
-    } else {
-        APP_BINARY_NAME.to_string()
-    };
+    autostart_desktop_entry_for_path(settings, Path::new("/usr/bin/rog-helper-ui"))
+        .expect("fixture executable path must be absolute")
+}
 
+fn autostart_desktop_entry_for_current_installation(
+    settings: &rog_core::UiPreferences,
+) -> Result<String, String> {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        let app_id = std::env::var("FLATPAK_ID")
+            .map_err(|_| "Flatpak application ID is not valid UTF-8.".to_string())?;
+        return autostart_desktop_entry_for_flatpak(settings, &app_id);
+    }
+
+    let executable = if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        PathBuf::from(appimage)
+    } else {
+        std::env::current_exe().map_err(|error| {
+            format!("Unable to resolve the application executable for autostart: {error}")
+        })?
+    };
+    if !executable.is_file() {
+        return Err(
+            "The application executable no longer exists; autostart was not enabled.".to_string(),
+        );
+    }
+    autostart_desktop_entry_for_path(settings, &executable)
+}
+
+fn autostart_desktop_entry_for_flatpak(
+    settings: &rog_core::UiPreferences,
+    app_id: &str,
+) -> Result<String, String> {
+    if !valid_flatpak_app_id(app_id) {
+        return Err("Flatpak application ID is empty or invalid.".to_string());
+    }
+    let exec = format!("flatpak run --command={APP_BINARY_NAME} {app_id}");
+    Ok(autostart_desktop_entry_with_exec(settings, &exec))
+}
+
+fn valid_flatpak_app_id(app_id: &str) -> bool {
+    let components = app_id.split('.').collect::<Vec<_>>();
+    components.len() >= 3
+        && components.iter().all(|component| {
+            component
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic())
+                && component
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+}
+
+fn autostart_desktop_entry_for_path(
+    settings: &rog_core::UiPreferences,
+    executable: &Path,
+) -> Result<String, String> {
+    if !executable.is_absolute() {
+        return Err("The application executable path is not absolute.".to_string());
+    }
+    let executable = desktop_entry_exec_arg(executable)?;
+    Ok(autostart_desktop_entry_with_exec(settings, &executable))
+}
+
+fn autostart_desktop_entry_with_exec(
+    settings: &rog_core::UiPreferences,
+    base_exec: &str,
+) -> String {
+    let exec = if settings.start_minimized_to_tray {
+        format!("{base_exec} {START_MINIMIZED_ARG}")
+    } else {
+        base_exec.to_string()
+    };
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=rog-helper\n\
          Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux\n\
          Exec={exec}\n\
+         X-Rog-Helper-Autostart=true\n\
          Icon={APP_ICON_NAME}\n\
          Terminal=false\n\
          StartupNotify=false\n\
          X-GNOME-Autostart-enabled=true\n"
     )
+}
+
+fn desktop_entry_exec_arg(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err("The application executable path is not absolute.".to_string());
+    }
+    let value = path
+        .to_str()
+        .ok_or_else(|| "The executable path is not valid UTF-8 for a desktop entry.".to_string())?;
+    let mut quoted = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' | '"' | '`' | '$' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '\n' | '\r' => return Err("The executable path contains a newline.".to_string()),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    Ok(quoted)
 }
 
 fn open_uri_with_feedback(shared: &Arc<Mutex<SharedUiState>>, uri: &str, error_message: &str) {
@@ -16921,7 +17143,108 @@ mod tests {
         let entry = autostart_desktop_entry(&settings);
 
         assert!(entry.contains("Type=Application"));
-        assert!(entry.contains(&format!("Exec={APP_BINARY_NAME} {START_MINIMIZED_ARG}")));
+        assert!(entry.contains(&format!(
+            "Exec=\"/usr/bin/{APP_BINARY_NAME}\" {START_MINIMIZED_ARG}"
+        )));
+    }
+
+    #[test]
+    fn autostart_entry_uses_quoted_absolute_paths_and_preserves_minimized_arg() {
+        let executable = Path::new("/home/test user/ROG Helper/rog-helper-ui");
+        let settings = rog_core::UiPreferences {
+            start_minimized_to_tray: true,
+            ..rog_core::UiPreferences::default()
+        };
+
+        let entry = autostart_desktop_entry_for_path(&settings, executable).unwrap();
+
+        assert!(
+            entry.contains("Exec=\"/home/test user/ROG Helper/rog-helper-ui\" --minimized-to-tray")
+        );
+        assert!(entry.contains("X-Rog-Helper-Autostart=true"));
+        assert!(!entry.contains("TryExec="));
+    }
+
+    #[test]
+    fn flatpak_autostart_uses_a_persistent_flatpak_launcher_command() {
+        let settings = rog_core::UiPreferences {
+            start_minimized_to_tray: true,
+            ..rog_core::UiPreferences::default()
+        };
+        let entry =
+            autostart_desktop_entry_for_flatpak(&settings, "io.github.roghelper.UI").unwrap();
+
+        assert!(entry.contains(
+            "Exec=flatpak run --command=rog-helper-ui io.github.roghelper.UI --minimized-to-tray"
+        ));
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "invalid app id").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.-roghelper").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.rog;helper").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.rog\nhelper").is_err());
+    }
+
+    #[test]
+    fn autostart_status_reports_stale_entries_and_respects_disabled_entries() {
+        let entry = autostart_desktop_entry(&rog_core::UiPreferences::default());
+        let expected_exec = entry
+            .lines()
+            .find(|line| line.starts_with("Exec="))
+            .unwrap();
+
+        let missing_target = autostart_status_for_entry(&entry, expected_exec, false);
+        assert!(!missing_target.enabled);
+        assert!(missing_target.message.unwrap().contains("stale"));
+
+        let mismatched_exec = autostart_status_for_entry(&entry, "Exec=other", true);
+        assert!(!mismatched_exec.enabled);
+        assert!(mismatched_exec.message.unwrap().contains("stale"));
+
+        let disabled = entry.replace("X-GNOME-Autostart-enabled=true", "Hidden=true");
+        let disabled_status = autostart_status_for_entry(&disabled, expected_exec, true);
+        assert!(!disabled_status.enabled);
+        assert_eq!(disabled_status.message, None);
+
+        let stale_and_disabled = disabled.replace(expected_exec, "Exec=other");
+        let status = autostart_status_for_entry(&stale_and_disabled, expected_exec, true);
+        assert!(!status.enabled);
+        assert!(status.message.unwrap().contains("stale"));
+    }
+
+    #[test]
+    fn autostart_exec_arg_escapes_desktop_entry_metacharacters() {
+        assert_eq!(
+            desktop_entry_exec_arg(Path::new("/tmp/ROG $Helper/\"ui\"")).unwrap(),
+            r#""/tmp/ROG \$Helper/\"ui\"""#
+        );
+        assert!(desktop_entry_exec_arg(Path::new("relative/path")).is_err());
+    }
+
+    #[test]
+    fn autostart_writer_preserves_unrelated_entries_and_removes_only_owned_entries() {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-helper-autostart-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(AUTOSTART_DESKTOP_FILE_NAME);
+        let unrelated = "[Desktop Entry]\nName=Other\nExec=other-app\n";
+        std::fs::write(&path, unrelated).unwrap();
+
+        assert!(sync_autostart_entry(&path, true, Some("replacement")).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), unrelated);
+
+        let similar_user_entry = legacy_autostart_desktop_entry(false)
+            .replace("Control ASUS ROG", "Custom control ASUS ROG");
+        std::fs::write(&path, &similar_user_entry).unwrap();
+        assert!(sync_autostart_entry(&path, false, None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), similar_user_entry);
+
+        let owned = autostart_desktop_entry(&rog_core::UiPreferences::default());
+        std::fs::write(&path, &owned).unwrap();
+        sync_autostart_entry(&path, false, None).unwrap();
+        assert!(!path.exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
