@@ -18,6 +18,48 @@ Implication:
 
 - the repository currently has implementation coverage, not hardware-certification coverage
 - unless a machine record is added, treat that machine or scenario as untested
+- the production custom-fan-curve write allowlist is empty; no laptop is currently authorized for
+  custom curve Apply
+
+## Custom fan-write support policy
+
+Fan telemetry, readable firmware curves, a structurally recognized ASUS curve ABI, writable kernel
+files, helper availability, physical validation, and current write authorization are separate facts.
+A compatible filename or an accepted sysfs write is not evidence that a curve is mechanically,
+thermally, or recoverably safe on a laptop.
+
+The runtime decision has four states:
+
+- `read_only`: useful telemetry or curve readback is available, but there is no custom write route
+- `unverified`: the expected ABI may be present and writable, but no approved physical-validation
+  record exactly matches the current machine and software environment
+- `unsupported`: the identity, channel mapping, ABI, or backend contradicts the reviewed contract
+- `verified_write`: an approved record exactly matches and all live pre-write checks pass
+
+Only `verified_write` authorizes custom curve Apply. Missing, unreadable, ambiguous, stale, or
+contradictory evidence fails closed. Eligibility is re-evaluated for every Apply; a capability
+observed at startup is not a retained authorization.
+
+### Production support records
+
+Production records are compiled into the reviewed binary and identify the exact system vendor, DMI
+product/model, board vendor and board name, BIOS vendor and exact BIOS version, kernel release and
+build identity, relevant driver identity/compatibility, ASUS WMI hwmon identity, approved CPU/GPU/Mid
+channel labels, eight-point ABI, reset/readback behavior, safe envelope and minimum-duty evidence.
+They also record recovery after interruption/restart, suspend/resume results, test date, tester,
+maintainer review status, and committed physical-evidence references.
+
+A proposed record is not eligible until supervised work under #64, a dated machine record under #65,
+and maintainer review are complete. BIOS, kernel, driver, board, backend, or channel changes require a
+new evidence review or an explicitly evidenced compatibility range; family prefixes and arbitrary
+minimum versions are insufficient. Test-only verified fixtures must never be promoted into the
+production record table. The G615JMR observations below remain read-only evidence and are not a
+production write record.
+
+Read-only RPM, temperatures, raw PWM values, current-curve readback, Import Current, draft editing,
+and local preset import/export do not require a write record. Import Current never activates a
+curve. The narrow Auto/BIOS recovery operation is evaluated separately: it may use only the already
+recognized driver reset endpoint and cannot be repurposed as general write authorization.
 
 ### Structured lighting implementation record (not physical validation)
 
@@ -252,8 +294,8 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan curve backend available | exact verified ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply validates safe points | `fan-caps`, `GetFanCurves`, Fans screenshot |
-| fan restore Auto | exact verified ASUS WMI curve backend | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
+| fan curve backend available | exact recognized ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply remains blocked unless the exact environment has an approved support record | `fan-caps`, `GetFanCurves`, Fans screenshot |
+| fan restore Auto | narrowly mapped ASUS WMI reset endpoint | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 
 ## Fan-Control Validation Fields

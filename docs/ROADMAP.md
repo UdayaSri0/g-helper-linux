@@ -36,7 +36,7 @@ The following features are present in the current codebase.
   single-target RGB protocol
 - fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - dynamic 0..N fan telemetry
-  - verified ASUS WMI eight-point curves with direct or typed privileged writes
+  - recognized ASUS WMI eight-point curves, with Apply limited to reviewed support records through direct or typed privileged writes
   - Auto/BIOS restore and root-owned recovery marker
   - generic manual percentage, RPM-target, and boost writes deliberately unsupported
   - sync state/API/UI present, but not operational for the verified curve backend
@@ -69,7 +69,7 @@ The daemon already exposes:
 - `SetGpuMode`
 - `SetBatteryLimit`
 - CPU control setters
-- verified fan control setters and Auto restore
+- policy-authorized fan control setters and separately constrained Auto restore
 
 See [DBUS_API.md](DBUS_API.md) for the current details.
 
