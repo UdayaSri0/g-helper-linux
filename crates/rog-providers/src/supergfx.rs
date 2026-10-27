@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use rog_core::{GpuMode, GpuSwitchState, RogError, RogResult};
 use tracing::debug;
 use zbus::fdo::DBusProxy;
@@ -236,6 +238,21 @@ impl SupergfxProvider {
     }
 }
 
+async fn run_if_switch_ready<Readiness, Operation, OperationFuture, T>(
+    readiness: Readiness,
+    operation: Operation,
+) -> RogResult<T>
+where
+    Readiness: Future<Output = RogResult<Option<String>>>,
+    Operation: FnOnce() -> OperationFuture,
+    OperationFuture: Future<Output = RogResult<T>>,
+{
+    if let Some(hint) = readiness.await? {
+        return Err(RogError::TemporarilyUnavailable(hint));
+    }
+    operation().await
+}
+
 impl GpuProvider for SupergfxProvider {
     async fn get_mode(&self) -> RogResult<GpuMode> {
         let raw = self.read_mode_value().await?;
@@ -248,39 +265,42 @@ impl GpuProvider for SupergfxProvider {
     }
 
     async fn set_mode(&self, mode: GpuMode) -> RogResult<()> {
-        let supported_values = self.read_supported_mode_values().await?;
-        let supported_ids = supported_values
-            .iter()
-            .filter_map(value_to_u32)
-            .collect::<Vec<_>>();
-        let supported_names = supported_values
-            .iter()
-            .filter_map(mode_name_from_value)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        run_if_switch_ready(self.can_switch_now(), || async {
+            let supported_values = self.read_supported_mode_values().await?;
+            let supported_ids = supported_values
+                .iter()
+                .filter_map(value_to_u32)
+                .collect::<Vec<_>>();
+            let supported_names = supported_values
+                .iter()
+                .filter_map(mode_name_from_value)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
 
-        let target_id = pick_target_mode(mode, &supported_ids, &supported_names)?;
-        let proxy = self.proxy().await?;
+            let target_id = pick_target_mode(mode, &supported_ids, &supported_names)?;
+            let proxy = self.proxy().await?;
 
-        match proxy.call::<_, _, OwnedValue>("SetMode", &target_id).await {
-            Ok(_) => return Ok(()),
-            Err(error) if !allows_text_mode_fallback(&error.to_string()) => {
-                return Err(map_dbus_error("set supergfx mode", error));
+            match proxy.call::<_, _, OwnedValue>("SetMode", &target_id).await {
+                Ok(_) => return Ok(()),
+                Err(error) if !allows_text_mode_fallback(&error.to_string()) => {
+                    return Err(map_dbus_error("set supergfx mode", error));
+                }
+                Err(_) => {}
             }
-            Err(_) => {}
-        }
 
-        // Fallback for implementations that expose mode as a text enum.
-        let target_name = mode_name_from_u32(target_id).ok_or_else(|| {
-            RogError::Unexpected(format!(
-                "could not map target mode id {target_id} to a name"
-            ))
-        })?;
-        proxy
-            .call::<_, _, OwnedValue>("SetMode", &target_name.to_string())
-            .await
-            .map_err(|e| map_dbus_error("set supergfx mode", e))?;
-        Ok(())
+            // Fallback for implementations that expose mode as a text enum.
+            let target_name = mode_name_from_u32(target_id).ok_or_else(|| {
+                RogError::Unexpected(format!(
+                    "could not map target mode id {target_id} to a name"
+                ))
+            })?;
+            proxy
+                .call::<_, _, OwnedValue>("SetMode", &target_name.to_string())
+                .await
+                .map_err(|e| map_dbus_error("set supergfx mode", e))?;
+            Ok(())
+        })
+        .await
     }
 
     async fn can_switch_now(&self) -> RogResult<Option<String>> {
@@ -344,12 +364,6 @@ fn pick_target_mode(mode: GpuMode, ids: &[u32], names: &[String]) -> RogResult<u
         GpuMode::Dedicated => {
             if contains(5, "AsusMuxDgpu") {
                 Some(5)
-            } else if contains(4, "AsusEgpu") {
-                Some(4)
-            } else if contains(2, "NvidiaNoModeset") {
-                Some(2)
-            } else if contains(3, "Vfio") {
-                Some(3)
             } else {
                 None
             }
@@ -558,6 +572,58 @@ mod tests {
             pick_target_mode(GpuMode::Dedicated, &[0, 1], &["Hybrid".to_string()]),
             Err(RogError::NotSupported(_))
         ));
+    }
+
+    #[test]
+    fn dedicated_requires_the_internal_asus_mux_mode() {
+        assert_eq!(
+            pick_target_mode(GpuMode::Dedicated, &[5], &["AsusMuxDgpu".to_string()]).unwrap(),
+            5
+        );
+        for (id, name) in [(4, "AsusEgpu"), (2, "NvidiaNoModeset"), (3, "Vfio")] {
+            assert!(matches!(
+                pick_target_mode(GpuMode::Dedicated, &[id], &[name.to_string()]),
+                Err(RogError::NotSupported(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_or_mocked_pending_replies_skip_the_mode_operation() {
+        let called = std::cell::Cell::new(0);
+
+        let failed = run_if_switch_ready(
+            async { Err(RogError::Unexpected("readiness unavailable".to_string())) },
+            || async {
+                called.set(called.get() + 1);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(matches!(failed, Err(RogError::Unexpected(_))));
+        assert_eq!(called.get(), 0);
+
+        for reply in ["Logout", "Reboot", "SwitchToIntegrated", "FutureAction"] {
+            let status = switch_status_from_action(reply);
+            let pending = run_if_switch_ready(
+                async move { Ok((status.state != GpuSwitchState::Ready).then_some(status.hint)) },
+                || async {
+                    called.set(called.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+            assert!(matches!(pending, Err(RogError::TemporarilyUnavailable(_))));
+            assert_eq!(called.get(), 0, "reply {reply} must not reach SetMode");
+        }
+
+        run_if_switch_ready(async { Ok(None) }, || async {
+            called.set(called.get() + 1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(called.get(), 1);
     }
 
     #[test]

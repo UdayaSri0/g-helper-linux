@@ -2068,11 +2068,16 @@ impl RogHelperDaemon {
             ));
         };
 
-        if let Ok(status) = supergfx.switch_status().await {
-            self.update_gpu_switch_status(&status);
-            if status.state.blocks_new_switch() {
-                return Err(fdo::Error::Failed(status.hint));
+        let status = match supergfx.switch_status().await {
+            Ok(status) => status,
+            Err(error) => {
+                self.update_gpu_backend_error(&error);
+                return Err(map_rog_error_to_fdo(error));
             }
+        };
+        self.update_gpu_switch_status(&status);
+        if status.state.blocks_new_switch() {
+            return Err(fdo::Error::Failed(status.hint));
         }
 
         let mode = parse_gpu_mode_request(mode).map_err(fdo::Error::InvalidArgs)?;
