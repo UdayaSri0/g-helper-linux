@@ -473,7 +473,7 @@ Current release behavior to expect:
 - readable-but-not-writable keyboard backlight sysfs -> current brightness remains visible;
   the canonical approved ASUS LED may use the typed helper, otherwise writes remain unavailable
 - dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
-- update checks are manual and UI-side; in-place replacement is attempted only for safe user-local direct-binary installs and otherwise falls back to the latest release page
+- update checks are manual and UI-side; executable replacement is disabled until signed release metadata can be verified with a pinned public key, while manual downloads remain available from the latest release page
 
 ## Documentation Index
 

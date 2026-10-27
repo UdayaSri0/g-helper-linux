@@ -160,12 +160,6 @@ impl AppMetadata {
 }
 
 #[derive(Debug, Clone)]
-struct ReleaseAsset {
-    name: String,
-    download_url: String,
-}
-
-#[derive(Debug, Clone)]
 struct UpdateState {
     latest_version: Option<String>,
     status_text: String,
@@ -174,10 +168,8 @@ struct UpdateState {
     release_notes_preview: Option<String>,
     release_notes_full: Option<String>,
     release_page_url: Option<String>,
-    downloadable_asset: Option<ReleaseAsset>,
     update_action_label: String,
     update_action_subtitle: String,
-    supports_in_place_update: bool,
 }
 
 impl Default for UpdateState {
@@ -192,10 +184,8 @@ impl Default for UpdateState {
             release_notes_preview: None,
             release_notes_full: None,
             release_page_url: None,
-            downloadable_asset: None,
-            update_action_label: "Open Releases".to_string(),
-            update_action_subtitle: "Open the latest release page in your browser.".to_string(),
-            supports_in_place_update: false,
+            update_action_label: update_action_label().to_string(),
+            update_action_subtitle: update_action_subtitle(),
         }
     }
 }
@@ -267,8 +257,6 @@ struct SharedUiState {
     update_state: UpdateState,
     pending_update_check: bool,
     update_check_in_progress: bool,
-    pending_update_action: bool,
-    update_action_in_progress: bool,
     pending_open_link: Option<OpenLinkRequest>,
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
@@ -345,8 +333,6 @@ impl Default for SharedUiState {
             update_state: UpdateState::default(),
             pending_update_check: false,
             update_check_in_progress: false,
-            pending_update_action: false,
-            update_action_in_progress: false,
             pending_open_link: None,
             pending_toast: None,
             daemon_error: None,
@@ -4126,7 +4112,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         check_updates_button.connect_clicked(move |_| {
             if let Ok(mut st) = shared.lock() {
-                if st.update_check_in_progress || st.update_action_in_progress {
+                if st.update_check_in_progress {
                     return;
                 }
                 st.pending_update_check = true;
@@ -4148,28 +4134,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     Ok(st) => st,
                     Err(_) => return,
                 };
-                if st.update_check_in_progress || st.update_action_in_progress {
+                if st.update_check_in_progress {
                     return;
                 }
-                if st.update_state.supports_in_place_update
-                    && st.update_state.downloadable_asset.is_some()
-                {
-                    st.pending_update_action = true;
-                    st.update_action_in_progress = true;
-                    st.update_state.status_text = "Preparing the update...".to_string();
-                    st.update_state.last_result_text =
-                        "Downloading the latest release asset.".to_string();
-                    st.mark_render_dirty();
-                    None
-                } else {
-                    st.update_state.last_result_text =
-                        "Automatic in-place update is not supported for this installation. Opening the latest release page instead.".to_string();
-                    st.mark_render_dirty();
-                    st.update_state
-                        .release_page_url
-                        .clone()
-                        .or_else(|| fallback_releases_url.clone())
-                }
+                st.update_state.last_result_text =
+                    format!("{UPDATE_SIGNATURE_REQUIRED_MESSAGE} Opening the latest release page for manual download.");
+                st.mark_render_dirty();
+                st.update_state
+                    .release_page_url
+                    .clone()
+                    .or_else(|| fallback_releases_url.clone())
             };
 
             if let Some(url) = release_page_url {
@@ -5861,7 +5835,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let stack_clone = stack.clone();
     let toast_overlay_clone = toast_overlay.clone();
     let update_check_available = app_metadata.repository_url.is_some();
-    let update_action_available = app_metadata.releases_url.is_some();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_supported_speeds =
         std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
@@ -5941,7 +5914,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             action_error_txt,
             update_state,
             update_check_in_progress,
-            update_action_in_progress,
             pending_open_link,
             daemon_error,
             settings,
@@ -6008,7 +5980,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.action_error.clone(),
                 st.update_state.clone(),
                 st.update_check_in_progress,
-                st.update_action_in_progress,
                 st.pending_open_link.take(),
                 st.daemon_error.clone(),
                 st.settings.clone(),
@@ -8700,27 +8671,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
         let check_subtitle = if update_check_in_progress {
             "Checking the latest GitHub release right now."
-        } else if update_action_in_progress {
-            "Wait for the current update action to finish before checking again."
         } else {
             "Query the latest GitHub release without blocking the UI."
         };
         check_updates_row.set_subtitle(check_subtitle);
-        check_updates_button.set_sensitive(
-            update_check_available && !update_check_in_progress && !update_action_in_progress,
-        );
+        check_updates_button.set_sensitive(update_check_available && !update_check_in_progress);
 
         update_action_button.set_label(&update_state.update_action_label);
-        if update_action_in_progress {
-            update_action_row.set_subtitle("Applying the latest release asset. Keep this window open until the action finishes.");
-        } else {
-            update_action_row.set_subtitle(&update_state.update_action_subtitle);
-        }
-        update_action_button.set_sensitive(
-            !update_check_in_progress
-                && !update_action_in_progress
-                && (update_state.release_page_url.is_some() || update_action_available),
-        );
+        update_action_row.set_subtitle(&update_state.update_action_subtitle);
+        update_action_button
+            .set_sensitive(!update_check_in_progress && update_state.release_page_url.is_some());
 
         glib::ControlFlow::Continue
     });
@@ -9155,71 +9115,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 st.update_check_in_progress = false;
                                 st.pending_toast =
                                     Some(("Unable to check for updates right now.".to_string(), true));
-                                st.mark_render_dirty();
-                            }
-                        }
-                    }
-                }
-
-                let pending_update_action = shared
-                    .lock()
-                    .ok()
-                    .map(|mut st| std::mem::take(&mut st.pending_update_action))
-                    .unwrap_or(false);
-                if pending_update_action {
-                    let update_state = shared
-                        .lock()
-                        .ok()
-                        .map(|st| st.update_state.clone())
-                        .unwrap_or_default();
-                    match apply_update_action(&app_metadata, &update_state).await {
-                        Ok(UpdateActionOutcome::Replaced { version }) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text = format!(
-                                    "Update downloaded. Restart required to switch to {version}."
-                                );
-                                st.update_state.last_result_text = format!(
-                                    "The binary on disk was replaced with {version}. Restart rog-helper to use the new version."
-                                );
-                                st.update_state.update_action_label = "Updated on Disk".to_string();
-                                st.update_state.update_action_subtitle =
-                                    "Restart rog-helper to finish switching to the downloaded binary."
-                                        .to_string();
-                                st.update_state.supports_in_place_update = false;
-                                st.pending_toast = Some((
-                                    format!(
-                                        "Update downloaded. Restart rog-helper to use {version}."
-                                    ),
-                                    false,
-                                ));
-                                st.mark_render_dirty();
-                            }
-                        }
-                        Ok(UpdateActionOutcome::OpenReleasePage { url, message }) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text =
-                                    "Automatic in-place update is not supported here.".to_string();
-                                st.update_state.last_result_text = message.clone();
-                                st.pending_open_link = Some(OpenLinkRequest {
-                                    url,
-                                    error_message:
-                                        "Unable to open the latest release page right now."
-                                            .to_string(),
-                                });
-                                st.pending_toast = Some((message, false));
-                                st.mark_render_dirty();
-                            }
-                        }
-                        Err(error) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text =
-                                    "Automatic in-place update could not be completed."
-                                        .to_string();
-                                st.update_state.last_result_text = error.clone();
-                                st.pending_toast = Some((error, true));
                                 st.mark_render_dirty();
                             }
                         }
@@ -9994,31 +9889,11 @@ async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String>
     Ok(())
 }
 
-#[derive(Debug)]
-enum UpdateActionOutcome {
-    Replaced { version: String },
-    OpenReleasePage { url: String, message: String },
-}
-
 #[derive(Debug, Deserialize)]
 struct GithubReleaseResponse {
     tag_name: String,
     html_url: String,
     body: Option<String>,
-    assets: Vec<GithubReleaseAssetResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubReleaseAssetResponse {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(Debug)]
-struct UpdateCapability {
-    asset: Option<ReleaseAsset>,
-    supports_in_place_update: bool,
-    explanation: String,
 }
 
 async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, String> {
@@ -10060,29 +9935,14 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
         .as_deref()
         .map(release_notes_preview_text);
     let comparison = compare_versions(&app_metadata.version, &release.tag_name);
-    let capability = detect_update_capability(&release.assets);
-
     let (status_text, last_result_text, update_action_label, update_action_subtitle) =
         match comparison {
             Some(std::cmp::Ordering::Less) => {
-                let action_label = if capability.supports_in_place_update {
-                    "Update Now".to_string()
-                } else {
-                    "Download Latest".to_string()
-                };
-                let action_subtitle = if capability.supports_in_place_update {
-                    capability.explanation.clone()
-                } else {
-                    format!(
-                        "{} Opening the latest release page is still available.",
-                        capability.explanation
-                    )
-                };
                 (
                     format!("Update available: {latest_version}"),
                     format!("Latest GitHub release: {latest_version}"),
-                    action_label,
-                    action_subtitle,
+                    update_action_label().to_string(),
+                    update_action_subtitle(),
                 )
             }
             Some(std::cmp::Ordering::Equal) => (
@@ -10091,7 +9951,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                     "Installed version {} matches the latest GitHub release.",
                     app_metadata.version
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Review release notes or download another build from GitHub.".to_string(),
             ),
             Some(std::cmp::Ordering::Greater) => (
@@ -10100,7 +9960,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                     "Installed version {} is newer than the latest published release {latest_version}.",
                     app_metadata.version
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Review the latest published release in your browser.".to_string(),
             ),
             None => (
@@ -10108,7 +9968,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                 format!(
                     "Latest GitHub release: {latest_version}. The installed and latest version strings could not be compared automatically."
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Version comparison was inconclusive, so the latest release page will open instead of attempting an in-place update."
                     .to_string(),
             ),
@@ -10122,14 +9982,8 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
         release_notes_preview,
         release_notes_full,
         release_page_url: Some(release.html_url),
-        downloadable_asset: if capability.supports_in_place_update {
-            capability.asset
-        } else {
-            None
-        },
         update_action_label,
         update_action_subtitle,
-        supports_in_place_update: capability.supports_in_place_update,
     })
 }
 
@@ -10161,117 +10015,22 @@ fn update_check_failed_state(
             .releases_url
             .clone()
             .or_else(|| previous_state.release_page_url.clone()),
-        update_action_label: "Open Releases".to_string(),
-        update_action_subtitle: "Open the latest release page in your browser.".to_string(),
+        update_action_label: update_action_label().to_string(),
+        update_action_subtitle: update_action_subtitle(),
         ..UpdateState::default()
     }
 }
 
-async fn apply_update_action(
-    app_metadata: &AppMetadata,
-    update_state: &UpdateState,
-) -> Result<UpdateActionOutcome, String> {
-    let release_page_url = update_state
-        .release_page_url
-        .clone()
-        .or_else(|| app_metadata.releases_url.clone())
-        .ok_or_else(|| "Repository URL is not configured.".to_string())?;
+const UPDATE_SIGNATURE_REQUIRED_MESSAGE: &str = "Automatic binary replacement is disabled until a signed release manifest can be verified with a pinned public key.";
 
-    if !update_state.supports_in_place_update {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
+fn update_action_label() -> &'static str {
+    "Open Releases"
+}
 
-    let asset = update_state.downloadable_asset.as_ref().ok_or_else(|| {
-        "No matching direct release asset was found for automatic replacement.".to_string()
-    })?;
-    let Some(executable_path) = supported_update_target_path(asset) else {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
-                    .to_string(),
-        });
-    };
-
-    let client = build_github_client(app_metadata)?;
-    let response = client
-        .get(&asset.download_url)
-        .send()
-        .await
-        .map_err(|_| "Unable to download the latest release asset right now.".to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "GitHub returned {} while downloading the latest release asset.",
-            response.status()
-        ));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| "The latest release asset could not be downloaded completely.".to_string())?;
-    if bytes.is_empty() {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The latest release asset was empty, so automatic replacement was skipped. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if !bytes.starts_with(b"\x7fELF") {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The latest release asset could not be validated as a Linux executable. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-
-    let current_permissions = fs::metadata(&executable_path)
-        .map_err(|_| "The current executable permissions could not be read.".to_string())?
-        .permissions();
-    let parent = executable_path
-        .parent()
-        .ok_or_else(|| "The current executable directory could not be determined.".to_string())?;
-    let temp_path = temp_update_path(parent, &asset.name);
-    if fs::write(&temp_path, &bytes).is_err() {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The downloaded update could not be written next to the current binary. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if fs::set_permissions(&temp_path, current_permissions).is_err() {
-        let _ = fs::remove_file(&temp_path);
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Execute permissions could not be preserved for the downloaded update. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if fs::rename(&temp_path, &executable_path).is_err() {
-        let _ = fs::remove_file(&temp_path);
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The downloaded update could not replace the current binary. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-
-    Ok(UpdateActionOutcome::Replaced {
-        version: update_state
-            .latest_version
-            .clone()
-            .unwrap_or_else(|| asset.name.clone()),
-    })
+fn update_action_subtitle() -> String {
+    format!(
+        "{UPDATE_SIGNATURE_REQUIRED_MESSAGE} Opening the latest release page for manual download."
+    )
 }
 
 fn build_github_client(app_metadata: &AppMetadata) -> Result<reqwest::Client, String> {
@@ -10279,170 +10038,6 @@ fn build_github_client(app_metadata: &AppMetadata) -> Result<reqwest::Client, St
         .user_agent(format!("rog-helper-ui/{}", app_metadata.version))
         .build()
         .map_err(|_| "The update checker could not initialize its GitHub client.".to_string())
-}
-
-fn detect_update_capability(assets: &[GithubReleaseAssetResponse]) -> UpdateCapability {
-    let executable_path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable path could not be determined for automatic replacement."
-                        .to_string(),
-            };
-        }
-    };
-    let executable_name = match executable_path.file_name().and_then(|name| name.to_str()) {
-        Some(name) => name,
-        None => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable name could not be determined for automatic replacement."
-                        .to_string(),
-            };
-        }
-    };
-
-    let asset = match matching_release_asset(assets, executable_name) {
-        Some(asset) => asset,
-        None => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "No direct release asset matches the current binary name, so automatic replacement is disabled."
-                        .to_string(),
-            };
-        }
-    };
-
-    let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The HOME directory is not available, so a safe user-local update path could not be confirmed."
-                    .to_string(),
-        };
-    };
-    if !executable_path.starts_with(&home_dir) {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current binary is not installed in a user-local path, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    let metadata = match fs::symlink_metadata(&executable_path) {
-        Ok(metadata) => metadata,
-        Err(_) => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable could not be inspected, so in-place replacement is disabled."
-                        .to_string(),
-            };
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable is a symlink, so automatic replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    let Some(parent) = executable_path.parent() else {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable directory could not be determined, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    };
-    if !can_stage_update_in_dir(parent, executable_name) {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable directory is not writable by the current user, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    UpdateCapability {
-        asset: Some(asset),
-        supports_in_place_update: true,
-        explanation:
-            "A matching direct binary release asset can safely replace this user-local installation after validation. Restart rog-helper afterward."
-                .to_string(),
-    }
-}
-
-fn supported_update_target_path(asset: &ReleaseAsset) -> Option<PathBuf> {
-    let executable_path = std::env::current_exe().ok()?;
-    let executable_name = executable_path.file_name()?.to_str()?;
-    if executable_name != asset.name {
-        return None;
-    }
-
-    let home_dir = std::env::var_os("HOME").map(PathBuf::from)?;
-    if !executable_path.starts_with(&home_dir) {
-        return None;
-    }
-
-    let metadata = fs::symlink_metadata(&executable_path).ok()?;
-    if metadata.file_type().is_symlink() {
-        return None;
-    }
-
-    let parent = executable_path.parent()?;
-    if !can_stage_update_in_dir(parent, executable_name) {
-        return None;
-    }
-
-    Some(executable_path)
-}
-
-fn matching_release_asset(
-    assets: &[GithubReleaseAssetResponse],
-    executable_name: &str,
-) -> Option<ReleaseAsset> {
-    assets
-        .iter()
-        .find(|asset| asset.name == executable_name)
-        .map(|asset| ReleaseAsset {
-            name: asset.name.clone(),
-            download_url: asset.browser_download_url.clone(),
-        })
-}
-
-fn can_stage_update_in_dir(dir: &Path, executable_name: &str) -> bool {
-    let probe_path = temp_update_path(dir, executable_name);
-    let write_result = fs::write(&probe_path, []);
-    let _ = fs::remove_file(&probe_path);
-    write_result.is_ok()
-}
-
-fn temp_update_path(dir: &Path, executable_name: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    dir.join(format!(
-        ".{executable_name}.rog-helper-update-{}-{stamp}",
-        std::process::id()
-    ))
 }
 
 fn package_value(value: &str, fallback: &str) -> String {
@@ -16995,13 +16590,8 @@ mod tests {
             release_notes_preview: Some("notes".to_string()),
             release_notes_full: Some("full notes".to_string()),
             release_page_url: Some("https://example.invalid/old-release".to_string()),
-            downloadable_asset: Some(ReleaseAsset {
-                name: "rog-helper-ui".to_string(),
-                download_url: "https://example.invalid/rog-helper-ui".to_string(),
-            }),
             update_action_label: "Update Now".to_string(),
             update_action_subtitle: "Replace the current binary.".to_string(),
-            supports_in_place_update: true,
             ..UpdateState::default()
         };
 
@@ -17009,55 +16599,28 @@ mod tests {
             update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &previous);
 
         assert_eq!(failed.status_text, "Could not check for updates");
-        assert_eq!(failed.update_action_label, "Open Releases");
-        assert!(!failed.supports_in_place_update);
-        assert!(failed.downloadable_asset.is_none());
+        assert_eq!(failed.update_action_label, update_action_label());
         assert!(failed.latest_version.is_none());
         assert!(failed.release_notes_full.is_none());
         assert_eq!(failed.release_page_url, metadata.releases_url);
     }
 
     #[test]
-    fn failed_then_successful_update_check_requires_fresh_release_state() {
-        let metadata = update_test_metadata();
-        let failed =
-            update_check_failed_state(&metadata, "GitHub returned 503", &UpdateState::default());
-        assert!(!failed.supports_in_place_update);
-        assert!(failed.downloadable_asset.is_none());
-
-        let successful = UpdateState {
-            latest_version: Some("0.5.0".to_string()),
-            release_page_url: Some(
-                "https://github.com/UdayaSri0/g-helper-linux/releases/tag/v0.5.0".to_string(),
-            ),
-            downloadable_asset: Some(ReleaseAsset {
-                name: "rog-helper-ui".to_string(),
-                download_url: "https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.5.0/rog-helper-ui".to_string(),
-            }),
-            update_action_label: "Update Now".to_string(),
-            supports_in_place_update: true,
-            ..UpdateState::default()
-        };
-
-        assert!(successful.supports_in_place_update);
-        assert!(successful.downloadable_asset.is_some());
-        assert_eq!(successful.update_action_label, "Update Now");
+    fn update_action_always_opens_manual_release_page() {
+        assert!(UPDATE_SIGNATURE_REQUIRED_MESSAGE.contains("signed release manifest"));
+        assert_eq!(update_action_label(), "Open Releases");
     }
 
     #[test]
     fn startup_and_offline_update_states_keep_manual_release_fallback_only() {
         let metadata = update_test_metadata();
         let startup = initial_update_state(&metadata);
-        assert_eq!(startup.update_action_label, "Open Releases");
-        assert!(!startup.supports_in_place_update);
-        assert!(startup.downloadable_asset.is_none());
+        assert_eq!(startup.update_action_label, update_action_label());
         assert_eq!(startup.release_page_url, metadata.releases_url);
 
         let offline =
             update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &startup);
-        assert_eq!(offline.update_action_label, "Open Releases");
-        assert!(!offline.supports_in_place_update);
-        assert!(offline.downloadable_asset.is_none());
+        assert_eq!(offline.update_action_label, update_action_label());
         assert_eq!(offline.release_page_url, metadata.releases_url);
     }
 
