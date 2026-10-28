@@ -21,6 +21,28 @@ Implication:
 - the production custom-fan-curve write allowlist is empty; no laptop is currently authorized for
   custom curve Apply
 
+### Compatibility evidence matrix
+
+These statuses describe only the evidence linked in this document. A read-only observation or
+automated fixture does not verify a physical write, and no row below is a complete machine
+validation record.
+
+| Area / scope | Status | Evidence and date | Limit |
+| --- | --- | --- | --- |
+| Complete machine validation record | **Blocked** | None committed | No dated run with a named tester and the required startup, UI, service, and feature results exists. |
+| G615JMR identity, fan discovery, and telemetry snapshot | **Read-only only** | [2026-10-06 discovery record](#structured-fan-discovery-record-read-only-no-physical-writes) | Readback and RPM snapshots only; no fan Apply, Auto restore, suspend/resume, or recovery test. |
+| G615JMR provider and battery endpoint observations | **Read-only only** | [2026-10-08 follow-up](#g615jmr-follow-up-observation-2026-10-08-read-only) | `asusd` and `supergfxd` were absent in that session; no provider write was attempted. |
+| G615JMR installed-target and Aura identity | **Read-only only** | [2026-08-21 installed-target audit](#structured-lighting-implementation-record-not-physical-validation) | Identity and packaging path evidence only; no physical RGB effect was observed. |
+| G615JMR custom fan-curve Apply and Auto restoration | **Blocked** | [Fan write policy](#custom-fan-write-support-policy); physical workflow tracked by [#64](https://github.com/UdayaSri0/g-helper-linux/issues/64) | Production write allowlist is empty pending supervised evidence and maintainer review. |
+| G615JMR native Aura physical Apply | **Untested** | [Lighting record](#structured-lighting-implementation-record-not-physical-validation); focused validation tracked by [#63](https://github.com/UdayaSri0/g-helper-linux/issues/63) | Descriptor matching and accepted writes do not establish a visible physical effect. |
+| `asusd` / `supergfxd` missing flows, CPU write permissions, fan-count layouts, tray behavior | **Untested** | [Untested scenario list](#untested-and-not-yet-validated) | Existing implementation and fixture coverage are not machine-session evidence. |
+| Additional ASUS models, Linux distributions, and desktop environments | **Not represented in current test fleet** | No complete machine records committed; the dated G615JMR entries above are limited observations | Do not infer compatibility outside the recorded G615JMR observations. |
+| Manual fan percent, RPM target, and boost | **Unsupported** | [Fan write policy](#custom-fan-write-support-policy) | These controls are intentionally unavailable; no support claim is made. |
+| RGB zones and per-key RGB | **Unsupported** | [Lighting implementation record](#structured-lighting-implementation-record-not-physical-validation) | These controls are intentionally unavailable; no support claim is made. |
+
+`Verified` is reserved for a feature and environment covered by a completed, dated machine record.
+The machine-specific evidence and scenario tables below remain the source for detailed results.
+
 ## Custom fan-write support policy
 
 Fan telemetry, readable firmware curves, a structurally recognized ASUS curve ABI, writable kernel
@@ -162,7 +184,7 @@ PolicyKit success or `accepted_no_readback` is not a validation result: a human 
 colour, Breathe pair, Rainbow Cycle, four Rainbow Wave directions, Pulse, and final Static restore as
 `observed`, `not observed`, or `uncertain`. Only a dated committed record may change this table.
 
-## Untested / Not Yet Validated
+## Untested and Not Yet Validated
 
 The scenarios below are the minimum release hardware checks that still need real evidence unless a linked record is added.
 
