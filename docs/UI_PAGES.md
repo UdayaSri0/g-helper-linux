@@ -363,16 +363,15 @@ Current behavior:
 
 ### What it supports
 
-- manual `Check for Updates`
-- best-effort `Update Now` for safe user-local direct-binary installs
+- executable replacement is disabled until signed release metadata can be verified with a pinned public key
 - browser actions for source / GitHub, support / repository, and issue reporting
-- safe fallback to opening the latest release page when automatic in-place replacement is not supported
+- the latest release page is opened for manual downloads
 
 ### Capability dependencies
 
 - static metadata has no daemon capability dependency
 - release checks depend on network access to GitHub
-- automatic in-place replacement depends on a matching direct release asset plus a writable user-local binary path
+- automatic in-place replacement requires a separately authenticated signed release manifest and pinned public verification key; no signing key is currently provisioned
 
 ### Missing or planned
 
