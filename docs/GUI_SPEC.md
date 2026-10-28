@@ -345,7 +345,7 @@ Current content:
 - last check result
 - release-notes preview
 - manual `Check for Updates` action
-- best-effort `Update Now` / `Download Latest` action
+- latest release page action for manual downloads
 - source, support, and issue-reporting buttons
 
 Current implementation note:
@@ -354,7 +354,7 @@ Current implementation note:
 - the UI still falls back to project defaults if those fields are blank
 - maintainer GitHub metadata is derived from the repository URL when possible
 - release checks are manual, run in the UI process, and use the GitHub Releases API
-- automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
+- automatic in-place replacement is disabled until a signed release manifest can be verified with a pinned public key; manual downloads remain available from the latest release page
 - lifecycle and durable preferences are intentionally located on Settings
 
 ## Current Capability Behavior
