@@ -3403,14 +3403,16 @@ fn automation_status_to_dbus(state: &SharedState) -> HashMap<String, OwnedValue>
 }
 
 fn daemon_info_to_dbus() -> HashMap<String, OwnedValue> {
+    let info = rog_core::DaemonApiInfo::current(env!("CARGO_PKG_VERSION"));
+    let (api_version, package_version) = info.to_wire_fields();
     HashMap::from([
         (
             dbus_keys::daemon_info::API_VERSION.to_string(),
-            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+            OwnedValue::from(api_version),
         ),
         (
             dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
-            ov(env!("CARGO_PKG_VERSION").to_string()),
+            ov(package_version),
         ),
     ])
 }
@@ -7407,6 +7409,7 @@ mod tests {
     fn daemon_identity_reports_workspace_api_and_package_version() {
         let map = daemon_info_to_dbus();
 
+        assert_eq!(map.len(), 2);
         assert_eq!(
             map.get(dbus_keys::daemon_info::API_VERSION)
                 .and_then(|value| u64::try_from(value).ok()),
@@ -7415,6 +7418,17 @@ mod tests {
         assert_eq!(
             value_as_str(&map, dbus_keys::daemon_info::PACKAGE_VERSION),
             env!("CARGO_PKG_VERSION")
+        );
+        let decoded = rog_core::DaemonApiInfo::from_wire_fields(
+            map.get(dbus_keys::daemon_info::API_VERSION)
+                .and_then(|value| u64::try_from(value).ok()),
+            map.get(dbus_keys::daemon_info::PACKAGE_VERSION)
+                .and_then(|value| <&str>::try_from(value).ok())
+                .map(str::to_owned),
+        )
+        .expect("daemon serializer must emit decodable identity fields");
+        assert!(
+            decoded.is_compatible_with(dbus_keys::DAEMON_API_VERSION, env!("CARGO_PKG_VERSION"))
         );
     }
 

@@ -1,13 +1,28 @@
 # DBus Contract Map
 
-This is the release audit of the `io.github.roghelper.Daemon1` contract. The public wire format remains the existing string-keyed `a{sv}` API. Shared constants in `rog-core::dbus_keys` cover the high-risk state, capability, telemetry, CPU, fan, setup, and lighting names; adding a typed internal model did not rename a public key.
+This is the release audit of the `io.github.roghelper.Daemon1` contract. The public wire format remains the existing string-keyed `a{sv}` API. Shared constants in `rog-core::dbus_keys` cover the high-risk state, capability, telemetry, CPU, fan, setup, lighting, and daemon identity names. The read-only `GetDaemonInfo` identity uses a shared core type; no public key or signature changed.
 
 Decoder rule: absent optional keys and keys with the wrong DBus type are treated as unavailable. Boolean capabilities default to `false`, counts default to `0`, collections default to empty, and access states default to `unknown`. A UI fallback is presentation-only and must not claim hardware support.
+
+## Schema Ownership and Versioning
+
+`rog-core::dbus_keys` owns shared wire names and the session API epoch. Daemon encoders own the
+published values; UI decoders own compatibility behavior and must preserve unknown values only when
+the domain model has an explicit lossless representation. Missing or wrongly typed fields remain
+unavailable; only documented legacy defaults are allowed. In particular, missing capability or
+write-access fields must remain disabled/unknown.
+
+The `GetDaemonInfo` API epoch is separate from configuration and privileged-helper versions. Additive
+fields retain their type and existing meaning. Removing, retyping, or changing a field's semantics
+requires an epoch/migration review and a compatibility window; use a parallel interface for an
+incompatible transition. Rollback restores the previous daemon producer without rewriting user
+configuration or invoking setters. See [DBUS_API.md](DBUS_API.md#schema-ownership-and-compatibility-policy).
 
 ## Consumer Summary
 
 | Contract | Daemon encoder | UI decoder | CLI dependency | Primary documentation |
 | --- | --- | --- | --- | --- |
+| `GetDaemonInfo` | `daemon_info_to_dbus` using shared `DaemonApiInfo` | `daemon_identity_from_dbus` using shared compatibility semantics | None | `DBUS_API.md`, this file |
 | `GetState` | `state_to_dbus`, plus `RogHelperDaemon::get_state` | `fetch_state` | Profile cycling and brightness commands decode actual state using shared keys | `DBUS_API.md`, this file |
 | `GetCaps` | `caps_to_dbus` | `caps_from_dbus`, `caps_text_from_dbus` | None; CLI probes providers directly | `DBUS_API.md` |
 | `GetTelemetry` | `telemetry_to_dbus`, `fan_row_to_dbus` | `telemetry_from_dbus`, `fan_row_from_dbus` | None; `sensors` probes providers directly | `DBUS_API.md` |
@@ -32,6 +47,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 | Payload | Keys and wire types | UI missing/default behavior |
 | --- | --- | --- |
+| `GetDaemonInfo` | required `api_version t`, `package_version s` | Missing or wrongly typed identity values remain unknown and mark the session service stale; additive unknown keys are ignored. Exact API epoch and package version are required for the bundled UI to mark the service compatible. |
 | `GetState` | `caps a{sv}`, `telemetry a{sv}`, `warnings as`, `cpu_caps a{sv}`, `cpu a{sv}`, `fan_caps a{sv}`, `fan_state a{sv}`, `automation a{sv}`, `lighting_diagnostics_summary s`, `lighting_diagnostics_details s`; optional `lighting a{sv}`, `profile s`, `gpu_mode s`, `battery_limit t` | Missing maps decode to safe unknown/empty models. Missing current controls remain `None`; no write capability is inferred. |
 | Automation nested state | `state s`, `explanation s`, `last_result s`; optional `last_transition_ms t`, `profile_id s` | Missing state uses disabled presentation; explanation/results are empty; unavailable transition/profile remain absent. Daemon remains authoritative. |
 | `GetCaps` battery/GPU extensions | `battery_limit_backend s`, `battery_limit_direct_write b`, `battery_limit_privileged_write b`, `battery_limit_authorization s`, `lighting_backend s`, `gpu_backend s`, `gpu_supported_modes as`, `gpu_external_authorization s`, `gpu_switch_state s`, `gpu_switch_hint s`, `requires_logout_for_gpu_switch b`, `control_privilege_matrix aa{sv}` | Missing capability booleans are false; supported modes/matrix empty; backend and transition values retain unavailable/unknown presentation. No write route or GPU mode is inferred. Matrix rows add `feature_supported`, `mapping_verified`, `telemetry_available`, `direct_writable`, `privileged_helper_ready`, `authorization_state`, `can_apply`, and `reason`; legacy row keys remain for compatibility. |
@@ -84,7 +100,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 - `rog-daemon` tests encoder keys, integer wire values, nested fan/setup/CPU rows, lighting optional capabilities, and omission of unavailable telemetry.
 - `rog-ui` tests capability/access decoding, structured fan/CPU rows, lighting capability decoding, mixed unsigned integer widths, missing optional fields, and unknown power-source behavior.
-- `rog-core` tests canonical status mapping and centralized error-message classification.
+- `rog-ui` tests `GetDaemonInfo` exact-version compatibility, rejects missing and wrongly typed identity fields, and ignores additive unknown fields.
+- `rog-core` tests canonical status mapping, exact `DaemonApiInfo` version matching, and centralized error-message classification.
 
 The complete public method descriptions and accepted setter values remain in [DBUS_API.md](DBUS_API.md).
 

@@ -331,6 +331,12 @@ The highest-risk keys and status semantics are shared through `rog-core`, withou
 wire format. See [DBUS_API.md](DBUS_API.md) for the public API and
 [DBUS_CONTRACT_MAP.md](DBUS_CONTRACT_MAP.md) for the encoder/decoder/default audit.
 
+The session API epoch and wire-key ownership are documented in `DBUS_API.md`. New contract work
+keeps existing `a{sv}` signatures stable, uses shared typed models at the Rust boundary where
+practical, and treats missing or malformed capability data as unavailable. An incompatible change
+requires a parallel interface or an explicit compatibility window and rollback plan before either
+producer or client changes.
+
 ## Current Architectural Limitations
 
 The current architecture has several known limitations:
