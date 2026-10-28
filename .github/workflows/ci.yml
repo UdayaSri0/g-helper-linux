@@ -119,3 +119,9 @@ jobs:
 
       - name: Inspect RPM Contents
         run: rpm -qpl dist/fedora-ci/*.rpm | sed -n '1,200p'
+
+      - name: Test RPM install, upgrade, and erase
+        run: |
+          packages=(dist/fedora-ci/*.rpm)
+          [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
+          python3 packaging/scripts/test-rpm-lifecycle.py "${packages[0]}"
