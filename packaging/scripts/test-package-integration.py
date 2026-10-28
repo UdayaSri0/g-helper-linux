@@ -58,6 +58,10 @@ class PackageIntegration(unittest.TestCase):
         self.assertNotIn("0.0.0", manifest)
         subprocess.run(["sha256sum", "--check", f"rog-helper-{version}-SHA256SUMS.txt"], cwd=self.root, check=True, capture_output=True)
 
+    def test_fedora_ci_runs_real_rpm_lifecycle_validation(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("packaging/scripts/test-rpm-lifecycle.py", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
