@@ -85,13 +85,19 @@ jobs:
             appstream desktop-file-utils python3-pil \
             file findutils libgdk-pixbuf-2.0-dev libgdk-pixbuf2.0-bin \
             libgirepository1.0-dev libglib2.0-dev-bin librsvg2-dev \
-            patchelf squashfs-tools
+            patchelf squashfs-tools dbus-daemon xvfb
 
       - name: Verify AppImage Host Tools
         run: packaging/scripts/build-appimage.sh --check-deps
 
       - name: Build AppImage
         run: packaging/scripts/build-appimage.sh dist/appimage-ci
+
+      - name: Smoke-test AppImage runtime
+        run: |
+          appimages=(dist/appimage-ci/*.AppImage)
+          [[ "${#appimages[@]}" -eq 1 && -f "${appimages[0]}" ]]
+          packaging/scripts/test-appimage-runtime.sh "${appimages[0]}" dist/appimage-ci
 
       - name: Upload AppImage Diagnostic Logs
         if: failure()

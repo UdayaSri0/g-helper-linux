@@ -67,6 +67,13 @@ class PackageIntegration(unittest.TestCase):
         self.assertIn("sudo packaging/scripts/test-deb-dpkg-lifecycle.py", workflow)
         self.assertTrue(os.access(ROOT / "packaging/scripts/test-deb-dpkg-lifecycle.py", os.X_OK))
 
+    def test_appimage_ci_smokes_built_bundle_in_isolated_session_and_display(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("dbus-daemon xvfb", workflow)
+        self.assertIn("packaging/scripts/test-appimage-runtime.sh", workflow)
+        self.assertTrue(os.access(ROOT / "packaging/scripts/test-appimage-runtime.sh", os.X_OK))
+        self.assertLess(workflow.index("Build AppImage"), workflow.index("Smoke-test AppImage runtime"))
+
 
 if __name__ == "__main__":
     unittest.main()
