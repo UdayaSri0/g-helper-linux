@@ -136,11 +136,13 @@ Current source-backed features include:
   fallback for the canonical ASUS keyboard LED
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
 - Dedicated Setup & Access UI plus `rog-helper setup-check`, backed by live API verification and read-only permission probes
-- Fan monitoring and safe fan controls for supported ASUS/Linux hardware
+- Fan RPM monitoring and capability reporting; custom fan-curve Apply remains fail-closed because
+  no production machine write record is approved
   - polished RPM monitoring dashboard with animated fan rotors, larger CPU/GPU gauges, and best-effort operating MHz display
   - best-effort dynamic RPM telemetry for 0..N fans
-  - verified eight-point ASUS WMI fan curves with direct or PolicyKit-gated writes
-  - Auto/BIOS restore when the exact ASUS device identity and channel mapping are confirmed
+  - read-only discovery and import of the recognized eight-point ASUS WMI curve ABI
+  - a narrow Auto/BIOS recovery path when the exact ASUS device identity and channel mapping are
+    confirmed; physical restoration remains untested
   - generic PWM, RPM-target, and boost candidates remain disabled even when a file appears writable
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
@@ -179,7 +181,8 @@ See:
 
 Important gaps in the current implementation:
 
-- Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
+- Broader fan-control contracts and physical validation beyond the recognized ASUS WMI eight-point
+  curve ABI
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions; the native HID implementation is deliberately limited to the G615JMR target identity and has not yet been physically validated through ROG Helper
 - Broader automatic preset application: the opt-in daemon policy currently applies only platform
   profiles and approved non-interactive battery limits; saved fan, lighting, and GPU fields are skipped
