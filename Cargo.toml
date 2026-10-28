@@ -26,6 +26,7 @@ repository = "https://github.com/UdayaSri0/g-helper-linux"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+libc = "0.2"
 futures-util = "0.3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
