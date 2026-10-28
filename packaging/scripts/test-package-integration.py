@@ -78,6 +78,8 @@ class PackageIntegration(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         smoke_script = ROOT / "packaging/scripts/test-appimage-session.sh"
         session_script = (ROOT / "packaging/scripts/test-session-smoke.sh").read_text()
+        self.assertTrue(smoke_script.stat().st_mode & 0o111)
+        self.assertTrue((ROOT / "packaging/scripts/test-session-smoke.sh").stat().st_mode & 0o111)
         self.assertIn("packaging/scripts/test-appimage-session.sh", workflow)
         self.assertTrue(os.access(smoke_script, os.X_OK))
         self.assertIn("ROG_HELPER_SMOKE_BIN_DIR", session_script)
