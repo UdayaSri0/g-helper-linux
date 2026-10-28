@@ -64,6 +64,7 @@ jobs:
           [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
           packaging/scripts/check-deb-package.sh "${packages[0]}"
           packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
+          sudo packaging/scripts/test-deb-dpkg-lifecycle.py "${packages[0]}"
 
       - name: Validate Flatpak Manifest
         run: packaging/scripts/build-flatpak.sh --check

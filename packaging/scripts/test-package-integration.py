@@ -62,6 +62,11 @@ class PackageIntegration(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("packaging/scripts/test-rpm-lifecycle.py", workflow)
 
+    def test_ubuntu_ci_runs_real_deb_lifecycle_validation_as_root(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("sudo packaging/scripts/test-deb-dpkg-lifecycle.py", workflow)
+        self.assertTrue(os.access(ROOT / "packaging/scripts/test-deb-dpkg-lifecycle.py", os.X_OK))
+
 
 if __name__ == "__main__":
     unittest.main()
