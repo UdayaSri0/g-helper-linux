@@ -1,0 +1,32 @@
+name: Cargo Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned RustSec scanner
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          test "$(cargo audit --version)" = "cargo-audit-audit 0.22.2"
+      - name: Fetch RustSec advisory database
+        run: |
+          git clone --quiet --depth 1 https://github.com/RustSec/advisory-db "$RUNNER_TEMP/advisory-db"
+          git -C "$RUNNER_TEMP/advisory-db" rev-parse HEAD | tee "$RUNNER_TEMP/advisory-db-revision"
+          echo "RustSec advisory database revision: $(cat "$RUNNER_TEMP/advisory-db-revision")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Test vulnerable fixture and audit locked dependencies
+        run: scripts/test-cargo-audit.sh
+        env:
+          RUSTSEC_ADVISORY_DB: ${{ runner.temp }}/advisory-db

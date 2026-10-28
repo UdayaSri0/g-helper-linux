@@ -1,0 +1,14 @@
+# This intentionally vulnerable lockfile is test data only. Do not build or ship it.
+version = 3
+
+[[package]]
+name = "rog-helper-audit-fixture"
+version = "0.1.0"
+dependencies = [
+ "time",
+]
+
+[[package]]
+name = "time"
+version = "0.2.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
