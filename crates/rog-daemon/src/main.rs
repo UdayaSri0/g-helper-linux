@@ -316,14 +316,19 @@ where
     }
 }
 
-async fn restore_fans_without_prompt(hwmon: &HwmonTelemetryProvider) -> rog_core::RogResult<()> {
-    match hwmon.set_fan_auto(None) {
-        Ok(()) => Ok(()),
-        Err(rog_core::RogError::PermissionDenied(_)) => privileged_client::recover_fans_if_armed()
-            .await
-            .map_err(map_privileged_fan_error),
-        Err(error) => Err(error),
-    }
+async fn with_fan_curve_recovery<P, F>(privileged: P) -> rog_core::RogResult<CpuWriteSource>
+where
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), rog_core::PrivilegedError>>,
+{
+    privileged().await.map_err(map_privileged_fan_error)?;
+    Ok(CpuWriteSource::Privileged)
+}
+
+async fn restore_fans_without_prompt() -> rog_core::RogResult<()> {
+    privileged_client::recover_fans_if_armed()
+        .await
+        .map_err(map_privileged_fan_error)
 }
 
 fn unresolved_owned_fan_curves(owned_fan_ids: &[String], fans: &[FanInfo]) -> Vec<String> {
@@ -340,6 +345,13 @@ fn unresolved_owned_fan_curves(owned_fan_ids: &[String], fans: &[FanInfo]) -> Ve
         })
         .cloned()
         .collect()
+}
+
+fn fan_auto_target_is_owned(target: Option<&str>, owned_fan_ids: &[String]) -> bool {
+    match target {
+        Some(fan_id) => owned_fan_ids.iter().any(|owned| owned == fan_id),
+        None => !owned_fan_ids.is_empty(),
+    }
 }
 
 fn map_privileged_lighting_error(error: rog_core::PrivilegedError) -> rog_core::RogError {
@@ -1445,11 +1457,25 @@ impl RogHelperDaemon {
         self.pause_automation_for_manual_action();
         let _control_guard = self.state.hardware_control_lock.lock().await;
         let target = (!fan_id.trim().is_empty()).then_some(fan_id);
-        let result = with_fan_privileged_fallback(
-            || self.hwmon.set_fan_auto(target),
-            || privileged_client::set_fan_auto(fan_id),
-        )
-        .await;
+        let owned = self.read_control_state().fan_curve_owned_fan_ids;
+        let result = if fan_auto_target_is_owned(target, &owned) {
+            let recovery = async {
+                match target {
+                    Some(fan_id) => privileged_client::set_fan_auto(fan_id).await,
+                    None => privileged_client::reset_fans_to_auto().await,
+                }
+            };
+            recovery
+                .await
+                .map_err(map_privileged_fan_error)
+                .map(|()| CpuWriteSource::Privileged)
+        } else {
+            with_fan_privileged_fallback(
+                || self.hwmon.set_fan_auto(target),
+                || privileged_client::set_fan_auto(fan_id),
+            )
+            .await
+        };
         match &result {
             Ok(CpuWriteSource::Privileged) => {
                 *self
@@ -1546,11 +1572,8 @@ impl RogHelperDaemon {
         self.pause_automation_for_manual_action();
         let _control_guard = self.state.hardware_control_lock.lock().await;
         let curve = fan_curve_from_dbus(fan_id, &curve).map_err(map_rog_error_to_fdo)?;
-        let result = with_fan_privileged_fallback(
-            || self.hwmon.set_fan_curve(fan_id, curve.clone()),
-            || privileged_client::set_fan_curve(fan_id, &curve),
-        )
-        .await;
+        let result =
+            with_fan_curve_recovery(|| privileged_client::set_fan_curve(fan_id, &curve)).await;
         match &result {
             Ok(CpuWriteSource::Privileged) => {
                 *self
@@ -3020,7 +3043,7 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 "temperature telemetry disappeared"
                             };
-                            match restore_fans_without_prompt(&hwmon).await {
+                            match restore_fans_without_prompt().await {
                                 Ok(()) => {
                                     daemon
                                         .state
@@ -3125,7 +3148,7 @@ async fn main() -> anyhow::Result<()> {
                         | FanControlMode::Curve
                         | FanControlMode::FullSpeedBoost
                 ) {
-                    if let Err(err) = restore_fans_without_prompt(&hwmon).await {
+                    if let Err(err) = restore_fans_without_prompt().await {
                         warn!("fan auto restore on shutdown failed: {err}");
                     }
                 }
@@ -6802,6 +6825,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fan_auto_uses_durable_recovery_only_for_owned_curve_channels() {
+        let owned = vec!["asus-wmi:cpu".to_string(), "asus-wmi:gpu".to_string()];
+
+        assert!(fan_auto_target_is_owned(Some("asus-wmi:cpu"), &owned));
+        assert!(!fan_auto_target_is_owned(Some("asus-wmi:mid"), &owned));
+        assert!(fan_auto_target_is_owned(None, &owned));
+        assert!(!fan_auto_target_is_owned(None, &[]));
+    }
+
     fn rows_from_value(value: &OwnedValue) -> Vec<HashMap<String, OwnedValue>> {
         Vec::<HashMap<String, OwnedValue>>::try_from(value.clone()).expect("rows should decode")
     }
@@ -7932,6 +7965,22 @@ mod tests {
                 permission_denied
             );
         }
+    }
+
+    #[tokio::test]
+    async fn fan_curve_recovery_helper_reports_privileged_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let helper_calls = AtomicUsize::new(0);
+        let source = with_fan_curve_recovery(|| async {
+            helper_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(source, CpuWriteSource::Privileged);
+        assert_eq!(helper_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
