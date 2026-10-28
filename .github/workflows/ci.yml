@@ -99,12 +99,18 @@ jobs:
           [[ "${#appimages[@]}" -eq 1 && -f "${appimages[0]}" ]]
           packaging/scripts/test-appimage-runtime.sh "${appimages[0]}" dist/appimage-ci
 
+      - name: Smoke-test packaged AppImage services and UI
+        run: packaging/scripts/test-appimage-session.sh dist/appimage-ci/AppDir dist/appimage-ci
+
       - name: Upload AppImage Diagnostic Logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: appimage-debug-${{ github.sha }}
-          path: dist/appimage-ci/*.log
+          path: |
+            dist/appimage-ci/*.log
+            dist/appimage-ci/session.*/daemon.log
+            dist/appimage-ci/session.*/ui.log
           if-no-files-found: ignore
 
   fedora-rpm:
