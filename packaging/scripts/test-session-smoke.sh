@@ -71,7 +71,12 @@ else
   echo "UI smoke skipped: no display session"
 fi
 kill -TERM "$daemon_pid"
-wait "$daemon_pid"
+daemon_status=0
+wait "$daemon_pid" || daemon_status=$?
+[[ "$daemon_status" -eq 0 || "$daemon_status" -eq 143 ]] || {
+  echo "daemon exited unexpectedly during cleanup ($daemon_status)" >&2
+  exit "$daemon_status"
+}
 trap - EXIT
 SH
 

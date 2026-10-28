@@ -87,6 +87,8 @@ class PackageIntegration(unittest.TestCase):
         self.assertNotIn("export XDG_DATA_DIRS=", session_script)
         self.assertIn('package_env+=("XDG_DATA_DIRS=$ROG_HELPER_SMOKE_XDG_DATA_DIRS")', session_script)
         self.assertIn('timeout --signal=TERM --kill-after=3s 5s env "${package_env[@]}" "$ui"', session_script)
+        self.assertIn('wait "$daemon_pid" || daemon_status=$?', session_script)
+        self.assertIn('[[ "$daemon_status" -eq 0 || "$daemon_status" -eq 143 ]]', session_script)
 
 
 if __name__ == "__main__":
