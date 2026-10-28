@@ -1178,6 +1178,44 @@ fn warn_if_fan_icon_missing() {
     }
 }
 
+async fn complete_display_apply<F>(
+    shared: Arc<Mutex<SharedUiState>>,
+    result: Result<display::DisplaySnapshot, String>,
+    discover: F,
+) where
+    F: FnOnce() -> display::DisplaySnapshot + Send + 'static,
+{
+    let update_draft_rate = result.is_ok();
+    let snapshot = match result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut snapshot =
+                tokio::task::spawn_blocking(discover)
+                    .await
+                    .unwrap_or_else(|worker_error| display::DisplaySnapshot {
+                        session_type: "unknown".into(),
+                        backend: "unavailable".into(),
+                        internal_output: None,
+                        current_mode: None,
+                        current_rate: None,
+                        supported_rates: Vec::new(),
+                        reason: format!("Display discovery worker failed: {worker_error}"),
+                    });
+            snapshot.reason = error;
+            snapshot
+        }
+    };
+
+    if let Ok(mut state) = shared.lock() {
+        state.display_action_in_progress = false;
+        if update_draft_rate {
+            state.display_draft_rate = snapshot.current_rate;
+        }
+        state.display_snapshot = snapshot;
+        state.mark_render_dirty();
+    }
+}
+
 fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     register_app_icon_paths();
     warn_if_fan_icon_missing();
@@ -8858,21 +8896,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     let result = tokio::task::spawn_blocking(move || display::apply_refresh_rate(rate))
                         .await
                         .unwrap_or_else(|error| Err(format!("Display operation worker failed: {error}")));
-                    if let Ok(mut state) = shared.lock() {
-                        state.display_action_in_progress = false;
-                        match result {
-                            Ok(snapshot) => {
-                                state.display_draft_rate = snapshot.current_rate;
-                                state.display_snapshot = snapshot;
-                            }
-                            Err(error) => {
-                                let mut snapshot = display::discover();
-                                snapshot.reason = error;
-                                state.display_snapshot = snapshot;
-                            }
-                        }
-                        state.mark_render_dirty();
-                    }
+                    complete_display_apply(shared.clone(), result, display::discover).await;
                 }
 
                 let pending_saved_profile_action = shared
@@ -17189,5 +17213,38 @@ mod tests {
         edit.update_reported(Some(80));
         assert_eq!(edit.draft, Some(80));
         assert!(!edit.is_dirty());
+    }
+
+    #[tokio::test]
+    async fn display_failure_discovery_runs_before_shared_state_lock() {
+        let shared = Arc::new(Mutex::new(SharedUiState::default()));
+        shared.lock().unwrap().display_action_in_progress = true;
+        let probe = shared.clone();
+        let lock_was_available = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = lock_was_available.clone();
+        let snapshot = display::DisplaySnapshot {
+            session_type: "x11".into(),
+            backend: "XRandR".into(),
+            internal_output: None,
+            current_mode: None,
+            current_rate: None,
+            supported_rates: Vec::new(),
+            reason: "discovery fixture".into(),
+        };
+
+        complete_display_apply(shared.clone(), Err("xrandr timed out".into()), move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            observed.store(
+                probe.try_lock().is_ok(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            snapshot
+        })
+        .await;
+
+        assert!(lock_was_available.load(std::sync::atomic::Ordering::SeqCst));
+        let state = shared.lock().unwrap();
+        assert!(!state.display_action_in_progress);
+        assert_eq!(state.display_snapshot.reason, "xrandr timed out");
     }
 }
