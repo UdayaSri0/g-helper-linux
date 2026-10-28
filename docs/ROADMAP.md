@@ -201,14 +201,20 @@ Still missing:
 
 Implemented as an opt-in daemon-owned policy runtime:
 
-- versioned AC/Battery preset rules, optional Battery percentage threshold, disabled by default
+- versioned AC/Battery preset rules, optional lower/upper Battery thresholds, optional explicitly
+  selected recovery preset, disabled by default
 - stable-source debounce, duplicate suppression, persistent manual override, and explicit Resume
 - automatic application is limited to asusd platform profile and asusd/direct-writable battery limit
 - PolicyKit-requiring, fan, lighting, and GPU changes are skipped; GPU remains manual because it may require logout/reboot
 - runtime reports per-component applied, unchanged, skipped, failed, and blocked results
 
-Remaining limitation: the Battery threshold is a one-way activation condition for the selected
-Battery preset; it does not switch to a second preset when charge later rises above the threshold.
+Recovery behavior is opt-in: at the upper threshold, automation selects only the explicitly
+configured recovery preset. If none is selected, the policy reports a no-write outcome and never
+infers that the AC preset is intended. Existing lower-threshold-only configuration keeps its
+one-way activation behavior. Automatic hardware writes remain disabled until per-operation safety
+checks, per-component readback confirmation, and three-attempt backoff are implemented. The
+runtime retry path is present but remains unreachable while the safety write gate is false; physical
+transition, consistency, and resume validation are still required before changing that gate.
 
 ### Aura / RGB lighting
 

@@ -106,7 +106,9 @@ pub struct AutomationPreferences {
     pub enabled: bool,
     pub ac_profile_id: Option<String>,
     pub battery_profile_id: Option<String>,
+    pub battery_recovery_profile_id: Option<String>,
     pub battery_threshold_percent: Option<u8>,
+    pub battery_return_threshold_percent: Option<u8>,
     pub manual_override: bool,
     #[serde(flatten)]
     pub future_fields: BTreeMap<String, toml::Value>,
@@ -476,7 +478,12 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
 
     if let Some(automation) = table(root, "automation", &mut warnings) {
         match toml::Value::Table(automation.clone()).try_into::<AutomationPreferences>() {
-            Ok(preferences) => config.automation = preferences,
+            Ok(preferences) => match validate_automation_preferences(&preferences) {
+                Ok(()) => config.automation = preferences,
+                Err(error) => warnings.push(format!(
+                    "Invalid automation configuration; automation remains disabled: {error}"
+                )),
+            },
             Err(error) => warnings.push(format!(
                 "Invalid automation configuration; automation remains disabled: {error}"
             )),
@@ -651,16 +658,53 @@ pub fn validate_config(config: &AppConfig) -> Result<(), String> {
             return Err(format!("Profile name '{}' is duplicated.", profile.name));
         }
     }
-    if config
-        .automation
+    validate_automation_preferences(&config.automation)?;
+    Ok(())
+}
+
+fn validate_automation_preferences(preferences: &AutomationPreferences) -> Result<(), String> {
+    if preferences
         .battery_threshold_percent
         .is_some_and(|threshold| !(1..=100).contains(&threshold))
     {
         return Err("Automation battery threshold must be between 1 and 100 percent.".into());
     }
+    if preferences
+        .battery_return_threshold_percent
+        .is_some_and(|threshold| !(1..=100).contains(&threshold))
+    {
+        return Err(
+            "Automation battery return threshold must be between 1 and 100 percent.".into(),
+        );
+    }
+    match (
+        preferences.battery_threshold_percent,
+        preferences.battery_return_threshold_percent,
+    ) {
+        (None, Some(_)) => {
+            return Err(
+                "Automation battery return threshold requires a lower battery threshold.".into(),
+            );
+        }
+        (Some(lower), Some(upper)) if lower >= upper => {
+            return Err(
+                "Automation battery return threshold must be higher than the lower threshold."
+                    .into(),
+            );
+        }
+        _ => {}
+    }
+    if preferences.battery_recovery_profile_id.is_some()
+        && preferences.battery_return_threshold_percent.is_none()
+    {
+        return Err(
+            "Automation recovery preset requires an upper battery return threshold.".into(),
+        );
+    }
     for id in [
-        config.automation.ac_profile_id.as_deref(),
-        config.automation.battery_profile_id.as_deref(),
+        preferences.ac_profile_id.as_deref(),
+        preferences.battery_profile_id.as_deref(),
+        preferences.battery_recovery_profile_id.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -913,6 +957,7 @@ mod tests {
         assert!(config.profiles.is_empty());
         assert!(!config.automation.enabled);
         assert!(!config.automation.manual_override);
+        assert_eq!(config.automation.battery_return_threshold_percent, None);
     }
 
     #[test]
@@ -922,7 +967,9 @@ mod tests {
                 enabled: true,
                 ac_profile_id: Some("quiet".into()),
                 battery_profile_id: Some("mobile".into()),
+                battery_recovery_profile_id: Some("balanced".into()),
                 battery_threshold_percent: Some(25),
+                battery_return_threshold_percent: Some(80),
                 manual_override: true,
                 future_fields: BTreeMap::from([(
                     "future_rule_option".into(),
@@ -943,6 +990,35 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(validate_config(&invalid).is_err());
+
+        for (lower, upper) in [(None, Some(80)), (Some(80), Some(80)), (Some(81), Some(80))] {
+            let invalid = AppConfig {
+                automation: AutomationPreferences {
+                    battery_threshold_percent: lower,
+                    battery_return_threshold_percent: upper,
+                    ..AutomationPreferences::default()
+                },
+                ..AppConfig::default()
+            };
+            assert!(validate_config(&invalid).is_err());
+        }
+        let legacy_lower_only = AppConfig {
+            automation: AutomationPreferences {
+                battery_threshold_percent: Some(25),
+                ..AutomationPreferences::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(validate_config(&legacy_lower_only).is_ok());
+
+        let recovery_without_upper = AppConfig {
+            automation: AutomationPreferences {
+                battery_recovery_profile_id: Some("balanced".into()),
+                ..AutomationPreferences::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(validate_config(&recovery_without_upper).is_err());
     }
 
     #[test]
@@ -1209,6 +1285,30 @@ mod tests {
         assert_eq!(loaded.config, AppConfig::default());
         assert_eq!(loaded.source, ConfigSource::Defaults);
         assert_eq!(loaded.warnings.len(), 1);
+    }
+
+    #[test]
+    fn incomplete_recovery_config_is_disabled_without_rewriting_user_file() {
+        let root = test_dir("invalid-recovery-config");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(CONFIG_FILE_NAME);
+        let original =
+            "version = 3\n[automation]\nenabled = true\nbattery_recovery_profile_id = 'balanced'\n";
+        fs::write(&path, original).unwrap();
+
+        let loaded = load_config(&path);
+        assert!(!loaded.config.automation.enabled);
+        assert!(loaded
+            .config
+            .automation
+            .battery_recovery_profile_id
+            .is_none());
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Invalid automation configuration")));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
