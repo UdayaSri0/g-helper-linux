@@ -14375,8 +14375,14 @@ fn daemon_identity_from_dbus(
         .and_then(u64_from_value)
         .and_then(|value| u32::try_from(value).ok());
     let package_version = dbus_decode::string(map, dbus_keys::daemon_info::PACKAGE_VERSION);
-    let compatible = api_version == Some(dbus_keys::DAEMON_API_VERSION)
-        && package_version.as_deref() == Some(expected_package_version);
+    let contract = rog_core::DaemonApiInfo::from_wire_fields(
+        map.get(dbus_keys::daemon_info::API_VERSION)
+            .and_then(u64_from_value),
+        package_version.clone(),
+    );
+    let compatible = contract.is_some_and(|info| {
+        info.is_compatible_with(dbus_keys::DAEMON_API_VERSION, expected_package_version)
+    });
     let detail = if compatible {
         format!(
             "Session API v{} and service version {} match this application.",
@@ -16077,6 +16083,44 @@ mod tests {
     }
 
     #[test]
+    fn daemon_identity_treats_missing_wrongly_typed_and_future_fields_as_incompatible() {
+        let mut map = HashMap::from([(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.4.0".to_string()),
+        )]);
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            ov("1".to_string()),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.remove(dbus_keys::daemon_info::PACKAGE_VERSION);
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.insert(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.4.0".to_string()),
+        );
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION + 1)),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        map.insert("future_optional_field".to_string(), ov(true));
+        assert!(daemon_identity_from_dbus(&map, "0.4.0").compatible);
+    }
+
+    #[test]
     fn installation_health_excludes_optional_provider_availability() {
         let daemon = DaemonIdentity {
             api_version: Some(dbus_keys::DAEMON_API_VERSION),
@@ -16608,7 +16652,13 @@ mod tests {
 
     #[test]
     fn missing_capability_fields_remain_disabled() {
-        let caps = caps_from_dbus(&HashMap::new());
+        let mut map = HashMap::new();
+        map.insert("future_fan_write_capability".to_string(), ov(true));
+        map.insert(
+            dbus_keys::caps::HAS_FAN_CURVES.to_string(),
+            ov("true".to_string()),
+        );
+        let caps = caps_from_dbus(&map);
         let lighting = lighting_from_dbus(HashMap::new()).expect("map should decode");
 
         assert!(!caps.has_profiles);

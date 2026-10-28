@@ -34,6 +34,35 @@ missing or wrongly typed optional values absent. The audited daemon/UI/CLI/defau
 
 This is the current design, not a placeholder.
 
+### Schema ownership and compatibility policy
+
+`rog-core::dbus_keys` owns stable wire-key names and the session API epoch;
+`rog-daemon` owns serialization and authoritative capability reports; `rog-ui` owns lossless
+decoding into presentation models. Shared typed core models describe contracts where useful, but
+the existing D-Bus signatures remain the public source of truth. The privileged system-bus API has
+its own version and is not part of the session API epoch.
+
+`DAEMON_API_VERSION` is a compatibility epoch, independent of the configuration-file version and
+privileged API version. `GetDaemonInfo` reports that epoch and the package version. The bundled UI
+treats a missing, malformed, mismatched, or unsupported identity as stale and does not present the
+service as ready. Other clients can continue using unchanged method signatures during an additive
+change and ignore unfamiliar map keys. Optional additive `a{sv}` fields do not change the epoch;
+absent or wrongly typed values decode as unavailable, and absent capability fields never mean
+supported. Unknown fields must not be used to infer support or authorize a write.
+
+There is no general mixed-package negotiation for the bundled UI: its exact package-version check
+is a stale-process safety check. External clients that do not use `GetDaemonInfo` may continue to
+use unchanged signatures, but that does not promise compatibility for an older bundled UI with a
+newer daemon.
+
+Additive fields keep the current key and type contract. Removing a field, changing its wire type,
+or changing its meaning requires a reviewed migration plan before code changes; increment the API
+epoch and keep the old field/signature available while supported clients migrate. For an
+incompatible contract, introduce a parallel interface/version, migrate clients, and remove the old
+contract only after a reviewed support window. Rollback restores the previous producer while
+retaining additive fields; it must not require a configuration rewrite or apply hardware controls.
+No public wire change is part of this policy/documentation change.
+
 ## Methods
 
 ### Configuration
