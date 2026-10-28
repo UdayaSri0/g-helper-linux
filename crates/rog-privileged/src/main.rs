@@ -355,7 +355,8 @@ impl PrivilegedService {
     ) -> fdo::Result<()> {
         self.authorize_fans_noninteractive(connection, &header)
             .await?;
-        self.restore_fans_if_armed().map_err(map_fan_error)
+        self.restore_fans_if_armed_for_active_session()
+            .map_err(map_fan_error)
     }
 
     async fn set_keyboard_backlight_brightness(
@@ -607,6 +608,14 @@ impl PrivilegedService {
         self.restore_fans_if_armed_unlocked()
     }
 
+    fn restore_fans_if_armed_for_active_session(&self) -> rog_core::RogResult<()> {
+        let _transaction = self.lock_fan_transaction()?;
+        validate_active_session_fan_recovery_scope(&read_fan_safety_marker(
+            &self.fan_safety_marker,
+        )?)?;
+        self.restore_fans_if_armed_unlocked()
+    }
+
     fn lock_fan_transaction(&self) -> rog_core::RogResult<std::sync::MutexGuard<'_, bool>> {
         self.fan_transaction
             .lock()
@@ -711,6 +720,15 @@ where
         )));
     }
     clear_fan_safety_marker_path(path)
+}
+
+fn validate_active_session_fan_recovery_scope(armed: &[String]) -> rog_core::RogResult<()> {
+    if armed.iter().any(|id| id == LEGACY_FAN_SAFETY_MARKER_ENTRY) {
+        return Err(RogError::NotSupported(
+            "legacy fan recovery requires the helper lifecycle recovery path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_fan_safety_marker(path: &std::path::Path, fan_id: &str) -> rog_core::RogResult<()> {
@@ -1830,6 +1848,19 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_session_recovery_rejects_legacy_global_marker() {
+        assert!(validate_active_session_fan_recovery_scope(&[
+            LEGACY_FAN_SAFETY_MARKER_ENTRY.to_string()
+        ])
+        .is_err());
+        assert!(validate_active_session_fan_recovery_scope(&[
+            "asus-wmi:cpu".to_string(),
+            "asus-wmi:gpu".to_string(),
+        ])
+        .is_ok());
     }
 
     #[test]
