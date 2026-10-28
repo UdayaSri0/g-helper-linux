@@ -66,6 +66,20 @@ struct SharedState {
     hardware_control_lock: tokio::sync::Mutex<()>,
 }
 
+// shortcut: keep writes disabled until transition and resume behavior are verified.
+const POWER_SOURCE_AUTOMATION_ENABLED: bool = false;
+
+fn usable_battery_source_sample(
+    sample: Option<rog_providers::upower::BatterySourceSample>,
+    telemetry_source: Option<PowerSource>,
+    boottime_ms: Option<u64>,
+) -> bool {
+    let (Some(sample), Some(now)) = (sample, boottime_ms) else {
+        return false;
+    };
+    Some(sample.source) == telemetry_source && sample.is_fresh_at(now)
+}
+
 #[derive(Debug, Clone)]
 struct AutomationRuntimeStatus {
     state: &'static str,
@@ -638,8 +652,59 @@ impl RogHelperDaemon {
         info!(target: "rog_helper::policy", event = "manual_override", "automatic policy paused by manual hardware control");
     }
 
-    async fn process_automation(&self, telemetry: &TelemetrySnapshot) {
+    async fn process_automation(
+        &self,
+        telemetry: &TelemetrySnapshot,
+        battery_source_sample: Option<rog_providers::upower::BatterySourceSample>,
+    ) {
         let config = self.read_config();
+        if !config.automation.enabled {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "disabled";
+            status.explanation =
+                "Automation is disabled; hardware will not be changed automatically.".into();
+            return;
+        }
+        if config.automation.manual_override {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "manual_override";
+            status.explanation = "Automation is paused after a manual hardware action. Resume explicitly to continue.".into();
+            return;
+        }
+        if !usable_battery_source_sample(
+            battery_source_sample,
+            telemetry.power_source,
+            rog_providers::upower::clock_boottime_ms().ok(),
+        ) {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "blocked";
+            status.explanation = "Automatic power-source presets are blocked because the physical battery source sample is missing, mismatched, stale, or the monotonic clock is unavailable.".into();
+            status.last_result = "No hardware settings were changed automatically.".into();
+            return;
+        }
+        if !POWER_SOURCE_AUTOMATION_ENABLED {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "blocked";
+            status.explanation = "Automatic power-source preset writes are disabled until transition, consistency, and resume safeguards are verified.".into();
+            status.last_result = "No hardware settings were changed automatically.".into();
+            return;
+        }
         let now = now_ms();
         let actions = {
             let mut policy = self.state.policy.write().expect("rwlock poisoned");
@@ -682,28 +747,6 @@ impl RogHelperDaemon {
                 Vec::new()
             }
         };
-
-        if !config.automation.enabled {
-            let mut status = self
-                .state
-                .automation_status
-                .write()
-                .expect("rwlock poisoned");
-            status.state = "disabled";
-            status.explanation =
-                "Automation is disabled; hardware will not be changed automatically.".into();
-            return;
-        }
-        if config.automation.manual_override {
-            let mut status = self
-                .state
-                .automation_status
-                .write()
-                .expect("rwlock poisoned");
-            status.state = "manual_override";
-            status.explanation = "Automation is paused after a manual hardware action. Resume explicitly to continue.".into();
-            return;
-        }
 
         let action = actions.into_iter().next();
         let Some(PolicyAction::ApplyFor(source)) = action else {
@@ -2808,6 +2851,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             _ = ticker.tick() => {
                 let mut warnings = Vec::new();
+                let mut battery_source_sample = None;
                 let cpu_caps = cpu.probe_caps();
                 daemon.set_cpu_caps(cpu_caps.clone());
 
@@ -2989,6 +3033,7 @@ async fn main() -> anyhow::Result<()> {
                     match provider.read_status().await {
                         Ok(status) => {
                             upower_retry.succeeded(Instant::now());
+                            battery_source_sample = Some(status.battery_source_sample);
                             apply_upower_status(&mut telemetry, Some(status));
                         }
                         Err(error) => {
@@ -3229,7 +3274,9 @@ async fn main() -> anyhow::Result<()> {
                 daemon.set_control_state(current_profile, current_gpu_mode, current_battery_limit);
                 daemon.set_telemetry(telemetry, warnings);
                 let policy_telemetry = daemon.read_state().telemetry;
-                daemon.process_automation(&policy_telemetry).await;
+                daemon
+                    .process_automation(&policy_telemetry, battery_source_sample)
+                    .await;
             }
             signal = shutdown_signal() => {
                 signal.context("listen for shutdown signal")?;
@@ -8418,6 +8465,7 @@ mod tests {
                     battery_time_to_empty_s: None,
                     battery_time_to_full_s: None,
                     timestamp_ms: 11,
+                    battery_source_sample: fake_battery_source_sample(),
                 }))
             })
             .await
@@ -8483,6 +8531,46 @@ mod tests {
             battery_time_to_empty_s: None,
             battery_time_to_full_s: None,
             timestamp_ms: 11,
+            battery_source_sample: fake_battery_source_sample(),
         }
+    }
+
+    fn fake_battery_source_sample() -> rog_providers::upower::BatterySourceSample {
+        rog_providers::upower::BatterySourceSample {
+            source: PowerSource::Ac,
+            update_time_secs: 11,
+            age_at_sample_ms: 0,
+            sampled_at_boottime_ms: 0,
+        }
+    }
+
+    #[test]
+    fn policy_rejects_missing_mismatched_or_stale_battery_source_samples() {
+        let sample = fake_battery_source_sample();
+        assert!(usable_battery_source_sample(
+            Some(sample),
+            Some(PowerSource::Ac),
+            Some(0)
+        ));
+        assert!(!usable_battery_source_sample(
+            None,
+            Some(PowerSource::Ac),
+            Some(0)
+        ));
+        assert!(!usable_battery_source_sample(
+            Some(sample),
+            Some(PowerSource::Battery),
+            Some(0)
+        ));
+        assert!(!usable_battery_source_sample(
+            Some(sample),
+            Some(PowerSource::Ac),
+            Some(60_001)
+        ));
+        assert!(!usable_battery_source_sample(
+            Some(sample),
+            Some(PowerSource::Ac),
+            None
+        ));
     }
 }
