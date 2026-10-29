@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+futures-util.workspace = true
 regex.workspace = true
 serde.workspace = true
 tokio.workspace = true

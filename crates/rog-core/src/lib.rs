@@ -10,6 +10,7 @@ pub mod dbus_keys;
 pub mod error;
 pub mod model;
 pub mod policy;
+pub mod power_freshness;
 pub mod privileged;
 
 pub use config::*;
@@ -19,4 +20,5 @@ pub use dbus_keys::*;
 pub use error::{ErrorCategory, RogError, RogResult, ValidationWarning};
 pub use model::*;
 pub use policy::*;
+pub use power_freshness::*;
 pub use privileged::*;
