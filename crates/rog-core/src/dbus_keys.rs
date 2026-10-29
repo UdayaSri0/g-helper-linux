@@ -126,6 +126,13 @@ pub mod state {
     pub const AUTOMATION_PROFILE_ID: &str = "profile_id";
     pub const AUTOMATION_EXPLANATION: &str = "explanation";
     pub const AUTOMATION_LAST_RESULT: &str = "last_result";
+    pub const AUTOMATION_PENDING_PROFILE_ID: &str = "pending_profile_id";
+    pub const AUTOMATION_COMPONENT_RESULTS: &str = "component_results";
+    pub const AUTOMATION_COMPONENT_PLATFORM_PROFILE: &str = "platform_profile";
+    pub const AUTOMATION_COMPONENT_BATTERY_LIMIT: &str = "battery_charge_limit";
+    pub const AUTOMATION_COMPONENT_UNSUPPORTED: &str = "unsupported_profile_field";
+    pub const AUTOMATION_SOURCE_FRESHNESS: &str = "source_freshness";
+    pub const AUTOMATION_RETRY_STATUS: &str = "retry_status";
     pub const FAN_STATE: &str = FAN_STATE_KEY;
     pub const FAN_CAPS: &str = FAN_CAPS_KEY;
 }

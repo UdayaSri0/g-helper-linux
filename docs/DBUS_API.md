@@ -97,14 +97,16 @@ retained through read/serialize cycles. All profile methods are storage-only; th
 hardware setters, request PolicyKit authorization, or activate automatic policy.
 
 Automation preferences use the same version-3 XDG configuration. Rules are opt-in and disabled by
-default. The daemon waits for a power source to remain stable for five seconds, applies a rule only
-on a stable transition (or explicit Resume), and suppresses identical telemetry reapplication.
-Manual hardware actions persist a pause until `ResumeAutomation`. Automatic application currently
-supports only the asusd platform profile and charge limit through asusd or a directly writable
-standard power-supply endpoint. A charge-limit write requiring PolicyKit is reported and skipped
-without opening a prompt. Fan, lighting, and GPU preset fields are retained but skipped; GPU changes
-remain pending/manual because they may require logout or reboot. Per-component results distinguish
-applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
+default. The daemon requires a fresh physical battery sample and five seconds of stable source and
+threshold dwell. An optional upper threshold selects only its explicitly configured recovery preset
+while still on battery; without that preset, it reports a no-write outcome instead of falling back
+to the AC preset. Existing lower-threshold-only rules retain their one-way behavior. Inside the
+hysteresis band, a known session target is held, while restart/resume leaves the target unknown
+until a threshold boundary is stably reached. Manual hardware actions persist a pause until
+`ResumeAutomation`. Automatic hardware writes are currently disabled pending transition, consistency,
+and resume verification. The existing `a{sv}` automation status adds optional component maps with
+state and detail; the legacy component summary and all public method signatures remain available.
+See `BATTERY_AUTOMATION.md` for the transition table and evidence limits.
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |

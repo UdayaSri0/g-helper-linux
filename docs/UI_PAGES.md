@@ -285,7 +285,10 @@ Current behavior:
 - named Saved Profiles with create, duplicate, rename/save, and confirmed delete
 - saved platform-profile and battery-limit fields; profile edits remain local until Save Changes
 - a live capability note for saved lighting effects and semantic fan roles when those fields exist
-- AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
+- AC/Battery preset selectors, optional Battery lower/upper thresholds, optional explicit recovery
+  preset (no implicit AC fallback), opt-in enable switch, current source and battery zone, source
+  freshness, pending and last-confirmed preset, component outcomes, retry state, blocker/manual
+  pause reason, and explicit Resume; automatic writes currently remain disabled
 - a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
 - X11-only internal-panel refresh-rate discovery, current mode/rate, advertised same-mode rates, manual Apply, and unsupported-backend explanation
 - semantic CLI commands for desktop-owned shortcuts, with explicit note that ROG Helper does not capture keys or own global mappings

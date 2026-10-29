@@ -158,9 +158,14 @@ Current source-backed features include:
   authentication is requested only when Apply needs the typed privileged route
 - Named semantic presets with create, duplicate, rename, update, and confirmed delete; saving a
   preset changes configuration only and never applies hardware
-- Opt-in daemon-owned AC/Battery automation with stable-source debounce, duplicate suppression,
-  persistent manual override, and explicit Resume; automatic application is intentionally limited
-  to platform profiles and non-interactive supported battery-limit routes
+- Opt-in daemon-owned AC/Battery automation with stable-source debounce, optional lower/upper
+  battery thresholds and an explicitly selected recovery preset, persistent manual override, and
+  explicit Resume; without a recovery preset, legacy one-way behavior remains. After restart or
+  resume, the active preset is unknown in the hysteresis band. Battery percentage and source must
+  remain stable for five seconds. Automatic hardware writes remain disabled until transition, consistency,
+  and resume safeguards are verified; the 60-second source freshness limit applies only to verified
+  environments. Automatic application is intentionally limited to platform profiles and
+  non-interactive supported battery-limit routes
 - Manual internal-display refresh-rate selection through the active X11 RandR session backend;
   Wayland and automatic AC/Battery refresh switching remain unsupported
 - Desktop-owned shortcut support through semantic daemon-backed CLI actions for profile cycling,

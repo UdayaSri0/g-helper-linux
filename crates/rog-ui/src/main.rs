@@ -374,6 +374,10 @@ struct AutomationUiStatus {
     last_result: String,
     last_transition_ms: Option<u64>,
     last_profile_id: Option<String>,
+    pending_profile_id: Option<String>,
+    component_results: Vec<String>,
+    source_freshness: String,
+    retry_status: String,
 }
 
 impl Default for AutomationUiStatus {
@@ -384,7 +388,63 @@ impl Default for AutomationUiStatus {
             last_result: "No automatic profile has been applied this session.".into(),
             last_transition_ms: None,
             last_profile_id: None,
+            pending_profile_id: None,
+            component_results: Vec::new(),
+            source_freshness: "unknown".into(),
+            retry_status: "not scheduled".into(),
         }
+    }
+}
+
+fn automation_status_from_dbus(map: &HashMap<String, OwnedValue>) -> AutomationUiStatus {
+    let component_results =
+        dbus_decode::strings(map, dbus_keys::state::AUTOMATION_COMPONENT_RESULTS).unwrap_or_else(
+            || {
+                [
+                    (
+                        "platform_profile",
+                        dbus_keys::state::AUTOMATION_COMPONENT_PLATFORM_PROFILE,
+                    ),
+                    (
+                        "battery_charge_limit",
+                        dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT,
+                    ),
+                    (
+                        "unsupported_profile_field",
+                        dbus_keys::state::AUTOMATION_COMPONENT_UNSUPPORTED,
+                    ),
+                ]
+                .into_iter()
+                .filter_map(|(name, key)| {
+                    let component = dbus_decode::nested_map(map, key)?;
+                    let state = dbus_decode::string(&component, "state")?;
+                    let detail = dbus_decode::string(&component, "detail").unwrap_or_default();
+                    Some(format!("{name}: {state} — {detail}"))
+                })
+                .collect()
+            },
+        );
+    AutomationUiStatus {
+        state: dbus_decode::string(map, dbus_keys::state::AUTOMATION_STATE)
+            .unwrap_or_else(|| "disabled".into()),
+        explanation: dbus_decode::string(map, dbus_keys::state::AUTOMATION_EXPLANATION)
+            .unwrap_or_else(|| "Automation status is unavailable.".into()),
+        last_result: dbus_decode::string(map, dbus_keys::state::AUTOMATION_LAST_RESULT)
+            .unwrap_or_else(|| "No automatic result is available.".into()),
+        last_transition_ms: dbus_decode::unsigned(
+            map,
+            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
+        ),
+        last_profile_id: dbus_decode::string(map, dbus_keys::state::AUTOMATION_PROFILE_ID),
+        pending_profile_id: dbus_decode::string(
+            map,
+            dbus_keys::state::AUTOMATION_PENDING_PROFILE_ID,
+        ),
+        component_results,
+        source_freshness: dbus_decode::string(map, dbus_keys::state::AUTOMATION_SOURCE_FRESHNESS)
+            .unwrap_or_else(|| "unknown".into()),
+        retry_status: dbus_decode::string(map, dbus_keys::state::AUTOMATION_RETRY_STATUS)
+            .unwrap_or_else(|| "not scheduled".into()),
     }
 }
 
@@ -3426,6 +3486,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     automation_battery_row.add_suffix(&automation_battery_profile);
     automation_battery_row.set_activatable(false);
     automation_group.add(&automation_battery_row);
+    let automation_recovery_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_recovery_profile);
+    let automation_recovery_row = adw::ActionRow::builder()
+        .title("Battery Recovery Preset")
+        .subtitle(
+            "Optional preset applied at the upper threshold; it never falls back to the AC preset.",
+        )
+        .build();
+    automation_recovery_row.add_suffix(&automation_recovery_profile);
+    automation_recovery_row.set_activatable(false);
+    automation_group.add(&automation_recovery_row);
     let automation_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
     style_spin_control(&automation_threshold, 0);
     automation_threshold.set_numeric(true);
@@ -3436,12 +3507,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             .unwrap_or(0) as f64,
     );
     let automation_threshold_row = adw::ActionRow::builder()
-        .title("Battery Threshold")
-        .subtitle("0 disables the condition; otherwise the Battery preset waits for this percentage or lower.")
+        .title("Battery Lower Threshold")
+        .subtitle(
+            "0 disables the Battery trigger; otherwise it activates at or below this percentage.",
+        )
         .build();
     automation_threshold_row.add_suffix(&automation_threshold);
     automation_threshold_row.set_activatable(false);
     automation_group.add(&automation_threshold_row);
+    let automation_return_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
+    style_spin_control(&automation_return_threshold, 0);
+    automation_return_threshold.set_numeric(true);
+    automation_return_threshold.set_value(
+        app_settings
+            .automation
+            .battery_return_threshold_percent
+            .unwrap_or(0) as f64,
+    );
+    let automation_return_threshold_row = adw::ActionRow::builder()
+        .title("Battery Return Threshold")
+        .subtitle("0 disables recovery; otherwise the explicitly selected recovery preset applies at or above this percentage. Must be higher than the lower threshold.")
+        .build();
+    automation_return_threshold_row.add_suffix(&automation_return_threshold);
+    automation_return_threshold_row.set_activatable(false);
+    automation_group.add(&automation_return_threshold_row);
     let automation_state_label = gtk::Label::new(Some("Disabled"));
     automation_state_label.set_xalign(0.0);
     automation_state_label.set_wrap(true);
@@ -3865,9 +3954,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
-    for (selector, is_ac) in [
-        (automation_ac_profile.clone(), true),
-        (automation_battery_profile.clone(), false),
+    for (selector, profile_kind) in [
+        (automation_ac_profile.clone(), 0),
+        (automation_battery_profile.clone(), 1),
+        (automation_recovery_profile.clone(), 2),
     ] {
         let shared = shared.clone();
         let syncing = automation_syncing.clone();
@@ -3879,12 +3969,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .active_id()
                 .filter(|id| id.as_str() != "none")
                 .map(|id| id.to_string());
-            if let Err(error) = persist_settings_change(&shared, |settings| {
-                if is_ac {
-                    settings.automation.ac_profile_id = selected;
-                } else {
-                    settings.automation.battery_profile_id = selected;
-                }
+            if let Err(error) = persist_settings_change(&shared, |settings| match profile_kind {
+                0 => settings.automation.ac_profile_id = selected,
+                1 => settings.automation.battery_profile_id = selected,
+                _ => settings.automation.battery_recovery_profile_id = selected,
             }) {
                 if let Ok(mut state) = shared.lock() {
                     state.pending_toast = Some((error, true));
@@ -3897,9 +3985,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         automation_threshold.connect_value_changed(move |spin| {
             let value = spin.value().round() as u8;
             let threshold = (value > 0).then_some(value);
-            let _ = persist_settings_change(&shared, |settings| {
+            if let Err(error) = persist_settings_change(&shared, |settings| {
                 settings.automation.battery_threshold_percent = threshold;
-            });
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_return_threshold.connect_value_changed(move |spin| {
+            let value = spin.value().round() as u8;
+            let threshold = (value > 0).then_some(value);
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                settings.automation.battery_return_threshold_percent = threshold;
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                    state.mark_render_dirty();
+                }
+            }
         });
     }
     {
@@ -6152,6 +6260,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         automation_enabled.set_active(settings.automation.enabled);
         automation_threshold
             .set_value(settings.automation.battery_threshold_percent.unwrap_or(0) as f64);
+        automation_return_threshold.set_value(
+            settings
+                .automation
+                .battery_return_threshold_percent
+                .unwrap_or(0) as f64,
+        );
         automation_syncing.set(true);
         for (selector, selected) in [
             (
@@ -6161,6 +6275,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             (
                 &automation_battery_profile,
                 settings.automation.battery_profile_id.as_deref(),
+            ),
+            (
+                &automation_recovery_profile,
+                settings.automation.battery_recovery_profile_id.as_deref(),
             ),
         ] {
             selector.remove_all();
@@ -6180,6 +6298,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             Some(PowerSource::Battery) => "Battery",
             None => "Unknown",
         };
+        let battery_zone = match telemetry.as_ref().and_then(|sample| sample.battery_percent) {
+            Some(percent) if power_source == "Battery" => {
+                match settings.automation.battery_threshold_percent {
+                    Some(lower) if percent <= f32::from(lower) => "lower threshold reached",
+                    Some(_)
+                        if settings
+                            .automation
+                            .battery_return_threshold_percent
+                            .is_some_and(|upper| percent >= f32::from(upper)) =>
+                    {
+                        "recovery threshold reached"
+                    }
+                    Some(_) => "between thresholds",
+                    None => "legacy Battery rule",
+                }
+            }
+            Some(_) if power_source == "AC" => "AC source",
+            _ => "unknown",
+        };
         let last_profile = automation_status
             .last_profile_id
             .as_deref()
@@ -6192,12 +6329,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .unwrap_or(id)
             })
             .unwrap_or("none yet");
+        let pending_profile = automation_status
+            .pending_profile_id
+            .as_deref()
+            .map(|id| {
+                settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or(id)
+            })
+            .unwrap_or("none");
         automation_state_label.set_text(&format!(
-            "State: {} · Power: {power_source} · Last transition: {last_transition} · Last preset: {last_profile}",
+            "State: {} · Power: {power_source} · Battery zone: {battery_zone} · Source sample: {} · Last transition: {last_transition} · Last confirmed: {last_profile} · Pending: {pending_profile}",
             automation_status.state,
+            automation_status.source_freshness,
         ));
         automation_explanation_label.set_text(&automation_status.explanation);
-        automation_result_label.set_text(&automation_status.last_result);
+        let component_results = if automation_status.component_results.is_empty() {
+            "none".to_string()
+        } else {
+            automation_status.component_results.join("; ")
+        };
+        automation_result_label.set_text(&format!(
+            "{} · Retries: {} · Components: {}",
+            automation_status.last_result, automation_status.retry_status, component_results
+        ));
         automation_resume.set_sensitive(automation_can_resume(&automation_status.state));
         saved_profile_syncing.set(true);
         saved_profile_select.remove_all();
@@ -9617,22 +9775,7 @@ async fn fetch_state() -> Result<
     let warnings = dbus_decode::strings(&state, dbus_keys::state::WARNINGS).unwrap_or_default();
     let automation_map =
         dbus_decode::nested_map(&state, dbus_keys::state::AUTOMATION).unwrap_or_default();
-    let automation_status = AutomationUiStatus {
-        state: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_STATE)
-            .unwrap_or_else(|| "disabled".into()),
-        explanation: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_EXPLANATION)
-            .unwrap_or_else(|| "Automation status is unavailable.".into()),
-        last_result: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_LAST_RESULT)
-            .unwrap_or_else(|| "No automatic result is available.".into()),
-        last_transition_ms: dbus_decode::unsigned(
-            &automation_map,
-            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
-        ),
-        last_profile_id: dbus_decode::string(
-            &automation_map,
-            dbus_keys::state::AUTOMATION_PROFILE_ID,
-        ),
-    };
+    let automation_status = automation_status_from_dbus(&automation_map);
     let profile = dbus_decode::string(&state, dbus_keys::state::PROFILE);
     let gpu_mode = dbus_decode::string(&state, dbus_keys::state::GPU_MODE);
     let battery_limit = dbus_decode::unsigned(&state, dbus_keys::state::BATTERY_LIMIT)
@@ -14716,7 +14859,7 @@ fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
 }
 
 fn automation_can_resume(state: &str) -> bool {
-    matches!(state, "manual_override" | "blocked" | "error")
+    matches!(state, "manual_override" | "blocked" | "error" | "failed")
 }
 
 fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
@@ -15671,10 +15814,48 @@ mod tests {
     }
 
     #[test]
+    fn old_daemon_automation_status_decodes_with_safe_optional_defaults() {
+        let old_status = HashMap::from([
+            (
+                dbus_keys::state::AUTOMATION_STATE.to_string(),
+                ov("monitoring".to_string()),
+            ),
+            (
+                dbus_keys::state::AUTOMATION_EXPLANATION.to_string(),
+                ov("legacy status".to_string()),
+            ),
+        ]);
+        let decoded = automation_status_from_dbus(&old_status);
+        assert_eq!(decoded.state, "monitoring");
+        assert_eq!(decoded.explanation, "legacy status");
+        assert_eq!(decoded.source_freshness, "unknown");
+        assert_eq!(decoded.retry_status, "not scheduled");
+        assert!(decoded.pending_profile_id.is_none());
+        assert!(decoded.component_results.is_empty());
+    }
+
+    #[test]
+    fn structured_component_status_decodes_when_legacy_summary_is_absent() {
+        let component = HashMap::from([
+            ("state".to_string(), ov("failed".to_string())),
+            ("detail".to_string(), ov("readback mismatch".to_string())),
+        ]);
+        let status = HashMap::from([(
+            dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT.to_string(),
+            ov(component),
+        )]);
+        let decoded = automation_status_from_dbus(&status);
+        assert_eq!(decoded.component_results.len(), 1);
+        assert!(decoded.component_results[0].contains("battery_charge_limit: failed"));
+        assert!(decoded.component_results[0].contains("readback mismatch"));
+    }
+
+    #[test]
     fn automation_resume_is_available_for_paused_or_blocked_states() {
         assert!(automation_can_resume("manual_override"));
         assert!(automation_can_resume("blocked"));
         assert!(automation_can_resume("error"));
+        assert!(automation_can_resume("failed"));
         assert!(!automation_can_resume("monitoring"));
         assert!(!automation_can_resume("disabled"));
     }

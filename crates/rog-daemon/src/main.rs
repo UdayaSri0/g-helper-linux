@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -10,11 +11,11 @@ use regex::Regex;
 use rog_core::{
     config_path, config_to_toml, cpu_request_readback_matches, dbus_keys, legacy_ui_config_path,
     load_or_migrate, native_aura_readiness_reason, save_config_atomic, validate_config, AppConfig,
-    AppState, BatteryLimitPercent, BatteryState, CpuAccessState, CpuAuthorization, CpuCaps,
-    CpuControlAccess, CpuControlRequest, CpuPathAccess, CpuPowerMode, CpuTelemetry,
-    DependencyStatus, DeviceCaps, FanCaps, FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint,
-    FanState, FanTelemetry, FeatureAccessState, FeatureAvailability, GpuMode, GpuSwitchState,
-    LightingApplyOutcome, LightingApplyRequest, LightingBackendKind, LightingCaps,
+    AppState, BatteryLimitPercent, BatteryState, ComponentRetryState, CpuAccessState,
+    CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest, CpuPathAccess, CpuPowerMode,
+    CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps, FanControlMode, FanCurve, FanDomain,
+    FanInfo, FanPoint, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability, GpuMode,
+    GpuSwitchState, LightingApplyOutcome, LightingApplyRequest, LightingBackendKind, LightingCaps,
     LightingDiagnostics, LightingDirection, LightingMode, LightingSpeed, LightingState,
     NamedProfile, PerformanceProfile, PermissionStatus, PolicyAction, PolicyConfig, PolicyState,
     PowerSource, ProfileSettings, RgbColor, SetupIssue, SetupStatus, TelemetrySnapshot,
@@ -63,7 +64,10 @@ struct SharedState {
     native_lighting: RwLock<NativeLightingState>,
     policy: RwLock<PolicyState>,
     automation_status: RwLock<AutomationRuntimeStatus>,
+    automation_retry: Mutex<AutomationRetryRuntime>,
+    automation_write_gate: Mutex<()>,
     hardware_control_lock: tokio::sync::Mutex<()>,
+    automation_generation: AtomicU64,
 }
 
 // shortcut: keep writes disabled until transition and resume behavior are verified.
@@ -80,13 +84,391 @@ fn usable_battery_source_sample(
     Some(sample.source) == telemetry_source && sample.is_fresh_at(now)
 }
 
+fn battery_source_sample_status(
+    sample: Option<rog_providers::upower::BatterySourceSample>,
+    telemetry_source: Option<PowerSource>,
+    boottime_ms: Option<u64>,
+) -> &'static str {
+    let Some(sample) = sample else {
+        return "missing";
+    };
+    if Some(sample.source) != telemetry_source {
+        return "source inconsistent";
+    }
+    let Some(now) = boottime_ms else {
+        return "monotonic clock unavailable";
+    };
+    if sample.is_fresh_at(now) {
+        "fresh"
+    } else {
+        "stale"
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AutomationRuntimeStatus {
     state: &'static str,
     last_transition_ms: Option<u64>,
     last_profile_id: Option<String>,
+    pending_profile_id: Option<String>,
+    component_results: Vec<ComponentOutcome>,
+    source_freshness: String,
+    retry_status: String,
     explanation: String,
     last_result: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComponentOutcome {
+    component: &'static str,
+    state: &'static str,
+    detail: String,
+}
+
+#[derive(Debug, Default)]
+struct AutomationRetryRuntime {
+    target: Option<AutomationRetryTarget>,
+    components: HashMap<&'static str, ComponentRetryState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutomationRetryTarget {
+    action: PolicyAction,
+    profile_id: String,
+    generation: u64,
+}
+
+fn retry_components_due(
+    runtime: &mut AutomationRetryRuntime,
+    profile: &NamedProfile,
+    source: PowerSource,
+    generation: u64,
+    now_boottime_ms: u64,
+) -> bool {
+    let mut due = false;
+    if let Some(desired) = &profile.settings.platform_profile {
+        let key = format!("platform_profile:{desired:?}");
+        due |= runtime
+            .components
+            .entry("platform_profile")
+            .or_default()
+            .ready_for(&key, source, generation, now_boottime_ms);
+    }
+    if let Some(desired) = profile.settings.battery_charge_limit {
+        let key = format!("battery_charge_limit:{desired}");
+        due |= runtime
+            .components
+            .entry("battery_charge_limit")
+            .or_default()
+            .ready_for(&key, source, generation, now_boottime_ms);
+    }
+    due
+}
+
+trait ApprovedAutomationBackend {
+    async fn read_platform_profile(&self) -> Result<PerformanceProfile, String>;
+    async fn prepare_platform_profile_write(
+        &self,
+        profile: PerformanceProfile,
+    ) -> Result<PreparedAutomationWrite<'_>, String>;
+    async fn read_battery_limit(&self) -> Result<BatteryLimitPercent, String>;
+    async fn prepare_battery_limit_write(
+        &self,
+        limit: BatteryLimitPercent,
+    ) -> Result<PreparedAutomationWrite<'_>, String>;
+}
+
+type PreparedAutomationWrite<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
+async fn with_automation_write_gate<P>(
+    write_gate: &Mutex<()>,
+    mut preflight: P,
+    prepared_write: PreparedAutomationWrite<'_>,
+) -> Result<(), String>
+where
+    P: FnMut() -> Result<(), String>,
+{
+    let mut write = prepared_write;
+    let mut started = false;
+    std::future::poll_fn(|context| {
+        if started {
+            return write.as_mut().poll(context);
+        }
+        let _guard = match write_gate.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return std::task::Poll::Ready(Err(
+                    "preflight: write-intent lock is poisoned".into()
+                ))
+            }
+        };
+        if let Err(error) = preflight() {
+            return std::task::Poll::Ready(Err(format!("preflight: {error}")));
+        }
+        match write.as_mut().poll(context) {
+            std::task::Poll::Pending => {
+                started = true;
+                std::task::Poll::Pending
+            }
+            ready => ready,
+        }
+    })
+    .await
+}
+
+impl ApprovedAutomationBackend for RogHelperDaemon {
+    async fn read_platform_profile(&self) -> Result<PerformanceProfile, String> {
+        self.asusd
+            .as_ref()
+            .ok_or_else(|| "asusd platform-profile backend unavailable".to_string())?
+            .get_profile()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn prepare_platform_profile_write(
+        &self,
+        profile: PerformanceProfile,
+    ) -> Result<PreparedAutomationWrite<'_>, String> {
+        let write = self
+            .asusd
+            .as_ref()
+            .ok_or_else(|| "asusd platform-profile backend unavailable".to_string())?
+            .prepare_profile_write(profile)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Box::pin(async move {
+            write.await.map_err(|error| error.to_string())
+        }))
+    }
+
+    async fn read_battery_limit(&self) -> Result<BatteryLimitPercent, String> {
+        match self.read_state().caps.battery_limit_backend.as_str() {
+            "asusd" => self
+                .asusd
+                .as_ref()
+                .ok_or_else(|| "asusd battery-limit backend unavailable".to_string())?
+                .get_limit()
+                .await
+                .map_err(|error| error.to_string()),
+            "power_supply_sysfs" => self
+                .battery_charge_limit
+                .as_ref()
+                .ok_or_else(|| "battery-limit backend unavailable".to_string())?
+                .read_limit()
+                .map_err(|error| error.to_string()),
+            _ => Err("unapproved battery-limit backend".into()),
+        }
+    }
+
+    async fn prepare_battery_limit_write(
+        &self,
+        limit: BatteryLimitPercent,
+    ) -> Result<PreparedAutomationWrite<'_>, String> {
+        match self.read_state().caps.battery_limit_backend.as_str() {
+            "asusd" => {
+                let write = self
+                    .asusd
+                    .as_ref()
+                    .ok_or_else(|| "asusd battery-limit backend unavailable".to_string())?
+                    .prepare_battery_limit_write(limit)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(Box::pin(async move {
+                    write.await.map_err(|error| error.to_string())
+                }))
+            }
+            "power_supply_sysfs" => {
+                let control = self
+                    .battery_charge_limit
+                    .as_ref()
+                    .filter(|control| control.can_write_directly())
+                    .ok_or_else(|| "noninteractive battery-limit write unavailable".to_string())?
+                    .clone();
+                Ok(Box::pin(async move {
+                    control
+                        .set_limit(limit)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }))
+            }
+            _ => Err("unapproved battery-limit backend".into()),
+        }
+    }
+}
+
+async fn apply_profile_component<B, F>(
+    backend: &B,
+    write_gate: &Mutex<()>,
+    desired: PerformanceProfile,
+    mut preflight: F,
+) -> ComponentOutcome
+where
+    B: ApprovedAutomationBackend,
+    F: FnMut() -> Result<(), String>,
+{
+    let component = "platform_profile";
+    if let Err(detail) = preflight() {
+        return ComponentOutcome {
+            component,
+            state: "blocked",
+            detail,
+        };
+    }
+    match backend.read_platform_profile().await {
+        Ok(actual) if actual == desired => ComponentOutcome {
+            component,
+            state: "unchanged_confirmed",
+            detail: "backend readback already matches".into(),
+        },
+        Err(detail) => ComponentOutcome {
+            component,
+            state: "failed",
+            detail,
+        },
+        Ok(_) => {
+            let prepared = match backend
+                .prepare_platform_profile_write(desired.clone())
+                .await
+            {
+                Ok(write) => write,
+                Err(detail) => {
+                    return ComponentOutcome {
+                        component,
+                        state: "failed",
+                        detail,
+                    }
+                }
+            };
+            let write_result =
+                with_automation_write_gate(write_gate, &mut preflight, prepared).await;
+            if let Err(error) = &write_result {
+                if let Some(detail) = error.strip_prefix("preflight: ") {
+                    return ComponentOutcome {
+                        component,
+                        state: "blocked",
+                        detail: detail.into(),
+                    };
+                }
+            }
+            match backend.read_platform_profile().await {
+                Ok(actual) if actual == desired => ComponentOutcome {
+                    component,
+                    state: "confirmed",
+                    detail: write_result.err().map_or_else(
+                        || "backend readback matches".into(),
+                        |error| format!("write response was {error}; backend readback matches"),
+                    ),
+                },
+                Ok(actual) => ComponentOutcome {
+                    component,
+                    state: "failed",
+                    detail: format!(
+                        "backend readback {actual:?} does not match requested {desired:?}"
+                    ),
+                },
+                Err(error) => ComponentOutcome {
+                    component,
+                    state: "failed",
+                    detail: format!("backend readback failed: {error}"),
+                },
+            }
+        }
+    }
+}
+
+async fn apply_battery_limit_component<B, F>(
+    backend: &B,
+    write_gate: &Mutex<()>,
+    desired: BatteryLimitPercent,
+    mut preflight: F,
+) -> ComponentOutcome
+where
+    B: ApprovedAutomationBackend,
+    F: FnMut() -> Result<(), String>,
+{
+    let component = "battery_charge_limit";
+    if let Err(detail) = preflight() {
+        return ComponentOutcome {
+            component,
+            state: "blocked",
+            detail,
+        };
+    }
+    match backend.read_battery_limit().await {
+        Ok(actual) if actual == desired => ComponentOutcome {
+            component,
+            state: "unchanged_confirmed",
+            detail: "backend readback already matches".into(),
+        },
+        Err(detail) => ComponentOutcome {
+            component,
+            state: "failed",
+            detail,
+        },
+        Ok(_) => {
+            let prepared = match backend.prepare_battery_limit_write(desired).await {
+                Ok(write) => write,
+                Err(detail) => {
+                    return ComponentOutcome {
+                        component,
+                        state: "failed",
+                        detail,
+                    }
+                }
+            };
+            let write_result =
+                with_automation_write_gate(write_gate, &mut preflight, prepared).await;
+            if let Err(error) = &write_result {
+                if let Some(detail) = error.strip_prefix("preflight: ") {
+                    return ComponentOutcome {
+                        component,
+                        state: "blocked",
+                        detail: detail.into(),
+                    };
+                }
+            }
+            match backend.read_battery_limit().await {
+                Ok(actual) if actual == desired => ComponentOutcome {
+                    component,
+                    state: "confirmed",
+                    detail: write_result.err().map_or_else(
+                        || "backend readback matches".into(),
+                        |error| format!("write response was {error}; backend readback matches"),
+                    ),
+                },
+                Ok(actual) => ComponentOutcome {
+                    component,
+                    state: "failed",
+                    detail: format!(
+                        "backend readback {} does not match requested {}",
+                        actual.0, desired.0
+                    ),
+                },
+                Err(error) => ComponentOutcome {
+                    component,
+                    state: "failed",
+                    detail: format!("backend readback failed: {error}"),
+                },
+            }
+        }
+    }
+}
+
+fn format_component_outcome(outcome: &ComponentOutcome) -> String {
+    let name = match outcome.component {
+        "platform_profile" => "platform profile",
+        "battery_charge_limit" => "battery limit",
+        _ => "automation component",
+    };
+    match outcome.state {
+        "confirmed" => format!("{name} applied and read back: {}", outcome.detail),
+        "unchanged_confirmed" => format!("{name} unchanged (readback matches): {}", outcome.detail),
+        "blocked" => format!("blocked: {name}: {}", outcome.detail),
+        "skipped" => format!("skipped: {name}: {}", outcome.detail),
+        "pending" => format!("pending: {name}: {}", outcome.detail),
+        _ => format!("failed: {name}: {}", outcome.detail),
+    }
 }
 
 impl Default for AutomationRuntimeStatus {
@@ -95,6 +477,10 @@ impl Default for AutomationRuntimeStatus {
             state: "disabled",
             last_transition_ms: None,
             last_profile_id: None,
+            pending_profile_id: None,
+            component_results: Vec::new(),
+            source_freshness: "unknown".into(),
+            retry_status: "not scheduled".into(),
             explanation: "Automation is disabled.".into(),
             last_result: "No automatic profile has been applied this session.".into(),
         }
@@ -111,6 +497,94 @@ fn selected_automation_profile_id(
     }
 }
 
+fn automation_rules_changed(previous: &AppConfig, current: &AppConfig) -> bool {
+    let before = &previous.automation;
+    let after = &current.automation;
+    if (
+        before.enabled,
+        before.manual_override,
+        &before.ac_profile_id,
+        &before.battery_profile_id,
+        &before.battery_recovery_profile_id,
+        before.battery_threshold_percent,
+        before.battery_return_threshold_percent,
+    ) != (
+        after.enabled,
+        after.manual_override,
+        &after.ac_profile_id,
+        &after.battery_profile_id,
+        &after.battery_recovery_profile_id,
+        after.battery_threshold_percent,
+        after.battery_return_threshold_percent,
+    ) {
+        return true;
+    }
+    [
+        before.ac_profile_id.as_deref(),
+        before.battery_profile_id.as_deref(),
+        before.battery_recovery_profile_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|id| {
+        let selected_values = |config: &AppConfig| {
+            config
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .map(|profile| {
+                    (
+                        profile.settings.platform_profile.clone(),
+                        profile.settings.battery_charge_limit,
+                    )
+                })
+        };
+        selected_values(previous) != selected_values(current)
+    })
+}
+
+fn selected_automation_profile_for_action(
+    preferences: &rog_core::AutomationPreferences,
+    action: PolicyAction,
+) -> Option<&str> {
+    match action {
+        PolicyAction::ApplyFor(source) => selected_automation_profile_id(preferences, source),
+        PolicyAction::ApplyRecovery => preferences.battery_recovery_profile_id.as_deref(),
+    }
+}
+
+fn action_power_source(action: PolicyAction) -> PowerSource {
+    match action {
+        PolicyAction::ApplyFor(source) => source,
+        PolicyAction::ApplyRecovery => PowerSource::Battery,
+    }
+}
+
+fn battery_threshold_action(
+    policy: &mut PolicyState,
+    now_boottime_ms: u64,
+    preferences: &rog_core::AutomationPreferences,
+    telemetry: &TelemetrySnapshot,
+    sample_is_usable: bool,
+) -> Vec<PolicyAction> {
+    if !sample_is_usable
+        || telemetry.power_source != Some(PowerSource::Battery)
+        || policy.stable_power_source() != Some(PowerSource::Battery)
+    {
+        return policy.observe_battery_threshold(now_boottime_ms, None, 1, None, false);
+    }
+    let Some(lower) = preferences.battery_threshold_percent else {
+        return policy.observe_battery_threshold(now_boottime_ms, None, 1, None, false);
+    };
+    policy.observe_battery_threshold(
+        now_boottime_ms,
+        telemetry.battery_percent,
+        lower,
+        preferences.battery_return_threshold_percent,
+        preferences.battery_recovery_profile_id.is_some(),
+    )
+}
+
 fn automation_profile<'a>(config: &'a AppConfig, id: &str) -> Option<&'a NamedProfile> {
     config.profiles.iter().find(|profile| profile.id == id)
 }
@@ -124,6 +598,8 @@ fn automation_result_state(results: &[String], blocked: bool) -> &'static str {
         "error"
     } else if blocked {
         "blocked"
+    } else if results.iter().any(|line| line.starts_with("pending:")) {
+        "retry_wait"
     } else {
         "monitoring"
     }
@@ -141,6 +617,119 @@ fn automation_skipped_components(settings: &ProfileSettings) -> Vec<&'static str
         skipped.push("skipped: lighting automation is disabled to avoid PolicyKit prompts and unobservable HID writes");
     }
     skipped
+}
+
+fn planned_component_results(
+    profile: &NamedProfile,
+    blocked_reason: &str,
+) -> Vec<ComponentOutcome> {
+    let mut results = Vec::new();
+    if profile.settings.platform_profile.is_some() {
+        results.push(ComponentOutcome {
+            component: "platform_profile",
+            state: "blocked",
+            detail: blocked_reason.into(),
+        });
+    }
+    if profile.settings.battery_charge_limit.is_some() {
+        results.push(ComponentOutcome {
+            component: "battery_charge_limit",
+            state: "blocked",
+            detail: blocked_reason.into(),
+        });
+    }
+    results.extend(
+        automation_skipped_components(&profile.settings)
+            .into_iter()
+            .map(|detail| ComponentOutcome {
+                component: "unsupported_profile_field",
+                state: "skipped",
+                detail: detail.to_owned(),
+            }),
+    );
+    results
+}
+
+fn pending_component_results(profile: &NamedProfile) -> Vec<ComponentOutcome> {
+    let mut results = Vec::new();
+    if profile.settings.platform_profile.is_some() {
+        results.push(ComponentOutcome {
+            component: "platform_profile",
+            state: "pending",
+            detail: "requested; awaiting verified backend readback".into(),
+        });
+    }
+    if profile.settings.battery_charge_limit.is_some() {
+        results.push(ComponentOutcome {
+            component: "battery_charge_limit",
+            state: "pending",
+            detail: "requested; awaiting verified backend readback".into(),
+        });
+    }
+    results.extend(
+        automation_skipped_components(&profile.settings)
+            .into_iter()
+            .map(|detail| ComponentOutcome {
+                component: "unsupported_profile_field",
+                state: "skipped",
+                detail: detail.into(),
+            }),
+    );
+    results
+}
+
+fn component_outcomes_from_lines(lines: &[String]) -> Vec<ComponentOutcome> {
+    lines
+        .iter()
+        .map(|line| {
+            let (component, state) = if line.contains("platform profile") {
+                ("platform_profile", component_result_state(line))
+            } else if line.contains("battery limit") {
+                ("battery_charge_limit", component_result_state(line))
+            } else if line.starts_with("skipped:") || line.starts_with("pending/skipped:") {
+                ("unsupported_profile_field", "skipped")
+            } else {
+                ("automation", component_result_state(line))
+            };
+            ComponentOutcome {
+                component,
+                state,
+                detail: line.clone(),
+            }
+        })
+        .collect()
+}
+
+fn record_stale_automation_completion(status: &mut AutomationRuntimeStatus, result: &[String]) {
+    match status.state {
+        "monitoring" if status.retry_status == "not scheduled; automation rules changed" => {
+            status.retry_status = "stale operation completed after automation rules changed".into();
+            status.explanation = "A prior automation operation completed after its rules changed. Component readbacks are shown, but the old preset is not considered current.".into();
+        }
+        "manual_override" | "disabled" => {}
+        _ => return,
+    }
+    status.component_results = component_outcomes_from_lines(result);
+    status.last_result = format!(
+        "Completed prior operation (stale configuration): {}",
+        result.join("; ")
+    );
+}
+
+fn component_result_state(line: &str) -> &'static str {
+    if line.contains("unchanged (readback matches)") {
+        "unchanged_confirmed"
+    } else if line.contains("applied and read back") {
+        "confirmed"
+    } else if line.starts_with("blocked:") || line.starts_with("authorization required:") {
+        "blocked"
+    } else if line.starts_with("failed:") {
+        "failed"
+    } else if line.starts_with("skipped:") || line.starts_with("pending/skipped:") {
+        "skipped"
+    } else {
+        "pending"
+    }
 }
 
 struct ProviderRetry {
@@ -504,6 +1093,185 @@ struct RogHelperDaemon {
 }
 
 impl RogHelperDaemon {
+    fn invalidate_automation_runtime(&self, automation: &rog_core::AutomationPreferences) {
+        self.state
+            .automation_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.state
+            .policy
+            .write()
+            .expect("rwlock poisoned")
+            .reset_for_reconfiguration();
+        *self.state.automation_retry.lock().expect("mutex poisoned") =
+            AutomationRetryRuntime::default();
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.last_profile_id = None;
+        status.pending_profile_id = None;
+        status.component_results.clear();
+        status.retry_status = if !automation.enabled {
+            "cancelled because automation was disabled".into()
+        } else if automation.manual_override {
+            "cancelled by manual override".into()
+        } else {
+            "not scheduled; automation rules changed".into()
+        };
+        status.last_result =
+            "Prior preset confirmation cleared after an automation rule change.".into();
+        if !automation.enabled {
+            status.state = "disabled";
+            status.explanation =
+                "Automation was disabled; completed component readbacks remain visible.".into();
+        } else if automation.manual_override {
+            status.state = "manual_override";
+            status.explanation = "Automation is paused by manual override; completed component readbacks remain visible.".into();
+        } else {
+            status.state = "monitoring";
+            status.explanation =
+                "Automation rules changed; waiting for a fresh stable source and threshold dwell."
+                    .into();
+        }
+    }
+
+    fn begin_component_retry(
+        &self,
+        component: &'static str,
+        desired_key: &str,
+        action: PolicyAction,
+        profile_id: &str,
+        generation: u64,
+        now_boottime_ms: u64,
+    ) -> bool {
+        let source = action_power_source(action);
+        let mut runtime = self.state.automation_retry.lock().expect("mutex poisoned");
+        let target = AutomationRetryTarget {
+            action,
+            profile_id: profile_id.into(),
+            generation,
+        };
+        if runtime.target.as_ref() != Some(&target) {
+            runtime.target = Some(target);
+            runtime.components.clear();
+        }
+        let state = runtime.components.entry(component).or_default();
+        if !state.ready_for(desired_key, source, generation, now_boottime_ms) {
+            return false;
+        }
+        state.started();
+        true
+    }
+
+    fn finish_component_retry(&self, component: &'static str, outcome: &ComponentOutcome) {
+        let now = rog_providers::upower::clock_boottime_ms().ok();
+        let mut runtime = self.state.automation_retry.lock().expect("mutex poisoned");
+        match outcome.state {
+            "confirmed" | "unchanged_confirmed" => {
+                if let Some(state) = runtime.components.get_mut(component) {
+                    state.confirmed();
+                }
+            }
+            "failed" => {
+                if let (Some(state), Some(now)) = (runtime.components.get_mut(component), now) {
+                    state.failed_at(now);
+                } else {
+                    *runtime = AutomationRetryRuntime::default();
+                }
+            }
+            "pending" => {}
+            _ => *runtime = AutomationRetryRuntime::default(),
+        }
+    }
+
+    fn component_retry_confirmed(&self, component: &'static str) -> bool {
+        self.state
+            .automation_retry
+            .lock()
+            .expect("mutex poisoned")
+            .components
+            .get(component)
+            .is_some_and(ComponentRetryState::is_confirmed)
+    }
+
+    fn retry_action_if_due(
+        &self,
+        config: &AppConfig,
+        telemetry: &TelemetrySnapshot,
+        generation: u64,
+        now_boottime_ms: u64,
+    ) -> Option<PolicyAction> {
+        let source = telemetry.power_source?;
+        if self
+            .state
+            .policy
+            .read()
+            .expect("rwlock poisoned")
+            .stable_power_source()
+            != Some(source)
+        {
+            *self.state.automation_retry.lock().expect("mutex poisoned") =
+                AutomationRetryRuntime::default();
+            return None;
+        }
+        let mut runtime = self.state.automation_retry.lock().expect("mutex poisoned");
+        let target = runtime.target.clone()?;
+        if target.generation != generation
+            || action_power_source(target.action) != source
+            || selected_automation_profile_for_action(&config.automation, target.action)
+                != Some(target.profile_id.as_str())
+        {
+            *runtime = AutomationRetryRuntime::default();
+            return None;
+        }
+        if runtime
+            .components
+            .values()
+            .any(ComponentRetryState::is_failed)
+        {
+            return None;
+        }
+        let profile = automation_profile(config, &target.profile_id)?;
+        let due = retry_components_due(&mut runtime, profile, source, generation, now_boottime_ms);
+        due.then_some(target.action)
+    }
+
+    fn automation_retry_status(&self, now_boottime_ms: Option<u64>) -> String {
+        let runtime = self.state.automation_retry.lock().expect("mutex poisoned");
+        let Some(now_boottime_ms) = now_boottime_ms else {
+            return "retries cancelled; CLOCK_BOOTTIME unavailable".into();
+        };
+        if runtime
+            .components
+            .values()
+            .any(ComponentRetryState::is_failed)
+        {
+            return "Failed after three attempts".into();
+        }
+        let next = runtime
+            .components
+            .iter()
+            .filter_map(|(component, state)| {
+                state
+                    .next_attempt_boottime_ms()
+                    .map(|at| (*component, state.attempts(), at))
+            })
+            .min_by_key(|(_, _, at)| *at);
+        match next {
+            Some((component, attempts, at)) => format!(
+                "{component}: attempt {attempts}/3; retry {}",
+                if at <= now_boottime_ms {
+                    "due".into()
+                } else {
+                    format!("in {}s", at.saturating_sub(now_boottime_ms).div_ceil(1_000))
+                },
+            ),
+            None if runtime.target.is_some() => "no retry pending".into(),
+            None => "not scheduled".into(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         state: Arc<SharedState>,
@@ -540,6 +1308,11 @@ impl RogHelperDaemon {
     }
 
     fn set_telemetry(&self, telemetry: TelemetrySnapshot, warnings: Vec<String>) {
+        let _write_gate = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("write-intent mutex poisoned");
         let mut guard = self.state.inner.write().expect("rwlock poisoned");
         let mut telemetry = telemetry;
         retain_recently_missing_fan_rows(&guard.telemetry, &mut telemetry);
@@ -620,6 +1393,11 @@ impl RogHelperDaemon {
     }
 
     fn pause_automation_for_manual_action(&self) {
+        let _write_gate = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("write-intent mutex poisoned");
         let mut stored = self.state.config.write().expect("rwlock poisoned");
         if !stored.automation.enabled || stored.automation.manual_override {
             return;
@@ -635,6 +1413,9 @@ impl RogHelperDaemon {
         if let Err(error) = result {
             warn!(target: "rog_helper::policy", event = "manual_override_persist_failed", %error, "manual override remains active for this daemon session");
         }
+        if automation_rules_changed(&stored, &config) {
+            self.invalidate_automation_runtime(&config.automation);
+        }
         *stored = config;
         drop(stored);
         self.state
@@ -648,6 +1429,7 @@ impl RogHelperDaemon {
             .write()
             .expect("rwlock poisoned");
         status.state = "manual_override";
+        status.retry_status = "cancelled by manual override".into();
         status.explanation = "Automation paused because a manual hardware control was used. Resume explicitly to continue.".into();
         info!(target: "rog_helper::policy", event = "manual_override", "automatic policy paused by manual hardware control");
     }
@@ -659,109 +1441,165 @@ impl RogHelperDaemon {
     ) {
         let config = self.read_config();
         if !config.automation.enabled {
+            *self.state.automation_retry.lock().expect("mutex poisoned") =
+                AutomationRetryRuntime::default();
             let mut status = self
                 .state
                 .automation_status
                 .write()
                 .expect("rwlock poisoned");
             status.state = "disabled";
+            status.retry_status = "not scheduled while automation is disabled".into();
             status.explanation =
                 "Automation is disabled; hardware will not be changed automatically.".into();
             return;
         }
         if config.automation.manual_override {
+            *self.state.automation_retry.lock().expect("mutex poisoned") =
+                AutomationRetryRuntime::default();
             let mut status = self
                 .state
                 .automation_status
                 .write()
                 .expect("rwlock poisoned");
             status.state = "manual_override";
+            status.retry_status = "cancelled by manual override".into();
             status.explanation = "Automation is paused after a manual hardware action. Resume explicitly to continue.".into();
             return;
         }
-        if !usable_battery_source_sample(
-            battery_source_sample,
-            telemetry.power_source,
-            rog_providers::upower::clock_boottime_ms().ok(),
-        ) {
+        let now = rog_providers::upower::clock_boottime_ms().ok();
+        if !usable_battery_source_sample(battery_source_sample, telemetry.power_source, now) {
+            *self.state.automation_retry.lock().expect("mutex poisoned") =
+                AutomationRetryRuntime::default();
+            let freshness =
+                battery_source_sample_status(battery_source_sample, telemetry.power_source, now);
+            let mut policy = self.state.policy.write().expect("rwlock poisoned");
+            policy.set_enabled(config.automation.enabled);
+            policy.set_manual_override(config.automation.manual_override);
+            policy.observe_power_source(now.unwrap_or_default(), None);
+            let (lower, upper) = config
+                .automation
+                .battery_threshold_percent
+                .map(|lower| (lower, config.automation.battery_return_threshold_percent))
+                .unwrap_or((1, None));
+            policy.observe_battery_threshold(
+                now.unwrap_or_default(),
+                None,
+                lower,
+                upper,
+                config.automation.battery_recovery_profile_id.is_some(),
+            );
+            drop(policy);
             let mut status = self
                 .state
                 .automation_status
                 .write()
                 .expect("rwlock poisoned");
             status.state = "blocked";
+            status.source_freshness = freshness.into();
+            status.retry_status = "not scheduled while telemetry is invalid".into();
             status.explanation = "Automatic power-source presets are blocked because the physical battery source sample is missing, mismatched, stale, or the monotonic clock is unavailable.".into();
             status.last_result = "No hardware settings were changed automatically.".into();
             return;
         }
-        if !POWER_SOURCE_AUTOMATION_ENABLED {
+        let Some(now) = now else {
             let mut status = self
                 .state
                 .automation_status
                 .write()
                 .expect("rwlock poisoned");
             status.state = "blocked";
-            status.explanation = "Automatic power-source preset writes are disabled until transition, consistency, and resume safeguards are verified.".into();
+            status.explanation =
+                "Automation is blocked because CLOCK_BOOTTIME is unavailable.".into();
             status.last_result = "No hardware settings were changed automatically.".into();
             return;
-        }
-        let now = now_ms();
+        };
+        self.state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned")
+            .source_freshness = "fresh".into();
         let actions = {
             let mut policy = self.state.policy.write().expect("rwlock poisoned");
             policy.set_enabled(config.automation.enabled);
             policy.set_manual_override(config.automation.manual_override);
             if config.automation.enabled && !config.automation.manual_override {
-                let mut actions = policy.observe_power_source(now, telemetry.power_source);
-                if actions.is_empty()
-                    && policy.stable_power_source() == Some(PowerSource::Battery)
-                    && telemetry.power_source == Some(PowerSource::Battery)
-                    && config
-                        .automation
-                        .battery_threshold_percent
-                        .is_some_and(|threshold| {
-                            rog_core::battery_threshold_satisfied(
-                                threshold,
-                                telemetry.battery_percent,
-                            ) == Some(true)
-                        })
-                {
-                    let profile_id = config.automation.battery_profile_id.as_ref();
-                    let status = self
-                        .state
-                        .automation_status
-                        .read()
-                        .expect("rwlock poisoned");
-                    let should_apply = status.last_profile_id.as_ref() != profile_id
-                        || status
-                            .last_result
-                            .starts_with("Threshold condition is not met")
-                        || status
-                            .last_result
-                            .starts_with("Battery percentage is unavailable");
-                    if should_apply {
-                        actions = policy.request_current_rule(now);
-                    }
+                let source_actions = policy.observe_power_source_with_battery_threshold(
+                    now,
+                    telemetry.power_source,
+                    config.automation.battery_threshold_percent.is_some(),
+                );
+                let threshold_actions = battery_threshold_action(
+                    &mut policy,
+                    now,
+                    &config.automation,
+                    telemetry,
+                    usable_battery_source_sample(
+                        battery_source_sample,
+                        telemetry.power_source,
+                        Some(now),
+                    ),
+                );
+                if source_actions.is_empty() {
+                    threshold_actions
+                } else {
+                    source_actions
                 }
-                actions
             } else {
                 Vec::new()
             }
         };
 
-        let action = actions.into_iter().next();
-        let Some(PolicyAction::ApplyFor(source)) = action else {
+        let action = actions.into_iter().next().or_else(|| {
+            self.retry_action_if_due(
+                &config,
+                telemetry,
+                self.state.automation_generation.load(Ordering::Acquire),
+                now,
+            )
+        });
+        let retry_status = self.automation_retry_status(Some(now));
+        let Some(action) = action else {
             let mut status = self
                 .state
                 .automation_status
                 .write()
                 .expect("rwlock poisoned");
-            if !matches!(status.state, "error" | "blocked") {
+            status.retry_status = retry_status.clone();
+            if !matches!(status.state, "error" | "blocked" | "failed" | "retry_wait") {
                 status.state = "monitoring";
             }
-            if matches!(status.state, "error" | "blocked") {
+            if matches!(status.state, "error" | "retry_wait" | "failed")
+                && retry_status != "Failed after three attempts"
+                && !retry_status.contains("; retry ")
+            {
+                status.state = "monitoring";
+                status.explanation = "The previous automatic retry was cancelled after its source or safety conditions changed; waiting for a fresh stable transition.".into();
+            }
+            if matches!(status.state, "error" | "blocked" | "failed" | "retry_wait") {
                 return;
             }
-            status.explanation = if telemetry.power_source.is_none() {
+            if telemetry.power_source == Some(PowerSource::Battery)
+                && config.automation.battery_recovery_profile_id.is_none()
+                && config
+                    .automation
+                    .battery_return_threshold_percent
+                    .zip(telemetry.battery_percent)
+                    .is_some_and(|(upper, percent)| {
+                        percent.is_finite() && percent >= f32::from(upper)
+                    })
+            {
+                status.state = "blocked";
+                status.explanation =
+                    "The upper battery threshold was reached, but no recovery preset is selected."
+                        .into();
+                status.last_result =
+                    "No recovery preset is selected; no hardware settings were changed.".into();
+                return;
+            }
+            status.explanation = if !POWER_SOURCE_AUTOMATION_ENABLED {
+                "Automatic hardware writes remain disabled pending verified transition and resume safeguards.".into()
+            } else if telemetry.power_source.is_none() {
                 "Monitoring; waiting for a reliable AC/Battery reading.".into()
             } else if self
                 .state
@@ -773,12 +1611,26 @@ impl RogHelperDaemon {
             {
                 "Monitoring; waiting for the power source to remain stable for five seconds.".into()
             } else {
-                "Monitoring the stable power source; no rule transition is pending.".into()
+                let policy = self.state.policy.read().expect("rwlock poisoned");
+                if policy.stable_power_source() == Some(PowerSource::Battery)
+                    && config.automation.battery_threshold_percent.is_some()
+                    && telemetry
+                        .battery_percent
+                        .is_some_and(|percent| percent.is_finite())
+                {
+                    "Monitoring battery hysteresis; the active preset is held between thresholds. After restart or resume, no preset is selected in the hysteresis band.".into()
+                } else {
+                    "Monitoring the stable power source; no rule transition is pending.".into()
+                }
             };
             return;
         };
+        let source = match action {
+            PolicyAction::ApplyFor(source) => source,
+            PolicyAction::ApplyRecovery => PowerSource::Battery,
+        };
+        let profile_id = selected_automation_profile_for_action(&config.automation, action);
 
-        let profile_id = selected_automation_profile_id(&config.automation, source);
         let Some(profile_id) = profile_id else {
             let mut status = self
                 .state
@@ -787,48 +1639,12 @@ impl RogHelperDaemon {
                 .expect("rwlock poisoned");
             status.state = "blocked";
             status.last_transition_ms = Some(now);
-            status.last_profile_id = None;
+            status.pending_profile_id = None;
             status.explanation = format!("{source:?} rule has no selected saved preset.");
             status.last_result = "No hardware settings were changed.".into();
             warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, reason = "no preset selected", "automatic rule could not be resolved");
             return;
         };
-        if source == PowerSource::Battery {
-            if let Some(threshold) = config.automation.battery_threshold_percent {
-                match rog_core::battery_threshold_satisfied(threshold, telemetry.battery_percent) {
-                    Some(true) => {}
-                    Some(false) => {
-                        let percent = telemetry.battery_percent.unwrap_or_default();
-                        let mut status = self
-                            .state
-                            .automation_status
-                            .write()
-                            .expect("rwlock poisoned");
-                        status.state = "monitoring";
-                        status.last_transition_ms = Some(now);
-                        status.last_profile_id = Some(profile_id.into());
-                        status.explanation = format!("Battery rule waits until charge is at or below {threshold}% (currently {:.0}%).", percent);
-                        status.last_result =
-                            "Threshold condition is not met; hardware was not changed.".into();
-                        return;
-                    }
-                    None => {
-                        let mut status = self
-                            .state
-                            .automation_status
-                            .write()
-                            .expect("rwlock poisoned");
-                        status.state = "blocked";
-                        status.last_transition_ms = Some(now);
-                        status.last_profile_id = Some(profile_id.into());
-                        status.explanation = "Battery percentage is unavailable, so the configured threshold cannot be evaluated.".into();
-                        status.last_result = "Battery percentage is unavailable; threshold condition could not be evaluated.".into();
-                        warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, preset_id = %profile_id, reason = "battery percentage unavailable", "automatic threshold could not be evaluated");
-                        return;
-                    }
-                }
-            }
-        }
         let profile = automation_profile(&config, profile_id);
         let Some(profile) = profile else {
             let mut status = self
@@ -838,13 +1654,30 @@ impl RogHelperDaemon {
                 .expect("rwlock poisoned");
             status.state = "blocked";
             status.last_transition_ms = Some(now);
-            status.last_profile_id = Some(profile_id.into());
+            status.pending_profile_id = Some(profile_id.into());
             status.explanation = format!("Selected saved preset '{profile_id}' no longer exists.");
             status.last_result =
                 "No hardware settings were changed. Select an existing preset.".into();
             warn!(target: "rog_helper::policy", event = "blocked", power_source = ?source, preset_id = %profile_id, reason = "preset missing", "automatic preset could not be resolved");
             return;
         };
+
+        if !POWER_SOURCE_AUTOMATION_ENABLED {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "blocked";
+            status.last_transition_ms = Some(now_ms());
+            status.pending_profile_id = Some(profile.id.clone());
+            status.component_results =
+                planned_component_results(profile, "automatic hardware writes are disabled");
+            status.retry_status = "disabled by safety write gate".into();
+            status.explanation = format!("A stable {source:?} preset transition was detected, but automatic hardware writes remain disabled pending verified transition and resume safeguards.");
+            status.last_result = "No hardware settings were changed automatically.".into();
+            return;
+        }
 
         {
             let mut status = self
@@ -854,25 +1687,45 @@ impl RogHelperDaemon {
                 .expect("rwlock poisoned");
             status.state = "applying";
             status.last_transition_ms = Some(now);
-            status.last_profile_id = Some(profile.id.clone());
+            status.pending_profile_id = Some(profile.id.clone());
+            status.component_results = pending_component_results(profile);
+            status.retry_status = "attempt 1 pending; automatic writes are safety-gated".into();
             status.explanation = format!(
                 "Applying the safe automatic subset of '{}' for {source:?}.",
                 profile.name
             );
         }
         info!(target: "rog_helper::policy", event = "trigger", power_source = ?source, preset_id = %profile.id, "stable power-source rule activated");
+        let operation_generation = self.state.automation_generation.load(Ordering::Acquire);
         let control_guard = self.state.hardware_control_lock.lock().await;
         let current_config = self.read_config();
         if !current_config.automation.enabled || current_config.automation.manual_override {
             drop(control_guard);
             return;
         }
-        let (result, blocked) = self.apply_automation_profile(profile).await;
+        let (result, blocked) = self
+            .apply_automation_profile(
+                profile,
+                action,
+                battery_source_sample,
+                operation_generation,
+                now,
+            )
+            .await;
         drop(control_guard);
-        let latest_automation = self.read_config().automation;
-        if latest_automation.manual_override {
+        if self.state.automation_generation.load(Ordering::Acquire) != operation_generation {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            if self.state.automation_generation.load(Ordering::Acquire) != operation_generation {
+                record_stale_automation_completion(&mut status, &result);
+            }
+            info!(target: "rog_helper::policy", event = "stale_apply_result", preset_id = %profile.id, result = %result.join("; "), "prior automation operation completed after invalidation");
             return;
         }
+        let latest_automation = self.read_config().automation;
         if !latest_automation.enabled {
             let mut status = self
                 .state
@@ -880,11 +1733,35 @@ impl RogHelperDaemon {
                 .write()
                 .expect("rwlock poisoned");
             status.state = "disabled";
+            status.retry_status = "cancelled because automation was disabled".into();
             status.explanation = "Automation was disabled while this rule was running; remaining settings were not applied.".into();
             status.last_result = result.join("; ");
+            status.component_results = component_outcomes_from_lines(&result);
+            status.pending_profile_id = Some(profile.id.clone());
             return;
         }
-        let state = automation_result_state(&result, blocked);
+        if latest_automation.manual_override {
+            let mut status = self
+                .state
+                .automation_status
+                .write()
+                .expect("rwlock poisoned");
+            status.state = "manual_override";
+            status.retry_status = "cancelled by manual override".into();
+            status.last_result = result.join("; ");
+            status.component_results = component_outcomes_from_lines(&result);
+            status.pending_profile_id = Some(profile.id.clone());
+            status.explanation = "Automation was paused during an operation; completed components retain their readback result and remaining operations were cancelled.".into();
+            return;
+        }
+        let retry_status =
+            self.automation_retry_status(rog_providers::upower::clock_boottime_ms().ok());
+        let mut state = automation_result_state(&result, blocked);
+        if retry_status == "Failed after three attempts" {
+            state = "failed";
+        } else if state == "error" && retry_status.contains("; retry ") {
+            state = "retry_wait";
+        }
         let summary = if result.is_empty() {
             "Preset contains no safely automatable settings.".into()
         } else {
@@ -920,7 +1797,15 @@ impl RogHelperDaemon {
             .write()
             .expect("rwlock poisoned");
         status.state = state;
+        status.retry_status = retry_status;
         status.last_result = summary.clone();
+        status.component_results = component_outcomes_from_lines(&result);
+        if state == "monitoring" {
+            status.last_profile_id = Some(profile.id.clone());
+            status.pending_profile_id = None;
+        } else {
+            status.pending_profile_id = Some(profile.id.clone());
+        }
         status.explanation = if state == "monitoring" {
             format!("Automatic {source:?} rule processed; skipped components remain unchanged.")
         } else {
@@ -931,112 +1816,255 @@ impl RogHelperDaemon {
         info!(target: "rog_helper::policy", event = "apply_result", power_source = ?source, preset_id = %profile.id, applied = ?applied, unchanged = ?unchanged, skipped = ?skipped, failed = ?failed, authorization_state, result = %summary, "automatic profile processing completed");
     }
 
-    async fn apply_automation_profile(&self, profile: &NamedProfile) -> (Vec<String>, bool) {
+    fn automation_operation_preflight(
+        &self,
+        profile: &NamedProfile,
+        action: PolicyAction,
+        sample: Option<rog_providers::upower::BatterySourceSample>,
+        generation: u64,
+        component: &str,
+    ) -> Result<(), String> {
+        if self.state.automation_generation.load(Ordering::Acquire) != generation {
+            return Err("automation configuration changed".into());
+        }
+        let config = self.read_config();
+        if !config.automation.enabled || config.automation.manual_override {
+            return Err("automation is disabled or manually paused".into());
+        }
+        if selected_automation_profile_for_action(&config.automation, action)
+            != Some(profile.id.as_str())
+        {
+            return Err("selected preset changed".into());
+        }
+        let Some(current_profile) = automation_profile(&config, &profile.id) else {
+            return Err("selected preset no longer exists".into());
+        };
+        if current_profile.settings.platform_profile != profile.settings.platform_profile
+            || current_profile.settings.battery_charge_limit
+                != profile.settings.battery_charge_limit
+        {
+            return Err("automated preset settings changed".into());
+        }
+        let telemetry = self.read_state().telemetry;
+        let expected_source = match action {
+            PolicyAction::ApplyFor(source) => source,
+            PolicyAction::ApplyRecovery => PowerSource::Battery,
+        };
+        if telemetry.power_source != Some(expected_source)
+            || self
+                .state
+                .policy
+                .read()
+                .expect("rwlock poisoned")
+                .stable_power_source()
+                != Some(expected_source)
+        {
+            return Err("power source is no longer stable".into());
+        }
+        let now = rog_providers::upower::clock_boottime_ms()
+            .map_err(|error| format!("CLOCK_BOOTTIME unavailable: {error}"))?;
+        if !usable_battery_source_sample(sample, telemetry.power_source, Some(now)) {
+            return Err("physical battery source sample is missing, inconsistent, or stale".into());
+        }
+        let threshold_matches = match action {
+            PolicyAction::ApplyFor(PowerSource::Ac) => true,
+            PolicyAction::ApplyFor(PowerSource::Battery) => config
+                .automation
+                .battery_threshold_percent
+                .is_none_or(|lower| {
+                    telemetry
+                        .battery_percent
+                        .is_some_and(|percent| percent.is_finite() && percent <= f32::from(lower))
+                }),
+            PolicyAction::ApplyRecovery => config
+                .automation
+                .battery_return_threshold_percent
+                .zip(telemetry.battery_percent)
+                .is_some_and(|(upper, percent)| {
+                    config.automation.battery_recovery_profile_id.as_deref()
+                        == Some(profile.id.as_str())
+                        && percent.is_finite()
+                        && percent >= f32::from(upper)
+                }),
+        };
+        if !threshold_matches {
+            return Err("battery threshold no longer matches the selected preset".into());
+        }
+        if component == "battery_charge_limit"
+            && battery_automation_requires_authorization(
+                &self.read_state().caps.battery_limit_backend,
+                self.battery_charge_limit
+                    .as_ref()
+                    .is_some_and(BatteryChargeLimitControl::can_write_directly),
+            )
+        {
+            return Err("battery-limit automation would require an authorization prompt".into());
+        }
+        match component {
+            "platform_profile"
+                if profile.settings.platform_profile.is_some() && self.asusd.is_some() => {}
+            "battery_charge_limit"
+                if profile.settings.battery_charge_limit.is_some()
+                    && ((self.read_state().caps.battery_limit_backend == "asusd"
+                        && self.asusd.is_some())
+                        || (self.read_state().caps.battery_limit_backend
+                            == "power_supply_sysfs"
+                            && self
+                                .battery_charge_limit
+                                .as_ref()
+                                .is_some_and(BatteryChargeLimitControl::can_write_directly))) => {}
+            _ => return Err("approved noninteractive backend capability is unavailable".into()),
+        }
+        Ok(())
+    }
+
+    async fn apply_automation_profile(
+        &self,
+        profile: &NamedProfile,
+        action: PolicyAction,
+        sample: Option<rog_providers::upower::BatterySourceSample>,
+        generation: u64,
+        now_boottime_ms: u64,
+    ) -> (Vec<String>, bool) {
         let mut results = Vec::new();
         let mut blocked = false;
         if let Some(desired) = profile.settings.platform_profile.clone() {
-            if self.read_control_state().profile.as_ref() == Some(&desired) {
-                results.push("platform profile unchanged (readback matches)".into());
-            } else if let Some(provider) = &self.asusd {
-                match provider.set_profile(desired.clone()).await {
-                    Ok(()) => {
-                        let readback = provider.get_profile().await;
-                        let result = confirm_profile_readback(
-                            &mut self.state.control.write().expect("rwlock poisoned").profile,
-                            &desired,
-                            readback,
-                        );
-                        match result {
-                            Ok(()) => results.push("platform profile applied and read back".into()),
-                            Err(error) => {
-                                results.push(format!("failed: platform profile readback: {error}"))
-                            }
-                        }
-                    }
-                    Err(error) => results.push(format!("failed: platform profile: {error}")),
-                }
+            let retry_time = now_boottime_ms;
+            let desired_key = format!("platform_profile:{desired:?}");
+            let outcome = if self.begin_component_retry(
+                "platform_profile",
+                &desired_key,
+                action,
+                &profile.id,
+                generation,
+                retry_time,
+            ) {
+                let outcome = apply_profile_component(
+                    self,
+                    &self.state.automation_write_gate,
+                    desired,
+                    || {
+                        self.automation_operation_preflight(
+                            profile,
+                            action,
+                            sample,
+                            generation,
+                            "platform_profile",
+                        )
+                    },
+                )
+                .await;
+                self.finish_component_retry("platform_profile", &outcome);
+                outcome
             } else {
-                results.push("skipped: platform profile backend unavailable".into());
-                blocked = true;
+                ComponentOutcome {
+                    component: "platform_profile",
+                    state: if self.component_retry_confirmed("platform_profile") {
+                        "unchanged_confirmed"
+                    } else {
+                        "pending"
+                    },
+                    detail: if self.component_retry_confirmed("platform_profile") {
+                        "previous backend readback confirmed this desired value".into()
+                    } else {
+                        "waiting for the scheduled retry interval".into()
+                    },
+                }
+            };
+            if outcome.state == "confirmed" || outcome.state == "unchanged_confirmed" {
+                if let Some(provider) = &self.asusd {
+                    if let Ok(actual) = provider.get_profile().await {
+                        self.state.control.write().expect("rwlock poisoned").profile = Some(actual);
+                    }
+                }
             }
+            results.push(format_component_outcome(&outcome));
+            blocked |= outcome.state == "blocked" || outcome.state == "failed";
         }
 
-        let automation = self.read_config().automation;
-        if !automation.enabled || automation.manual_override {
+        if self.state.automation_generation.load(Ordering::Acquire) != generation
+            || !self.read_config().automation.enabled
+            || self.read_config().automation.manual_override
+        {
+            results.push(
+                "blocked: remaining operations cancelled because automation state changed".into(),
+            );
             return (results, true);
         }
         if let Some(desired) = profile.settings.battery_charge_limit {
             let limit = BatteryLimitPercent(desired);
-            if self.read_control_state().battery_limit == Some(limit) {
-                results.push("battery limit unchanged (readback matches)".into());
-            } else if self.read_state().caps.battery_limit_backend == "asusd" {
-                if let Some(provider) = &self.asusd {
-                    match provider.set_limit(limit).await {
-                        Ok(()) => match provider.get_limit().await {
-                            Ok(actual) if actual == limit => {
-                                self.state
-                                    .control
-                                    .write()
-                                    .expect("rwlock poisoned")
-                                    .battery_limit = Some(actual);
-                                results.push("battery limit applied and read back".into());
-                            }
-                            Ok(_) => {
-                                results.push("failed: battery limit readback did not match".into())
-                            }
-                            Err(error) => results.push(format!(
-                                "failed: battery limit readback unavailable: {error}"
-                            )),
-                        },
-                        Err(error) => results.push(format!("failed: battery limit: {error}")),
-                    }
-                } else {
-                    results.push("skipped: asusd battery-limit backend disappeared".into());
-                    blocked = true;
-                }
-            } else if let Some(control) = &self.battery_charge_limit {
-                let direct_writable = control.can_write_directly();
-                if battery_automation_requires_authorization(
-                    &self.read_state().caps.battery_limit_backend,
-                    direct_writable,
-                ) {
-                    results.push("authorization required: battery limit needs PolicyKit; automation never opens an authentication prompt".into());
-                    blocked = true;
-                } else if direct_writable {
-                    match control.set_limit(limit) {
-                        Ok(actual) if actual == limit => {
-                            self.state
-                                .control
-                                .write()
-                                .expect("rwlock poisoned")
-                                .battery_limit = Some(actual);
-                            results.push("battery limit applied and read back".into());
-                        }
-                        Ok(_) => {
-                            results.push("failed: battery limit readback did not match".into())
-                        }
-                        Err(error) => results.push(format!("failed: battery limit: {error}")),
-                    }
-                } else {
-                    results.push(
-                        "skipped: battery-limit backend is not an approved direct route".into(),
-                    );
-                    blocked = true;
-                }
+            let retry_time = now_boottime_ms;
+            let desired_key = format!("battery_charge_limit:{}", limit.0);
+            let outcome = if self.begin_component_retry(
+                "battery_charge_limit",
+                &desired_key,
+                action,
+                &profile.id,
+                generation,
+                retry_time,
+            ) {
+                let outcome = apply_battery_limit_component(
+                    self,
+                    &self.state.automation_write_gate,
+                    limit,
+                    || {
+                        self.automation_operation_preflight(
+                            profile,
+                            action,
+                            sample,
+                            generation,
+                            "battery_charge_limit",
+                        )
+                    },
+                )
+                .await;
+                self.finish_component_retry("battery_charge_limit", &outcome);
+                outcome
             } else {
-                results.push("skipped: battery-limit backend unavailable".into());
-                blocked = true;
+                ComponentOutcome {
+                    component: "battery_charge_limit",
+                    state: if self.component_retry_confirmed("battery_charge_limit") {
+                        "unchanged_confirmed"
+                    } else {
+                        "pending"
+                    },
+                    detail: if self.component_retry_confirmed("battery_charge_limit") {
+                        "previous backend readback confirmed this desired value".into()
+                    } else {
+                        "waiting for the scheduled retry interval".into()
+                    },
+                }
+            };
+            if outcome.state == "confirmed" || outcome.state == "unchanged_confirmed" {
+                if let Ok(actual) = self.read_battery_limit().await {
+                    self.state
+                        .control
+                        .write()
+                        .expect("rwlock poisoned")
+                        .battery_limit = Some(actual);
+                }
             }
+            results.push(format_component_outcome(&outcome));
+            blocked |= outcome.state == "blocked" || outcome.state == "failed";
         }
 
         for reason in automation_skipped_components(&profile.settings) {
             results.push(reason.into());
             blocked = true;
         }
+        if results.is_empty() {
+            results.push("blocked: preset has no safely automatable components".into());
+            blocked = true;
+        }
         (results, blocked)
     }
 
     fn persist_config(&self, mut config: AppConfig) -> Result<AppConfig, String> {
+        let _write_gate = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("write-intent mutex poisoned");
         config.version = config.version.max(rog_core::CONFIG_VERSION);
         validate_config(&config)?;
         let mut stored = self.state.config.write().expect("rwlock poisoned");
@@ -1044,8 +2072,12 @@ impl RogHelperDaemon {
             "Configuration path is unavailable because HOME and XDG_CONFIG_HOME are not set."
                 .to_string()
         })?;
+        let invalidate = automation_rules_changed(&stored, &config);
         save_config_atomic(path, &config)?;
         *stored = config.clone();
+        if invalidate {
+            self.invalidate_automation_runtime(&config.automation);
+        }
         Ok(config)
     }
 
@@ -1053,6 +2085,11 @@ impl RogHelperDaemon {
     where
         F: FnOnce(&mut AppConfig) -> Result<(), String>,
     {
+        let _write_gate = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("write-intent mutex poisoned");
         let mut stored = self.state.config.write().expect("rwlock poisoned");
         let mut config = stored.clone();
         update(&mut config).map_err(fdo::Error::InvalidArgs)?;
@@ -1064,8 +2101,12 @@ impl RogHelperDaemon {
                     .to_string(),
             )
         })?;
+        let invalidate = automation_rules_changed(&stored, &config);
         save_config_atomic(path, &config).map_err(fdo::Error::Failed)?;
         *stored = config.clone();
+        if invalidate {
+            self.invalidate_automation_runtime(&config.automation);
+        }
         Ok(config)
     }
 
@@ -1269,6 +2310,8 @@ impl RogHelperDaemon {
             Ok(())
         })?;
         self.state.policy.write().expect("rwlock poisoned").resume();
+        *self.state.automation_retry.lock().expect("mutex poisoned") =
+            AutomationRetryRuntime::default();
         let mut status = self
             .state
             .automation_status
@@ -1301,6 +2344,7 @@ impl RogHelperDaemon {
             .write()
             .expect("rwlock poisoned");
         status.state = "manual_override";
+        status.retry_status = "cancelled by manual override".into();
         status.explanation =
             "Automation paused explicitly by the user; resume it from the UI or CLI.".into();
         info!(target: "rog_helper::policy", event = "manual_override", source = "cli", "automatic policy paused explicitly");
@@ -2807,7 +3851,10 @@ async fn main() -> anyhow::Result<()> {
         native_lighting: RwLock::new(NativeLightingState::default()),
         policy: RwLock::new(policy),
         automation_status: RwLock::new(automation_status),
+        automation_retry: Mutex::new(AutomationRetryRuntime::default()),
+        automation_write_gate: Mutex::new(()),
         hardware_control_lock: tokio::sync::Mutex::new(()),
+        automation_generation: AtomicU64::new(0),
     });
 
     // Export DBus service on the session bus.
@@ -3549,6 +4596,14 @@ fn automation_status_to_dbus(state: &SharedState) -> HashMap<String, OwnedValue>
             dbus_keys::state::AUTOMATION_LAST_RESULT.to_string(),
             ov(status.last_result),
         ),
+        (
+            dbus_keys::state::AUTOMATION_SOURCE_FRESHNESS.to_string(),
+            ov(status.source_freshness.clone()),
+        ),
+        (
+            dbus_keys::state::AUTOMATION_RETRY_STATUS.to_string(),
+            ov(status.retry_status.clone()),
+        ),
     ]);
     if let Some(at_ms) = status.last_transition_ms {
         map.insert(
@@ -3561,6 +4616,59 @@ fn automation_status_to_dbus(state: &SharedState) -> HashMap<String, OwnedValue>
             dbus_keys::state::AUTOMATION_PROFILE_ID.to_string(),
             ov(profile_id),
         );
+    }
+    if let Some(profile_id) = status.pending_profile_id {
+        map.insert(
+            dbus_keys::state::AUTOMATION_PENDING_PROFILE_ID.to_string(),
+            ov(profile_id),
+        );
+    }
+    map.extend(component_results_to_dbus(&status.component_results));
+    map
+}
+
+fn component_results_to_dbus(outcomes: &[ComponentOutcome]) -> HashMap<String, OwnedValue> {
+    if outcomes.is_empty() {
+        return HashMap::new();
+    }
+    let mut map = HashMap::from([(
+        dbus_keys::state::AUTOMATION_COMPONENT_RESULTS.to_string(),
+        ov(outcomes
+            .iter()
+            .map(|outcome| {
+                format!(
+                    "{}: {} — {}",
+                    outcome.component, outcome.state, outcome.detail
+                )
+            })
+            .collect::<Vec<_>>()),
+    )]);
+    for (component, key) in [
+        (
+            "platform_profile",
+            dbus_keys::state::AUTOMATION_COMPONENT_PLATFORM_PROFILE,
+        ),
+        (
+            "battery_charge_limit",
+            dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT,
+        ),
+        (
+            "unsupported_profile_field",
+            dbus_keys::state::AUTOMATION_COMPONENT_UNSUPPORTED,
+        ),
+    ] {
+        if let Some(outcome) = outcomes
+            .iter()
+            .find(|outcome| outcome.component == component)
+        {
+            map.insert(
+                key.to_string(),
+                ov(HashMap::from([
+                    ("state".to_string(), ov(outcome.state)),
+                    ("detail".to_string(), ov(outcome.detail.clone())),
+                ])),
+            );
+        }
     }
     map
 }
@@ -6810,6 +7918,268 @@ fn lighting_state_to_dbus(
 mod tests {
     use super::*;
 
+    struct FakeAutomationBackend {
+        profile: std::sync::Mutex<PerformanceProfile>,
+        limit: std::sync::Mutex<BatteryLimitPercent>,
+        apply_profile: bool,
+        apply_limit: bool,
+        fail_profile_read_after_write: bool,
+        profile_writes: std::sync::atomic::AtomicUsize,
+        limit_writes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Default for FakeAutomationBackend {
+        fn default() -> Self {
+            Self {
+                profile: std::sync::Mutex::new(PerformanceProfile::Balanced),
+                limit: std::sync::Mutex::new(BatteryLimitPercent(80)),
+                apply_profile: false,
+                apply_limit: false,
+                fail_profile_read_after_write: false,
+                profile_writes: std::sync::atomic::AtomicUsize::new(0),
+                limit_writes: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ApprovedAutomationBackend for FakeAutomationBackend {
+        async fn read_platform_profile(&self) -> Result<PerformanceProfile, String> {
+            if self.fail_profile_read_after_write && self.profile_writes.load(Ordering::Relaxed) > 0
+            {
+                return Err("fake readback failure".into());
+            }
+            Ok(self.profile.lock().unwrap().clone())
+        }
+        async fn prepare_platform_profile_write<'a>(
+            &'a self,
+            profile: PerformanceProfile,
+        ) -> Result<PreparedAutomationWrite<'a>, String> {
+            let current = &self.profile;
+            let write_count = &self.profile_writes;
+            let apply = self.apply_profile;
+            Ok(Box::pin(async move {
+                write_count.fetch_add(1, Ordering::Relaxed);
+                if apply {
+                    *current.lock().unwrap() = profile;
+                }
+                Ok(())
+            }))
+        }
+        async fn read_battery_limit(&self) -> Result<BatteryLimitPercent, String> {
+            Ok(*self.limit.lock().unwrap())
+        }
+        async fn prepare_battery_limit_write<'a>(
+            &'a self,
+            limit: BatteryLimitPercent,
+        ) -> Result<PreparedAutomationWrite<'a>, String> {
+            let current = &self.limit;
+            let write_count = &self.limit_writes;
+            let apply = self.apply_limit;
+            Ok(Box::pin(async move {
+                write_count.fetch_add(1, Ordering::Relaxed);
+                if apply {
+                    *current.lock().unwrap() = limit;
+                }
+                Ok(())
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_applier_confirms_only_backend_readback_and_avoids_duplicate_writes() {
+        let gate = Mutex::new(());
+        let backend = FakeAutomationBackend {
+            apply_profile: true,
+            ..FakeAutomationBackend::default()
+        };
+        let desired = PerformanceProfile::Turbo;
+        let applied = apply_profile_component(&backend, &gate, desired.clone(), || Ok(())).await;
+        assert_eq!(applied.state, "confirmed");
+        let unchanged = apply_profile_component(&backend, &gate, desired, || Ok(())).await;
+        assert_eq!(unchanged.state, "unchanged_confirmed");
+        assert_eq!(backend.profile_writes.load(Ordering::Relaxed), 1);
+
+        let no_op = FakeAutomationBackend::default();
+        let outcome =
+            apply_battery_limit_component(&no_op, &gate, BatteryLimitPercent(90), || Ok(())).await;
+        assert_eq!(outcome.state, "failed");
+        assert_eq!(no_op.limit_writes.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn preflight_invalidation_after_readback_prevents_the_write() {
+        let backend = FakeAutomationBackend::default();
+        let gate = Mutex::new(());
+        let checks = std::cell::Cell::new(0);
+        let outcome = apply_profile_component(&backend, &gate, PerformanceProfile::Turbo, || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 1 {
+                Ok(())
+            } else {
+                Err("generation changed".into())
+            }
+        })
+        .await;
+        assert_eq!(outcome.state, "blocked");
+        assert_eq!(backend.profile_writes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn write_intent_lock_orders_final_preflight_before_concurrent_invalidation() {
+        let gate = Arc::new(Mutex::new(()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (start_tx, start_rx) = std::sync::mpsc::channel();
+        let (trying_tx, trying_rx) = std::sync::mpsc::channel();
+        let invalidation_gate = gate.clone();
+        let invalidation_events = events.clone();
+        let invalidator = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            trying_tx.send(()).unwrap();
+            let _guard = invalidation_gate.lock().unwrap();
+            invalidation_events.lock().unwrap().push("invalidated");
+        });
+
+        let write_events = events.clone();
+        let prepared: PreparedAutomationWrite<'_> = Box::pin(async move {
+            write_events.lock().unwrap().push("write_started");
+            Ok(())
+        });
+        let result = with_automation_write_gate(
+            &gate,
+            || {
+                start_tx.send(()).unwrap();
+                trying_rx.recv().unwrap();
+                Ok(())
+            },
+            prepared,
+        )
+        .await;
+        assert!(result.is_ok());
+        invalidator.join().unwrap();
+        assert_eq!(*events.lock().unwrap(), ["write_started", "invalidated"]);
+    }
+
+    #[tokio::test]
+    async fn started_backend_write_is_not_dropped_when_configuration_changes() {
+        let gate = Arc::new(Mutex::new(()));
+        let valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let task_gate = gate.clone();
+        let task_valid = valid.clone();
+        let task_started = started.clone();
+        let task_completed = completed.clone();
+        let task_checks = checks.clone();
+        let task = tokio::spawn(async move {
+            let prepared: PreparedAutomationWrite<'_> = Box::pin(async move {
+                task_started.store(true, Ordering::Release);
+                release_rx.await.map_err(|error| error.to_string())?;
+                task_completed.store(true, Ordering::Release);
+                Ok(())
+            });
+            with_automation_write_gate(
+                &task_gate,
+                || {
+                    task_checks.fetch_add(1, Ordering::Relaxed);
+                    task_valid
+                        .load(Ordering::Acquire)
+                        .then_some(())
+                        .ok_or_else(|| "configuration invalidated".into())
+                },
+                prepared,
+            )
+            .await
+        });
+
+        while !started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        {
+            let _guard = gate.lock().unwrap();
+            valid.store(false, Ordering::Release);
+        }
+        release_tx.send(()).unwrap();
+        assert!(task.await.unwrap().is_ok());
+        assert!(completed.load(Ordering::Acquire));
+        assert_eq!(checks.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn invalidation_during_proxy_preparation_prevents_the_dbus_write() {
+        let gate = Arc::new(Mutex::new(()));
+        let valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (preparing_tx, preparing_rx) = tokio::sync::oneshot::channel();
+        let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+        let task_gate = gate.clone();
+        let task_valid = valid.clone();
+        let task_writes = writes.clone();
+        let task = tokio::spawn(async move {
+            preparing_tx.send(()).unwrap();
+            prepared_rx.await.unwrap();
+            let prepared: PreparedAutomationWrite<'_> = Box::pin(async move {
+                task_writes.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            });
+            with_automation_write_gate(
+                &task_gate,
+                || {
+                    task_valid
+                        .load(Ordering::Acquire)
+                        .then_some(())
+                        .ok_or_else(|| "configuration invalidated during proxy preparation".into())
+                },
+                prepared,
+            )
+            .await
+        });
+
+        preparing_rx.await.unwrap();
+        {
+            let _guard = gate.lock().unwrap();
+            valid.store(false, Ordering::Release);
+        }
+        prepared_tx.send(()).unwrap();
+        let result = task.await.unwrap();
+        assert!(result.unwrap_err().contains("preflight"));
+        assert_eq!(writes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_write_success_without_readback_is_not_confirmation() {
+        let backend = FakeAutomationBackend {
+            apply_profile: true,
+            fail_profile_read_after_write: true,
+            ..FakeAutomationBackend::default()
+        };
+        let gate = Mutex::new(());
+        let result =
+            apply_profile_component(&backend, &gate, PerformanceProfile::Turbo, || Ok(())).await;
+        assert_eq!(result.state, "failed");
+        assert!(result.detail.contains("readback failed"));
+    }
+
+    #[tokio::test]
+    async fn partial_preset_result_preserves_confirmed_and_failed_components() {
+        let backend = FakeAutomationBackend {
+            apply_profile: true,
+            apply_limit: false,
+            ..FakeAutomationBackend::default()
+        };
+        let gate = Mutex::new(());
+        let profile =
+            apply_profile_component(&backend, &gate, PerformanceProfile::Turbo, || Ok(())).await;
+        let limit =
+            apply_battery_limit_component(&backend, &gate, BatteryLimitPercent(90), || Ok(()))
+                .await;
+        assert_eq!(profile.state, "confirmed");
+        assert_eq!(limit.state, "failed");
+        assert_eq!(backend.profile_writes.load(Ordering::Relaxed), 1);
+        assert_eq!(backend.limit_writes.load(Ordering::Relaxed), 1);
+    }
+
     struct FakeUpower(rog_providers::upower::UPowerStatus);
 
     #[test]
@@ -6821,6 +8191,51 @@ mod tests {
         assert!(first
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+    }
+
+    #[test]
+    fn automation_components_are_exported_as_optional_nested_status_maps() {
+        let outcomes = vec![ComponentOutcome {
+            component: "battery_charge_limit",
+            state: "failed",
+            detail: "readback mismatch".into(),
+        }];
+        let wire = component_results_to_dbus(&outcomes);
+        assert!(wire.contains_key(dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT));
+        assert!(wire.contains_key(dbus_keys::state::AUTOMATION_COMPONENT_RESULTS));
+    }
+
+    #[test]
+    fn daemon_retry_scheduler_waits_five_seconds_before_second_component_attempt() {
+        let profile = NamedProfile {
+            schema_version: rog_core::PROFILE_SCHEMA_VERSION,
+            id: "mobile".into(),
+            name: "Mobile".into(),
+            settings: ProfileSettings {
+                platform_profile: Some(PerformanceProfile::Turbo),
+                ..ProfileSettings::default()
+            },
+            future_fields: Default::default(),
+        };
+        let mut runtime = AutomationRetryRuntime::default();
+        let state = runtime.components.entry("platform_profile").or_default();
+        assert!(state.ready_for("platform_profile:Turbo", PowerSource::Battery, 4, 100,));
+        state.started();
+        state.failed_at(100);
+        assert!(!retry_components_due(
+            &mut runtime,
+            &profile,
+            PowerSource::Battery,
+            4,
+            5_099,
+        ));
+        assert!(retry_components_due(
+            &mut runtime,
+            &profile,
+            PowerSource::Battery,
+            4,
+            5_100,
+        ));
     }
 
     #[test]
@@ -6866,6 +8281,58 @@ mod tests {
     }
 
     #[test]
+    fn battery_threshold_requires_fresh_physical_source_and_selects_presets_independently() {
+        let preferences = rog_core::AutomationPreferences {
+            enabled: true,
+            battery_profile_id: Some("mobile".into()),
+            ac_profile_id: Some("quiet".into()),
+            battery_recovery_profile_id: Some("balanced".into()),
+            battery_threshold_percent: Some(25),
+            battery_return_threshold_percent: Some(80),
+            ..rog_core::AutomationPreferences::default()
+        };
+        let mut policy = PolicyState::new(PolicyConfig { debounce_ms: 5_000 });
+        policy.set_enabled(true);
+        assert!(policy
+            .observe_power_source_with_battery_threshold(0, Some(PowerSource::Battery), true)
+            .is_empty());
+        assert!(policy
+            .observe_power_source_with_battery_threshold(5_000, Some(PowerSource::Battery), true)
+            .is_empty());
+        let mut telemetry = TelemetrySnapshot::empty_now(0);
+        telemetry.power_source = Some(PowerSource::Battery);
+        telemetry.battery_percent = Some(20.0);
+        assert!(
+            battery_threshold_action(&mut policy, 5_000, &preferences, &telemetry, false)
+                .is_empty()
+        );
+        assert!(
+            battery_threshold_action(&mut policy, 5_000, &preferences, &telemetry, true).is_empty()
+        );
+        assert_eq!(
+            battery_threshold_action(&mut policy, 10_000, &preferences, &telemetry, true),
+            vec![PolicyAction::ApplyFor(PowerSource::Battery)]
+        );
+        assert_eq!(
+            selected_automation_profile_id(&preferences, PowerSource::Battery),
+            Some("mobile")
+        );
+        telemetry.battery_percent = Some(81.0);
+        assert!(
+            battery_threshold_action(&mut policy, 11_000, &preferences, &telemetry, true)
+                .is_empty()
+        );
+        assert_eq!(
+            battery_threshold_action(&mut policy, 16_000, &preferences, &telemetry, true),
+            vec![PolicyAction::ApplyRecovery]
+        );
+        assert_eq!(
+            selected_automation_profile_for_action(&preferences, PolicyAction::ApplyRecovery),
+            Some("balanced")
+        );
+    }
+
+    #[test]
     fn automation_skips_privileged_writes_and_risky_components_without_prompting() {
         assert!(battery_automation_requires_authorization(
             "power_supply_sysfs",
@@ -6904,6 +8371,49 @@ mod tests {
         ];
         assert_eq!(automation_result_state(&results, true), "error");
         assert_eq!(automation_result_state(&[], true), "blocked");
+    }
+
+    #[test]
+    fn stale_automation_completion_keeps_readback_without_restoring_old_preset() {
+        let mut status = AutomationRuntimeStatus {
+            state: "monitoring",
+            last_transition_ms: None,
+            last_profile_id: None,
+            pending_profile_id: None,
+            component_results: Vec::new(),
+            source_freshness: "fresh".into(),
+            retry_status: "not scheduled; automation rules changed".into(),
+            explanation: String::new(),
+            last_result: String::new(),
+        };
+        record_stale_automation_completion(
+            &mut status,
+            &["platform profile applied and read back".into()],
+        );
+        assert_eq!(status.state, "monitoring");
+        assert_eq!(status.last_profile_id, None);
+        assert_eq!(status.pending_profile_id, None);
+        assert_eq!(status.component_results[0].state, "confirmed");
+        assert!(status.retry_status.contains("stale operation"));
+
+        status.state = "manual_override";
+        status.retry_status = "cancelled by manual override".into();
+        status.explanation = "Paused by the user.".into();
+        record_stale_automation_completion(
+            &mut status,
+            &["platform profile applied and read back".into()],
+        );
+        assert_eq!(status.state, "manual_override");
+        assert_eq!(status.retry_status, "cancelled by manual override");
+        assert_eq!(status.explanation, "Paused by the user.");
+        assert_eq!(status.component_results[0].state, "confirmed");
+        assert!(status.last_result.contains("stale configuration"));
+
+        status.state = "applying";
+        status.retry_status = "new operation in progress".into();
+        record_stale_automation_completion(&mut status, &["old result".into()]);
+        assert_eq!(status.state, "applying");
+        assert_eq!(status.retry_status, "new operation in progress");
     }
 
     fn value_as_str(map: &HashMap<String, OwnedValue>, key: &str) -> String {
