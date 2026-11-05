@@ -167,6 +167,28 @@ Fedora install:
 sudo dnf install ./rog-helper-<version>-1.x86_64.rpm
 ```
 
+Portable tarball download and verification example (v0.4.0):
+
+```bash
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-linux-x86_64.tar.xz
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt
+asset=rog-helper-0.4.0-linux-x86_64.tar.xz
+manifest=rog-helper-0.4.0-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty tarball: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper-0\.4\.0-linux-x86_64\.tar\.xz$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+```
+
+For another release, use the artifact and manifest names from that release's asset list and ensure
+the version in both download URLs matches the filename. `sha256sum` should print the selected
+artifact name followed by `: OK` before extraction or installation.
+
 Portable prefix install under `/usr/local`:
 
 ```bash
@@ -183,7 +205,8 @@ Notes:
   `/usr/local` prefix; privileged activation uses the fixed absolute
   `/usr/local/libexec/rog-helper-privileged` path and therefore must not be relocated casually
 - direct binary assets are primarily for advanced user-local installs and the UI's safe direct-binary update path
-- verify release assets with the published SHA256 file before installing them
+- download the matching SHA256 manifest separately and verify the exact artifact entry before installing; `README.md` has complete v0.4.0 DEB/RPM/AppImage examples
+- a manifest served beside the artifact detects mismatches but does not independently authenticate the publisher
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
 - the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.4.0`, the correct release tag is `v0.4.0`
 
