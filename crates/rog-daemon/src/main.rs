@@ -7,19 +7,21 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+use futures_util::StreamExt;
 use regex::Regex;
 use rog_core::{
     config_path, config_to_toml, cpu_request_readback_matches, dbus_keys, legacy_ui_config_path,
     load_or_migrate, native_aura_readiness_reason, save_config_atomic, validate_config, AppConfig,
-    AppState, BatteryLimitPercent, BatteryState, ComponentRetryState, CpuAccessState,
-    CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlRequest, CpuPathAccess, CpuPowerMode,
-    CpuTelemetry, DependencyStatus, DeviceCaps, FanCaps, FanControlMode, FanCurve, FanDomain,
-    FanInfo, FanPoint, FanState, FanTelemetry, FeatureAccessState, FeatureAvailability, GpuMode,
-    GpuSwitchState, LightingApplyOutcome, LightingApplyRequest, LightingBackendKind, LightingCaps,
-    LightingDiagnostics, LightingDirection, LightingMode, LightingSpeed, LightingState,
-    NamedProfile, PerformanceProfile, PermissionStatus, PolicyAction, PolicyConfig, PolicyState,
-    PowerSource, ProfileSettings, RgbColor, SetupIssue, SetupStatus, TelemetrySnapshot,
-    PRIVILEGED_API_VERSION,
+    AppState, BatteryFreshnessBarrier, BatteryLimitPercent, BatteryState, ClockObservation,
+    ComponentRetryState, CpuAccessState, CpuAuthorization, CpuCaps, CpuControlAccess,
+    CpuControlRequest, CpuPathAccess, CpuPowerMode, CpuTelemetry, DependencyStatus, DeviceCaps,
+    FanCaps, FanControlMode, FanCurve, FanDomain, FanInfo, FanPoint, FanState, FanTelemetry,
+    FeatureAccessState, FeatureAvailability, FreshnessDecision, FreshnessEvent, FreshnessSample,
+    GpuMode, GpuSwitchState, LightingApplyOutcome, LightingApplyRequest, LightingBackendKind,
+    LightingCaps, LightingDiagnostics, LightingDirection, LightingMode, LightingSpeed,
+    LightingState, NamedProfile, PerformanceProfile, PermissionStatus, PolicyAction, PolicyConfig,
+    PolicyState, PowerSource, ProfileSettings, RgbColor, SetupIssue, SetupStatus,
+    SuspendGapDetector, TelemetrySnapshot, PRIVILEGED_API_VERSION,
 };
 use rog_providers::asusd::AsusdPlatformProvider;
 use rog_providers::aura::{
@@ -63,6 +65,7 @@ struct SharedState {
     lighting_authorization: RwLock<String>,
     native_lighting: RwLock<NativeLightingState>,
     policy: RwLock<PolicyState>,
+    power_freshness: Mutex<BatteryFreshnessBarrier>,
     automation_status: RwLock<AutomationRuntimeStatus>,
     automation_retry: Mutex<AutomationRetryRuntime>,
     automation_write_gate: Mutex<()>,
@@ -72,6 +75,15 @@ struct SharedState {
 
 // shortcut: keep writes disabled until transition and resume behavior are verified.
 const POWER_SOURCE_AUTOMATION_ENABLED: bool = false;
+
+fn initial_power_freshness_barrier() -> BatteryFreshnessBarrier {
+    let mut barrier = BatteryFreshnessBarrier::default();
+    barrier.invalidate(
+        FreshnessEvent::DaemonStartup,
+        now_epoch_secs().unwrap_or(u64::MAX),
+    );
+    barrier
+}
 
 fn usable_battery_source_sample(
     sample: Option<rog_providers::upower::BatterySourceSample>,
@@ -1093,6 +1105,152 @@ struct RogHelperDaemon {
 }
 
 impl RogHelperDaemon {
+    fn observe_battery_freshness(
+        &self,
+        sample: Option<rog_providers::upower::BatterySourceSample>,
+        telemetry_source: Option<PowerSource>,
+        boottime_ms: Option<u64>,
+        now_epoch_secs: Option<u64>,
+    ) -> FreshnessDecision {
+        let _write_intent = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("automation write lock poisoned");
+        let observation = sample.map(|sample| FreshnessSample {
+            source: sample.source,
+            update_time_secs: sample.update_time_secs,
+            source_consistent: telemetry_source == Some(sample.source),
+            fresh: boottime_ms.is_some_and(|now| sample.is_fresh_at(now)),
+        });
+        let mut barrier = self
+            .state
+            .power_freshness
+            .lock()
+            .expect("power freshness mutex poisoned");
+        let decision = barrier.observe(observation, now_epoch_secs.unwrap_or(u64::MAX));
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.state
+                .automation_generation
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        drop(barrier);
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.cancel_automation_after_power_invalidation("power sample or source changed");
+        }
+        decision
+    }
+
+    fn invalidate_power_freshness(&self, event: FreshnessEvent, label: &'static str) {
+        let _write_intent = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("automation write lock poisoned");
+        let mut barrier = self
+            .state
+            .power_freshness
+            .lock()
+            .expect("power freshness mutex poisoned");
+        let decision = barrier.invalidate(event, now_epoch_secs().unwrap_or(u64::MAX));
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.state
+                .automation_generation
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        drop(barrier);
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.cancel_automation_after_power_invalidation(label);
+        }
+    }
+
+    fn observe_sleep_signal(&self, preparing: bool) {
+        let _write_intent = self
+            .state
+            .automation_write_gate
+            .lock()
+            .expect("automation write lock poisoned");
+        let mut barrier = self
+            .state
+            .power_freshness
+            .lock()
+            .expect("power freshness mutex poisoned");
+        let decision = barrier.prepare_for_sleep(preparing, now_epoch_secs().unwrap_or(u64::MAX));
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.state
+                .automation_generation
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        drop(barrier);
+        if matches!(decision, FreshnessDecision::Invalidated { .. }) {
+            self.cancel_automation_after_power_invalidation(if preparing {
+                "system suspend signal"
+            } else {
+                "system resume signal"
+            });
+        }
+    }
+
+    fn cancel_automation_after_power_invalidation(&self, reason: &'static str) {
+        let now = rog_providers::upower::clock_boottime_ms().unwrap_or_default();
+        let config = self.read_config();
+        let mut policy = self.state.policy.write().expect("rwlock poisoned");
+        policy.set_enabled(config.automation.enabled);
+        policy.set_manual_override(config.automation.manual_override);
+        policy.observe_power_source(now, None);
+        let (lower, upper) = config
+            .automation
+            .battery_threshold_percent
+            .map(|lower| (lower, config.automation.battery_return_threshold_percent))
+            .unwrap_or((1, None));
+        policy.observe_battery_threshold(
+            now,
+            None,
+            lower,
+            upper,
+            config.automation.battery_recovery_profile_id.is_some(),
+        );
+        drop(policy);
+        *self.state.automation_retry.lock().expect("mutex poisoned") =
+            AutomationRetryRuntime::default();
+        let mut status = self
+            .state
+            .automation_status
+            .write()
+            .expect("rwlock poisoned");
+        status.pending_profile_id = None;
+        status.retry_status = "cancelled; waiting for post-event battery refresh".into();
+        status.source_freshness = format!("awaiting post-event refresh: {reason}");
+        status.last_result = "No hardware settings were changed automatically.".into();
+        if config.automation.enabled && !config.automation.manual_override {
+            status.state = "blocked";
+            status.explanation = format!(
+                "Battery-dependent automation is blocked after {reason}; a newer physical battery UpdateTime and a fresh stable dwell are required."
+            );
+        }
+    }
+
+    fn battery_freshness_barrier_allows(
+        &self,
+        sample: Option<rog_providers::upower::BatterySourceSample>,
+        telemetry_source: Option<PowerSource>,
+        boottime_ms: Option<u64>,
+    ) -> bool {
+        let (Some(sample), Some(now)) = (sample, boottime_ms) else {
+            return false;
+        };
+        self.state
+            .power_freshness
+            .lock()
+            .expect("power freshness mutex poisoned")
+            .is_eligible(FreshnessSample {
+                source: sample.source,
+                update_time_secs: sample.update_time_secs,
+                source_consistent: telemetry_source == Some(sample.source),
+                fresh: sample.is_fresh_at(now),
+            })
+    }
+
     fn invalidate_automation_runtime(&self, automation: &rog_core::AutomationPreferences) {
         self.state
             .automation_generation
@@ -1439,6 +1597,15 @@ impl RogHelperDaemon {
         telemetry: &TelemetrySnapshot,
         battery_source_sample: Option<rog_providers::upower::BatterySourceSample>,
     ) {
+        let now = rog_providers::upower::clock_boottime_ms().ok();
+        let freshness_decision = self.observe_battery_freshness(
+            battery_source_sample,
+            telemetry.power_source,
+            now,
+            now_epoch_secs(),
+        );
+        let sample_eligible = matches!(freshness_decision, FreshnessDecision::Eligible { .. })
+            && usable_battery_source_sample(battery_source_sample, telemetry.power_source, now);
         let config = self.read_config();
         if !config.automation.enabled {
             *self.state.automation_retry.lock().expect("mutex poisoned") =
@@ -1467,12 +1634,22 @@ impl RogHelperDaemon {
             status.explanation = "Automation is paused after a manual hardware action. Resume explicitly to continue.".into();
             return;
         }
-        let now = rog_providers::upower::clock_boottime_ms().ok();
-        if !usable_battery_source_sample(battery_source_sample, telemetry.power_source, now) {
+        if !sample_eligible
+            || !self.battery_freshness_barrier_allows(
+                battery_source_sample,
+                telemetry.power_source,
+                now,
+            )
+        {
             *self.state.automation_retry.lock().expect("mutex poisoned") =
                 AutomationRetryRuntime::default();
-            let freshness =
-                battery_source_sample_status(battery_source_sample, telemetry.power_source, now);
+            let freshness = match freshness_decision {
+                FreshnessDecision::AwaitingRefresh { .. } => "awaiting post-event refresh",
+                FreshnessDecision::Suspended { .. } => "suspended",
+                _ => {
+                    battery_source_sample_status(battery_source_sample, telemetry.power_source, now)
+                }
+            };
             let mut policy = self.state.policy.write().expect("rwlock poisoned");
             policy.set_enabled(config.automation.enabled);
             policy.set_manual_override(config.automation.manual_override);
@@ -1863,7 +2040,9 @@ impl RogHelperDaemon {
         }
         let now = rog_providers::upower::clock_boottime_ms()
             .map_err(|error| format!("CLOCK_BOOTTIME unavailable: {error}"))?;
-        if !usable_battery_source_sample(sample, telemetry.power_source, Some(now)) {
+        if !usable_battery_source_sample(sample, telemetry.power_source, Some(now))
+            || !self.battery_freshness_barrier_allows(sample, telemetry.power_source, Some(now))
+        {
             return Err("physical battery source sample is missing, inconsistent, or stale".into());
         }
         let threshold_matches = match action {
@@ -2309,6 +2488,7 @@ impl RogHelperDaemon {
             config.automation.manual_override = false;
             Ok(())
         })?;
+        self.invalidate_power_freshness(FreshnessEvent::ClockResume, "explicit automation resume");
         self.state.policy.write().expect("rwlock poisoned").resume();
         *self.state.automation_retry.lock().expect("mutex poisoned") =
             AutomationRetryRuntime::default();
@@ -2322,7 +2502,9 @@ impl RogHelperDaemon {
         } else {
             "disabled"
         };
-        status.explanation = "Automation resumed by the user; the current rule will be evaluated on the next power sample.".into();
+        status.source_freshness = "awaiting post-resume physical battery refresh".into();
+        status.retry_status = "cancelled; waiting for post-resume refresh".into();
+        status.explanation = "Automation resumed by the user; a newly timestamped physical battery sample and fresh dwell are required before evaluation.".into();
         info!(target: "rog_helper::policy", event = "resume", "automatic policy resumed explicitly");
         Ok(())
     }
@@ -3850,6 +4032,7 @@ async fn main() -> anyhow::Result<()> {
         lighting_authorization: RwLock::new("not_checked".to_string()),
         native_lighting: RwLock::new(NativeLightingState::default()),
         policy: RwLock::new(policy),
+        power_freshness: Mutex::new(initial_power_freshness_barrier()),
         automation_status: RwLock::new(automation_status),
         automation_retry: Mutex::new(AutomationRetryRuntime::default()),
         automation_write_gate: Mutex::new(()),
@@ -3893,12 +4076,104 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_nvidia = None;
     let mut nvidia_status = "nvidia-smi not checked yet".to_string();
     let mut nvidia_warning: Option<String> = None;
+    let mut suspend_gap_detector = SuspendGapDetector::default();
+    let sleep_daemon = daemon.clone();
+    tokio::spawn(async move {
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.login1")
+            .expect("static logind sender is valid")
+            .interface("org.freedesktop.login1.Manager")
+            .expect("static logind interface is valid")
+            .member("PrepareForSleep")
+            .expect("static logind member is valid")
+            .path("/org/freedesktop/login1")
+            .expect("static logind path is valid")
+            .build();
+        loop {
+            match zbus::Connection::system().await {
+                Ok(connection) => {
+                    match zbus::MessageStream::for_match_rule(rule.clone(), &connection, Some(8))
+                        .await
+                    {
+                        Ok(mut stream) => {
+                            while let Some(message) = stream.next().await {
+                                match message {
+                                    Ok(message) => match message.body().deserialize::<bool>() {
+                                        Ok(preparing) => {
+                                            sleep_daemon.observe_sleep_signal(preparing)
+                                        }
+                                        Err(error) => {
+                                            warn!("invalid logind PrepareForSleep signal; invalidating battery freshness: {error}");
+                                            sleep_daemon.invalidate_power_freshness(
+                                                FreshnessEvent::ClockAnomaly,
+                                                "invalid logind sleep signal",
+                                            );
+                                        }
+                                    },
+                                    Err(error) => {
+                                        warn!("logind signal stream failed; invalidating battery freshness: {error}");
+                                        sleep_daemon.invalidate_power_freshness(
+                                            FreshnessEvent::ClockAnomaly,
+                                            "logind signal stream failure",
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!("logind sleep signal subscription unavailable; clock-gap detection remains active: {error}");
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!("system D-Bus unavailable for logind suspend signals; clock-gap detection remains active: {error}");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 let mut warnings = Vec::new();
                 let mut battery_source_sample = None;
+                match (
+                    rog_providers::upower::clock_boottime_ms(),
+                    rog_providers::upower::clock_monotonic_ms(),
+                ) {
+                    (Ok(boottime_ms), Ok(monotonic_ms)) => {
+                        match suspend_gap_detector.observe(boottime_ms, monotonic_ms) {
+                            ClockObservation::Resumed { gap_ms } => {
+                                daemon.invalidate_power_freshness(
+                                    FreshnessEvent::ClockResume,
+                                    "CLOCK_BOOTTIME resume gap",
+                                );
+                                warnings.push(format!(
+                                    "suspend/resume freshness barrier activated after {gap_ms}ms clock gap"
+                                ));
+                            }
+                            ClockObservation::Anomaly => {
+                                daemon.invalidate_power_freshness(
+                                    FreshnessEvent::ClockAnomaly,
+                                    "clock regression or anomaly",
+                                );
+                                warnings.push("clock anomaly; battery automation freshness invalidated".into());
+                            }
+                            ClockObservation::Baseline | ClockObservation::Steady => {}
+                        }
+                    }
+                    _ => {
+                        suspend_gap_detector.reset();
+                        daemon.invalidate_power_freshness(
+                            FreshnessEvent::ClockAnomaly,
+                            "suspend detection clock unavailable",
+                        );
+                        warnings.push("suspend detection clocks unavailable; battery automation remains blocked".into());
+                    }
+                }
                 let cpu_caps = cpu.probe_caps();
                 daemon.set_cpu_caps(cpu_caps.clone());
 
@@ -4064,7 +4339,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                let upower_connect_error = if upower.is_none() {
+                let upower_was_disconnected = upower.is_none();
+                let upower_connect_error = if upower_was_disconnected {
                     reconnect_optional_provider(
                         &mut upower,
                         &mut upower_retry,
@@ -4076,6 +4352,12 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     None
                 };
+                if upower_was_disconnected && upower.is_some() {
+                    daemon.invalidate_power_freshness(
+                        FreshnessEvent::UPowerReconnect,
+                        "UPower reconnection",
+                    );
+                }
                 if let Some(provider) = &upower {
                     match provider.read_status().await {
                         Ok(status) => {
@@ -4084,6 +4366,10 @@ async fn main() -> anyhow::Result<()> {
                             apply_upower_status(&mut telemetry, Some(status));
                         }
                         Err(error) => {
+                            daemon.invalidate_power_freshness(
+                                FreshnessEvent::UPowerReconnect,
+                                "UPower read failure",
+                            );
                             upower = None;
                             upower_retry.failed(Instant::now());
                             let retry_seconds = upower_retry.seconds_until_retry(Instant::now());
@@ -4371,6 +4657,13 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn now_epoch_secs() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 fn detect_kbd_backlight() -> bool {

@@ -503,6 +503,21 @@ pub fn clock_boottime_ms() -> RogResult<u64> {
         .ok_or_else(|| RogError::Unexpected("CLOCK_BOOTTIME value overflowed".into()))
 }
 
+pub fn clock_monotonic_ms() -> RogResult<u64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
+    if result != 0 || time.tv_sec < 0 || time.tv_nsec < 0 {
+        return Err(RogError::Unexpected("CLOCK_MONOTONIC read failed".into()));
+    }
+    (time.tv_sec as u64)
+        .checked_mul(1_000)
+        .and_then(|millis| millis.checked_add(time.tv_nsec as u64 / 1_000_000))
+        .ok_or_else(|| RogError::Unexpected("CLOCK_MONOTONIC value overflowed".into()))
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
