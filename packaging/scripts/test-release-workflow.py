@@ -67,3 +67,22 @@ assert "rog-helper-0.4.0-linux-x86_64.tar.xz" in build_guide
 assert "curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt" in build_guide
 assert 'sha256sum --check "$asset.sha256"' in build_guide
 print("Release download and checksum documentation tests passed")
+
+ci_workflow = workflow.parent / "ci.yml"
+ci_lines = ci_workflow.read_text().splitlines()
+ci_text = "\n".join(ci_lines)
+ci_action_lines = [line.strip() for line in ci_lines if re.match(r"\s*uses:", line)]
+for line in ci_action_lines:
+    assert re.fullmatch(r"uses: [^@]+@[0-9a-f]{40} # .+", line), line
+assert "permissions:\n  contents: read" in ci_text
+assert "contents: write" not in ci_text
+assert ci_text.count("persist-credentials: false") == 3
+assert ci_text.count("retention-days: 14") == 2
+assert ci_text.count("if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')") == 2
+assert ci_text.count("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4") == 3
+for inventory in ("candidate-artifact-inventory.txt", "sha256sum --check \"$manifest\""):
+    assert ci_text.count(inventory) >= 2, inventory
+assert ci_text.index("Verify and describe AppImage candidate") < ci_text.index("Retain candidate AppImage artifact")
+assert ci_text.index("Verify and describe Fedora RPM candidate") < ci_text.index("Retain candidate Fedora RPM artifact")
+assert "secrets." not in ci_text
+print("Candidate artifact retention permission, provenance, and checksum tests passed")
