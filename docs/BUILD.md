@@ -208,7 +208,7 @@ Notes:
 - download the matching SHA256 manifest separately and verify the exact artifact entry before installing; `README.md` has complete v0.4.0 DEB/RPM/AppImage examples
 - a manifest served beside the artifact detects mismatches but does not independently authenticate the publisher
 - a future APT repository can be staged locally with `packaging/scripts/stage-apt-repo.sh`, but no signed public repository is live yet
-- the release workflow only publishes from a tag named `v<workspace.package.version>`; with the current workspace version `0.4.0`, the correct release tag is `v0.4.0`
+- the release workflow only publishes from a tag named `v<workspace.package.version>`; the v0.4.1 candidate requires the approved tag `v0.4.1`
 
 ## Optional Desktop Launcher Install
 
@@ -338,7 +338,7 @@ This installs from the current repository checkout through the bundled
 Notes:
 
 - the `PKGBUILD` auto-detects the repository root when run from `packaging/arch`
-- the committed `.SRCINFO` is generated against the upstream `v0.4.0` tag
+- the committed `.SRCINFO` is prepared against the proposed upstream `v0.4.1` tag
 - the same packaging defaults to the upstream tagged Git source when moved into
   an AUR repository
 - the Arch package does not auto-enable the user service; enable it manually
