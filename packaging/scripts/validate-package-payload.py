@@ -35,7 +35,7 @@ REQUIRED_FILES = {
     "usr/share/doc/rog-helper/copyright": 0o644,
 }
 REQUIRED_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
-REQUIRED_DEPENDS = {"dbus", "dbus-user-session", "policykit-1", "systemd", "udev"}
+REQUIRED_DEPENDS = {"dbus", "dbus-user-session", "polkitd", "systemd", "udev"}
 REQUIRED_RECOMMENDS = {"desktop-file-utils", "gtk-update-icon-cache"}
 REQUIRED_SUGGESTS = {"asusd", "pciutils", "supergfxd", "upower"}
 
@@ -129,6 +129,9 @@ def validate_control(root: Path) -> None:
     for field in ("Version", "Architecture", "Maintainer", "Description"):
         if not control.get(field):
             fail(f"Debian control field is missing: {field}")
+    depends = relationship_names(control.get("Depends", ""))
+    if "policykit-1" in depends:
+        fail("Debian Depends must use polkitd; policykit-1 is an obsolete transitional package")
     for field, required in (
         ("Depends", REQUIRED_DEPENDS),
         ("Recommends", REQUIRED_RECOMMENDS),

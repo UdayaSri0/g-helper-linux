@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -187,6 +188,60 @@ def validate_current_package(package: Package) -> None:
     helper = package.tree / "usr/libexec/rog-helper-privileged"
     if b"SetAuraEffect" not in helper.read_bytes():
         raise TestFailure("current API-v3 privileged helper does not expose SetAuraEffect (introduced in v2)")
+    depends = query_field(package.deb, "Depends")
+    dependency_names = {
+        alternative.strip().split()[0]
+        for clause in depends.split(",")
+        for alternative in clause.split("|")
+        if alternative.strip()
+    }
+    if "polkitd" not in dependency_names:
+        raise TestFailure("generated Debian Depends metadata must include polkitd")
+    if "policykit-1" in dependency_names:
+        raise TestFailure("generated Debian Depends metadata must not include obsolete policykit-1")
+
+
+def test_dependency_validator_rejects_obsolete_policykit_package() -> None:
+    root = Path(__file__).resolve().parents[2]
+    validator_path = root / "packaging/scripts/validate-package-payload.py"
+    spec = importlib.util.spec_from_file_location("package_payload_validator", validator_path)
+    if spec is None or spec.loader is None:
+        raise TestFailure("could not load package payload validator")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+
+    with tempfile.TemporaryDirectory(prefix="rog-helper-depends-test-") as temporary:
+        control = Path(temporary) / "DEBIAN"
+        control.mkdir()
+        metadata = (
+            "Package: rog-helper\nVersion: 0.4.1\nArchitecture: amd64\n"
+            "Maintainer: ROG Helper contributors\nDescription: test package\n"
+            "Recommends: desktop-file-utils, gtk-update-icon-cache\n"
+            "Suggests: asusd, pciutils, supergfxd, upower\n"
+        )
+        for script in ("postinst", "postrm"):
+            path = control / script
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.chmod(0o755)
+
+        control_path = control / "control"
+        control_path.write_text(
+            metadata + "Depends: dbus, dbus-user-session, polkitd, systemd, udev\n",
+            encoding="utf-8",
+        )
+        validator.validate_control(Path(temporary))
+
+        control_path.write_text(
+            metadata + "Depends: dbus, dbus-user-session, policykit-1, systemd, udev\n",
+            encoding="utf-8",
+        )
+        try:
+            validator.validate_control(Path(temporary))
+        except AssertionError as error:
+            if "obsolete transitional package" not in str(error):
+                raise TestFailure(f"obsolete dependency failed for the wrong reason: {error}") from error
+        else:
+            raise TestFailure("package validator accepted obsolete policykit-1 dependency")
 
 
 def exercise(current: Package, previous: Package | None, root: Path, work: Path) -> None:
@@ -282,6 +337,8 @@ def main() -> int:
             work = Path(temporary)
             current = Package(args.deb, work, "current")
             previous = Package(args.previous, work, "previous") if args.previous else None
+            test_dependency_validator_rejects_obsolete_policykit_package()
+            print("Debian dependency metadata regression PASS")
             validate_current_package(current)
             root = work / "clean-root"
             root.mkdir()
