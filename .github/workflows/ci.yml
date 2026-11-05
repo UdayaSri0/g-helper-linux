@@ -172,9 +172,6 @@ jobs:
       - name: Build Fedora RPM
         run: packaging/scripts/build-rpm.sh dist/fedora-ci
 
-      - name: Inspect RPM Contents
-        run: rpm -qpl dist/fedora-ci/*.rpm | sed -n '1,200p'
-
       - name: Test RPM install, upgrade, and erase
         run: |
           packages=(dist/fedora-ci/*.rpm)
@@ -193,6 +190,14 @@ jobs:
           (
             cd dist/fedora-ci
             sha256sum --check "$manifest"
+            rpm -K --nosignature "$rpm"
+            [[ "$(rpm -qp --qf '%{VERSION} %{ARCH}' "$rpm")" == "$version $(uname -m)" ]]
+            {
+              rpm -qpi "$rpm"
+              rpm -qpl "$rpm"
+              rpm -qp --requires "$rpm"
+              rpm -qp --scripts "$rpm"
+            } | tee rpm-inspection.txt
             {
               printf 'repository=%s\ncommit=%s\nworkflow=%s\nrun_id=%s\nversion=%s\narchitecture=%s\nrustc=%s\nrpm=%s\n' \
                 "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKFLOW" "$GITHUB_RUN_ID" \
@@ -211,5 +216,6 @@ jobs:
             dist/fedora-ci/*.rpm
             dist/fedora-ci/*RPM-SHA256SUMS.txt
             dist/fedora-ci/candidate-artifact-inventory.txt
+            dist/fedora-ci/rpm-inspection.txt
           if-no-files-found: error
           retention-days: 14
