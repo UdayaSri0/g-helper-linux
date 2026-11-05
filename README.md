@@ -273,13 +273,27 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 
 ## Debian / Ubuntu / Mint Installation
 
-Direct `.deb` install:
+Direct `.deb` install (run in a new, empty directory):
 
 ```bash
-sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
-sudo apt install ./rog-helper_0.4.0_amd64.deb
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper_0.4.0_amd64.deb
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt
+asset=rog-helper_0.4.0_amd64.deb
+manifest=rog-helper-0.4.0-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty package: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper_0\.4\.0_amd64\.deb$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+sudo apt install "./$asset"
 rog-helper privileged-status
 ```
+
+The targeted check fails if either download is missing or empty, the manifest does not contain exactly one entry for this versioned package, or its checksum differs. After `OK`, the temporary `.sha256` file can be removed. A SHA256 manifest downloaded from the same release site detects accidental or in-transit changes; it does not independently authenticate the publisher.
 
 No manual systemd, D-Bus, PolicyKit, udev, device-permission, or daemon setup is required.
 Launching `rog-helper-ui` activates the unprivileged session daemon on demand. The package
@@ -307,11 +321,23 @@ systemctl --user daemon-reload
 
 ## Fedora Installation
 
-Direct `.rpm` install:
+Direct `.rpm` install (run in a new, empty directory):
 
 ```bash
-sha256sum -c rog-helper-0.4.0-RPM-SHA256SUMS.txt --ignore-missing
-sudo dnf install ./rog-helper-0.4.0-1.x86_64.rpm
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-1.x86_64.rpm
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-RPM-SHA256SUMS.txt
+asset=rog-helper-0.4.0-1.x86_64.rpm
+manifest=rog-helper-0.4.0-RPM-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty package: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper-0\.4\.0-1\.x86_64\.rpm$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+sudo dnf install "./$asset"
 ```
 
 Optional user-session daemon enablement:
@@ -419,12 +445,24 @@ sudo apt install rog-helper
 
 ## AppImage Usage
 
-Download the AppImage and verify it before first run:
+Download the AppImage and its manifest, then verify the exact file before first run:
 
 ```bash
-sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
-chmod +x rog-helper-v0.4.0-x86_64.AppImage
-./rog-helper-v0.4.0-x86_64.AppImage
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-v0.4.0-x86_64.AppImage
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt
+asset=rog-helper-v0.4.0-x86_64.AppImage
+manifest=rog-helper-0.4.0-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty AppImage: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper-v0\.4\.0-x86_64\.AppImage$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+chmod +x "$asset"
+"./$asset"
 ```
 
 The AppImage bundles:
