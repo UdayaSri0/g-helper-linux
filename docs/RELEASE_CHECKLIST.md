@@ -81,7 +81,7 @@ Current repository note:
 - [ ] `packaging/scripts/build-release-assets.sh` reviewed
 - [ ] user-service install flow tested
 - [ ] `ExecStart` / `Exec` paths are valid for the release target
-- [ ] release artifact names and SHA256 files reviewed
+- [ ] each documented download fetches both the exact artifact and its version-matched SHA256 manifest; exact artifact checksum verifies from an empty directory
 
 Current repository note:
 
