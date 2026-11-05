@@ -24,6 +24,21 @@ transitions, and suspend/resume are not characterized. Unverified environments r
 The proposed 1.0 percentage-point energy/percentage tolerance is not established and is not used
 to authorize automation.
 
+The 2026-10-29 read-only charging capture also observed 30-second physical battery `UpdateTime`
+refreshes over ten minutes, with maximum sample age 29.620 seconds and a maximum
+Percentage-to-energy-ratio difference of 0.0012 percentage points. Together with the earlier
+discharging capture, this supports only the provisional 60-second age candidate in the observed
+steady states. No transition or suspend/resume evidence was collected; the energy tolerance remains
+provisional.
+
+The daemon invalidates pending dwell and retries on a validated source change, UPower disconnect or
+reconnect, logind suspend/resume signal, or detected `CLOCK_BOOTTIME`/`CLOCK_MONOTONIC` gap. It
+requires a physical battery `UpdateTime` later than the recorded event floor and consistent UPower
+and line-power source readings before policy dwell can restart. If logind signalling is unavailable,
+clock-gap detection provides a fallback; if clocks are unavailable or anomalous, eligibility remains
+blocked. These checks have fake-clock regression coverage only; actual transition and resume timing
+still require deliberate read-only observation by a user.
+
 Automatic hardware writes remain disabled in the daemon. The daemon has per-component three-attempt
 retry scheduling (initial attempt, then five seconds and thirty seconds), generation/source
 cancellation, per-operation revalidation, and readback-confirmed component status. The retry path

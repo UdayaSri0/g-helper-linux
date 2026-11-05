@@ -40,6 +40,17 @@ verified safeguards.
   The proposed 1.0 percentage-point tolerance remains provisional and must be
   independently justified before enforcement.
 
+The separate read-only charging observation on 2026-10-29 also lasted 10
+minutes at a two-second cadence (301 samples). It recorded AC charging
+throughout, 30-second `UpdateTime` intervals, a maximum sample age of 29.620
+seconds, update delays of 1.618–1.620 seconds, and a maximum Percentage-to-
+energy-ratio difference of 0.0012 percentage points. It observed no missing,
+stale, or inconsistent samples. The combined steady-state observations support
+the 60-second candidate for the observed discharging and charging states only.
+Neither capture contains an AC/Battery transition or suspend/resume event, so
+transition convergence and post-resume refresh remain unobserved. Do not
+finalize an energy plausibility tolerance from these steady-state samples.
+
 ## Runtime safeguards
 
 The provider requires one present physical battery and a matching UPower
@@ -59,6 +70,26 @@ disabled for every environment, so these observations do not authorize
 physical control. Any future write-enabling change must add a reviewed way to
 identify verified environments and revalidate source freshness before each
 component write.
+
+## Transition and resume barrier
+
+The daemon invalidates battery automation eligibility when its validated
+physical battery source changes, UPower becomes unavailable or reconnects, a
+`PrepareForSleep` signal is received, or clock-gap detection indicates resume.
+Invalidation advances the automation generation and clears pending dwell and
+retry state. The barrier records the last physical battery `UpdateTime` and
+requires a strictly newer `UpdateTime`, matching UPower `OnBattery` and
+line-power `Online` readings, and a new policy dwell. Re-reading a cached
+`GetAll` property set does not clear it.
+
+The daemon subscribes to logind `PrepareForSleep` when system D-Bus is
+available. It also compares `CLOCK_BOOTTIME` with `CLOCK_MONOTONIC` on its
+one-second loop; a gap greater than 50 ms invalidates eligibility if the signal
+was missed. Clock read failure or regression invalidates eligibility. These
+software barriers are covered by deterministic fake-clock tests, but neither
+real AC/Battery transitions nor suspend/resume has been observed on this
+device. A delayed or missing physical `UpdateTime` refresh leaves the barrier
+closed. This is not physical validation and does not enable writes.
 
 ## Safety and uncertainty
 
