@@ -38,3 +38,8 @@ All changes are lockfile-only, use advisory-patched releases, and passed the wor
 | RUSTSEC-2026-0372 | zvariant_derive 5.9.2 | Unmaintained derive crate; zbus 5 dependency graph. | Same zbus 6 migration constraint; no known vulnerability is reported by this advisory. |
 
 The remaining three unmaintained-crate warnings are surfaced in CI but do not fail the vulnerability gate. CI fails on unexcepted vulnerabilities, unsound dependencies, and yanked releases. There are currently no advisory exceptions. A clean scan is limited to the exact lockfile and advisory database revision recorded in that run.
+
+
+## Current v0.4.1 lockfile advisories (2026-11-06)
+
+A refreshed advisory database (`26fd2d43f7280a1fb925a3743ec463017afe7119`; cargo-audit 0.22.2) reports four **unmaintained** crates in `Cargo.lock`: `zbus_names 4.3.1` (RUSTSEC-2026-0371), `zvariant 5.9.2` (RUSTSEC-2026-0370), `zvariant_derive 5.9.2` (RUSTSEC-2026-0372), and `pin-utils 0.1.0` (RUSTSEC-2026-0441). These advisories identify maintenance status; they are not confirmed exploitable vulnerability findings. No vulnerability advisory is reported for the exact lockfile. Keep these notices visible and do not make a major dependency migration as part of release hardening.
