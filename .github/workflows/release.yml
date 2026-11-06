@@ -16,6 +16,8 @@ permissions:
 jobs:
   linux-release:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload_release.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -110,6 +112,7 @@ jobs:
         run: packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview
 
       - name: Upload Release Package Artifacts
+        id: upload_release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-packages-${{ github.ref_name }}
@@ -132,6 +135,8 @@ jobs:
 
   fedora-rpm:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload_rpm.outputs.artifact-id }}
     container: fedora:42
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -170,6 +175,7 @@ jobs:
         run: packaging/scripts/build-rpm.sh dist
 
       - name: Upload Fedora RPM Artifact
+        id: upload_rpm
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fedora-rpm-${{ github.ref_name }}
@@ -178,68 +184,122 @@ jobs:
             dist/*RPM-SHA256SUMS.txt
           if-no-files-found: error
 
-  publish-release:
+  verify-release-assets:
     needs: [linux-release, fedora-rpm]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.linux-release.outputs.artifact_id }}
+          path: ${{ runner.temp }}/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.fedora-rpm.outputs.artifact_id }}
+          path: ${{ runner.temp }}/rpm
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install RPM metadata reader
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm
+      - name: Verify exact candidate inventory and provenance
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 packaging/scripts/verify-release-assets.py \
+            --linux-dir "$RUNNER_TEMP/linux" --rpm-dir "$RUNNER_TEMP/rpm" \
+            --output-dir "$RUNNER_TEMP/verified" --provenance "$RUNNER_TEMP/provenance.txt" \
+            --tag "$TAG" --commit "$COMMIT" --run-id "$RUN_ID"
+      - name: Upload single verified release bundle
+        id: bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/verified/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload readable verification provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-provenance-${{ github.run_id }}
+          path: ${{ runner.temp }}/provenance.txt
+          if-no-files-found: error
+          retention-days: 90
+    outputs:
+      bundle_artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+
+  verify-release-environment:
+    needs: verify-release-assets
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-packages-${{ github.ref_name }}
-          path: dist
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: fedora-rpm-${{ github.ref_name }}
-          path: dist
-
-      - name: Detect Release Notes
-        id: release_notes
+      - name: Read saved release environment protections
         env:
-          GIT_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
+          ACTOR: ${{ github.actor }}
         run: |
-          path="docs/releases/${GIT_TAG}.md"
-          if [[ -f "$path" ]]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          base="$API_URL/repos/$REPOSITORY/environments/release-publish"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base" > "$RUNNER_TEMP/environment.json"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
+          python3 packaging/scripts/check-release-environment.py --environment "$RUNNER_TEMP/environment.json" --policies "$RUNNER_TEMP/policies.json" --actor "$ACTOR"
 
-      - name: Publish Release With Notes
-        if: steps.release_notes.outputs.present == 'true'
+  publish-release:
+    needs: [verify-release-assets, verify-release-environment]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: release-publish
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id }}
+          path: dist
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require matching release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test "$TAG" = v0.4.1 && test -s "docs/releases/$TAG.md"
+      - name: Add verified provenance to the draft notes
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          cp "docs/releases/$TAG.md" "$RUNNER_TEMP/release-body.md"
+          printf '\n\n---\n\nVerified build provenance\n\n- Tag: `%s`\n- Commit: `%s`\n- GitHub Actions run: `%s`\n' \
+            "$TAG" "$COMMIT" "$RUN_ID" >> "$RUNNER_TEMP/release-body.md"
+      - name: Create protected draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.tar.xz
+            dist/rog-helper_0.4.1_amd64.deb
+            dist/rog-helper-0.4.1-1.x86_64.rpm
+            dist/rog-helper-v0.4.1-x86_64.AppImage
+            dist/rog-helper-0.4.1-linux-x86_64.tar.xz
             dist/rog-helper
             dist/rog-helperd
             dist/rog-helper-ui
-            dist/*SHA256SUMS.txt
-            dist/*.rpm
-            dist/*RPM-SHA256SUMS.txt
-          body_path: docs/releases/${{ github.ref_name }}.md
-          fail_on_unmatched_files: true
-
-      - name: Publish Release
-        if: steps.release_notes.outputs.present != 'true'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          files: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.tar.xz
-            dist/rog-helper
-            dist/rog-helperd
-            dist/rog-helper-ui
-            dist/*SHA256SUMS.txt
-            dist/*.rpm
-            dist/*RPM-SHA256SUMS.txt
+            dist/rog-helper-0.4.1-SHA256SUMS.txt
+            dist/rog-helper-0.4.1-RPM-SHA256SUMS.txt
+          body_path: ${{ runner.temp }}/release-body.md
+          draft: true
+          target_commitish: ${{ github.sha }}
+          tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true

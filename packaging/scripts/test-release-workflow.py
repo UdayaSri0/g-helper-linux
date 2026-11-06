@@ -13,13 +13,25 @@ for line in action_lines:
     assert re.fullmatch(r"uses: [^@]+@[0-9a-f]{40} # .+", line), line
 
 assert text.count("contents: write") == 1, "only the publisher may have write access"
-assert "    permissions:\n      contents: write\n    steps:" in text
-assert "  publish-release:\n    needs: [linux-release, fedora-rpm]" in text
-assert text.count("name: release-packages-${{ github.ref_name }}") == 2
-assert text.count("name: fedora-rpm-${{ github.ref_name }}") == 2
-assert text.count("persist-credentials: false") == 3
+assert "  publish-release:\n    needs: [verify-release-assets, verify-release-environment]" in text
+assert "  verify-release-assets:\n    needs: [linux-release, fedora-rpm]" in text
+assert "  verify-release-environment:\n    needs: verify-release-assets" in text
+assert "    environment:\n      name: release-publish" in text
+assert "artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id }}" in text
+assert text.count("persist-credentials: false") == 5
 assert text.count('if [[ "$GIT_REF" != refs/tags/v* ]]') == 2
 assert "if: startsWith(github.ref, 'refs/tags/v')" in text
+assert "draft: true" in text and "body_path: ${{ runner.temp }}/release-body.md" in text
+assert "Verified build provenance" in text and "COMMIT: ${{ github.sha }}" in text
+assert "check-release-environment.py" in text
+assert "secrets." not in text
+for filename in (
+    "rog-helper_0.4.1_amd64.deb", "rog-helper-0.4.1-1.x86_64.rpm",
+    "rog-helper-v0.4.1-x86_64.AppImage", "rog-helper-0.4.1-linux-x86_64.tar.xz",
+    "rog-helper", "rog-helperd", "rog-helper-ui",
+    "rog-helper-0.4.1-SHA256SUMS.txt", "rog-helper-0.4.1-RPM-SHA256SUMS.txt",
+):
+    assert filename in text
 
 publisher_start = lines.index("  publish-release:")
 build_jobs = "\n".join(lines[:publisher_start])
@@ -28,6 +40,7 @@ publisher = "\n".join(lines[publisher_start:])
 assert "actions/download-artifact@" in publisher
 assert "softprops/action-gh-release@" in publisher
 assert "cargo build" not in publisher and "packaging/scripts/" not in publisher
+assert "draft: true" in publisher
 
 print("Release workflow permission and action-pin tests passed")
 
@@ -50,6 +63,7 @@ print("AppImage tool pin coverage tests passed")
 docs_root = workflow.parents[2] / "docs"
 readme = (workflow.parents[2] / "README.md").read_text()
 release_notes = (docs_root / "releases/v0.4.0.md").read_text()
+v041_notes = (docs_root / "releases/v0.4.1.md").read_text()
 build_guide = (docs_root / "BUILD.md").read_text()
 for artifact, manifest in (
     ("rog-helper_0.4.0_amd64.deb", "rog-helper-0.4.0-SHA256SUMS.txt"),
@@ -63,6 +77,11 @@ for artifact, manifest in (
 assert "rog-helper_0.4.0_amd64.deb" in release_notes
 assert "curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt" in release_notes
 assert 'sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing' not in readme + release_notes
+assert "rog-helper_0.4.1_amd64.deb" in v041_notes
+assert "grep -E '^[[:xdigit:]]{64}  rog-helper_0\\.4\\.1_amd64\\.deb$'" in v041_notes
+assert 'test "$(wc -l < "$asset.sha256")" -eq 1' in v041_notes
+assert 'sha256sum --check "$asset.sha256"' in v041_notes
+assert "independently authenticated digital signature" in v041_notes
 assert "rog-helper-0.4.0-linux-x86_64.tar.xz" in build_guide
 assert "curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt" in build_guide
 assert 'sha256sum --check "$asset.sha256"' in build_guide
