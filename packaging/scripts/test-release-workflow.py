@@ -17,7 +17,21 @@ assert "  publish-release:\n    needs: [verify-release-assets, verify-release-en
 assert "  verify-release-assets:\n    needs: [linux-release, fedora-rpm]" in text
 assert "  verify-release-environment:\n    needs: verify-release-assets" in text
 assert "    environment:\n      name: release-publish" in text
-assert "artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id || 'invalid' }}" in text
+# The pinned action only extracts ID-selected artifacts directly into path
+# when merge-multiple is true, even when exactly one ID is selected.
+downloads = re.findall(r"^      - uses: actions/download-artifact@[^\n]+\n"
+                       r"        with:\n((?:          [^\n]+\n)+)", text, re.MULTILINE)
+assert len(downloads) == 3
+for download, (source, destination) in zip(downloads, (
+    ("linux-release.outputs.artifact_id", "linux"),
+    ("fedora-rpm.outputs.artifact_id", "rpm"),
+    ("verify-release-assets.outputs.bundle_artifact_id", "verified"),
+), strict=True):
+    assert dict(line.strip().split(": ", 1) for line in download.splitlines()) == {
+        "artifact-ids": "${{ needs." + source + " || 'invalid' }}",
+        "merge-multiple": "true",
+        "path": "${{ runner.temp }}/" + destination,
+    }, destination
 assert text.count("persist-credentials: false") == 5
 assert text.count('if [[ "$GIT_REF" != refs/tags/v* ]]') == 2
 assert "if: startsWith(github.ref, 'refs/tags/v')" in text
