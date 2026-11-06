@@ -446,8 +446,7 @@ write_sha256sums() {
       for asset in \
         "$PACKAGE_NAME" \
         "${PACKAGE_NAME}d" \
-        "${PACKAGE_NAME}-ui" \
-        "${PACKAGE_NAME}-privileged"; do
+        "${PACKAGE_NAME}-ui"; do
         [[ -f "$asset" ]] && printf '%s\0' "$asset"
       done
       find . -maxdepth 1 -type f \
