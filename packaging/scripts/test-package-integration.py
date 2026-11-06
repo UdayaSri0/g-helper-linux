@@ -47,14 +47,15 @@ class PackageIntegration(unittest.TestCase):
     def test_checksums_include_all_native_assets_and_skip_unrelated_versions(self):
         import tomllib
         version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-        names = ["rog-helper", f"rog-helper_{version}_amd64.deb", f"rog-helper-{version}-1.x86_64.rpm", f"rog-helper-v{version}-x86_64.AppImage", f"rog-helper-{version}-linux-x86_64.tar.xz"]
-        for name in names + ["rog-helper-0.0.0-1.x86_64.rpm"]:
+        names = ["rog-helper", "rog-helper-ui", "rog-helperd", f"rog-helper_{version}_amd64.deb", f"rog-helper-{version}-1.x86_64.rpm", f"rog-helper-v{version}-x86_64.AppImage", f"rog-helper-{version}-linux-x86_64.tar.xz"]
+        for name in names + ["rog-helper-privileged", "rog-helper-0.0.0-1.x86_64.rpm"]:
             (self.root / name).touch()
         common = shlex.quote(str(ROOT / "packaging/scripts/package-common.sh"))
         subprocess.run(["bash", "-c", f"source {common}; write_sha256sums {shlex.quote(str(self.root))}"], check=True)
         manifest = (self.root / f"rog-helper-{version}-SHA256SUMS.txt").read_text()
         for name in names:
             self.assertIn(name, manifest)
+        self.assertNotIn("rog-helper-privileged", manifest)
         self.assertNotIn("0.0.0", manifest)
         subprocess.run(["sha256sum", "--check", f"rog-helper-{version}-SHA256SUMS.txt"], cwd=self.root, check=True, capture_output=True)
 

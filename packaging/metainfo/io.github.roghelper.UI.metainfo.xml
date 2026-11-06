@@ -23,6 +23,14 @@
   </categories>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.1" date="2026-11-06" type="stable">
+      <description>
+        <p>
+          A stability update with safer package dependencies, improved checksum
+          guidance, and continued fail-closed hardware controls.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-08" />
   </releases>
   <description>
