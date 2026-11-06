@@ -17,30 +17,26 @@ assert "  publish-release:\n    needs: [verify-release-assets, verify-release-en
 assert "  verify-release-assets:\n    needs: [linux-release, fedora-rpm]" in text
 assert "  verify-release-environment:\n    needs: verify-release-assets" in text
 assert "    environment:\n      name: release-publish" in text
-assert "artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id }}" in text
+assert "artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id || 'invalid' }}" in text
 assert text.count("persist-credentials: false") == 5
 assert text.count('if [[ "$GIT_REF" != refs/tags/v* ]]') == 2
 assert "if: startsWith(github.ref, 'refs/tags/v')" in text
-assert "draft: true" in text and "body_path: ${{ runner.temp }}/release-body.md" in text
+assert '--notes-file "$RUNNER_TEMP/release-body.md"' in text
 assert "Verified build provenance" in text and "COMMIT: ${{ github.sha }}" in text
 assert "check-release-environment.py" in text
 assert "secrets." not in text
-for filename in (
-    "rog-helper_0.4.1_amd64.deb", "rog-helper-0.4.1-1.x86_64.rpm",
-    "rog-helper-v0.4.1-x86_64.AppImage", "rog-helper-0.4.1-linux-x86_64.tar.xz",
-    "rog-helper", "rog-helperd", "rog-helper-ui",
-    "rog-helper-0.4.1-SHA256SUMS.txt", "rog-helper-0.4.1-RPM-SHA256SUMS.txt",
-):
-    assert filename in text
+assert text.count('check-release-ref.sh "$TAG" "$COMMIT"') == 2
+assert 'scripts/test-cargo-audit.sh' in text
 
 publisher_start = lines.index("  publish-release:")
 build_jobs = "\n".join(lines[:publisher_start])
 assert "contents: write" not in build_jobs
 publisher = "\n".join(lines[publisher_start:])
 assert "actions/download-artifact@" in publisher
-assert "softprops/action-gh-release@" in publisher
-assert "cargo build" not in publisher and "packaging/scripts/" not in publisher
-assert "draft: true" in publisher
+assert publisher.count("gh release create") == 1
+assert "cargo build" not in publisher and "build-release-assets.sh" not in publisher
+assert "--draft --verify-tag" in publisher
+assert "gh release edit" not in publisher
 
 print("Release workflow permission and action-pin tests passed")
 

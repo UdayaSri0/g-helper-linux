@@ -17,15 +17,16 @@ release = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(release)
 
+VERSION = release.VERSION
 LINUX_HASHED = (
-    "rog-helper_0.4.1_amd64.deb",
-    "rog-helper-v0.4.1-x86_64.AppImage",
-    "rog-helper-0.4.1-linux-x86_64.tar.xz",
+    f"rog-helper_{VERSION}_amd64.deb",
+    f"rog-helper-v{VERSION}-x86_64.AppImage",
+    f"rog-helper-{VERSION}-linux-x86_64.tar.xz",
     "rog-helper",
     "rog-helperd",
     "rog-helper-ui",
 )
-RPM_NAME = "rog-helper-0.4.1-1.x86_64.rpm"
+RPM_NAME = f"rog-helper-{VERSION}-1.x86_64.rpm"
 
 
 def make_inputs(root: Path) -> tuple[Path, Path]:
@@ -43,8 +44,8 @@ def make_inputs(root: Path) -> tuple[Path, Path]:
         else:
             (linux / name).write_bytes(("linux:" + name).encode())
     (rpm / RPM_NAME).write_bytes(b"rpm-payload")
-    write_manifest(linux, "rog-helper-0.4.1-SHA256SUMS.txt", LINUX_HASHED)
-    write_manifest(rpm, "rog-helper-0.4.1-RPM-SHA256SUMS.txt", (RPM_NAME,))
+    write_manifest(linux, f"rog-helper-{VERSION}-SHA256SUMS.txt", LINUX_HASHED)
+    write_manifest(rpm, f"rog-helper-{VERSION}-RPM-SHA256SUMS.txt", (RPM_NAME,))
     return linux, rpm
 
 
@@ -53,7 +54,7 @@ def write_manifest(root: Path, manifest: str, filenames: tuple[str, ...]) -> Non
     (root / manifest).write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
-def metadata_runner(deb_version: str = "0.4.1", rpm_version: str = "0.4.1"):
+def metadata_runner(deb_version: str = VERSION, rpm_version: str = VERSION):
     def run(args, **kwargs):
         if args[0] == "dpkg-deb":
             output = f"Package: rog-helper\nVersion: {deb_version}\nArchitecture: amd64\n"
@@ -71,7 +72,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             rpm,
             root / "bundle",
             root / "provenance.txt",
-            tag="v0.4.1",
+            tag=f"v{VERSION}",
             commit="a" * 40,
             run_id="123456",
             runner=runner or metadata_runner(),
@@ -83,13 +84,13 @@ class ReleaseVerificationTests(unittest.TestCase):
             linux, rpm = make_inputs(root)
             result = self.invoke(root, linux, rpm)
             self.assertEqual(set(result), set(LINUX_HASHED) | {RPM_NAME} | {
-                "rog-helper-0.4.1-SHA256SUMS.txt",
-                "rog-helper-0.4.1-RPM-SHA256SUMS.txt",
+                f"rog-helper-{VERSION}-SHA256SUMS.txt",
+                f"rog-helper-{VERSION}-RPM-SHA256SUMS.txt",
             })
             self.assertEqual(len(list((root / "bundle").iterdir())), 9)
             self.assertNotIn("rog-helper-privileged", " ".join(result))
             provenance = (root / "provenance.txt").read_text(encoding="utf-8")
-            self.assertIn("tag: v0.4.1", provenance)
+            self.assertIn(f"tag: v{VERSION}", provenance)
             self.assertIn("commit: " + "a" * 40, provenance)
             self.assertIn("workflow run: 123456", provenance)
             self.assertIn(hashlib.sha256((root / "bundle" / RPM_NAME).read_bytes()).hexdigest(), provenance)
@@ -130,7 +131,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 linux, rpm = make_inputs(root)
-                primary = linux / "rog-helper-0.4.1-SHA256SUMS.txt"
+                primary = linux / f"rog-helper-{VERSION}-SHA256SUMS.txt"
                 if mutation == "malformed":
                     primary.write_text("not a checksum entry\n", encoding="ascii")
                 elif mutation == "missing":
@@ -144,7 +145,7 @@ class ReleaseVerificationTests(unittest.TestCase):
                         line for line in primary.read_text().splitlines() if not line.endswith(LINUX_HASHED[0])
                     ) + "\n", encoding="ascii")
                 else:
-                    (rpm / "rog-helper-0.4.1-RPM-SHA256SUMS.txt").write_text("bad\n", encoding="ascii")
+                    (rpm / f"rog-helper-{VERSION}-RPM-SHA256SUMS.txt").write_text("bad\n", encoding="ascii")
                 with self.assertRaises(release.VerificationError):
                     self.invoke(root, linux, rpm)
 
@@ -153,19 +154,19 @@ class ReleaseVerificationTests(unittest.TestCase):
             root = Path(directory)
             linux, rpm = make_inputs(root)
             with self.assertRaisesRegex(release.VerificationError, "DEB version"):
-                self.invoke(root, linux, rpm, metadata_runner(deb_version="0.4.0"))
+                self.invoke(root, linux, rpm, metadata_runner(deb_version=VERSION + ".0"))
 
     def test_rejects_tarball_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             linux, rpm = make_inputs(root)
-            tarball = linux / "rog-helper-0.4.1-linux-x86_64.tar.xz"
+            tarball = linux / f"rog-helper-{VERSION}-linux-x86_64.tar.xz"
             with tarfile.open(tarball, "w:xz") as archive:
                 item = tarfile.TarInfo("../../outside")
                 item.type = tarfile.SYMTYPE
                 item.linkname = "/etc/passwd"
                 archive.addfile(item)
-            write_manifest(linux, "rog-helper-0.4.1-SHA256SUMS.txt", LINUX_HASHED)
+            write_manifest(linux, f"rog-helper-{VERSION}-SHA256SUMS.txt", LINUX_HASHED)
             with self.assertRaisesRegex(release.VerificationError, "unsafe path or link"):
                 self.invoke(root, linux, rpm)
 
@@ -175,7 +176,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             linux, rpm = make_inputs(root)
             with self.assertRaises(release.VerificationError):
                 release.verify_release_assets(linux, rpm, root / "bundle", root / "provenance.txt",
-                                              tag="v0.4.0", commit="a" * 40, run_id="123456",
+                                              tag=f"v{VERSION}.0", commit="a" * 40, run_id="123456",
                                               runner=metadata_runner())
 
 

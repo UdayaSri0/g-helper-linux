@@ -71,6 +71,20 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Install pinned RustSec scanner
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          test "$(cargo audit --version)" = "cargo-audit-audit 0.22.2"
+      - name: Fetch RustSec advisory database
+        run: |
+          git clone --quiet --depth 1 https://github.com/RustSec/advisory-db "$RUNNER_TEMP/advisory-db"
+          git -C "$RUNNER_TEMP/advisory-db" rev-parse HEAD | tee "$RUNNER_TEMP/advisory-db-revision"
+          echo "RustSec advisory database revision: $(cat "$RUNNER_TEMP/advisory-db-revision")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Test vulnerable fixture and audit locked dependencies
+        run: scripts/test-cargo-audit.sh
+        env:
+          RUSTSEC_ADVISORY_DB: ${{ runner.temp }}/advisory-db
+
       - name: Packaging Script Tests
         run: |
           packaging/scripts/test-install-dev.sh
@@ -193,11 +207,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: ${{ needs.linux-release.outputs.artifact_id }}
+          artifact-ids: ${{ needs.linux-release.outputs.artifact_id || 'invalid' }}
           path: ${{ runner.temp }}/linux
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: ${{ needs.fedora-rpm.outputs.artifact_id }}
+          artifact-ids: ${{ needs.fedora-rpm.outputs.artifact_id || 'invalid' }}
           path: ${{ runner.temp }}/rpm
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -238,6 +252,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -247,13 +262,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           API_URL: ${{ github.api_url }}
-          ACTOR: ${{ github.actor }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          bash packaging/scripts/check-release-ref.sh "$TAG" "$COMMIT"
           base="$API_URL/repos/$REPOSITORY/environments/release-publish"
           curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base" > "$RUNNER_TEMP/environment.json"
           curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
-          python3 packaging/scripts/check-release-environment.py --environment "$RUNNER_TEMP/environment.json" --policies "$RUNNER_TEMP/policies.json" --actor "$ACTOR"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base/deployment_protection_rules" > "$RUNNER_TEMP/custom-rules.json"
+          python3 packaging/scripts/check-release-environment.py --environment "$RUNNER_TEMP/environment.json" --policies "$RUNNER_TEMP/policies.json" --custom-rules "$RUNNER_TEMP/custom-rules.json" --tag "$TAG"
 
   publish-release:
     needs: [verify-release-assets, verify-release-environment]
@@ -267,15 +285,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id }}
-          path: dist
+          artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id || 'invalid' }}
+          path: ${{ runner.temp }}/verified
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Require matching release notes
         env:
           TAG: ${{ github.ref_name }}
-        run: test "$TAG" = v0.4.1 && test -s "docs/releases/$TAG.md"
+        run: test -s "docs/releases/$TAG.md"
       - name: Add verified provenance to the draft notes
         env:
           TAG: ${{ github.ref_name }}
@@ -286,20 +304,27 @@ jobs:
           printf '\n\n---\n\nVerified build provenance\n\n- Tag: `%s`\n- Commit: `%s`\n- GitHub Actions run: `%s`\n' \
             "$TAG" "$COMMIT" "$RUN_ID" >> "$RUNNER_TEMP/release-body.md"
       - name: Create protected draft release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          files: |
-            dist/rog-helper_0.4.1_amd64.deb
-            dist/rog-helper-0.4.1-1.x86_64.rpm
-            dist/rog-helper-v0.4.1-x86_64.AppImage
-            dist/rog-helper-0.4.1-linux-x86_64.tar.xz
-            dist/rog-helper
-            dist/rog-helperd
-            dist/rog-helper-ui
-            dist/rog-helper-0.4.1-SHA256SUMS.txt
-            dist/rog-helper-0.4.1-RPM-SHA256SUMS.txt
-          body_path: ${{ runner.temp }}/release-body.md
-          draft: true
-          target_commitish: ${{ github.sha }}
-          tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          bash packaging/scripts/check-release-ref.sh "$TAG" "$COMMIT"
+          cd "$RUNNER_TEMP"
+          version="${TAG#v}"
+          files=(
+            "verified/rog-helper_${version}_amd64.deb"
+            "verified/rog-helper-$version-1.x86_64.rpm"
+            "verified/rog-helper-$TAG-x86_64.AppImage"
+            "verified/rog-helper-$version-linux-x86_64.tar.xz"
+            verified/rog-helper
+            verified/rog-helperd
+            verified/rog-helper-ui
+            "verified/rog-helper-$version-SHA256SUMS.txt"
+            "verified/rog-helper-$version-RPM-SHA256SUMS.txt"
+          )
+          for file in "${files[@]}"; do
+            test -f "$file" && test -s "$file" || exit 1
+          done
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${files[@]}" --draft --verify-tag --target "$COMMIT" \
+            --title "ROG Helper $TAG" --notes-file "$RUNNER_TEMP/release-body.md"

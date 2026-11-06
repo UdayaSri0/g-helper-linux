@@ -10,11 +10,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 from typing import Callable
 
 
-VERSION = "0.4.1"
+VERSION = tomllib.loads((Path(__file__).resolve().parents[2] / "Cargo.toml").read_text())["workspace"]["package"]["version"]
 TAG = f"v{VERSION}"
 PRIMARY_MANIFEST = f"rog-helper-{VERSION}-SHA256SUMS.txt"
 RPM_MANIFEST = f"rog-helper-{VERSION}-RPM-SHA256SUMS.txt"
@@ -175,7 +176,7 @@ def verify_release_assets(
         hashes[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
 
     summary = [
-        "ROG Helper v0.4.1 verified release candidate",
+        f"ROG Helper {tag} verified release candidate",
         f"tag: {tag}",
         f"commit: {commit}",
         f"workflow run: {run_id}",
