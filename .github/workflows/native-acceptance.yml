@@ -1,0 +1,117 @@
+name: Native acceptance
+
+on:
+  push:
+    branches: [main, chore/v0.4.1-release-prep]
+  pull_request:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-24-04-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install build and smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libgtk-4-dev libadwaita-1-dev appstream desktop-file-utils dpkg-dev \
+            python3-pil curl dbus-daemon libglib2.0-bin xvfb xauth polkitd pkexec
+      - name: Build exact checkout and record DEB provenance
+        run: |
+          cat /etc/os-release
+          git rev-parse HEAD
+          rustc --version
+          packaging/scripts/build-deb.sh dist/native
+          packages=(dist/native/*.deb)
+          [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
+          git rev-parse HEAD > dist/native/commit.txt
+          (cd dist/native && sha256sum ./*.deb | tee SHA256SUMS)
+          dpkg-deb -I "${packages[0]}"
+      - name: Install with APT and inspect installed integration
+        run: |
+          (cd dist/native && sha256sum --check SHA256SUMS)
+          sudo apt-get install -y --no-install-recommends ./dist/native/*.deb
+          sudo apt-get check
+          dpkg-query -W -f='${db:Status-Abbrev} ${Version} ${Architecture} ${Depends}\n' rog-helper
+          for path in /usr/bin/{rog-helper,rog-helperd,rog-helper-ui} /usr/libexec/rog-helper-privileged; do
+            stat -c '%a %U:%G %n' "$path"
+            [[ "$(stat -c '%a %U:%G' "$path")" == '755 root:root' ]]
+          done
+          dpkg -L rog-helper | tee dist/native/installed-files.txt
+          for path in $(git ls-files packaging/dbus-session packaging/dbus-system packaging/polkit); do
+            grep -F "/${path##*/}" dist/native/installed-files.txt
+          done
+          if [[ "$(ps -p 1 -o comm=)" == systemd ]]; then
+            systemctl cat rog-helper-privileged.service
+            sudo systemctl daemon-reload
+            sudo systemctl start rog-helper-privileged.service
+            systemctl is-active rog-helper-privileged.service
+            busctl --system introspect io.github.roghelper.Privileged /io/github/roghelper/Privileged
+          else
+            echo 'SKIP: system service activation requires systemd as PID 1'
+          fi
+      - name: Headless GTK and isolated session smoke
+        run: |
+          dbus-run-session -- bash -euxo pipefail -c '
+            gdbus introspect --session --dest io.github.roghelper.Daemon --object-path /io/github/roghelper/Daemon
+            rog-helper setup-check
+            rog-helper privileged-status
+            rog-helper issue-report >/dev/null
+          '
+          DBUS_SYSTEM_BUS_ADDRESS="unix:path=$RUNNER_TEMP/rog-helper-no-system-bus" \
+          ROG_HELPER_SMOKE_BIN_DIR=/usr/bin xvfb-run -a bash packaging/scripts/test-session-smoke.sh dist/native
+      - name: PolicyKit denial without invoking hardware methods
+        run: |
+          pkaction --action-id io.github.roghelper.cpu.control --verbose
+          sudo -u nobody bash -c '
+            rc=0
+            pkcheck --action-id io.github.roghelper.cpu.control --process "$$" || rc=$?
+            echo "pkcheck denial exit code: $rc"
+            test "$rc" -eq 1
+          '
+      - name: Upgrade from published v0.4.0 when compatible
+        run: |
+          prior="$RUNNER_TEMP/rog-helper_0.4.0_amd64.deb"
+          curl --fail --location --silent --show-error \
+            https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper_0.4.0_amd64.deb -o "$prior"
+          echo "af4a3f2e2afe8c742db57edc90f7e086136702b4ec1723dfb33b8001ad86a8f4  $prior" | sha256sum --check
+          sudo apt-get purge -y rog-helper
+          if ! apt-get --simulate install "$prior"; then
+            echo 'SKIP upgrade: APT could not resolve the original v0.4.0 DEB'
+            exit 0
+          fi
+          sudo apt-get install -y "$prior"
+          test "$(dpkg-query -W -f='${Version}' rog-helper)" = 0.4.0
+          sudo apt-get install -y --no-install-recommends ./dist/native/*.deb
+          test "$(dpkg-query -W -f='${Version}' rog-helper)" = 0.4.1
+          sudo apt-get check
+      - name: APT removal and purge
+        if: always()
+        run: |
+          if ! dpkg-query -W rog-helper >/dev/null 2>&1; then exit 0; fi
+          sudo apt-get remove -y rog-helper
+          sudo apt-get purge -y rog-helper
+          if dpkg-query -W rog-helper >/dev/null 2>&1; then exit 1; fi
+          for path in /usr/bin/{rog-helper,rog-helperd,rog-helper-ui} /usr/libexec/rog-helper-privileged; do
+            test ! -e "$path"
+          done
+      - name: Retain package and acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ubuntu-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/native/
+          retention-days: 14
+          if-no-files-found: ignore

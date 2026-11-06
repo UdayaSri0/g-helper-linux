@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -11,9 +14,11 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
 
@@ -72,9 +77,11 @@ jobs:
   appimage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - name: Install AppImage Build Dependencies
         run: |
@@ -91,7 +98,7 @@ jobs:
         run: packaging/scripts/build-appimage.sh --check-deps
 
       - name: Build AppImage
-        run: packaging/scripts/build-appimage.sh dist/appimage-ci
+        run: ROG_HELPER_WRITE_SHA256SUMS=1 packaging/scripts/build-appimage.sh dist/appimage-ci
 
       - name: Smoke-test AppImage runtime
         run: |
@@ -102,9 +109,42 @@ jobs:
       - name: Smoke-test packaged AppImage services and UI
         run: packaging/scripts/test-appimage-session.sh dist/appimage-ci/AppDir dist/appimage-ci
 
+      - name: Verify and describe AppImage candidate
+        run: |
+          appimages=(dist/appimage-ci/*.AppImage)
+          manifests=(dist/appimage-ci/*SHA256SUMS.txt)
+          [[ "${#appimages[@]}" -eq 1 && -f "${appimages[0]}" ]]
+          [[ "${#manifests[@]}" -eq 1 && -f "${manifests[0]}" ]]
+          appimage="$(basename "${appimages[0]}")"
+          manifest="$(basename "${manifests[0]}")"
+          version="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          (
+            cd dist/appimage-ci
+            sha256sum --check "$manifest"
+            {
+              printf 'repository=%s\ncommit=%s\nworkflow=%s\nrun_id=%s\nversion=%s\narchitecture=%s\nrustc=%s\n' \
+                "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKFLOW" "$GITHUB_RUN_ID" \
+                "$version" "$(uname -m)" "$(rustc --version)"
+              printf 'artifact=%s\n' "$appimage"
+              sha256sum "$appimage"
+            } > candidate-artifact-inventory.txt
+          )
+
+      - name: Retain candidate AppImage artifact
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rog-helper-appimage-${{ github.sha }}
+          path: |
+            dist/appimage-ci/*.AppImage
+            dist/appimage-ci/*SHA256SUMS.txt
+            dist/appimage-ci/candidate-artifact-inventory.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload AppImage Diagnostic Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: appimage-debug-${{ github.sha }}
           path: |
@@ -117,7 +157,9 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:42
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Fedora Build Dependencies
         run: |
@@ -130,11 +172,50 @@ jobs:
       - name: Build Fedora RPM
         run: packaging/scripts/build-rpm.sh dist/fedora-ci
 
-      - name: Inspect RPM Contents
-        run: rpm -qpl dist/fedora-ci/*.rpm | sed -n '1,200p'
-
       - name: Test RPM install, upgrade, and erase
         run: |
           packages=(dist/fedora-ci/*.rpm)
           [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
           python3 packaging/scripts/test-rpm-lifecycle.py "${packages[0]}"
+
+      - name: Verify and describe Fedora RPM candidate
+        run: |
+          packages=(dist/fedora-ci/*.rpm)
+          manifests=(dist/fedora-ci/*RPM-SHA256SUMS.txt)
+          [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
+          [[ "${#manifests[@]}" -eq 1 && -f "${manifests[0]}" ]]
+          rpm="$(basename "${packages[0]}")"
+          manifest="$(basename "${manifests[0]}")"
+          version="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          (
+            cd dist/fedora-ci
+            sha256sum --check "$manifest"
+            rpm -K --nosignature "$rpm"
+            [[ "$(rpm -qp --qf '%{VERSION} %{ARCH}' "$rpm")" == "$version $(uname -m)" ]]
+            {
+              rpm -qpi "$rpm"
+              rpm -qpl "$rpm"
+              rpm -qp --requires "$rpm"
+              rpm -qp --scripts "$rpm"
+            } | tee rpm-inspection.txt
+            {
+              printf 'repository=%s\ncommit=%s\nworkflow=%s\nrun_id=%s\nversion=%s\narchitecture=%s\nrustc=%s\nrpm=%s\n' \
+                "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKFLOW" "$GITHUB_RUN_ID" \
+                "$version" "$(uname -m)" "$(rustc --version)" "$(rpm --version)"
+              printf 'artifact=%s\n' "$rpm"
+              sha256sum "$rpm"
+            } > candidate-artifact-inventory.txt
+          )
+
+      - name: Retain candidate Fedora RPM artifact
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rog-helper-fedora-rpm-${{ github.sha }}
+          path: |
+            dist/fedora-ci/*.rpm
+            dist/fedora-ci/*RPM-SHA256SUMS.txt
+            dist/fedora-ci/candidate-artifact-inventory.txt
+            dist/fedora-ci/rpm-inspection.txt
+          if-no-files-found: error
+          retention-days: 14
