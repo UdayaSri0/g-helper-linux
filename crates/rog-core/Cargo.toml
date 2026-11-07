@@ -12,3 +12,6 @@ repository.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+proptest = "1.12.0"

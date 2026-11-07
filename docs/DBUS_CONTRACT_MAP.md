@@ -1,13 +1,28 @@
 # DBus Contract Map
 
-This is the release audit of the `io.github.roghelper.Daemon1` contract. The public wire format remains the existing string-keyed `a{sv}` API. Shared constants in `rog-core::dbus_keys` cover the high-risk state, capability, telemetry, CPU, fan, setup, and lighting names; adding a typed internal model did not rename a public key.
+This is the release audit of the `io.github.roghelper.Daemon1` contract. The public wire format remains the existing string-keyed `a{sv}` API. Shared constants in `rog-core::dbus_keys` cover the high-risk state, capability, telemetry, CPU, fan, setup, lighting, and daemon identity names. The read-only `GetDaemonInfo` identity uses a shared core type; no public key or signature changed.
 
 Decoder rule: absent optional keys and keys with the wrong DBus type are treated as unavailable. Boolean capabilities default to `false`, counts default to `0`, collections default to empty, and access states default to `unknown`. A UI fallback is presentation-only and must not claim hardware support.
+
+## Schema Ownership and Versioning
+
+`rog-core::dbus_keys` owns shared wire names and the session API epoch. Daemon encoders own the
+published values; UI decoders own compatibility behavior and must preserve unknown values only when
+the domain model has an explicit lossless representation. Missing or wrongly typed fields remain
+unavailable; only documented legacy defaults are allowed. In particular, missing capability or
+write-access fields must remain disabled/unknown.
+
+The `GetDaemonInfo` API epoch is separate from configuration and privileged-helper versions. Additive
+fields retain their type and existing meaning. Removing, retyping, or changing a field's semantics
+requires an epoch/migration review and a compatibility window; use a parallel interface for an
+incompatible transition. Rollback restores the previous daemon producer without rewriting user
+configuration or invoking setters. See [DBUS_API.md](DBUS_API.md#schema-ownership-and-compatibility-policy).
 
 ## Consumer Summary
 
 | Contract | Daemon encoder | UI decoder | CLI dependency | Primary documentation |
 | --- | --- | --- | --- | --- |
+| `GetDaemonInfo` | `daemon_info_to_dbus` using shared `DaemonApiInfo` | `daemon_identity_from_dbus` using shared compatibility semantics | None | `DBUS_API.md`, this file |
 | `GetState` | `state_to_dbus`, plus `RogHelperDaemon::get_state` | `fetch_state` | Profile cycling and brightness commands decode actual state using shared keys | `DBUS_API.md`, this file |
 | `GetCaps` | `caps_to_dbus` | `caps_from_dbus`, `caps_text_from_dbus` | None; CLI probes providers directly | `DBUS_API.md` |
 | `GetTelemetry` | `telemetry_to_dbus`, `fan_row_to_dbus` | `telemetry_from_dbus`, `fan_row_from_dbus` | None; `sensors` probes providers directly | `DBUS_API.md` |
@@ -32,6 +47,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 | Payload | Keys and wire types | UI missing/default behavior |
 | --- | --- | --- |
+| `GetDaemonInfo` | required `api_version t`, `package_version s` | Missing or wrongly typed identity values remain unknown and mark the session service stale; additive unknown keys are ignored. Exact API epoch and package version are required for the bundled UI to mark the service compatible. |
 | `GetState` | `caps a{sv}`, `telemetry a{sv}`, `warnings as`, `cpu_caps a{sv}`, `cpu a{sv}`, `fan_caps a{sv}`, `fan_state a{sv}`, `automation a{sv}`, `lighting_diagnostics_summary s`, `lighting_diagnostics_details s`; optional `lighting a{sv}`, `profile s`, `gpu_mode s`, `battery_limit t` | Missing maps decode to safe unknown/empty models. Missing current controls remain `None`; no write capability is inferred. |
 | Automation nested state | `state s`, `explanation s`, `last_result s`; optional `last_transition_ms t`, `profile_id s` | Missing state uses disabled presentation; explanation/results are empty; unavailable transition/profile remain absent. Daemon remains authoritative. |
 | `GetCaps` battery/GPU extensions | `battery_limit_backend s`, `battery_limit_direct_write b`, `battery_limit_privileged_write b`, `battery_limit_authorization s`, `lighting_backend s`, `gpu_backend s`, `gpu_supported_modes as`, `gpu_external_authorization s`, `gpu_switch_state s`, `gpu_switch_hint s`, `requires_logout_for_gpu_switch b`, `control_privilege_matrix aa{sv}` | Missing capability booleans are false; supported modes/matrix empty; backend and transition values retain unavailable/unknown presentation. No write route or GPU mode is inferred. Matrix rows add `feature_supported`, `mapping_verified`, `telemetry_available`, `direct_writable`, `privileged_helper_ready`, `authorization_state`, `can_apply`, and `reason`; legacy row keys remain for compatibility. |
@@ -52,7 +68,7 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 | Setup issue row | `severity s`, `title s`, `summary s`, `guidance s` | Unknown severity uses the domain fallback; strings empty. |
 | `GetFanCaps` / nested `fan_caps` | all matching `GetCaps` fan booleans/count/backend/endpoints/notes plus `fan_curve_readable b`, `fan_curve_writable b`, `fan_mapping_confidence s`, `warnings as` | Booleans `false`, count `0`, mapping `unknown`, strings/lists empty. RPM telemetry never implies write support. |
 | `GetFanState` | `fan_caps a{sv}`, `fans aa{sv}`, `mode s`, `sync_enabled b`, `warnings as`; optional `last_action s`, `active_boost_fan_id s`, `active_boost_until_ms t`, `active_curve_summary s` | Empty/read-only fan model, mode `read_only`, sync `false`, optionals absent. |
-| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `telemetry_source s`, `sampled_at_ms t`, `freshness s`, `telemetry_reason s`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `rpm_readable b`, `pwm_endpoint_verified b`, `direct_write b`, `privileged_write b`, `authorization s`, `access_state s`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, optional `curve_readback a{sv}`, `rollback_available b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping/freshness unknown, measurements/readback absent. `controllable` is route capability; consumers use `access_state` for authorized presentation. `curve_readback` uses the same row shape as `GetFanCurves`. |
+| Fan info row | required `id s`, `label s`; `index t`, `mapping_confidence s`, optional `current_rpm u/t`, `telemetry_source s`, `sampled_at_ms t`, `freshness s`, `telemetry_reason s`, `min_rpm u/t`, `max_rpm u/t`, `current_percent y/u/t`, `rpm_readable b`, `pwm_endpoint_verified b`, `direct_write b`, `privileged_write b`, `authorization s`, `access_state s`, `controllable b`, `supports_manual_percent b`, `supports_manual_rpm_target b`, `supports_curve b`, `supports_auto b`, `curve_abi_detected b`, `fan_curve_readable b`, `backend_writable b`, `helper_ready b`, `physical_validation_recorded b`, `custom_curve_authorized b`, `recovery_available b`, `write_support_state s`, `write_support_reason s`, `write_support_explanation s`, optional `curve_readback a{sv}`, `rollback_available b`, `backend s`, `endpoints as`, `notes as`, `warnings as` | Rows missing id/label skipped; booleans false, index `0`, backend `unknown`, mapping/freshness unknown, measurements/readback absent. `controllable` is route capability; consumers use `access_state` for authorized presentation. `curve_readback` uses the same row shape as `GetFanCurves`. |
 | `GetFanCurves` | `supported b`, `reason s`, `curves aa{sv}`; each curve row has `fan_id s`, `source s` (`backend_current`), `enable_mode t`, `raw_pwm ay`, and `points aa{sv}` with `temp_c t` and `speed_percent t` | No standalone-method UI/CLI decoder. The UI consumes the equivalent `curve_readback` nested in `GetFanState`; malformed or non-eight-point nested readbacks are discarded. `backend_current` records readback origin, not factory ownership. |
 | Lighting map | `backend s`, `backend_kind s`, `device s`, `brightness t`, `max_brightness t`, `can_set b`, `writable b`, `direct_writable b`, `privileged_writable b`, `authorization_required b`, `authorization s`, `privileged_helper_installed b`, `privileged_helper_reachable b`, `privileged_helper_compatible b`, `polkit_available b`, `privileged_lighting_category_available b`, `write_path_ready b`, optional `mode s`, `supported_modes as`, `supports_brightness b`, `supports_modes b`, `supports_rgb b`, `supports_argb b`, `supports_zones b`, `supports_per_key b`, optional `rgb_hex s`, `secondary_rgb_hex s`, `supports_speed b`, `supported_speeds as`, optional `speed s`, `supported_directions as`, optional `direction s`, `supported_zones as`, optional `active_zone s`, `apply_outcome s`, optional `last_action s`, `status s`, optional `last_error s`, `diagnostics_summary s`, `diagnostics_details s`, `fallback_reason s`, `unavailable_reason s`, `permission_warning s` | Backend/device/status use calm unknown labels, numeric values `0`, capabilities/writable/readiness false, lists empty, optional values absent. Compatibility inference enables brightness only when an older daemon reports `max_brightness > 0`, and modes only when it reports a non-empty mode list. RGB/ARGB/zones/per-key and privileged readiness are never inferred. |
 
@@ -84,7 +100,8 @@ Types below use DBus notation. Unless marked required, a telemetry or current-st
 
 - `rog-daemon` tests encoder keys, integer wire values, nested fan/setup/CPU rows, lighting optional capabilities, and omission of unavailable telemetry.
 - `rog-ui` tests capability/access decoding, structured fan/CPU rows, lighting capability decoding, mixed unsigned integer widths, missing optional fields, and unknown power-source behavior.
-- `rog-core` tests canonical status mapping and centralized error-message classification.
+- `rog-ui` tests `GetDaemonInfo` exact-version compatibility, rejects missing and wrongly typed identity fields, and ignores additive unknown fields.
+- `rog-core` tests canonical status mapping, exact `DaemonApiInfo` version matching, and centralized error-message classification.
 
 The complete public method descriptions and accepted setter values remain in [DBUS_API.md](DBUS_API.md).
 

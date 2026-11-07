@@ -22,11 +22,11 @@ use rog_core::{
     CpuAuthorization, CpuCaps, CpuControlAccess, CpuControlKind, CpuCoreTelemetry, CpuPathAccess,
     CpuTelemetry, DependencyKind, DependencyState, DependencyStatus, DeviceCaps, ErrorCategory,
     FanCaps, FanControlMode, FanCurve, FanCurvePolicy, FanCurvePreset, FanCurveReadback, FanDomain,
-    FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FeatureAccessState,
-    FeatureAvailability, GpuSwitchState, NamedProfile, PerformanceProfile, PermissionKind,
-    PermissionState, PermissionStatus, PowerSource, PrivilegedCategory, PrivilegedStatus,
-    ProfileSettings, RgbColor, SetupIssue, SetupSeverity, SetupStatus, TelemetrySnapshot,
-    TopProcessMem,
+    FanInfo, FanMappingConfidence, FanPoint, FanState, FanTelemetry, FanWritePolicyDecision,
+    FanWriteSupportState, FeatureAccessState, FeatureAvailability, GpuSwitchState, NamedProfile,
+    PerformanceProfile, PermissionKind, PermissionState, PermissionStatus, PowerSource,
+    PrivilegedCategory, PrivilegedStatus, ProfileSettings, RgbColor, SetupIssue, SetupSeverity,
+    SetupStatus, TelemetrySnapshot, TopProcessMem,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -160,12 +160,6 @@ impl AppMetadata {
 }
 
 #[derive(Debug, Clone)]
-struct ReleaseAsset {
-    name: String,
-    download_url: String,
-}
-
-#[derive(Debug, Clone)]
 struct UpdateState {
     latest_version: Option<String>,
     status_text: String,
@@ -174,10 +168,8 @@ struct UpdateState {
     release_notes_preview: Option<String>,
     release_notes_full: Option<String>,
     release_page_url: Option<String>,
-    downloadable_asset: Option<ReleaseAsset>,
     update_action_label: String,
     update_action_subtitle: String,
-    supports_in_place_update: bool,
 }
 
 impl Default for UpdateState {
@@ -192,10 +184,8 @@ impl Default for UpdateState {
             release_notes_preview: None,
             release_notes_full: None,
             release_page_url: None,
-            downloadable_asset: None,
-            update_action_label: "Open Releases".to_string(),
-            update_action_subtitle: "Open the latest release page in your browser.".to_string(),
-            supports_in_place_update: false,
+            update_action_label: update_action_label().to_string(),
+            update_action_subtitle: update_action_subtitle(),
         }
     }
 }
@@ -267,8 +257,6 @@ struct SharedUiState {
     update_state: UpdateState,
     pending_update_check: bool,
     update_check_in_progress: bool,
-    pending_update_action: bool,
-    update_action_in_progress: bool,
     pending_open_link: Option<OpenLinkRequest>,
     pending_toast: Option<(String, bool)>,
     daemon_error: Option<String>,
@@ -345,8 +333,6 @@ impl Default for SharedUiState {
             update_state: UpdateState::default(),
             pending_update_check: false,
             update_check_in_progress: false,
-            pending_update_action: false,
-            update_action_in_progress: false,
             pending_open_link: None,
             pending_toast: None,
             daemon_error: None,
@@ -388,6 +374,10 @@ struct AutomationUiStatus {
     last_result: String,
     last_transition_ms: Option<u64>,
     last_profile_id: Option<String>,
+    pending_profile_id: Option<String>,
+    component_results: Vec<String>,
+    source_freshness: String,
+    retry_status: String,
 }
 
 impl Default for AutomationUiStatus {
@@ -398,7 +388,63 @@ impl Default for AutomationUiStatus {
             last_result: "No automatic profile has been applied this session.".into(),
             last_transition_ms: None,
             last_profile_id: None,
+            pending_profile_id: None,
+            component_results: Vec::new(),
+            source_freshness: "unknown".into(),
+            retry_status: "not scheduled".into(),
         }
+    }
+}
+
+fn automation_status_from_dbus(map: &HashMap<String, OwnedValue>) -> AutomationUiStatus {
+    let component_results =
+        dbus_decode::strings(map, dbus_keys::state::AUTOMATION_COMPONENT_RESULTS).unwrap_or_else(
+            || {
+                [
+                    (
+                        "platform_profile",
+                        dbus_keys::state::AUTOMATION_COMPONENT_PLATFORM_PROFILE,
+                    ),
+                    (
+                        "battery_charge_limit",
+                        dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT,
+                    ),
+                    (
+                        "unsupported_profile_field",
+                        dbus_keys::state::AUTOMATION_COMPONENT_UNSUPPORTED,
+                    ),
+                ]
+                .into_iter()
+                .filter_map(|(name, key)| {
+                    let component = dbus_decode::nested_map(map, key)?;
+                    let state = dbus_decode::string(&component, "state")?;
+                    let detail = dbus_decode::string(&component, "detail").unwrap_or_default();
+                    Some(format!("{name}: {state} — {detail}"))
+                })
+                .collect()
+            },
+        );
+    AutomationUiStatus {
+        state: dbus_decode::string(map, dbus_keys::state::AUTOMATION_STATE)
+            .unwrap_or_else(|| "disabled".into()),
+        explanation: dbus_decode::string(map, dbus_keys::state::AUTOMATION_EXPLANATION)
+            .unwrap_or_else(|| "Automation status is unavailable.".into()),
+        last_result: dbus_decode::string(map, dbus_keys::state::AUTOMATION_LAST_RESULT)
+            .unwrap_or_else(|| "No automatic result is available.".into()),
+        last_transition_ms: dbus_decode::unsigned(
+            map,
+            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
+        ),
+        last_profile_id: dbus_decode::string(map, dbus_keys::state::AUTOMATION_PROFILE_ID),
+        pending_profile_id: dbus_decode::string(
+            map,
+            dbus_keys::state::AUTOMATION_PENDING_PROFILE_ID,
+        ),
+        component_results,
+        source_freshness: dbus_decode::string(map, dbus_keys::state::AUTOMATION_SOURCE_FRESHNESS)
+            .unwrap_or_else(|| "unknown".into()),
+        retry_status: dbus_decode::string(map, dbus_keys::state::AUTOMATION_RETRY_STATUS)
+            .unwrap_or_else(|| "not scheduled".into()),
     }
 }
 
@@ -578,7 +624,7 @@ impl AccessUiState {
     const fn label(self) -> &'static str {
         match self {
             Self::Available => "Available",
-            Self::AvailableWithAdministrator => "Administrator access required",
+            Self::AvailableWithAdministrator => "Authentication on Apply",
             Self::Authorized => "Authorized",
             Self::AuthorizationDenied => "Authorization denied",
             Self::NotRequired => "Not required",
@@ -586,7 +632,7 @@ impl AccessUiState {
             Self::BackendMissing => "Backend missing",
             Self::PrivilegedHelperMissing => "Privileged helper missing",
             Self::UnsupportedHardware => "Unsupported hardware",
-            Self::UnsafeMapping => "Unsafe mapping",
+            Self::UnsafeMapping => "Unverified",
             Self::SetupRequired => "Setup required",
             Self::ExternalServiceRequired => "External service required",
             Self::Unavailable => "Unavailable",
@@ -1189,6 +1235,44 @@ fn warn_if_fan_icon_missing() {
         eprintln!(
             "Warning: rog-fan-symbolic icon was not found. Check crates/rog-ui/assets/icons/hicolor/scalable/actions/rog-fan-symbolic.svg and packaging icon installation."
         );
+    }
+}
+
+async fn complete_display_apply<F>(
+    shared: Arc<Mutex<SharedUiState>>,
+    result: Result<display::DisplaySnapshot, String>,
+    discover: F,
+) where
+    F: FnOnce() -> display::DisplaySnapshot + Send + 'static,
+{
+    let update_draft_rate = result.is_ok();
+    let snapshot = match result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut snapshot =
+                tokio::task::spawn_blocking(discover)
+                    .await
+                    .unwrap_or_else(|worker_error| display::DisplaySnapshot {
+                        session_type: "unknown".into(),
+                        backend: "unavailable".into(),
+                        internal_output: None,
+                        current_mode: None,
+                        current_rate: None,
+                        supported_rates: Vec::new(),
+                        reason: format!("Display discovery worker failed: {worker_error}"),
+                    });
+            snapshot.reason = error;
+            snapshot
+        }
+    };
+
+    if let Ok(mut state) = shared.lock() {
+        state.display_action_in_progress = false;
+        if update_draft_rate {
+            state.display_draft_rate = snapshot.current_rate;
+        }
+        state.display_snapshot = snapshot;
+        state.mark_render_dirty();
     }
 }
 
@@ -3149,7 +3233,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     launch_on_login_switch.set_valign(gtk::Align::Center);
     let launch_on_login_row = adw::ActionRow::builder()
         .title("Launch on Login")
-        .subtitle("Start rog-helper when the user session starts.")
+        .subtitle(autostart_status_message())
         .build();
     launch_on_login_row.add_suffix(&launch_on_login_switch);
     launch_on_login_row.set_activatable(false);
@@ -3402,6 +3486,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     automation_battery_row.add_suffix(&automation_battery_profile);
     automation_battery_row.set_activatable(false);
     automation_group.add(&automation_battery_row);
+    let automation_recovery_profile = gtk::ComboBoxText::new();
+    style_combo_control(&automation_recovery_profile);
+    let automation_recovery_row = adw::ActionRow::builder()
+        .title("Battery Recovery Preset")
+        .subtitle(
+            "Optional preset applied at the upper threshold; it never falls back to the AC preset.",
+        )
+        .build();
+    automation_recovery_row.add_suffix(&automation_recovery_profile);
+    automation_recovery_row.set_activatable(false);
+    automation_group.add(&automation_recovery_row);
     let automation_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
     style_spin_control(&automation_threshold, 0);
     automation_threshold.set_numeric(true);
@@ -3412,12 +3507,30 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             .unwrap_or(0) as f64,
     );
     let automation_threshold_row = adw::ActionRow::builder()
-        .title("Battery Threshold")
-        .subtitle("0 disables the condition; otherwise the Battery preset waits for this percentage or lower.")
+        .title("Battery Lower Threshold")
+        .subtitle(
+            "0 disables the Battery trigger; otherwise it activates at or below this percentage.",
+        )
         .build();
     automation_threshold_row.add_suffix(&automation_threshold);
     automation_threshold_row.set_activatable(false);
     automation_group.add(&automation_threshold_row);
+    let automation_return_threshold = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
+    style_spin_control(&automation_return_threshold, 0);
+    automation_return_threshold.set_numeric(true);
+    automation_return_threshold.set_value(
+        app_settings
+            .automation
+            .battery_return_threshold_percent
+            .unwrap_or(0) as f64,
+    );
+    let automation_return_threshold_row = adw::ActionRow::builder()
+        .title("Battery Return Threshold")
+        .subtitle("0 disables recovery; otherwise the explicitly selected recovery preset applies at or above this percentage. Must be higher than the lower threshold.")
+        .build();
+    automation_return_threshold_row.add_suffix(&automation_return_threshold);
+    automation_return_threshold_row.set_activatable(false);
+    automation_group.add(&automation_return_threshold_row);
     let automation_state_label = gtk::Label::new(Some("Disabled"));
     automation_state_label.set_xalign(0.0);
     automation_state_label.set_wrap(true);
@@ -3841,9 +3954,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         });
     }
-    for (selector, is_ac) in [
-        (automation_ac_profile.clone(), true),
-        (automation_battery_profile.clone(), false),
+    for (selector, profile_kind) in [
+        (automation_ac_profile.clone(), 0),
+        (automation_battery_profile.clone(), 1),
+        (automation_recovery_profile.clone(), 2),
     ] {
         let shared = shared.clone();
         let syncing = automation_syncing.clone();
@@ -3855,12 +3969,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 .active_id()
                 .filter(|id| id.as_str() != "none")
                 .map(|id| id.to_string());
-            if let Err(error) = persist_settings_change(&shared, |settings| {
-                if is_ac {
-                    settings.automation.ac_profile_id = selected;
-                } else {
-                    settings.automation.battery_profile_id = selected;
-                }
+            if let Err(error) = persist_settings_change(&shared, |settings| match profile_kind {
+                0 => settings.automation.ac_profile_id = selected,
+                1 => settings.automation.battery_profile_id = selected,
+                _ => settings.automation.battery_recovery_profile_id = selected,
             }) {
                 if let Ok(mut state) = shared.lock() {
                     state.pending_toast = Some((error, true));
@@ -3873,9 +3985,29 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         automation_threshold.connect_value_changed(move |spin| {
             let value = spin.value().round() as u8;
             let threshold = (value > 0).then_some(value);
-            let _ = persist_settings_change(&shared, |settings| {
+            if let Err(error) = persist_settings_change(&shared, |settings| {
                 settings.automation.battery_threshold_percent = threshold;
-            });
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                    state.mark_render_dirty();
+                }
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        automation_return_threshold.connect_value_changed(move |spin| {
+            let value = spin.value().round() as u8;
+            let threshold = (value > 0).then_some(value);
+            if let Err(error) = persist_settings_change(&shared, |settings| {
+                settings.automation.battery_return_threshold_percent = threshold;
+            }) {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_toast = Some((error, true));
+                    state.mark_render_dirty();
+                }
+            }
         });
     }
     {
@@ -4126,7 +4258,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         let shared = shared.clone();
         check_updates_button.connect_clicked(move |_| {
             if let Ok(mut st) = shared.lock() {
-                if st.update_check_in_progress || st.update_action_in_progress {
+                if st.update_check_in_progress {
                     return;
                 }
                 st.pending_update_check = true;
@@ -4148,28 +4280,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     Ok(st) => st,
                     Err(_) => return,
                 };
-                if st.update_check_in_progress || st.update_action_in_progress {
+                if st.update_check_in_progress {
                     return;
                 }
-                if st.update_state.supports_in_place_update
-                    && st.update_state.downloadable_asset.is_some()
-                {
-                    st.pending_update_action = true;
-                    st.update_action_in_progress = true;
-                    st.update_state.status_text = "Preparing the update...".to_string();
-                    st.update_state.last_result_text =
-                        "Downloading the latest release asset.".to_string();
-                    st.mark_render_dirty();
-                    None
-                } else {
-                    st.update_state.last_result_text =
-                        "Automatic in-place update is not supported for this installation. Opening the latest release page instead.".to_string();
-                    st.mark_render_dirty();
-                    st.update_state
-                        .release_page_url
-                        .clone()
-                        .or_else(|| fallback_releases_url.clone())
-                }
+                st.update_state.last_result_text =
+                    format!("{UPDATE_SIGNATURE_REQUIRED_MESSAGE} Opening the latest release page for manual download.");
+                st.mark_render_dirty();
+                st.update_state
+                    .release_page_url
+                    .clone()
+                    .or_else(|| fallback_releases_url.clone())
             };
 
             if let Some(url) = release_page_url {
@@ -5424,15 +5544,17 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                             .fan_state
                             .fans
                             .iter()
-                            .find(|fan| fan.supports_curve && fan.controllable)
+                            .find(|fan| {
+                                fan.fan_write_policy.custom_curve_authorized && fan.controllable
+                            })
                             .map(|fan| fan.id.clone())
                     })
                     .filter(|id| {
-                        state
-                            .fan_state
-                            .fans
-                            .iter()
-                            .any(|fan| fan.id == *id && fan.supports_curve && fan.controllable)
+                        state.fan_state.fans.iter().any(|fan| {
+                            fan.id == *id
+                                && fan.fan_write_policy.custom_curve_authorized
+                                && fan.controllable
+                        })
                     });
                 if let Some(fan_id) = fan_id {
                     state.pending_fan_action = Some(PendingFanAction::Curve {
@@ -5644,7 +5766,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .fan_state
                     .fans
                     .iter()
-                    .any(|fan| fan.id == fan_id && fan.supports_auto && fan.controllable)
+                    .any(|fan| fan.id == fan_id && fan_auto_recovery_available(fan))
                 {
                     state.pending_fan_action = Some(PendingFanAction::Auto { fan_id });
                     state.action_error = None;
@@ -5859,7 +5981,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let stack_clone = stack.clone();
     let toast_overlay_clone = toast_overlay.clone();
     let update_check_available = app_metadata.repository_url.is_some();
-    let update_action_available = app_metadata.releases_url.is_some();
     let last_supported_modes = std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
     let last_supported_speeds =
         std::rc::Rc::new(std::cell::RefCell::<Vec<String>>::new(Vec::new()));
@@ -5939,7 +6060,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             action_error_txt,
             update_state,
             update_check_in_progress,
-            update_action_in_progress,
             pending_open_link,
             daemon_error,
             settings,
@@ -6006,7 +6126,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.action_error.clone(),
                 st.update_state.clone(),
                 st.update_check_in_progress,
-                st.update_action_in_progress,
                 st.pending_open_link.take(),
                 st.daemon_error.clone(),
                 st.settings.clone(),
@@ -6141,6 +6260,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         automation_enabled.set_active(settings.automation.enabled);
         automation_threshold
             .set_value(settings.automation.battery_threshold_percent.unwrap_or(0) as f64);
+        automation_return_threshold.set_value(
+            settings
+                .automation
+                .battery_return_threshold_percent
+                .unwrap_or(0) as f64,
+        );
         automation_syncing.set(true);
         for (selector, selected) in [
             (
@@ -6150,6 +6275,10 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             (
                 &automation_battery_profile,
                 settings.automation.battery_profile_id.as_deref(),
+            ),
+            (
+                &automation_recovery_profile,
+                settings.automation.battery_recovery_profile_id.as_deref(),
             ),
         ] {
             selector.remove_all();
@@ -6169,6 +6298,25 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             Some(PowerSource::Battery) => "Battery",
             None => "Unknown",
         };
+        let battery_zone = match telemetry.as_ref().and_then(|sample| sample.battery_percent) {
+            Some(percent) if power_source == "Battery" => {
+                match settings.automation.battery_threshold_percent {
+                    Some(lower) if percent <= f32::from(lower) => "lower threshold reached",
+                    Some(_)
+                        if settings
+                            .automation
+                            .battery_return_threshold_percent
+                            .is_some_and(|upper| percent >= f32::from(upper)) =>
+                    {
+                        "recovery threshold reached"
+                    }
+                    Some(_) => "between thresholds",
+                    None => "legacy Battery rule",
+                }
+            }
+            Some(_) if power_source == "AC" => "AC source",
+            _ => "unknown",
+        };
         let last_profile = automation_status
             .last_profile_id
             .as_deref()
@@ -6181,12 +6329,33 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                     .unwrap_or(id)
             })
             .unwrap_or("none yet");
+        let pending_profile = automation_status
+            .pending_profile_id
+            .as_deref()
+            .map(|id| {
+                settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or(id)
+            })
+            .unwrap_or("none");
         automation_state_label.set_text(&format!(
-            "State: {} · Power: {power_source} · Last transition: {last_transition} · Last preset: {last_profile}",
+            "State: {} · Power: {power_source} · Battery zone: {battery_zone} · Source sample: {} · Last transition: {last_transition} · Last confirmed: {last_profile} · Pending: {pending_profile}",
             automation_status.state,
+            automation_status.source_freshness,
         ));
         automation_explanation_label.set_text(&automation_status.explanation);
-        automation_result_label.set_text(&automation_status.last_result);
+        let component_results = if automation_status.component_results.is_empty() {
+            "none".to_string()
+        } else {
+            automation_status.component_results.join("; ")
+        };
+        automation_result_label.set_text(&format!(
+            "{} · Retries: {} · Components: {}",
+            automation_status.last_result, automation_status.retry_status, component_results
+        ));
         automation_resume.set_sensitive(automation_can_resume(&automation_status.state));
         saved_profile_syncing.set(true);
         saved_profile_select.remove_all();
@@ -6459,10 +6628,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             setup_issues_row
                 .set_subtitle("All relevant live service and permission checks currently pass.");
         } else {
-            setup_issues_row.set_title(&format!(
-                "{} control areas need setup",
-                setup_status.issue_count()
-            ));
+            setup_issues_row
+                .set_title(&format!("{} items need review", setup_status.issue_count()));
             setup_issues_row.set_subtitle(
                 &setup_status
                     .issues
@@ -6848,12 +7015,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             }
         }
         let selected_fan = selected_id.as_deref().and_then(|id| {
-            fan_state
-                .fans
-                .iter()
-                .find(|fan| fan.id == id && fan.supports_curve)
+            fan_state.fans.iter().find(|fan| {
+                fan.id == id && (fan.fan_write_policy.abi_detected || fan.curve_readback.is_some())
+            })
         });
-        let selected_writable = selected_fan.is_some_and(|fan| fan.controllable);
+        let selected_writable = selected_fan.is_some_and(fan_curve_apply_authorized);
+        let selected_editable = selected_fan.is_some_and(fan_curve_draft_editable);
         let curve_apply_in_progress = curve_apply_pending.borrow().is_some();
         let fan_authorization_required =
             selected_fan.is_some_and(|fan| fan.access_state == "authorization_required");
@@ -6873,24 +7040,28 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         fan_boost_10.set_sensitive(fan_state.caps.has_fan_boost);
         fan_boost_15.set_sensitive(fan_state.caps.has_fan_boost);
         fan_stop_boost.set_sensitive(matches!(fan_state.mode, FanControlMode::FullSpeedBoost));
-        fan_auto_button.set_sensitive(fan_state.caps.has_individual_fan_control);
+        fan_auto_button.set_sensitive(
+            fan_state
+                .fans
+                .iter()
+                .any(|fan| fan.supports_auto && fan.fan_write_policy.recovery_available),
+        );
         fan_mode_combo.set_sensitive(
             fan_state.caps.has_fan_manual_percent
                 || fan_state.caps.fan_curve_writable
                 || fan_state.caps.has_fan_boost,
         );
         controls_hint.set_text(&fan_controls_hint(&fan_state));
-        curve_preview.set_enabled(selected_writable && !curve_apply_in_progress);
+        curve_preview.set_enabled(selected_editable && !curve_apply_in_progress);
         for input in curve_temp_inputs.iter().chain(curve_duty_inputs.iter()) {
-            input.set_sensitive(selected_writable && !curve_apply_in_progress);
+            input.set_sensitive(selected_editable && !curve_apply_in_progress);
         }
         for button in [&curve_quiet, &curve_balanced, &curve_performance] {
-            button.set_sensitive(selected_writable && !curve_apply_in_progress);
+            button.set_sensitive(selected_editable && !curve_apply_in_progress);
         }
-        curve_import.set_sensitive(selected_fan.is_some_and(|fan| fan.curve_readback.is_some()));
+        curve_import.set_sensitive(selected_fan.is_some_and(fan_curve_import_available));
         curve_auto.set_sensitive(
-            !curve_apply_in_progress
-                && selected_fan.is_some_and(|fan| fan.supports_auto && fan.controllable),
+            !curve_apply_in_progress && selected_fan.is_some_and(fan_auto_recovery_available),
         );
         curve_apply.set_sensitive(fan_curve_apply_enabled(
             selected_writable && !curve_apply_in_progress,
@@ -6902,7 +7073,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             "Apply curve"
         });
-        curve_reset.set_sensitive(selected_writable && !curve_apply_in_progress);
+        curve_reset.set_sensitive(selected_editable && !curve_apply_in_progress);
         curve_status.set_text(&fan_curve_access_label(selected_fan));
         if let Some(fan) = selected_fan {
             let rpm = fan
@@ -7962,7 +8133,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             "Read-only".to_string()
         };
         system_state_details.set_text(&format!(
-            "Controls  {control_state}  ·  Setup issues  {missing_services}"
+            "Controls  {control_state}  ·  Items to review  {missing_services}"
         ));
 
         let health_warning_count = support_messages.len() + warnings.len();
@@ -8012,7 +8183,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_banner.remove_css_class("warning-error");
             warning_banner.add_css_class("warning-warning");
             warning_banner.set_title(&format!(
-                "{} control areas need setup",
+                "{} items need review",
                 setup_status.control_issue_count()
             ));
             warning_banner.set_button_label(Some("Review"));
@@ -8694,27 +8865,16 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
         let check_subtitle = if update_check_in_progress {
             "Checking the latest GitHub release right now."
-        } else if update_action_in_progress {
-            "Wait for the current update action to finish before checking again."
         } else {
             "Query the latest GitHub release without blocking the UI."
         };
         check_updates_row.set_subtitle(check_subtitle);
-        check_updates_button.set_sensitive(
-            update_check_available && !update_check_in_progress && !update_action_in_progress,
-        );
+        check_updates_button.set_sensitive(update_check_available && !update_check_in_progress);
 
         update_action_button.set_label(&update_state.update_action_label);
-        if update_action_in_progress {
-            update_action_row.set_subtitle("Applying the latest release asset. Keep this window open until the action finishes.");
-        } else {
-            update_action_row.set_subtitle(&update_state.update_action_subtitle);
-        }
-        update_action_button.set_sensitive(
-            !update_check_in_progress
-                && !update_action_in_progress
-                && (update_state.release_page_url.is_some() || update_action_available),
-        );
+        update_action_row.set_subtitle(&update_state.update_action_subtitle);
+        update_action_button
+            .set_sensitive(!update_check_in_progress && update_state.release_page_url.is_some());
 
         glib::ControlFlow::Continue
     });
@@ -8892,21 +9052,7 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     let result = tokio::task::spawn_blocking(move || display::apply_refresh_rate(rate))
                         .await
                         .unwrap_or_else(|error| Err(format!("Display operation worker failed: {error}")));
-                    if let Ok(mut state) = shared.lock() {
-                        state.display_action_in_progress = false;
-                        match result {
-                            Ok(snapshot) => {
-                                state.display_draft_rate = snapshot.current_rate;
-                                state.display_snapshot = snapshot;
-                            }
-                            Err(error) => {
-                                let mut snapshot = display::discover();
-                                snapshot.reason = error;
-                                state.display_snapshot = snapshot;
-                            }
-                        }
-                        state.mark_render_dirty();
-                    }
+                    complete_display_apply(shared.clone(), result, display::discover).await;
                 }
 
                 let pending_saved_profile_action = shared
@@ -9149,71 +9295,6 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                                 st.update_check_in_progress = false;
                                 st.pending_toast =
                                     Some(("Unable to check for updates right now.".to_string(), true));
-                                st.mark_render_dirty();
-                            }
-                        }
-                    }
-                }
-
-                let pending_update_action = shared
-                    .lock()
-                    .ok()
-                    .map(|mut st| std::mem::take(&mut st.pending_update_action))
-                    .unwrap_or(false);
-                if pending_update_action {
-                    let update_state = shared
-                        .lock()
-                        .ok()
-                        .map(|st| st.update_state.clone())
-                        .unwrap_or_default();
-                    match apply_update_action(&app_metadata, &update_state).await {
-                        Ok(UpdateActionOutcome::Replaced { version }) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text = format!(
-                                    "Update downloaded. Restart required to switch to {version}."
-                                );
-                                st.update_state.last_result_text = format!(
-                                    "The binary on disk was replaced with {version}. Restart rog-helper to use the new version."
-                                );
-                                st.update_state.update_action_label = "Updated on Disk".to_string();
-                                st.update_state.update_action_subtitle =
-                                    "Restart rog-helper to finish switching to the downloaded binary."
-                                        .to_string();
-                                st.update_state.supports_in_place_update = false;
-                                st.pending_toast = Some((
-                                    format!(
-                                        "Update downloaded. Restart rog-helper to use {version}."
-                                    ),
-                                    false,
-                                ));
-                                st.mark_render_dirty();
-                            }
-                        }
-                        Ok(UpdateActionOutcome::OpenReleasePage { url, message }) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text =
-                                    "Automatic in-place update is not supported here.".to_string();
-                                st.update_state.last_result_text = message.clone();
-                                st.pending_open_link = Some(OpenLinkRequest {
-                                    url,
-                                    error_message:
-                                        "Unable to open the latest release page right now."
-                                            .to_string(),
-                                });
-                                st.pending_toast = Some((message, false));
-                                st.mark_render_dirty();
-                            }
-                        }
-                        Err(error) => {
-                            if let Ok(mut st) = shared.lock() {
-                                st.update_action_in_progress = false;
-                                st.update_state.status_text =
-                                    "Automatic in-place update could not be completed."
-                                        .to_string();
-                                st.update_state.last_result_text = error.clone();
-                                st.pending_toast = Some((error, true));
                                 st.mark_render_dirty();
                             }
                         }
@@ -9692,22 +9773,7 @@ async fn fetch_state() -> Result<
     let warnings = dbus_decode::strings(&state, dbus_keys::state::WARNINGS).unwrap_or_default();
     let automation_map =
         dbus_decode::nested_map(&state, dbus_keys::state::AUTOMATION).unwrap_or_default();
-    let automation_status = AutomationUiStatus {
-        state: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_STATE)
-            .unwrap_or_else(|| "disabled".into()),
-        explanation: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_EXPLANATION)
-            .unwrap_or_else(|| "Automation status is unavailable.".into()),
-        last_result: dbus_decode::string(&automation_map, dbus_keys::state::AUTOMATION_LAST_RESULT)
-            .unwrap_or_else(|| "No automatic result is available.".into()),
-        last_transition_ms: dbus_decode::unsigned(
-            &automation_map,
-            dbus_keys::state::AUTOMATION_LAST_TRANSITION_MS,
-        ),
-        last_profile_id: dbus_decode::string(
-            &automation_map,
-            dbus_keys::state::AUTOMATION_PROFILE_ID,
-        ),
-    };
+    let automation_status = automation_status_from_dbus(&automation_map);
     let profile = dbus_decode::string(&state, dbus_keys::state::PROFILE);
     let gpu_mode = dbus_decode::string(&state, dbus_keys::state::GPU_MODE);
     let battery_limit = dbus_decode::unsigned(&state, dbus_keys::state::BATTERY_LIMIT)
@@ -9988,31 +10054,11 @@ async fn apply_cpu_actions(actions: Vec<PendingCpuAction>) -> Result<(), String>
     Ok(())
 }
 
-#[derive(Debug)]
-enum UpdateActionOutcome {
-    Replaced { version: String },
-    OpenReleasePage { url: String, message: String },
-}
-
 #[derive(Debug, Deserialize)]
 struct GithubReleaseResponse {
     tag_name: String,
     html_url: String,
     body: Option<String>,
-    assets: Vec<GithubReleaseAssetResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubReleaseAssetResponse {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(Debug)]
-struct UpdateCapability {
-    asset: Option<ReleaseAsset>,
-    supports_in_place_update: bool,
-    explanation: String,
 }
 
 async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, String> {
@@ -10054,29 +10100,14 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
         .as_deref()
         .map(release_notes_preview_text);
     let comparison = compare_versions(&app_metadata.version, &release.tag_name);
-    let capability = detect_update_capability(&release.assets);
-
     let (status_text, last_result_text, update_action_label, update_action_subtitle) =
         match comparison {
             Some(std::cmp::Ordering::Less) => {
-                let action_label = if capability.supports_in_place_update {
-                    "Update Now".to_string()
-                } else {
-                    "Download Latest".to_string()
-                };
-                let action_subtitle = if capability.supports_in_place_update {
-                    capability.explanation.clone()
-                } else {
-                    format!(
-                        "{} Opening the latest release page is still available.",
-                        capability.explanation
-                    )
-                };
                 (
                     format!("Update available: {latest_version}"),
                     format!("Latest GitHub release: {latest_version}"),
-                    action_label,
-                    action_subtitle,
+                    update_action_label().to_string(),
+                    update_action_subtitle(),
                 )
             }
             Some(std::cmp::Ordering::Equal) => (
@@ -10085,7 +10116,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                     "Installed version {} matches the latest GitHub release.",
                     app_metadata.version
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Review release notes or download another build from GitHub.".to_string(),
             ),
             Some(std::cmp::Ordering::Greater) => (
@@ -10094,7 +10125,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                     "Installed version {} is newer than the latest published release {latest_version}.",
                     app_metadata.version
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Review the latest published release in your browser.".to_string(),
             ),
             None => (
@@ -10102,7 +10133,7 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
                 format!(
                     "Latest GitHub release: {latest_version}. The installed and latest version strings could not be compared automatically."
                 ),
-                "Open Releases".to_string(),
+                update_action_label().to_string(),
                 "Version comparison was inconclusive, so the latest release page will open instead of attempting an in-place update."
                     .to_string(),
             ),
@@ -10116,14 +10147,8 @@ async fn check_for_updates(app_metadata: &AppMetadata) -> Result<UpdateState, St
         release_notes_preview,
         release_notes_full,
         release_page_url: Some(release.html_url),
-        downloadable_asset: if capability.supports_in_place_update {
-            capability.asset
-        } else {
-            None
-        },
         update_action_label,
         update_action_subtitle,
-        supports_in_place_update: capability.supports_in_place_update,
     })
 }
 
@@ -10147,124 +10172,30 @@ fn update_check_failed_state(
     error: &str,
     previous_state: &UpdateState,
 ) -> UpdateState {
-    let mut state = previous_state.clone();
-    if state.release_page_url.is_none() {
-        state.release_page_url = app_metadata.releases_url.clone();
+    UpdateState {
+        status_text: "Could not check for updates".to_string(),
+        last_result_text: friendly_update_error(error),
+        last_checked_unix: Some(now_unix_timestamp()),
+        release_page_url: app_metadata
+            .releases_url
+            .clone()
+            .or_else(|| previous_state.release_page_url.clone()),
+        update_action_label: update_action_label().to_string(),
+        update_action_subtitle: update_action_subtitle(),
+        ..UpdateState::default()
     }
-    if state.update_action_label.is_empty() {
-        state.update_action_label = "Open Releases".to_string();
-    }
-    state.status_text = "Could not check for updates".to_string();
-    state.last_checked_unix = Some(now_unix_timestamp());
-    state.last_result_text = friendly_update_error(error);
-    state
 }
 
-async fn apply_update_action(
-    app_metadata: &AppMetadata,
-    update_state: &UpdateState,
-) -> Result<UpdateActionOutcome, String> {
-    let release_page_url = update_state
-        .release_page_url
-        .clone()
-        .or_else(|| app_metadata.releases_url.clone())
-        .ok_or_else(|| "Repository URL is not configured.".to_string())?;
+const UPDATE_SIGNATURE_REQUIRED_MESSAGE: &str = "Automatic binary replacement is disabled until a signed release manifest can be verified with a pinned public key.";
 
-    if !update_state.supports_in_place_update {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
+fn update_action_label() -> &'static str {
+    "Open Releases"
+}
 
-    let asset = update_state.downloadable_asset.as_ref().ok_or_else(|| {
-        "No matching direct release asset was found for automatic replacement.".to_string()
-    })?;
-    let Some(executable_path) = supported_update_target_path(asset) else {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Automatic in-place update is not supported for this installation. Opening the latest release page instead."
-                    .to_string(),
-        });
-    };
-
-    let client = build_github_client(app_metadata)?;
-    let response = client
-        .get(&asset.download_url)
-        .send()
-        .await
-        .map_err(|_| "Unable to download the latest release asset right now.".to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "GitHub returned {} while downloading the latest release asset.",
-            response.status()
-        ));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| "The latest release asset could not be downloaded completely.".to_string())?;
-    if bytes.is_empty() {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The latest release asset was empty, so automatic replacement was skipped. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if !bytes.starts_with(b"\x7fELF") {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The latest release asset could not be validated as a Linux executable. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-
-    let current_permissions = fs::metadata(&executable_path)
-        .map_err(|_| "The current executable permissions could not be read.".to_string())?
-        .permissions();
-    let parent = executable_path
-        .parent()
-        .ok_or_else(|| "The current executable directory could not be determined.".to_string())?;
-    let temp_path = temp_update_path(parent, &asset.name);
-    if fs::write(&temp_path, &bytes).is_err() {
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The downloaded update could not be written next to the current binary. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if fs::set_permissions(&temp_path, current_permissions).is_err() {
-        let _ = fs::remove_file(&temp_path);
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "Execute permissions could not be preserved for the downloaded update. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-    if fs::rename(&temp_path, &executable_path).is_err() {
-        let _ = fs::remove_file(&temp_path);
-        return Ok(UpdateActionOutcome::OpenReleasePage {
-            url: release_page_url,
-            message:
-                "The downloaded update could not replace the current binary. Opening the latest release page instead."
-                    .to_string(),
-        });
-    }
-
-    Ok(UpdateActionOutcome::Replaced {
-        version: update_state
-            .latest_version
-            .clone()
-            .unwrap_or_else(|| asset.name.clone()),
-    })
+fn update_action_subtitle() -> String {
+    format!(
+        "{UPDATE_SIGNATURE_REQUIRED_MESSAGE} Opening the latest release page for manual download."
+    )
 }
 
 fn build_github_client(app_metadata: &AppMetadata) -> Result<reqwest::Client, String> {
@@ -10272,170 +10203,6 @@ fn build_github_client(app_metadata: &AppMetadata) -> Result<reqwest::Client, St
         .user_agent(format!("rog-helper-ui/{}", app_metadata.version))
         .build()
         .map_err(|_| "The update checker could not initialize its GitHub client.".to_string())
-}
-
-fn detect_update_capability(assets: &[GithubReleaseAssetResponse]) -> UpdateCapability {
-    let executable_path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable path could not be determined for automatic replacement."
-                        .to_string(),
-            };
-        }
-    };
-    let executable_name = match executable_path.file_name().and_then(|name| name.to_str()) {
-        Some(name) => name,
-        None => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable name could not be determined for automatic replacement."
-                        .to_string(),
-            };
-        }
-    };
-
-    let asset = match matching_release_asset(assets, executable_name) {
-        Some(asset) => asset,
-        None => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "No direct release asset matches the current binary name, so automatic replacement is disabled."
-                        .to_string(),
-            };
-        }
-    };
-
-    let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The HOME directory is not available, so a safe user-local update path could not be confirmed."
-                    .to_string(),
-        };
-    };
-    if !executable_path.starts_with(&home_dir) {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current binary is not installed in a user-local path, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    let metadata = match fs::symlink_metadata(&executable_path) {
-        Ok(metadata) => metadata,
-        Err(_) => {
-            return UpdateCapability {
-                asset: None,
-                supports_in_place_update: false,
-                explanation:
-                    "The current executable could not be inspected, so in-place replacement is disabled."
-                        .to_string(),
-            };
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable is a symlink, so automatic replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    let Some(parent) = executable_path.parent() else {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable directory could not be determined, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    };
-    if !can_stage_update_in_dir(parent, executable_name) {
-        return UpdateCapability {
-            asset: None,
-            supports_in_place_update: false,
-            explanation:
-                "The current executable directory is not writable by the current user, so in-place replacement is disabled."
-                    .to_string(),
-        };
-    }
-
-    UpdateCapability {
-        asset: Some(asset),
-        supports_in_place_update: true,
-        explanation:
-            "A matching direct binary release asset can safely replace this user-local installation after validation. Restart rog-helper afterward."
-                .to_string(),
-    }
-}
-
-fn supported_update_target_path(asset: &ReleaseAsset) -> Option<PathBuf> {
-    let executable_path = std::env::current_exe().ok()?;
-    let executable_name = executable_path.file_name()?.to_str()?;
-    if executable_name != asset.name {
-        return None;
-    }
-
-    let home_dir = std::env::var_os("HOME").map(PathBuf::from)?;
-    if !executable_path.starts_with(&home_dir) {
-        return None;
-    }
-
-    let metadata = fs::symlink_metadata(&executable_path).ok()?;
-    if metadata.file_type().is_symlink() {
-        return None;
-    }
-
-    let parent = executable_path.parent()?;
-    if !can_stage_update_in_dir(parent, executable_name) {
-        return None;
-    }
-
-    Some(executable_path)
-}
-
-fn matching_release_asset(
-    assets: &[GithubReleaseAssetResponse],
-    executable_name: &str,
-) -> Option<ReleaseAsset> {
-    assets
-        .iter()
-        .find(|asset| asset.name == executable_name)
-        .map(|asset| ReleaseAsset {
-            name: asset.name.clone(),
-            download_url: asset.browser_download_url.clone(),
-        })
-}
-
-fn can_stage_update_in_dir(dir: &Path, executable_name: &str) -> bool {
-    let probe_path = temp_update_path(dir, executable_name);
-    let write_result = fs::write(&probe_path, []);
-    let _ = fs::remove_file(&probe_path);
-    write_result.is_ok()
-}
-
-fn temp_update_path(dir: &Path, executable_name: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    dir.join(format!(
-        ".{executable_name}.rog-helper-update-{}-{stamp}",
-        std::process::id()
-    ))
 }
 
 fn package_value(value: &str, fallback: &str) -> String {
@@ -10816,24 +10583,127 @@ fn xdg_config_home() -> Result<PathBuf, String> {
 }
 
 fn autostart_enabled() -> Result<bool, String> {
+    Ok(autostart_status()?.enabled)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AutostartStatus {
+    enabled: bool,
+    message: Option<&'static str>,
+}
+
+fn autostart_status_message() -> String {
+    match autostart_status() {
+        Ok(status) => status
+            .message
+            .unwrap_or("Start rog-helper when the user session starts.")
+            .to_string(),
+        Err(error) => format!("Autostart status unavailable: {error}"),
+    }
+}
+
+fn autostart_status() -> Result<AutostartStatus, String> {
     let path = autostart_file_path()?;
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AutostartStatus {
+                enabled: false,
+                message: None,
+            })
+        }
         Err(error) => return Err(format!("Unable to read autostart entry: {error}")),
     };
 
-    let mut disabled = false;
-    for line in contents.lines().map(str::trim) {
-        if key_value_is(line, "Hidden", "true")
+    let expected = autostart_desktop_entry_for_current_installation(&rog_core::UiPreferences {
+        start_minimized_to_tray: contents
+            .lines()
+            .any(|line| line.trim().starts_with("Exec=") && line.contains(START_MINIMIZED_ARG)),
+        ..rog_core::UiPreferences::default()
+    })?;
+    let expected_exec = expected
+        .lines()
+        .find(|line| line.starts_with("Exec="))
+        .unwrap_or_default();
+    let target_exists = if expected_exec.starts_with("Exec=flatpak run ") {
+        true
+    } else {
+        desktop_entry_exec_path(expected_exec).is_some_and(|target| target.is_file())
+    };
+    Ok(autostart_status_for_entry(
+        &contents,
+        expected_exec,
+        target_exists,
+    ))
+}
+
+fn autostart_status_for_entry(
+    contents: &str,
+    expected_exec: &str,
+    target_exists: bool,
+) -> AutostartStatus {
+    if !is_rog_helper_autostart(contents) {
+        return AutostartStatus {
+            enabled: false,
+            message: Some("A different autostart entry uses the rog-helper filename."),
+        };
+    }
+    let disabled = contents.lines().map(str::trim).any(|line| {
+        key_value_is(line, "Hidden", "true")
             || key_value_is(line, "X-GNOME-Autostart-enabled", "false")
-        {
-            disabled = true;
-            break;
+    });
+    let matches_install =
+        target_exists && contents.lines().any(|line| line.trim() == expected_exec);
+    AutostartStatus {
+        enabled: !disabled && matches_install,
+        message: (!matches_install)
+            .then_some("Saved autostart entry is stale or its executable is unavailable."),
+    }
+}
+
+fn desktop_entry_exec_path(exec: &str) -> Option<PathBuf> {
+    let argument = exec.strip_prefix("Exec=\"")?;
+    let mut path = String::new();
+    let mut escaped = false;
+    for ch in argument.chars() {
+        if escaped {
+            path.push(ch);
+            escaped = false;
+        } else {
+            match ch {
+                '\\' => escaped = true,
+                '"' => return Some(PathBuf::from(path)),
+                _ => path.push(ch),
+            }
         }
     }
+    None
+}
 
-    Ok(!disabled)
+fn is_rog_helper_autostart(contents: &str) -> bool {
+    contents.contains("X-Rog-Helper-Autostart=true")
+        || [false, true]
+            .into_iter()
+            .any(|minimized| contents == legacy_autostart_desktop_entry(minimized))
+}
+
+fn legacy_autostart_desktop_entry(minimized: bool) -> String {
+    let exec = if minimized {
+        format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
+    } else {
+        APP_BINARY_NAME.to_string()
+    };
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=rog-helper\n\
+         Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux\n\
+         Exec={exec}\n\
+         Icon={APP_ICON_NAME}\n\
+         Terminal=false\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
 }
 
 fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
@@ -10846,11 +10716,29 @@ fn key_value_is(line: &str, key: &str, expected_value: &str) -> bool {
 
 fn sync_autostart(settings: &rog_core::UiPreferences) -> Result<(), String> {
     let path = autostart_file_path()?;
-    if !settings.launch_on_login {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
+    let entry = if settings.launch_on_login {
+        Some(autostart_desktop_entry_for_current_installation(settings)?)
+    } else {
+        None
+    };
+    sync_autostart_entry(&path, settings.launch_on_login, entry.as_deref())
+}
+
+fn sync_autostart_entry(path: &Path, enabled: bool, entry: Option<&str>) -> Result<(), String> {
+    if !enabled {
+        match fs::read_to_string(path) {
+            Ok(contents) if is_rog_helper_autostart(&contents) => {
+                fs::remove_file(path)
+                    .map_err(|error| format!("Unable to remove autostart entry: {error}"))?;
+            }
+            Ok(_) => {
+                return Err(
+                    "Autostart path is owned by another desktop entry; it was preserved."
+                        .to_string(),
+                )
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("Unable to remove autostart entry: {error}")),
+            Err(error) => return Err(format!("Unable to inspect autostart entry: {error}")),
         }
         return Ok(());
     }
@@ -10860,28 +10748,129 @@ fn sync_autostart(settings: &rog_core::UiPreferences) -> Result<(), String> {
         .ok_or_else(|| "Unable to determine the autostart directory.".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Unable to create autostart directory: {error}"))?;
-    fs::write(&path, autostart_desktop_entry(settings))
-        .map_err(|error| format!("Unable to save autostart entry: {error}"))
+    if let Ok(contents) = fs::read_to_string(path) {
+        if !is_rog_helper_autostart(&contents) {
+            return Err(
+                "Autostart path is owned by another desktop entry; it was preserved.".to_string(),
+            );
+        }
+    }
+    fs::write(
+        path,
+        entry.ok_or_else(|| "Autostart entry was not generated.".to_string())?,
+    )
+    .map_err(|error| format!("Unable to save autostart entry: {error}"))
 }
 
+#[cfg(test)]
 fn autostart_desktop_entry(settings: &rog_core::UiPreferences) -> String {
-    let exec = if settings.start_minimized_to_tray {
-        format!("{APP_BINARY_NAME} {START_MINIMIZED_ARG}")
-    } else {
-        APP_BINARY_NAME.to_string()
-    };
+    autostart_desktop_entry_for_path(settings, Path::new("/usr/bin/rog-helper-ui"))
+        .expect("fixture executable path must be absolute")
+}
 
+fn autostart_desktop_entry_for_current_installation(
+    settings: &rog_core::UiPreferences,
+) -> Result<String, String> {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        let app_id = std::env::var("FLATPAK_ID")
+            .map_err(|_| "Flatpak application ID is not valid UTF-8.".to_string())?;
+        return autostart_desktop_entry_for_flatpak(settings, &app_id);
+    }
+
+    let executable = if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        PathBuf::from(appimage)
+    } else {
+        std::env::current_exe().map_err(|error| {
+            format!("Unable to resolve the application executable for autostart: {error}")
+        })?
+    };
+    if !executable.is_file() {
+        return Err(
+            "The application executable no longer exists; autostart was not enabled.".to_string(),
+        );
+    }
+    autostart_desktop_entry_for_path(settings, &executable)
+}
+
+fn autostart_desktop_entry_for_flatpak(
+    settings: &rog_core::UiPreferences,
+    app_id: &str,
+) -> Result<String, String> {
+    if !valid_flatpak_app_id(app_id) {
+        return Err("Flatpak application ID is empty or invalid.".to_string());
+    }
+    let exec = format!("flatpak run --command={APP_BINARY_NAME} {app_id}");
+    Ok(autostart_desktop_entry_with_exec(settings, &exec))
+}
+
+fn valid_flatpak_app_id(app_id: &str) -> bool {
+    let components = app_id.split('.').collect::<Vec<_>>();
+    components.len() >= 3
+        && components.iter().all(|component| {
+            component
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic())
+                && component
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+}
+
+fn autostart_desktop_entry_for_path(
+    settings: &rog_core::UiPreferences,
+    executable: &Path,
+) -> Result<String, String> {
+    if !executable.is_absolute() {
+        return Err("The application executable path is not absolute.".to_string());
+    }
+    let executable = desktop_entry_exec_arg(executable)?;
+    Ok(autostart_desktop_entry_with_exec(settings, &executable))
+}
+
+fn autostart_desktop_entry_with_exec(
+    settings: &rog_core::UiPreferences,
+    base_exec: &str,
+) -> String {
+    let exec = if settings.start_minimized_to_tray {
+        format!("{base_exec} {START_MINIMIZED_ARG}")
+    } else {
+        base_exec.to_string()
+    };
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=rog-helper\n\
          Comment=Control ASUS ROG power, GPU, battery, and diagnostics on Linux\n\
          Exec={exec}\n\
+         X-Rog-Helper-Autostart=true\n\
          Icon={APP_ICON_NAME}\n\
          Terminal=false\n\
          StartupNotify=false\n\
          X-GNOME-Autostart-enabled=true\n"
     )
+}
+
+fn desktop_entry_exec_arg(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err("The application executable path is not absolute.".to_string());
+    }
+    let value = path
+        .to_str()
+        .ok_or_else(|| "The executable path is not valid UTF-8 for a desktop entry.".to_string())?;
+    let mut quoted = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' | '"' | '`' | '$' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '\n' | '\r' => return Err("The executable path contains a newline.".to_string()),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    Ok(quoted)
 }
 
 fn open_uri_with_feedback(shared: &Arc<Mutex<SharedUiState>>, uri: &str, error_message: &str) {
@@ -12912,7 +12901,10 @@ fn fan_privileged_access_state(
         return AccessUiState::UnsupportedHardware;
     }
     let safe_mapping = fan_state.fans.iter().any(|fan| {
-        fan.pwm_endpoint_verified && (fan.supports_auto || fan.supports_curve || fan.controllable)
+        fan.pwm_endpoint_verified
+            && (fan.fan_write_policy.abi_detected
+                || fan.fan_write_policy.recovery_available
+                || fan.controllable)
     });
     if !safe_mapping {
         return AccessUiState::UnsafeMapping;
@@ -13280,7 +13272,7 @@ fn update_setup_dependency_row(
     value: &gtk::Label,
 ) {
     if let Some(dependency) = status.dependency(kind) {
-        value.set_text(dependency.state.label());
+        value.set_text(setup_dependency_label(kind, dependency.state));
         set_setup_value_status(
             value,
             match dependency.state {
@@ -13302,6 +13294,14 @@ fn update_setup_dependency_row(
     }
 }
 
+fn setup_dependency_label(kind: DependencyKind, state: DependencyState) -> &'static str {
+    if kind != DependencyKind::RogHelperd && state == DependencyState::NotAvailable {
+        "Missing optional backend"
+    } else {
+        state.label()
+    }
+}
+
 fn update_setup_permission_row(
     status: &SetupStatus,
     kind: PermissionKind,
@@ -13309,11 +13309,18 @@ fn update_setup_permission_row(
     value: &gtk::Label,
 ) {
     if let Some(permission) = status.permission(kind) {
-        value.set_text(permission.state.label());
+        value.set_text(setup_permission_label(kind, permission.state));
         set_setup_value_status(
             value,
             match permission.state {
                 PermissionState::Writable => "status-ok",
+                PermissionState::Unknown
+                | PermissionState::Unsupported
+                | PermissionState::ReadOnly
+                    if kind == PermissionKind::FanControls =>
+                {
+                    "status-info"
+                }
                 PermissionState::Unknown | PermissionState::Unsupported => "status-info",
                 PermissionState::AuthorizationRequired | PermissionState::ReadOnly => {
                     "status-warning"
@@ -13327,6 +13334,16 @@ fn update_setup_permission_row(
     } else {
         value.set_text("Checking");
         row.set_subtitle("No permission result has been received yet.");
+    }
+}
+
+fn setup_permission_label(kind: PermissionKind, state: PermissionState) -> &'static str {
+    match (kind, state) {
+        (PermissionKind::FanControls, PermissionState::ReadOnly) => "Telemetry only",
+        (PermissionKind::CpuPolicyWrites, PermissionState::AuthorizationRequired) => {
+            "Authentication on Apply"
+        }
+        _ => state.label(),
     }
 }
 
@@ -13959,6 +13976,7 @@ fn fan_caps_from_dbus(map: HashMap<String, OwnedValue>) -> FanCaps {
             .unwrap_or(false),
         fan_curve_writable: dbus_decode::boolean(&map, dbus_keys::fan_caps::FAN_CURVE_WRITABLE)
             .unwrap_or(false),
+        fan_write_policy: fan_write_policy_from_dbus(&map),
         has_fan_manual_percent: dbus_decode::boolean(&map, dbus_keys::caps::HAS_FAN_MANUAL_PERCENT)
             .unwrap_or(false),
         has_fan_manual_rpm_target: dbus_decode::boolean(
@@ -14065,6 +14083,7 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         supports_manual_rpm_target: b(&map, dbus_keys::FAN_INFO_SUPPORTS_MANUAL_RPM_TARGET_KEY),
         supports_curve: b(&map, dbus_keys::FAN_INFO_SUPPORTS_CURVE_KEY),
         supports_auto: b(&map, dbus_keys::FAN_INFO_SUPPORTS_AUTO_KEY),
+        fan_write_policy: fan_write_policy_from_dbus(&map),
         curve_readback,
         rollback_available: b(&map, dbus_keys::FAN_INFO_ROLLBACK_AVAILABLE_KEY),
         backend: s(&map, dbus_keys::FAN_INFO_BACKEND_KEY).unwrap_or_else(|| "unknown".to_string()),
@@ -14072,6 +14091,40 @@ fn fan_info_from_dbus(map: HashMap<String, OwnedValue>) -> Option<FanInfo> {
         notes: vec_string(&map, dbus_keys::FAN_INFO_NOTES_KEY),
         warnings: vec_string(&map, dbus_keys::FAN_INFO_WARNINGS_KEY),
     })
+}
+
+fn fan_write_policy_from_dbus(map: &HashMap<String, OwnedValue>) -> FanWritePolicyDecision {
+    use dbus_keys::fan_caps as keys;
+    let boolean = |key| {
+        map.get(key)
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(false)
+    };
+    let string = |key| {
+        map.get(key)
+            .and_then(|value| <&str>::try_from(value).ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let state = match string(keys::WRITE_SUPPORT_STATE).as_str() {
+        "unverified" => FanWriteSupportState::Unverified,
+        "unsupported" => FanWriteSupportState::Unsupported,
+        "verified_write" => FanWriteSupportState::VerifiedWrite,
+        _ => FanWriteSupportState::ReadOnly,
+    };
+    FanWritePolicyDecision {
+        state,
+        reason: string(keys::WRITE_SUPPORT_REASON),
+        explanation: string(keys::WRITE_SUPPORT_EXPLANATION),
+        abi_detected: boolean(keys::CURVE_ABI_DETECTED),
+        curve_readable: dbus_decode::boolean(map, keys::FAN_CURVE_READABLE).unwrap_or(false),
+        backend_writable: boolean(keys::BACKEND_WRITABLE),
+        helper_ready: boolean(keys::HELPER_READY),
+        physical_validation_recorded: boolean(keys::PHYSICAL_VALIDATION_RECORDED),
+        custom_curve_authorized: boolean(keys::CUSTOM_CURVE_AUTHORIZED),
+        recovery_available: boolean(keys::RECOVERY_AVAILABLE),
+        ..FanWritePolicyDecision::default()
+    }
 }
 
 fn fan_curve_readback_from_dbus(
@@ -14488,8 +14541,14 @@ fn daemon_identity_from_dbus(
         .and_then(u64_from_value)
         .and_then(|value| u32::try_from(value).ok());
     let package_version = dbus_decode::string(map, dbus_keys::daemon_info::PACKAGE_VERSION);
-    let compatible = api_version == Some(dbus_keys::DAEMON_API_VERSION)
-        && package_version.as_deref() == Some(expected_package_version);
+    let contract = rog_core::DaemonApiInfo::from_wire_fields(
+        map.get(dbus_keys::daemon_info::API_VERSION)
+            .and_then(u64_from_value),
+        package_version.clone(),
+    );
+    let compatible = contract.is_some_and(|info| {
+        info.is_compatible_with(dbus_keys::DAEMON_API_VERSION, expected_package_version)
+    });
     let detail = if compatible {
         format!(
             "Session API v{} and service version {} match this application.",
@@ -14823,7 +14882,7 @@ fn fan_curve_preset(name: &str) -> Vec<(u8, u8)> {
 }
 
 fn automation_can_resume(state: &str) -> bool {
-    matches!(state, "manual_override" | "blocked" | "error")
+    matches!(state, "manual_override" | "blocked" | "error" | "failed")
 }
 
 fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
@@ -14838,10 +14897,7 @@ fn validate_ui_fan_curve(points: &[(u8, u8)]) -> Result<(), String> {
             .collect(),
     };
     curve
-        .validate_safe(FanCurvePolicy {
-            exact_point_count: Some(8),
-            ..FanCurvePolicy::default()
-        })
+        .validate_safe(FanCurvePolicy::verified_asus_write())
         .map_err(|error| error.to_string())
 }
 
@@ -14871,44 +14927,75 @@ fn fan_curve_access_label(fan: Option<&FanInfo>) -> String {
     let Some(fan) = fan else {
         return "Unsupported · no verified fan-curve channel is mapped".to_string();
     };
-    match fan.access_state.as_str() {
-        "direct" if fan.controllable => {
-            "Direct curve control is available; the UI remains unprivileged.".to_string()
+    match &fan.fan_write_policy.state {
+        FanWriteSupportState::Unverified => format!(
+            "Unverified · custom Apply is blocked. {}",
+            fan.fan_write_policy.explanation
+        ),
+        FanWriteSupportState::Unsupported => format!(
+            "Unsupported · custom Apply is blocked. {}",
+            fan.fan_write_policy.explanation
+        ),
+        FanWriteSupportState::ReadOnly if !fan.fan_write_policy.custom_curve_authorized => {
+            format!("Read only · {}", fan.fan_write_policy.explanation)
         }
-        "curve_control_available" if fan.controllable => {
-            "Authorized curve control is available for this session.".to_string()
-        }
-        "authorization_required" => {
-            "Authorization required · PolicyKit is requested only when Apply is pressed."
+        _ => match fan.access_state.as_str() {
+            "direct" if fan.controllable => {
+                "Direct curve control is available; the UI remains unprivileged.".to_string()
+            }
+            "curve_control_available" if fan.controllable => {
+                "Authorized curve control is available for this session.".to_string()
+            }
+            "authorization_required" => {
+                "Authorization required · PolicyKit is requested only when Apply is pressed."
+                    .to_string()
+            }
+            "authorization_denied" => {
+                "Authorization denied · the draft is retained; Apply may be retried.".to_string()
+            }
+            "helper_missing" => {
+                "Privileged helper missing · curve readback remains available, writes are unavailable."
                 .to_string()
-        }
-        "authorization_denied" => {
-            "Authorization denied · the draft is retained; Apply may be retried.".to_string()
-        }
-        "helper_missing" => {
-            "Privileged helper missing · curve readback remains available, writes are unavailable."
-                .to_string()
-        }
-        "unsafe_read_only" => "Unsafe or unverified mapping · this fan is read-only.".to_string(),
-        "telemetry_only" | "read_only" => {
-            "Telemetry only · RPM is visible, but this channel has no verified curve write route."
-                .to_string()
-        }
-        _ if fan.supports_curve && fan.curve_readback.is_some() => {
-            "Curve is readable but currently read-only.".to_string()
-        }
-        _ if fan.supports_curve => {
-            "Curve capability reported; write access is unavailable.".to_string()
-        }
-        _ => "Unsupported · this fan has no verified curve capability.".to_string(),
+            }
+            "unsafe_read_only" => {
+                "Unsafe or unverified mapping · this fan is read-only.".to_string()
+            }
+            "telemetry_only" | "read_only" => {
+                "Telemetry only · RPM is visible, but this channel has no verified curve write route."
+                    .to_string()
+            }
+            _ if fan.supports_curve && fan.curve_readback.is_some() => {
+                "Curve is readable but currently read-only.".to_string()
+            }
+            _ if fan.supports_curve => {
+                "Curve capability reported; write access is unavailable.".to_string()
+            }
+            _ => "Unsupported · this fan has no verified curve capability.".to_string(),
+        },
     }
+}
+
+fn fan_curve_draft_editable(fan: &FanInfo) -> bool {
+    fan.fan_write_policy.abi_detected
+}
+
+fn fan_curve_import_available(fan: &FanInfo) -> bool {
+    fan.curve_readback.is_some()
+}
+
+fn fan_curve_apply_authorized(fan: &FanInfo) -> bool {
+    fan.fan_write_policy.custom_curve_authorized && fan.controllable
+}
+
+fn fan_auto_recovery_available(fan: &FanInfo) -> bool {
+    fan.supports_auto && fan.fan_write_policy.recovery_available
 }
 
 fn fan_curve_tab_available(fans: &[FanInfo], fan_id: &str) -> bool {
     matches!(fan_id, "asus-wmi:cpu" | "asus-wmi:gpu" | "asus-wmi:mid")
         && fans
             .iter()
-            .any(|fan| fan.id == fan_id && fan.supports_curve)
+            .any(|fan| fan.id == fan_id && fan.fan_write_policy.abi_detected)
 }
 
 fn profile_fan_role_available(
@@ -14924,9 +15011,9 @@ fn profile_fan_role_available(
     fans.iter().any(|fan| {
         fan.id == id
             && if curve {
-                fan.supports_curve
+                fan.fan_write_policy.abi_detected
             } else {
-                fan.supports_auto
+                fan_auto_recovery_available(fan)
             }
     })
 }
@@ -14977,6 +15064,7 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         "fan_curve_writable: {}",
         state.caps.fan_curve_writable
     ));
+    append_fan_write_policy_diagnostics(&mut lines, "", &state.caps.fan_write_policy);
     lines.push(format!("boost: {}", state.caps.has_fan_boost));
     if let Some(until) = state.active_boost_until_ms {
         let remaining = until.saturating_sub(now_ms()) / 1000;
@@ -15043,6 +15131,7 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
             "  direct_write: {}; helper_ready: {}; authorization: {}; rollback_available: {}",
             fan.direct_write, fan.privileged_write, fan.authorization, fan.rollback_available
         ));
+        append_fan_write_policy_diagnostics(&mut lines, "  ", &fan.fan_write_policy);
         if let Some(readback) = &fan.curve_readback {
             lines.push(format!(
                 "  current_curve: source=backend_current, enable_mode={}, points={}",
@@ -15104,6 +15193,44 @@ fn fan_state_diagnostics_text(state: &FanState) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn append_fan_write_policy_diagnostics(
+    lines: &mut Vec<String>,
+    prefix: &str,
+    policy: &FanWritePolicyDecision,
+) {
+    lines.push(format!(
+        "{prefix}curve_abi_detected: {}",
+        policy.abi_detected
+    ));
+    lines.push(format!("{prefix}curve_readable: {}", policy.curve_readable));
+    lines.push(format!(
+        "{prefix}backend_writable: {}",
+        policy.backend_writable
+    ));
+    lines.push(format!("{prefix}helper_ready: {}", policy.helper_ready));
+    lines.push(format!(
+        "{prefix}physical_validation_recorded: {}",
+        policy.physical_validation_recorded
+    ));
+    lines.push(format!(
+        "{prefix}custom_curve_authorized: {}",
+        policy.custom_curve_authorized
+    ));
+    lines.push(format!(
+        "{prefix}recovery_available: {}",
+        policy.recovery_available
+    ));
+    lines.push(format!(
+        "{prefix}write_support_state: {}",
+        policy.state.as_str()
+    ));
+    lines.push(format!("{prefix}write_support_reason: {}", policy.reason));
+    lines.push(format!(
+        "{prefix}write_support_explanation: {}",
+        policy.explanation
+    ));
 }
 
 fn fan_mode_label_text(mode: FanControlMode) -> &'static str {
@@ -15363,7 +15490,7 @@ fn fresh_telemetry_rpm(fan: &FanTelemetry, now_ms: u64) -> Option<u32> {
         .flatten()
 }
 
-fn effective_telemetry_freshness<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+fn effective_telemetry_freshness(fan: &FanTelemetry, now_ms: u64) -> &str {
     if fan.sampled_at_ms > 0 && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS {
         "stale"
     } else {
@@ -15371,7 +15498,7 @@ fn effective_telemetry_freshness<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a 
     }
 }
 
-fn effective_telemetry_reason<'a>(fan: &'a FanTelemetry, now_ms: u64) -> &'a str {
+fn effective_telemetry_reason(fan: &FanTelemetry, now_ms: u64) -> &str {
     if fan.telemetry_available
         && fan.sampled_at_ms > 0
         && now_ms.saturating_sub(fan.sampled_at_ms) > FAN_SAMPLE_MAX_AGE_MS
@@ -15702,6 +15829,25 @@ fn text_or_unknown(value: &str) -> &str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn setup_access_labels_fan_telemetry_without_calling_it_a_failure() {
+        assert_eq!(
+            setup_permission_label(PermissionKind::FanControls, PermissionState::ReadOnly),
+            "Telemetry only"
+        );
+        assert_eq!(
+            setup_permission_label(
+                PermissionKind::CpuPolicyWrites,
+                PermissionState::AuthorizationRequired
+            ),
+            "Authentication on Apply"
+        );
+        assert_eq!(
+            setup_dependency_label(DependencyKind::Supergfxd, DependencyState::NotAvailable),
+            "Missing optional backend"
+        );
+    }
+
     fn ov<T>(value: T) -> OwnedValue
     where
         T: Into<Value<'static>>,
@@ -15710,10 +15856,48 @@ mod tests {
     }
 
     #[test]
+    fn old_daemon_automation_status_decodes_with_safe_optional_defaults() {
+        let old_status = HashMap::from([
+            (
+                dbus_keys::state::AUTOMATION_STATE.to_string(),
+                ov("monitoring".to_string()),
+            ),
+            (
+                dbus_keys::state::AUTOMATION_EXPLANATION.to_string(),
+                ov("legacy status".to_string()),
+            ),
+        ]);
+        let decoded = automation_status_from_dbus(&old_status);
+        assert_eq!(decoded.state, "monitoring");
+        assert_eq!(decoded.explanation, "legacy status");
+        assert_eq!(decoded.source_freshness, "unknown");
+        assert_eq!(decoded.retry_status, "not scheduled");
+        assert!(decoded.pending_profile_id.is_none());
+        assert!(decoded.component_results.is_empty());
+    }
+
+    #[test]
+    fn structured_component_status_decodes_when_legacy_summary_is_absent() {
+        let component = HashMap::from([
+            ("state".to_string(), ov("failed".to_string())),
+            ("detail".to_string(), ov("readback mismatch".to_string())),
+        ]);
+        let status = HashMap::from([(
+            dbus_keys::state::AUTOMATION_COMPONENT_BATTERY_LIMIT.to_string(),
+            ov(component),
+        )]);
+        let decoded = automation_status_from_dbus(&status);
+        assert_eq!(decoded.component_results.len(), 1);
+        assert!(decoded.component_results[0].contains("battery_charge_limit: failed"));
+        assert!(decoded.component_results[0].contains("readback mismatch"));
+    }
+
+    #[test]
     fn automation_resume_is_available_for_paused_or_blocked_states() {
         assert!(automation_can_resume("manual_override"));
         assert!(automation_can_resume("blocked"));
         assert!(automation_can_resume("error"));
+        assert!(automation_can_resume("failed"));
         assert!(!automation_can_resume("monitoring"));
         assert!(!automation_can_resume("disabled"));
     }
@@ -15769,7 +15953,20 @@ mod tests {
         };
         let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
         fan.supports_curve = true;
+        fan.supports_auto = true;
         fan.id = "asus-wmi:cpu".to_string();
+        fan.fan_write_policy = FanWritePolicyDecision {
+            state: FanWriteSupportState::VerifiedWrite,
+            reason: "test_fixture".to_string(),
+            explanation: "test-only verified policy".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: true,
+            custom_curve_authorized: true,
+            recovery_available: true,
+            ..FanWritePolicyDecision::default()
+        };
         assert!(fan_curve_tab_available(
             std::slice::from_ref(&fan),
             "asus-wmi:cpu"
@@ -15779,7 +15976,7 @@ mod tests {
             rog_core::ProfileFanRole::Cpu,
             true
         ));
-        assert!(!profile_fan_role_available(
+        assert!(profile_fan_role_available(
             std::slice::from_ref(&fan),
             rog_core::ProfileFanRole::Cpu,
             false
@@ -15818,7 +16015,110 @@ mod tests {
             fan.controllable = state == "direct";
             assert!(fan_curve_access_label(Some(&fan)).contains(expected));
         }
+        fan.fan_write_policy.state = FanWriteSupportState::Unverified;
+        fan.fan_write_policy.custom_curve_authorized = false;
+        fan.fan_write_policy.physical_validation_recorded = false;
+        fan.fan_write_policy.explanation = "no approved physical validation record".to_string();
+        assert!(fan_curve_access_label(Some(&fan)).contains("Unverified"));
         assert!(fan_curve_access_label(None).contains("Unsupported"));
+    }
+
+    #[test]
+    fn unverified_curve_keeps_local_drafting_and_recovery_without_apply() {
+        let telemetry = FanTelemetry {
+            stable_id: "fixture:fan1".to_string(),
+            hwmon_device: "asus".to_string(),
+            hwmon_path: "fixture".to_string(),
+            input_path: "fixture/fan1_input".to_string(),
+            raw_label: Some("cpu_fan".to_string()),
+            display_label: "CPU Fan".to_string(),
+            rpm: Some(2000),
+            source: "fixture/fan1_input".to_string(),
+            sampled_at_ms: 1,
+            freshness: "fresh".to_string(),
+            telemetry_available: true,
+            telemetry_reason: "fresh_numeric".to_string(),
+        };
+        let mut fan = FanInfo::read_only_from_telemetry(0, &telemetry);
+        fan.id = "asus-wmi:cpu".to_string();
+        fan.supports_auto = true;
+        fan.fan_write_policy = FanWritePolicyDecision {
+            state: FanWriteSupportState::Unverified,
+            reason: "no_matching_record".to_string(),
+            explanation: "physical fan-write support is unverified".to_string(),
+            abi_detected: true,
+            curve_readable: true,
+            backend_writable: true,
+            physical_validation_recorded: false,
+            custom_curve_authorized: false,
+            recovery_available: true,
+            ..FanWritePolicyDecision::default()
+        };
+        fan.curve_readback = Some(FanCurveReadback {
+            curve: FanCurve {
+                domain: FanDomain::Cpu,
+                points: fan_curve_preset("balanced")
+                    .into_iter()
+                    .map(|(temp_c, duty_percent)| FanPoint {
+                        temp_c,
+                        duty_percent,
+                    })
+                    .collect(),
+            },
+            raw_pwm: vec![40; 8],
+            enable_mode: 2,
+        });
+
+        assert!(fan_curve_import_available(&fan));
+        assert!(fan_curve_tab_available(std::slice::from_ref(&fan), &fan.id));
+        assert!(fan_curve_draft_editable(&fan));
+        assert!(!fan_curve_apply_authorized(&fan));
+        assert!(!fan_curve_apply_enabled(
+            fan_curve_apply_authorized(&fan),
+            true,
+            true
+        ));
+        assert!(fan_auto_recovery_available(&fan));
+    }
+
+    #[test]
+    fn fan_write_policy_dbus_decoder_preserves_fail_closed_decision() {
+        use dbus_keys::fan_caps as keys;
+        let map = HashMap::from([
+            (
+                keys::WRITE_SUPPORT_STATE.to_string(),
+                ov("unverified".to_string()),
+            ),
+            (
+                keys::WRITE_SUPPORT_REASON.to_string(),
+                ov("no_matching_record".to_string()),
+            ),
+            (
+                keys::WRITE_SUPPORT_EXPLANATION.to_string(),
+                ov("no approved physical validation record".to_string()),
+            ),
+            (keys::CURVE_ABI_DETECTED.to_string(), OwnedValue::from(true)),
+            (keys::FAN_CURVE_READABLE.to_string(), OwnedValue::from(true)),
+            (keys::BACKEND_WRITABLE.to_string(), OwnedValue::from(true)),
+            (
+                keys::PHYSICAL_VALIDATION_RECORDED.to_string(),
+                OwnedValue::from(false),
+            ),
+            (
+                keys::CUSTOM_CURVE_AUTHORIZED.to_string(),
+                OwnedValue::from(false),
+            ),
+            (keys::RECOVERY_AVAILABLE.to_string(), OwnedValue::from(true)),
+        ]);
+
+        let policy = fan_write_policy_from_dbus(&map);
+        assert_eq!(policy.state, FanWriteSupportState::Unverified);
+        assert!(policy.abi_detected);
+        assert!(policy.curve_readable);
+        assert!(policy.backend_writable);
+        assert!(!policy.physical_validation_recorded);
+        assert!(!policy.custom_curve_authorized);
+        assert!(policy.recovery_available);
     }
 
     #[test]
@@ -16003,6 +16303,44 @@ mod tests {
         assert!(!stale.compatible);
         assert!(stale.is_stale());
         assert!(stale.detail.contains("Restart") || stale.detail.contains("running session"));
+    }
+
+    #[test]
+    fn daemon_identity_treats_missing_wrongly_typed_and_future_fields_as_incompatible() {
+        let mut map = HashMap::from([(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.4.0".to_string()),
+        )]);
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            ov("1".to_string()),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.remove(dbus_keys::daemon_info::PACKAGE_VERSION);
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+
+        map.insert(
+            dbus_keys::daemon_info::PACKAGE_VERSION.to_string(),
+            ov("0.4.0".to_string()),
+        );
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION + 1)),
+        );
+        assert!(!daemon_identity_from_dbus(&map, "0.4.0").compatible);
+        map.insert(
+            dbus_keys::daemon_info::API_VERSION.to_string(),
+            OwnedValue::from(u64::from(dbus_keys::DAEMON_API_VERSION)),
+        );
+        map.insert("future_optional_field".to_string(), ov(true));
+        assert!(daemon_identity_from_dbus(&map, "0.4.0").compatible);
     }
 
     #[test]
@@ -16537,7 +16875,13 @@ mod tests {
 
     #[test]
     fn missing_capability_fields_remain_disabled() {
-        let caps = caps_from_dbus(&HashMap::new());
+        let mut map = HashMap::new();
+        map.insert("future_fan_write_capability".to_string(), ov(true));
+        map.insert(
+            dbus_keys::caps::HAS_FAN_CURVES.to_string(),
+            ov("true".to_string()),
+        );
+        let caps = caps_from_dbus(&map);
         let lighting = lighting_from_dbus(HashMap::new()).expect("map should decode");
 
         assert!(!caps.has_profiles);
@@ -16741,6 +17085,64 @@ mod tests {
         assert_eq!(comparison, Some(std::cmp::Ordering::Equal));
     }
 
+    fn update_test_metadata() -> AppMetadata {
+        AppMetadata {
+            binary_name: "rog-helper-ui".to_string(),
+            version: "0.4.0".to_string(),
+            license: "MIT OR Apache-2.0".to_string(),
+            authors: "test".to_string(),
+            repository_url: Some("https://github.com/UdayaSri0/g-helper-linux".to_string()),
+            maintainer_name: "test".to_string(),
+            maintainer_url: None,
+            issues_url: None,
+            releases_url: Some(
+                "https://github.com/UdayaSri0/g-helper-linux/releases/latest".to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn failed_update_check_invalidates_cached_replacement_state() {
+        let metadata = update_test_metadata();
+        let previous = UpdateState {
+            latest_version: Some("0.5.0".to_string()),
+            release_notes_preview: Some("notes".to_string()),
+            release_notes_full: Some("full notes".to_string()),
+            release_page_url: Some("https://example.invalid/old-release".to_string()),
+            update_action_label: "Update Now".to_string(),
+            update_action_subtitle: "Replace the current binary.".to_string(),
+            ..UpdateState::default()
+        };
+
+        let failed =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &previous);
+
+        assert_eq!(failed.status_text, "Could not check for updates");
+        assert_eq!(failed.update_action_label, update_action_label());
+        assert!(failed.latest_version.is_none());
+        assert!(failed.release_notes_full.is_none());
+        assert_eq!(failed.release_page_url, metadata.releases_url);
+    }
+
+    #[test]
+    fn update_action_always_opens_manual_release_page() {
+        assert!(UPDATE_SIGNATURE_REQUIRED_MESSAGE.contains("signed release manifest"));
+        assert_eq!(update_action_label(), "Open Releases");
+    }
+
+    #[test]
+    fn startup_and_offline_update_states_keep_manual_release_fallback_only() {
+        let metadata = update_test_metadata();
+        let startup = initial_update_state(&metadata);
+        assert_eq!(startup.update_action_label, update_action_label());
+        assert_eq!(startup.release_page_url, metadata.releases_url);
+
+        let offline =
+            update_check_failed_state(&metadata, "Unable to reach GitHub right now.", &startup);
+        assert_eq!(offline.update_action_label, update_action_label());
+        assert_eq!(offline.release_page_url, metadata.releases_url);
+    }
+
     #[test]
     fn github_repo_from_url_supports_https_and_ssh_forms() {
         assert_eq!(
@@ -16833,7 +17235,108 @@ mod tests {
         let entry = autostart_desktop_entry(&settings);
 
         assert!(entry.contains("Type=Application"));
-        assert!(entry.contains(&format!("Exec={APP_BINARY_NAME} {START_MINIMIZED_ARG}")));
+        assert!(entry.contains(&format!(
+            "Exec=\"/usr/bin/{APP_BINARY_NAME}\" {START_MINIMIZED_ARG}"
+        )));
+    }
+
+    #[test]
+    fn autostart_entry_uses_quoted_absolute_paths_and_preserves_minimized_arg() {
+        let executable = Path::new("/home/test user/ROG Helper/rog-helper-ui");
+        let settings = rog_core::UiPreferences {
+            start_minimized_to_tray: true,
+            ..rog_core::UiPreferences::default()
+        };
+
+        let entry = autostart_desktop_entry_for_path(&settings, executable).unwrap();
+
+        assert!(
+            entry.contains("Exec=\"/home/test user/ROG Helper/rog-helper-ui\" --minimized-to-tray")
+        );
+        assert!(entry.contains("X-Rog-Helper-Autostart=true"));
+        assert!(!entry.contains("TryExec="));
+    }
+
+    #[test]
+    fn flatpak_autostart_uses_a_persistent_flatpak_launcher_command() {
+        let settings = rog_core::UiPreferences {
+            start_minimized_to_tray: true,
+            ..rog_core::UiPreferences::default()
+        };
+        let entry =
+            autostart_desktop_entry_for_flatpak(&settings, "io.github.roghelper.UI").unwrap();
+
+        assert!(entry.contains(
+            "Exec=flatpak run --command=rog-helper-ui io.github.roghelper.UI --minimized-to-tray"
+        ));
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "invalid app id").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.-roghelper").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.rog;helper").is_err());
+        assert!(autostart_desktop_entry_for_flatpak(&settings, "io.github.rog\nhelper").is_err());
+    }
+
+    #[test]
+    fn autostart_status_reports_stale_entries_and_respects_disabled_entries() {
+        let entry = autostart_desktop_entry(&rog_core::UiPreferences::default());
+        let expected_exec = entry
+            .lines()
+            .find(|line| line.starts_with("Exec="))
+            .unwrap();
+
+        let missing_target = autostart_status_for_entry(&entry, expected_exec, false);
+        assert!(!missing_target.enabled);
+        assert!(missing_target.message.unwrap().contains("stale"));
+
+        let mismatched_exec = autostart_status_for_entry(&entry, "Exec=other", true);
+        assert!(!mismatched_exec.enabled);
+        assert!(mismatched_exec.message.unwrap().contains("stale"));
+
+        let disabled = entry.replace("X-GNOME-Autostart-enabled=true", "Hidden=true");
+        let disabled_status = autostart_status_for_entry(&disabled, expected_exec, true);
+        assert!(!disabled_status.enabled);
+        assert_eq!(disabled_status.message, None);
+
+        let stale_and_disabled = disabled.replace(expected_exec, "Exec=other");
+        let status = autostart_status_for_entry(&stale_and_disabled, expected_exec, true);
+        assert!(!status.enabled);
+        assert!(status.message.unwrap().contains("stale"));
+    }
+
+    #[test]
+    fn autostart_exec_arg_escapes_desktop_entry_metacharacters() {
+        assert_eq!(
+            desktop_entry_exec_arg(Path::new("/tmp/ROG $Helper/\"ui\"")).unwrap(),
+            r#""/tmp/ROG \$Helper/\"ui\"""#
+        );
+        assert!(desktop_entry_exec_arg(Path::new("relative/path")).is_err());
+    }
+
+    #[test]
+    fn autostart_writer_preserves_unrelated_entries_and_removes_only_owned_entries() {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-helper-autostart-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(AUTOSTART_DESKTOP_FILE_NAME);
+        let unrelated = "[Desktop Entry]\nName=Other\nExec=other-app\n";
+        std::fs::write(&path, unrelated).unwrap();
+
+        assert!(sync_autostart_entry(&path, true, Some("replacement")).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), unrelated);
+
+        let similar_user_entry = legacy_autostart_desktop_entry(false)
+            .replace("Control ASUS ROG", "Custom control ASUS ROG");
+        std::fs::write(&path, &similar_user_entry).unwrap();
+        assert!(sync_autostart_entry(&path, false, None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), similar_user_entry);
+
+        let owned = autostart_desktop_entry(&rog_core::UiPreferences::default());
+        std::fs::write(&path, &owned).unwrap();
+        sync_autostart_entry(&path, false, None).unwrap();
+        assert!(!path.exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -16983,5 +17486,38 @@ mod tests {
         edit.update_reported(Some(80));
         assert_eq!(edit.draft, Some(80));
         assert!(!edit.is_dirty());
+    }
+
+    #[tokio::test]
+    async fn display_failure_discovery_runs_before_shared_state_lock() {
+        let shared = Arc::new(Mutex::new(SharedUiState::default()));
+        shared.lock().unwrap().display_action_in_progress = true;
+        let probe = shared.clone();
+        let lock_was_available = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = lock_was_available.clone();
+        let snapshot = display::DisplaySnapshot {
+            session_type: "x11".into(),
+            backend: "XRandR".into(),
+            internal_output: None,
+            current_mode: None,
+            current_rate: None,
+            supported_rates: Vec::new(),
+            reason: "discovery fixture".into(),
+        };
+
+        complete_display_apply(shared.clone(), Err("xrandr timed out".into()), move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            observed.store(
+                probe.try_lock().is_ok(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            snapshot
+        })
+        .await;
+
+        assert!(lock_was_available.load(std::sync::atomic::Ordering::SeqCst));
+        let state = shared.lock().unwrap();
+        assert!(!state.display_action_in_progress);
+        assert_eq!(state.display_snapshot.reason, "xrandr timed out");
     }
 }

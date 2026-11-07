@@ -61,7 +61,7 @@ GTK UI -> session DBus -> rog-helperd -> system DBus -> rog-helper-privileged
 
 Its system identity is `io.github.roghelper.Privileged`, object
 `/io/github/roghelper/Privileged`, interface `io.github.roghelper.Privileged1`. It exposes discovery,
-a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, verified fan,
+a non-interactive allow-listed `CanPerform` diagnostic probe, and explicit CPU, policy-authorized fan,
 keyboard-brightness, native Aura-effect, and standard battery-threshold operations. Privileged API
 v3 is current; v2 introduced the high-level `SetAuraEffect` operation for the exact G615JMR target
 contract, and v3 adds marker-gated fan Auto recovery. `RecoverFansIfArmed` performs the dedicated
@@ -164,7 +164,8 @@ Current effect of failure:
 Architecture decision:
 
 - GPU telemetry remains unprivileged (`hwmon` and optional `nvidia-smi`)
-- GPU mode discovery, validation, switching, and transition safety remain authoritative in `supergfxd`
+- current GPU mode discovery, validation, switching, and transition safety remain authoritative in `supergfxd`; this is an optional backend, not the universal upstream GPU solution
+- upstream asusd supports model-dependent firmware/MUX functionality, but this repository has not validated or implemented that API and must not write GPU mode attributes directly
 - `rog-helper-privileged` deliberately exposes no GPU method
 - ROG Helper does not bind or unbind PCI devices, write GPU sysfs mode files, reload kernel
   modules, power-cycle GPUs, issue raw ACPI calls, or execute commands for GPU switching
@@ -265,7 +266,7 @@ direct-user-write state, fallback suitability, risk, and implementation decision
 | Keyboard brightness | verified asusd, LED sysfs, approved ASUS LED helper | Sometimes | Prefer `asusd` | Preferred | Yes for canonical approved LED only | Low | No caller path and no generic lighting write |
 | Aura/RGB/modes | verified asusd, then allow-listed G615JMR target HID | External service policy or PolicyKit | Prefer `asusd` | No direct user hidraw access | Yes, only the path-free high-level Aura effect operation | High | Suppress HID when asusd owns Aura; revalidate a root-only alias; never accept paths or bytes |
 | Fan RPM | hwmon | No | No | Read-only | No | Low | Telemetry remains unprivileged |
-| Fan curve/Auto | verified ASUS WMI hwmon ABI | Sometimes | No | Preferred when permitted | Yes only for verified endpoints | High | Reject generic PWM/RPM-target guesses; preserve Auto restore safety |
+| Fan curve/Auto | recognized ASUS WMI hwmon ABI plus exact support policy | Sometimes | No | Preferred when permitted | Only custom Apply on a reviewed `verified_write` record; Auto remains separately constrained | High | Reject generic PWM/RPM-target guesses; preserve Auto restore safety |
 | Fan manual percent/RPM target/boost | generic hwmon candidates only | Not authorized | No | Deliberately unused | No | High | Compatibility methods return unsupported; no privileged method exists |
 | Performance profile | `asusd` | External service policy | Yes, `asusd` | No | No | Medium | Keep asusd authoritative |
 | Persistent configuration | per-user XDG file | No | No | Yes | No | Low | Atomic user-session write only |
@@ -324,6 +325,11 @@ However:
 ## Read-Only Degradation Behavior
 
 The current implementation prefers graceful degradation over hidden failure.
+
+Setup issue counts exclude normal `AuthorizationRequired` (authentication begins only on Apply)
+and fan `ReadOnly` when RPM telemetry is available without a verified write endpoint. Those states
+remain visible in the Permissions section. Missing optional providers remain visible under Service
+Integrations and do not make core session/helper installation health fail.
 
 Current examples:
 

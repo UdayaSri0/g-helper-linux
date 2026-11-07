@@ -133,6 +133,8 @@ Current content and behavior:
 
 - grouped Session Daemon, Administrator Access, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
 - verified readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and relevant `nvidia-smi` support
+- core installation health stays independent from missing optional integrations; routine authentication-on-Apply and telemetry-only states are not counted as installation/setup failures
+- statuses use direct labels such as Ready, Missing optional backend, Authentication on Apply, Telemetry only, Unverified, and Unsupported
 - live API checks are authoritative; executable and systemd-unit discovery is advanced evidence
 - explicit available, administrator-required, authorized, denied, read-only, missing-backend/helper, external-service, unsupported, and unavailable language
 - Refresh checks, Copy setup diagnostics, Copy privilege diagnostics, and Open full Diagnostics actions
@@ -345,7 +347,7 @@ Current content:
 - last check result
 - release-notes preview
 - manual `Check for Updates` action
-- best-effort `Update Now` / `Download Latest` action
+- latest release page action for manual downloads
 - source, support, and issue-reporting buttons
 
 Current implementation note:
@@ -354,7 +356,7 @@ Current implementation note:
 - the UI still falls back to project defaults if those fields are blank
 - maintainer GitHub metadata is derived from the repository URL when possible
 - release checks are manual, run in the UI process, and use the GitHub Releases API
-- automatic in-place replacement is limited to matching user-local direct-binary installs; unsupported installs fall back to opening the latest release page
+- automatic in-place replacement is disabled until a signed release manifest can be verified with a pinned public key; manual downloads remain available from the latest release page
 - lifecycle and durable preferences are intentionally located on Settings
 
 ## Current Capability Behavior

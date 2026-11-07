@@ -1,0 +1,134 @@
+name: Bug report
+description: Report a reproducible problem in ROG Helper with enough context to investigate it.
+title: "[Bug]: "
+labels:
+  - type:bug
+  - status:needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please search existing issues first and remove sensitive information before submitting.
+
+        **Privacy warning:** redact API tokens, passwords, usernames, personal information, hostnames, serial numbers, private filesystem paths, unrelated logs or command output, and other sensitive hardware or system identifiers. `rog-helper issue-report` produces read-only Markdown that is redacted by default, but you must inspect the output yourself before publishing it.
+
+        Do not use public issues for security vulnerabilities. Use the private security-reporting link in the issue chooser instead.
+
+  - type: textarea
+    id: problem-summary
+    attributes:
+      label: Problem summary
+      description: What went wrong? Include the affected feature or component and when it started.
+      placeholder: A short, specific description of the problem.
+    validations:
+      required: true
+
+  - type: input
+    id: helper-version
+    attributes:
+      label: ROG Helper version
+      description: Provide the installed version, package version, or commit when running from source.
+      placeholder: "0.4.0, package build, or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: linux-distribution
+    attributes:
+      label: Linux distribution and version
+      placeholder: "Fedora 42, Ubuntu 24.04, Arch (rolling)"
+    validations:
+      required: true
+
+  - type: input
+    id: kernel-version
+    attributes:
+      label: Kernel version
+      placeholder: "uname -r output"
+    validations:
+      required: true
+
+  - type: input
+    id: desktop-session
+    attributes:
+      label: Desktop environment and display session
+      description: Include the desktop, compositor/window system, and session type when relevant.
+      placeholder: "KDE Plasma 6 / Wayland, GNOME / X11"
+    validations:
+      required: true
+
+  - type: input
+    id: affected-component
+    attributes:
+      label: Affected feature or component
+      description: For example, battery limit, GPU mode, fan curves, lighting, daemon, UI, or CLI diagnostics.
+      placeholder: "Cooling / fan curves"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest reliable sequence of actions. Include commands without secrets and whether the issue happens every time.
+      placeholder: |
+        1. Start ...
+        2. Open ...
+        3. Select ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What should have happened according to the UI, documentation, or hardware behavior?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include exact safe error text, warnings, or observable state.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: reproduction-checklist
+    attributes:
+      label: Reproduction checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I can reproduce this with the steps above, or I explained why it is intermittent.
+          required: true
+        - label: I tested without running the UI or session daemon as root.
+          required: true
+        - label: I included only information that is safe to publish.
+          required: true
+
+  - type: textarea
+    id: screenshots-logs
+    attributes:
+      label: Screenshots or logs
+      description: Optional. Attach only relevant, redacted screenshots or focused log excerpts. Do not paste whole journal output.
+      render: text
+
+  - type: textarea
+    id: diagnostic-report
+    attributes:
+      label: Optional redacted diagnostic report
+      description: Paste the reviewed output of `rog-helper issue-report` when it helps. It is read-only and redacted by default, but inspect it before sharing.
+      render: markdown
+
+  - type: checkboxes
+    id: privacy-acknowledgment
+    attributes:
+      label: Privacy acknowledgment
+      options:
+        - label: I removed tokens, passwords, usernames, personal information, hostnames, serial numbers, private paths, unrelated output, and sensitive identifiers from this report.
+          required: true
+        - label: I understand that issue attachments and comments are public and that I must review generated diagnostics before publishing them.
+          required: true

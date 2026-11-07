@@ -383,11 +383,12 @@ EOF
 
 # dpkg-shlibdeps only sees ELF linkage. These packages provide the runtime
 # services used by the installed D-Bus activation files, systemd units,
-# PolicyKit policy, and udev rule. Keep these unversioned: the package is meant
-# to work across supported Debian, Ubuntu, and Linux Mint releases, while
+# PolicyKit policy, and udev rule. polkitd provides the PolicyKit authority;
+# this application does not invoke pkexec. Keep these unversioned across
+# supported Debian, Ubuntu, and Linux Mint releases, while
 # dpkg-shlibdeps remains responsible for precise shared-library versions.
 debian_explicit_depends() {
-  printf '%s\n' 'dbus, dbus-user-session, policykit-1, systemd, udev'
+  printf '%s\n' 'dbus, dbus-user-session, polkitd, systemd, udev'
 }
 
 debian_runtime_recommends() {
@@ -445,8 +446,7 @@ write_sha256sums() {
       for asset in \
         "$PACKAGE_NAME" \
         "${PACKAGE_NAME}d" \
-        "${PACKAGE_NAME}-ui" \
-        "${PACKAGE_NAME}-privileged"; do
+        "${PACKAGE_NAME}-ui"; do
         [[ -f "$asset" ]] && printf '%s\0' "$asset"
       done
       find . -maxdepth 1 -type f \

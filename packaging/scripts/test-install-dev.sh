@@ -3,11 +3,26 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEST_ROOT="$(mktemp -d)"
-trap 'find "$TEST_ROOT" -depth -delete' EXIT HUP INT TERM
+CALLS="$TEST_ROOT/calls"
+INSTALL_OUTPUT="$TEST_ROOT/install-output.log"
+on_error() {
+  local status="$1"
+  local command="$2"
+  echo "install-dev.sh mock test failed (exit $status): $command" >&2
+  if [[ -f "$INSTALL_OUTPUT" ]]; then
+    echo "--- captured installer output ---" >&2
+    cat "$INSTALL_OUTPUT" >&2
+  fi
+  if [[ -f "$CALLS" ]]; then
+    echo "--- recorded mock calls ---" >&2
+    cat "$CALLS" >&2
+  fi
+}
+trap 'on_error "$?" "$BASH_COMMAND"' ERR
+trap 'find "$TEST_ROOT" -depth -delete' EXIT
 
 FAKE_REPO="$TEST_ROOT/repo"
 MOCK_BIN="$TEST_ROOT/bin"
-CALLS="$TEST_ROOT/calls"
 mkdir -p "$FAKE_REPO/packaging/scripts" "$MOCK_BIN"
 cp "$SCRIPT_DIR/install-dev.sh" "$FAKE_REPO/packaging/scripts/install-dev.sh"
 cp "$SCRIPT_DIR/../../Cargo.toml" "$FAKE_REPO/Cargo.toml"
@@ -53,15 +68,30 @@ printf "rog-helper" >>"$CALLS"; printf " <%s>" "$@" >>"$CALLS"; printf "\n" >>"$
 
 : >"$CALLS"
 PATH="$MOCK_BIN:/usr/bin:/bin" CALLS="$CALLS" \
-  "$FAKE_REPO/packaging/scripts/install-dev.sh" >/dev/null
+  "$FAKE_REPO/packaging/scripts/install-dev.sh" >"$INSTALL_OUTPUT" 2>&1
 
 package="$FAKE_REPO/dist/rog-helper_${VERSION}_amd64.deb"
-grep -Fqx "sudo <apt> <install> <$package>" "$CALLS"
+if ! grep -Fqx "sudo <apt> <install> <$package>" "$CALLS"; then
+  echo "Missing expected mock call: grep -Fqx \"sudo <apt> <install> <$package>\" \"$CALLS\"" >&2
+  false
+fi
 [[ "$(grep -c '^sudo ' "$CALLS")" -eq 1 ]]
-grep -Fqx "systemctl <--user> <daemon-reload>" "$CALLS"
-grep -Fqx "systemctl <--user> <restart> <rog-helperd.service>" "$CALLS"
-grep -Fqx "rog-helper <privileged-status>" "$CALLS"
-grep -Fqx "rog-helper <lighting-diagnostics>" "$CALLS"
+if ! grep -Fqx "systemctl <--user> <daemon-reload>" "$CALLS"; then
+  echo "Missing expected mock call: grep -Fqx \"systemctl <--user> <daemon-reload>\" \"$CALLS\"" >&2
+  false
+fi
+if ! grep -Fqx "systemctl <--user> <restart> <rog-helperd.service>" "$CALLS"; then
+  echo "Missing expected mock call: grep -Fqx \"systemctl <--user> <restart> <rog-helperd.service>\" \"$CALLS\"" >&2
+  false
+fi
+if ! grep -Fqx "rog-helper <privileged-status>" "$CALLS"; then
+  echo "Missing expected mock call: grep -Fqx \"rog-helper <privileged-status>\" \"$CALLS\"" >&2
+  false
+fi
+if ! grep -Fqx "rog-helper <lighting-diagnostics>" "$CALLS"; then
+  echo "Missing expected mock call: grep -Fqx \"rog-helper <lighting-diagnostics>\" \"$CALLS\"" >&2
+  false
+fi
 
 make_mock id 'echo 0'
 if PATH="$MOCK_BIN:/usr/bin:/bin" CALLS="$CALLS" \

@@ -5,16 +5,20 @@ pub const BUILD_COMMIT: &str = env!("ROG_HELPER_BUILD_COMMIT");
 
 pub mod config;
 pub mod cpu_control;
+pub mod daemon_api;
 pub mod dbus_keys;
 pub mod error;
 pub mod model;
 pub mod policy;
+pub mod power_freshness;
 pub mod privileged;
 
 pub use config::*;
 pub use cpu_control::*;
+pub use daemon_api::*;
 pub use dbus_keys::*;
 pub use error::{ErrorCategory, RogError, RogResult, ValidationWarning};
 pub use model::*;
 pub use policy::*;
+pub use power_freshness::*;
 pub use privileged::*;

@@ -136,11 +136,13 @@ Current source-backed features include:
   fallback for the canonical ASUS keyboard LED
 - Capability-aware unavailable/read-only UX that keeps controls visible and explains common missing-backend or permission-blocked states
 - Dedicated Setup & Access UI plus `rog-helper setup-check`, backed by live API verification and read-only permission probes
-- Fan monitoring and safe fan controls for supported ASUS/Linux hardware
+- Fan RPM monitoring and capability reporting; custom fan-curve Apply remains fail-closed because
+  no production machine write record is approved
   - polished RPM monitoring dashboard with animated fan rotors, larger CPU/GPU gauges, and best-effort operating MHz display
   - best-effort dynamic RPM telemetry for 0..N fans
-  - verified eight-point ASUS WMI fan curves with direct or PolicyKit-gated writes
-  - Auto/BIOS restore when the exact ASUS device identity and channel mapping are confirmed
+  - read-only discovery and import of the recognized eight-point ASUS WMI curve ABI
+  - a narrow Auto/BIOS recovery path when the exact ASUS device identity and channel mapping are
+    confirmed; physical restoration remains untested
   - generic PWM, RPM-target, and boost candidates remain disabled even when a file appears writable
 - Battery, power, health, and time estimates from `UPower` with sysfs fallback for additional details
 - RAM, swap, PSI, zram, zswap, and top memory process telemetry
@@ -156,9 +158,14 @@ Current source-backed features include:
   authentication is requested only when Apply needs the typed privileged route
 - Named semantic presets with create, duplicate, rename, update, and confirmed delete; saving a
   preset changes configuration only and never applies hardware
-- Opt-in daemon-owned AC/Battery automation with stable-source debounce, duplicate suppression,
-  persistent manual override, and explicit Resume; automatic application is intentionally limited
-  to platform profiles and non-interactive supported battery-limit routes
+- Opt-in daemon-owned AC/Battery automation with stable-source debounce, optional lower/upper
+  battery thresholds and an explicitly selected recovery preset, persistent manual override, and
+  explicit Resume; without a recovery preset, legacy one-way behavior remains. After restart or
+  resume, the active preset is unknown in the hysteresis band. Battery percentage and source must
+  remain stable for five seconds. Automatic hardware writes remain disabled until transition, consistency,
+  and resume safeguards are verified; the 60-second source freshness limit applies only to verified
+  environments. Automatic application is intentionally limited to platform profiles and
+  non-interactive supported battery-limit routes
 - Manual internal-display refresh-rate selection through the active X11 RandR session backend;
   Wayland and automatic AC/Battery refresh switching remain unsupported
 - Desktop-owned shortcut support through semantic daemon-backed CLI actions for profile cycling,
@@ -179,7 +186,8 @@ See:
 
 Important gaps in the current implementation:
 
-- Broader fan-control contracts beyond the verified ASUS WMI eight-point curve ABI
+- Broader fan-control contracts and physical validation beyond the recognized ASUS WMI eight-point
+  curve ABI
 - Broader Aura/RGB lighting validation across ASUS models and asusd versions; the native HID implementation is deliberately limited to the G615JMR target identity and has not yet been physically validated through ROG Helper
 - Broader automatic preset application: the opt-in daemon policy currently applies only platform
   profiles and approved non-interactive battery limits; saved fan, lighting, and GPU fields are skipped
@@ -265,13 +273,27 @@ See [docs/BUILD.md](docs/BUILD.md) for the current install paths and packaging c
 
 ## Debian / Ubuntu / Mint Installation
 
-Direct `.deb` install:
+Direct `.deb` install (run in a new, empty directory):
 
 ```bash
-sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
-sudo apt install ./rog-helper_0.4.0_amd64.deb
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper_0.4.0_amd64.deb
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt
+asset=rog-helper_0.4.0_amd64.deb
+manifest=rog-helper-0.4.0-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty package: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper_0\.4\.0_amd64\.deb$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+sudo apt install "./$asset"
 rog-helper privileged-status
 ```
+
+The targeted check fails if either download is missing or empty, the manifest does not contain exactly one entry for this versioned package, or its checksum differs. After `OK`, the temporary `.sha256` file can be removed. A SHA256 manifest downloaded from the same release site detects accidental or in-transit changes; it does not independently authenticate the publisher.
 
 No manual systemd, D-Bus, PolicyKit, udev, device-permission, or daemon setup is required.
 Launching `rog-helper-ui` activates the unprivileged session daemon on demand. The package
@@ -299,11 +321,23 @@ systemctl --user daemon-reload
 
 ## Fedora Installation
 
-Direct `.rpm` install:
+Direct `.rpm` install (run in a new, empty directory):
 
 ```bash
-sha256sum -c rog-helper-0.4.0-RPM-SHA256SUMS.txt --ignore-missing
-sudo dnf install ./rog-helper-0.4.0-1.x86_64.rpm
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-1.x86_64.rpm
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-RPM-SHA256SUMS.txt
+asset=rog-helper-0.4.0-1.x86_64.rpm
+manifest=rog-helper-0.4.0-RPM-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty package: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper-0\.4\.0-1\.x86_64\.rpm$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+sudo dnf install "./$asset"
 ```
 
 Optional user-session daemon enablement:
@@ -411,12 +445,24 @@ sudo apt install rog-helper
 
 ## AppImage Usage
 
-Download the AppImage and verify it before first run:
+Download the AppImage and its manifest, then verify the exact file before first run:
 
 ```bash
-sha256sum -c rog-helper-0.4.0-SHA256SUMS.txt --ignore-missing
-chmod +x rog-helper-v0.4.0-x86_64.AppImage
-./rog-helper-v0.4.0-x86_64.AppImage
+set -eu
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-v0.4.0-x86_64.AppImage
+curl -fLO https://github.com/UdayaSri0/g-helper-linux/releases/download/v0.4.0/rog-helper-0.4.0-SHA256SUMS.txt
+asset=rog-helper-v0.4.0-x86_64.AppImage
+manifest=rog-helper-0.4.0-SHA256SUMS.txt
+test -s "$manifest" || { echo "Missing or empty checksum manifest: $manifest" >&2; exit 1; }
+test -s "$asset" || { echo "Missing or empty AppImage: $asset" >&2; exit 1; }
+grep -E '^[[:xdigit:]]{64}  rog-helper-v0\.4\.0-x86_64\.AppImage$' "$manifest" > "$asset.sha256" || {
+    echo "Manifest has no v0.4.0 checksum entry for $asset" >&2
+    exit 1
+}
+test "$(wc -l < "$asset.sha256")" -eq 1 || { echo "Expected exactly one checksum entry for $asset" >&2; exit 1; }
+sha256sum --check "$asset.sha256"
+chmod +x "$asset"
+"./$asset"
 ```
 
 The AppImage bundles:
@@ -473,7 +519,7 @@ Current release behavior to expect:
 - readable-but-not-writable keyboard backlight sysfs -> current brightness remains visible;
   the canonical approved ASUS LED may use the typed helper, otherwise writes remain unavailable
 - dynamic fan telemetry -> the UI adapts to the detected fan set instead of assuming a fixed one-fan or two-fan layout
-- update checks are manual and UI-side; in-place replacement is attempted only for safe user-local direct-binary installs and otherwise falls back to the latest release page
+- update checks are manual and UI-side; executable replacement is disabled until signed release metadata can be verified with a pinned public key, while manual downloads remain available from the latest release page
 
 ## Documentation Index
 

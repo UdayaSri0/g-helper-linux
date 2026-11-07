@@ -590,10 +590,6 @@ fn build_issues(
 
     for permission in permissions {
         let (severity, guidance) = match permission.state {
-            PermissionState::AuthorizationRequired => (
-                SetupSeverity::Info,
-                "Use Apply for the selected operation to start the normal administrator authentication flow.",
-            ),
             PermissionState::AuthorizationDenied => (
                 SetupSeverity::Warning,
                 "Authorization was denied. No access change is applied automatically; use Apply again to retry.",
@@ -602,10 +598,11 @@ fn build_issues(
                 SetupSeverity::Warning,
                 "Install the packaged typed privileged helper; do not run the graphical UI as root or broaden device permissions.",
             ),
-            PermissionState::ReadOnly => (
+            PermissionState::ReadOnly if permission.kind != PermissionKind::FanControls => (
                 SetupSeverity::Warning,
                 "The application remains unprivileged. Review the permission documentation for the detected backend; no permission changes are applied automatically.",
             ),
+            PermissionState::AuthorizationRequired | PermissionState::ReadOnly => continue,
             PermissionState::Unavailable => (
                 SetupSeverity::Warning,
                 "Refresh after the backend becomes available. See installation or troubleshooting documentation if the state persists.",
@@ -882,6 +879,45 @@ mod tests {
         assert_eq!(issues.len(), 2);
         assert!(issues.iter().any(|issue| issue.title.contains("asusd")));
         assert!(issues.iter().any(|issue| issue.title.contains("supergfxd")));
+    }
+
+    #[test]
+    fn normal_apply_auth_and_fan_telemetry_do_not_count_as_setup_issues() {
+        let dependencies = [DependencyKind::Asusd, DependencyKind::Supergfxd]
+            .into_iter()
+            .map(|kind| DependencyStatus {
+                kind,
+                state: DependencyState::NotAvailable,
+                summary: "Optional provider is not installed".to_string(),
+                required_for: vec!["optional controls".to_string()],
+                evidence: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let permissions = [
+            PermissionStatus {
+                kind: PermissionKind::CpuPolicyWrites,
+                state: PermissionState::AuthorizationRequired,
+                summary: "Authenticate when Apply is used".to_string(),
+                paths: Vec::new(),
+            },
+            PermissionStatus {
+                kind: PermissionKind::FanControls,
+                state: PermissionState::ReadOnly,
+                summary: "RPM telemetry only".to_string(),
+                paths: Vec::new(),
+            },
+        ];
+
+        let issues = build_issues(&dependencies, &permissions);
+        assert_eq!(issues.len(), 2);
+        let status = SetupStatus {
+            checked_at_ms: 1,
+            dependencies,
+            permissions: permissions.to_vec(),
+            issues,
+        };
+        assert_eq!(status.issue_count(), 2);
+        assert_eq!(status.control_issue_count(), 2);
     }
 
     #[test]

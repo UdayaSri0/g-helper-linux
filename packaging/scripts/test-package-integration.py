@@ -47,16 +47,51 @@ class PackageIntegration(unittest.TestCase):
     def test_checksums_include_all_native_assets_and_skip_unrelated_versions(self):
         import tomllib
         version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-        names = ["rog-helper", f"rog-helper_{version}_amd64.deb", f"rog-helper-{version}-1.x86_64.rpm", f"rog-helper-v{version}-x86_64.AppImage", f"rog-helper-{version}-linux-x86_64.tar.xz"]
-        for name in names + ["rog-helper-0.0.0-1.x86_64.rpm"]:
+        names = ["rog-helper", "rog-helper-ui", "rog-helperd", f"rog-helper_{version}_amd64.deb", f"rog-helper-{version}-1.x86_64.rpm", f"rog-helper-v{version}-x86_64.AppImage", f"rog-helper-{version}-linux-x86_64.tar.xz"]
+        for name in names + ["rog-helper-privileged", "rog-helper-0.0.0-1.x86_64.rpm"]:
             (self.root / name).touch()
         common = shlex.quote(str(ROOT / "packaging/scripts/package-common.sh"))
         subprocess.run(["bash", "-c", f"source {common}; write_sha256sums {shlex.quote(str(self.root))}"], check=True)
         manifest = (self.root / f"rog-helper-{version}-SHA256SUMS.txt").read_text()
         for name in names:
             self.assertIn(name, manifest)
+        self.assertNotIn("rog-helper-privileged", manifest)
         self.assertNotIn("0.0.0", manifest)
         subprocess.run(["sha256sum", "--check", f"rog-helper-{version}-SHA256SUMS.txt"], cwd=self.root, check=True, capture_output=True)
+
+    def test_fedora_ci_runs_real_rpm_lifecycle_validation(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("packaging/scripts/test-rpm-lifecycle.py", workflow)
+
+    def test_ubuntu_ci_runs_real_deb_lifecycle_validation_as_root(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("sudo packaging/scripts/test-deb-dpkg-lifecycle.py", workflow)
+        self.assertTrue(os.access(ROOT / "packaging/scripts/test-deb-dpkg-lifecycle.py", os.X_OK))
+
+    def test_appimage_ci_smokes_built_bundle_in_isolated_session_and_display(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("dbus-daemon xvfb", workflow)
+        self.assertIn("packaging/scripts/test-appimage-runtime.sh", workflow)
+        self.assertTrue(os.access(ROOT / "packaging/scripts/test-appimage-runtime.sh", os.X_OK))
+        self.assertLess(workflow.index("Build AppImage"), workflow.index("Smoke-test AppImage runtime"))
+
+    def test_appimage_ci_runs_packaged_payload_session_smoke(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        smoke_script = ROOT / "packaging/scripts/test-appimage-session.sh"
+        session_script = (ROOT / "packaging/scripts/test-session-smoke.sh").read_text()
+        self.assertTrue(smoke_script.stat().st_mode & 0o111)
+        self.assertTrue((ROOT / "packaging/scripts/test-session-smoke.sh").stat().st_mode & 0o111)
+        self.assertIn("packaging/scripts/test-appimage-session.sh", workflow)
+        self.assertTrue(os.access(smoke_script, os.X_OK))
+        self.assertIn("ROG_HELPER_SMOKE_BIN_DIR", session_script)
+        self.assertIn("ROG_HELPER_SMOKE_UI_BIN", session_script)
+        self.assertIn("ROG_HELPER_SMOKE_LD_LIBRARY_PATH", session_script)
+        self.assertNotIn("export LD_LIBRARY_PATH=", session_script)
+        self.assertNotIn("export XDG_DATA_DIRS=", session_script)
+        self.assertIn('package_env+=("XDG_DATA_DIRS=$ROG_HELPER_SMOKE_XDG_DATA_DIRS")', session_script)
+        self.assertIn('timeout --signal=TERM --kill-after=3s 5s env "${package_env[@]}" "$ui"', session_script)
+        self.assertIn('wait "$daemon_pid" || daemon_status=$?', session_script)
+        self.assertIn('[[ "$daemon_status" -eq 0 || "$daemon_status" -eq 143 ]]', session_script)
 
 
 if __name__ == "__main__":

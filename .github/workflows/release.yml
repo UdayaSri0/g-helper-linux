@@ -4,28 +4,26 @@ on:
   push:
     tags:
       - "v*"
+  # Enables a safe, explicit re-dispatch after repairing a release tag.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_FILES: |
-    dist/*.deb
-    dist/*.AppImage
-    dist/*.tar.xz
-    dist/rog-helper
-    dist/rog-helperd
-    dist/rog-helper-ui
-    dist/*SHA256SUMS.txt
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux-release:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload_release.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
 
@@ -48,10 +46,11 @@ jobs:
         run: |
           VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
           EXPECTED_TAG="v${VERSION}"
-          ACTUAL_TAG="$GIT_TAG"
-          if [[ "$GIT_REF" == refs/tags/* ]]; then
-            ACTUAL_TAG="${GIT_REF#refs/tags/}"
+          if [[ "$GIT_REF" != refs/tags/v* ]]; then
+            echo "release workflow must run from a version tag" >&2
+            exit 1
           fi
+          ACTUAL_TAG="${GIT_REF#refs/tags/}"
           if [[ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]]; then
             echo "expected tag: $EXPECTED_TAG" >&2
             echo "actual tag: $ACTUAL_TAG" >&2
@@ -72,15 +71,40 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Install pinned RustSec scanner
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          test "$(cargo audit --version)" = "cargo-audit-audit 0.22.2"
+      - name: Fetch RustSec advisory database
+        run: |
+          git clone --quiet --depth 1 https://github.com/RustSec/advisory-db "$RUNNER_TEMP/advisory-db"
+          git -C "$RUNNER_TEMP/advisory-db" rev-parse HEAD | tee "$RUNNER_TEMP/advisory-db-revision"
+          echo "RustSec advisory database revision: $(cat "$RUNNER_TEMP/advisory-db-revision")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Test vulnerable fixture and audit locked dependencies
+        run: scripts/test-cargo-audit.sh
+        env:
+          RUSTSEC_ADVISORY_DB: ${{ runner.temp }}/advisory-db
+
+      - name: Packaging Script Tests
+        run: |
+          packaging/scripts/test-install-dev.sh
+          packaging/scripts/test-debian-maintainer-scripts.sh
+          packaging/scripts/test-appimage-gtk-plugin.sh
+          packaging/scripts/test-appimage-tool-integrity.sh
+          python3 packaging/scripts/test-release-workflow.py
+
+      - name: Clean Release Output
+        run: rm -rf -- dist
+
       - name: Build Release Assets
         run: ROG_HELPER_BUILD_APPIMAGE=0 ROG_HELPER_BUILD_RPM=0 packaging/scripts/build-release-assets.sh dist
 
       - name: Validate Final Debian Package
         run: |
           packages=(dist/rog-helper_*.deb)
+          printf 'Debian release candidates:\n'
+          printf '  %s\n' "${packages[@]}"
           [[ "${#packages[@]}" -eq 1 && -f "${packages[0]}" ]]
-          packaging/scripts/test-install-dev.sh
-          packaging/scripts/test-debian-maintainer-scripts.sh
           packaging/scripts/check-deb-package.sh "${packages[0]}"
           packaging/scripts/test-deb-lifecycle.py "${packages[0]}"
 
@@ -92,7 +116,7 @@ jobs:
 
       - name: Upload AppImage Diagnostic Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: appimage-debug-${{ github.ref_name }}
           path: dist/*.log
@@ -102,55 +126,36 @@ jobs:
         run: packaging/scripts/stage-apt-repo.sh dist dist/apt-repo-preview
 
       - name: Upload Release Package Artifacts
-        uses: actions/upload-artifact@v4
+        id: upload_release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-packages-${{ github.ref_name }}
-          path: ${{ env.RELEASE_FILES }}
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.tar.xz
+            dist/rog-helper
+            dist/rog-helperd
+            dist/rog-helper-ui
+            dist/*SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Upload APT Repository Preview
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: apt-repo-preview-${{ github.ref_name }}
           path: dist/apt-repo-preview/
           if-no-files-found: error
 
-      - name: Detect Release Notes
-        id: release_notes
-        env:
-          GIT_TAG: ${{ github.ref_name }}
-        run: |
-          path="docs/releases/${GIT_TAG}.md"
-          if [[ -f "$path" ]]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "path=$path" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish Release With Notes
-        if: steps.release_notes.outputs.present == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.RELEASE_FILES }}
-          body_path: ${{ steps.release_notes.outputs.path }}
-          fail_on_unmatched_files: true
-
-      - name: Publish Release
-        if: steps.release_notes.outputs.present != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.RELEASE_FILES }}
-          fail_on_unmatched_files: true
-
   fedora-rpm:
-    needs: linux-release
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload_rpm.outputs.artifact-id }}
     container: fedora:42
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Fedora Build Dependencies
         run: |
@@ -167,10 +172,11 @@ jobs:
         run: |
           VERSION="$(python3 -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
           EXPECTED_TAG="v${VERSION}"
-          ACTUAL_TAG="$GIT_TAG"
-          if [[ "$GIT_REF" == refs/tags/* ]]; then
-            ACTUAL_TAG="${GIT_REF#refs/tags/}"
+          if [[ "$GIT_REF" != refs/tags/v* ]]; then
+            echo "release workflow must run from a version tag" >&2
+            exit 1
           fi
+          ACTUAL_TAG="${GIT_REF#refs/tags/}"
           if [[ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]]; then
             echo "expected tag: $EXPECTED_TAG" >&2
             echo "actual tag: $ACTUAL_TAG" >&2
@@ -183,7 +189,8 @@ jobs:
         run: packaging/scripts/build-rpm.sh dist
 
       - name: Upload Fedora RPM Artifact
-        uses: actions/upload-artifact@v4
+        id: upload_rpm
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fedora-rpm-${{ github.ref_name }}
           path: |
@@ -191,10 +198,136 @@ jobs:
             dist/*RPM-SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Publish Fedora RPM To Release
-        uses: softprops/action-gh-release@v2
+  verify-release-assets:
+    needs: [linux-release, fedora-rpm]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          files: |
-            dist/*.rpm
-            dist/*RPM-SHA256SUMS.txt
-          fail_on_unmatched_files: true
+          artifact-ids: ${{ needs.linux-release.outputs.artifact_id || 'invalid' }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.fedora-rpm.outputs.artifact_id || 'invalid' }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/rpm
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install RPM metadata reader
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm
+      - name: Verify exact candidate inventory and provenance
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 packaging/scripts/verify-release-assets.py \
+            --linux-dir "$RUNNER_TEMP/linux" --rpm-dir "$RUNNER_TEMP/rpm" \
+            --output-dir "$RUNNER_TEMP/verified" --provenance "$RUNNER_TEMP/provenance.txt" \
+            --tag "$TAG" --commit "$COMMIT" --run-id "$RUN_ID"
+      - name: Upload single verified release bundle
+        id: bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/verified/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload readable verification provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-provenance-${{ github.run_id }}
+          path: ${{ runner.temp }}/provenance.txt
+          if-no-files-found: error
+          retention-days: 90
+    outputs:
+      bundle_artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+
+  verify-release-environment:
+    needs: verify-release-assets
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Read saved release environment protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash packaging/scripts/check-release-ref.sh "$TAG" "$COMMIT"
+          base="$API_URL/repos/$REPOSITORY/environments/release-publish"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base" > "$RUNNER_TEMP/environment.json"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$base/deployment_protection_rules" > "$RUNNER_TEMP/custom-rules.json"
+          python3 packaging/scripts/check-release-environment.py --environment "$RUNNER_TEMP/environment.json" --policies "$RUNNER_TEMP/policies.json" --custom-rules "$RUNNER_TEMP/custom-rules.json" --tag "$TAG"
+
+  publish-release:
+    needs: [verify-release-assets, verify-release-environment]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: release-publish
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release-assets.outputs.bundle_artifact_id || 'invalid' }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/verified
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require matching release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test -s "docs/releases/$TAG.md"
+      - name: Add verified provenance to the draft notes
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          cp "docs/releases/$TAG.md" "$RUNNER_TEMP/release-body.md"
+          printf '\n\n---\n\nVerified build provenance\n\n- Tag: `%s`\n- Commit: `%s`\n- GitHub Actions run: `%s`\n' \
+            "$TAG" "$COMMIT" "$RUN_ID" >> "$RUNNER_TEMP/release-body.md"
+      - name: Create protected draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          bash packaging/scripts/check-release-ref.sh "$TAG" "$COMMIT"
+          cd "$RUNNER_TEMP"
+          version="${TAG#v}"
+          files=(
+            "verified/rog-helper_${version}_amd64.deb"
+            "verified/rog-helper-$version-1.x86_64.rpm"
+            "verified/rog-helper-$TAG-x86_64.AppImage"
+            "verified/rog-helper-$version-linux-x86_64.tar.xz"
+            verified/rog-helper
+            verified/rog-helperd
+            verified/rog-helper-ui
+            "verified/rog-helper-$version-SHA256SUMS.txt"
+            "verified/rog-helper-$version-RPM-SHA256SUMS.txt"
+          )
+          for file in "${files[@]}"; do
+            test -f "$file" && test -s "$file" || exit 1
+          done
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${files[@]}" --draft --verify-tag --target "$COMMIT" \
+            --title "ROG Helper $TAG" --notes-file "$RUNNER_TEMP/release-body.md"

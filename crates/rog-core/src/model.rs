@@ -268,6 +268,45 @@ impl FanCurvePreset {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FanWriteSupportState {
+    #[default]
+    ReadOnly,
+    Unverified,
+    Unsupported,
+    VerifiedWrite,
+}
+
+impl FanWriteSupportState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Unverified => "unverified",
+            Self::Unsupported => "unsupported",
+            Self::VerifiedWrite => "verified_write",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FanWritePolicyDecision {
+    pub state: FanWriteSupportState,
+    pub reason: String,
+    pub explanation: String,
+    pub abi_detected: bool,
+    pub curve_readable: bool,
+    pub backend_writable: bool,
+    pub helper_ready: bool,
+    pub physical_validation_recorded: bool,
+    pub custom_curve_authorized: bool,
+    pub recovery_available: bool,
+    pub minimum_duty_percent: Option<u8>,
+    pub minimum_temperature_c: Option<u8>,
+    pub maximum_temperature_c: Option<u8>,
+    pub terminal_temperature_c: Option<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanInfo {
     pub id: String,
@@ -304,6 +343,8 @@ pub struct FanInfo {
     pub supports_manual_rpm_target: bool,
     pub supports_curve: bool,
     pub supports_auto: bool,
+    #[serde(default)]
+    pub fan_write_policy: FanWritePolicyDecision,
     #[serde(default)]
     pub curve_readback: Option<FanCurveReadback>,
     #[serde(default)]
@@ -348,6 +389,7 @@ impl FanInfo {
             supports_manual_rpm_target: false,
             supports_curve: false,
             supports_auto: false,
+            fan_write_policy: FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: false,
             backend: "hwmon-read-only".to_string(),
@@ -406,6 +448,8 @@ pub struct FanCaps {
     pub fan_curve_readable: bool,
     #[serde(default)]
     pub fan_curve_writable: bool,
+    #[serde(default)]
+    pub fan_write_policy: FanWritePolicyDecision,
     pub has_fan_manual_percent: bool,
     pub has_fan_manual_rpm_target: bool,
     pub has_individual_fan_control: bool,
@@ -425,7 +469,9 @@ impl FanCaps {
         let controllable_count = fans.iter().filter(|fan| fan.controllable).count();
         let has_fan_manual_percent = fans.iter().any(|fan| fan.supports_manual_percent);
         let has_fan_manual_rpm_target = fans.iter().any(|fan| fan.supports_manual_rpm_target);
-        let has_fan_curves = fans.iter().any(|fan| fan.supports_curve);
+        let has_fan_curves = fans
+            .iter()
+            .any(|fan| fan.fan_write_policy.abi_detected || fan.curve_readback.is_some());
         let has_fan_reading = fans.iter().any(|fan| fan.current_rpm.is_some());
         let fan_mapping_confidence = if fans.is_empty()
             || fans
@@ -465,13 +511,29 @@ impl FanCaps {
         warnings.sort();
         warnings.dedup();
 
+        let fan_write_policy = fans
+            .iter()
+            .map(|fan| fan.fan_write_policy.clone())
+            .max_by_key(|decision| match decision.state {
+                FanWriteSupportState::VerifiedWrite => 3,
+                FanWriteSupportState::Unverified => 2,
+                FanWriteSupportState::ReadOnly => 1,
+                FanWriteSupportState::Unsupported => 0,
+            })
+            .unwrap_or_default();
+
         Self {
             has_fan_reading,
             has_fan_curves,
-            fan_curve_readable: has_fan_curves,
-            fan_curve_writable: fans
+            fan_curve_readable: fans
                 .iter()
-                .any(|fan| fan.supports_curve && fan.controllable),
+                .any(|fan| fan.fan_write_policy.curve_readable || fan.curve_readback.is_some()),
+            fan_curve_writable: fans.iter().any(|fan| {
+                fan.fan_write_policy.custom_curve_authorized
+                    && fan.supports_curve
+                    && fan.controllable
+            }),
+            fan_write_policy,
             has_fan_manual_percent,
             has_fan_manual_rpm_target,
             has_individual_fan_control: controllable_count > 0,
@@ -553,6 +615,11 @@ pub struct FanCurvePolicy {
     pub safe_floor: Option<SafeFloor>,
     /// Exact number of points required by a verified backend ABI, when known.
     pub exact_point_count: Option<usize>,
+    /// Require an explicit high-temperature endpoint before a curve may be
+    /// sent to a hardware write route. Read-only factory curves may use a
+    /// firmware-specific endpoint.
+    pub require_terminal_coverage: bool,
+    pub terminal_temp_c: u8,
 }
 
 impl Default for FanCurvePolicy {
@@ -569,6 +636,21 @@ impl Default for FanCurvePolicy {
                 min_duty_percent: 70,
             }),
             exact_point_count: None,
+            require_terminal_coverage: false,
+            terminal_temp_c: 95,
+        }
+    }
+}
+
+impl FanCurvePolicy {
+    /// Fail-closed policy for the currently supported ASUS WMI write route.
+    /// This is a write gate, not a claim about every ASUS firmware curve.
+    pub fn verified_asus_write() -> Self {
+        Self {
+            exact_point_count: Some(8),
+            require_terminal_coverage: true,
+            terminal_temp_c: 95,
+            ..Self::default()
         }
     }
 }
@@ -763,6 +845,14 @@ pub fn validate_fan_curve_points(points: &[FanPoint], policy: FanCurvePolicy) ->
         }
         last_temp = Some(point.temp_c);
         last_duty = Some(point.duty_percent);
+    }
+    if policy.require_terminal_coverage
+        && last_temp.is_none_or(|temp| temp < policy.terminal_temp_c)
+    {
+        return Err(RogError::InvalidInput(format!(
+            "fan curve must include a terminal point at or above {}C before hardware writes",
+            policy.terminal_temp_c
+        )));
     }
     Ok(())
 }
@@ -2573,9 +2663,9 @@ impl SetupStatus {
                     entry.state,
                     PermissionState::AuthorizationDenied
                         | PermissionState::HelperMissing
-                        | PermissionState::ReadOnly
                         | PermissionState::Unavailable
-                )
+                ) || (entry.kind != PermissionKind::FanControls
+                    && entry.state == PermissionState::ReadOnly)
             })
             .count();
         dependency_issues + permission_issues
@@ -3329,6 +3419,37 @@ mod tests {
     }
 
     #[test]
+    fn hardware_write_policy_rejects_curve_without_terminal_coverage() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: (0..8)
+                .map(|index| FanPoint {
+                    temp_c: 30 + index * 5,
+                    duty_percent: 10,
+                })
+                .collect(),
+        };
+        let error = curve
+            .validate_safe(FanCurvePolicy::verified_asus_write())
+            .unwrap_err();
+        assert!(error.to_string().contains("terminal point"));
+    }
+
+    #[test]
+    fn read_only_policy_accepts_firmware_curve_ending_below_write_gate() {
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: (0..8)
+                .map(|index| FanPoint {
+                    temp_c: 40 + index * 5,
+                    duty_percent: 20 + index * 5,
+                })
+                .collect(),
+        };
+        assert!(curve.validate_safe(FanCurvePolicy::default()).is_ok());
+    }
+
+    #[test]
     fn conservative_presets_are_eight_point_safe_drafts() {
         let policy = FanCurvePolicy {
             exact_point_count: Some(8),
@@ -3354,10 +3475,14 @@ mod tests {
         cpu.id = "asus-wmi:cpu".to_string();
         cpu.supports_manual_percent = false;
         cpu.supports_curve = true;
+        cpu.fan_write_policy.abi_detected = true;
+        cpu.fan_write_policy.curve_readable = true;
         let mut gpu = cpu.clone();
         gpu.id = "asus-wmi:gpu".to_string();
         let caps = FanCaps::from_fans(&[cpu, gpu]);
         assert!(caps.has_fan_curves);
+        assert!(caps.fan_curve_readable);
+        assert!(!caps.fan_curve_writable);
         assert!(!caps.has_fan_sync_control);
         assert!(!caps.has_fan_boost);
     }
@@ -3431,6 +3556,7 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: false,
             supports_auto: true,
+            fan_write_policy: FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: true,
             backend: "test".to_string(),

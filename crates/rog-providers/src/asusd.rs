@@ -1,4 +1,6 @@
 use rog_core::{BatteryLimitPercent, PerformanceProfile, RogError, RogResult};
+use std::future::Future;
+use std::pin::Pin;
 use tracing::debug;
 use zbus::fdo::DBusProxy;
 use zbus::zvariant::OwnedValue;
@@ -41,7 +43,51 @@ pub struct AsusdPlatformProvider {
     endpoint: AsusdEndpoint,
 }
 
+pub type PreparedAsusdWrite = Pin<Box<dyn Future<Output = RogResult<()>> + Send + 'static>>;
+
 impl AsusdPlatformProvider {
+    pub async fn prepare_profile_write(
+        &self,
+        profile: PerformanceProfile,
+    ) -> RogResult<PreparedAsusdWrite> {
+        let wire = to_asusd_profile(profile)?;
+        let proxy = Proxy::new_owned(
+            self.conn.clone(),
+            self.endpoint.service,
+            self.endpoint.path,
+            self.endpoint.interface,
+        )
+        .await
+        .map_err(|error| map_dbus_error("build asusd platform proxy", error))?;
+        Ok(Box::pin(async move {
+            proxy
+                .set_property("PlatformProfile", wire)
+                .await
+                .map_err(|error| map_dbus_fdo_error("set PlatformProfile", error))
+        }))
+    }
+
+    pub async fn prepare_battery_limit_write(
+        &self,
+        limit: BatteryLimitPercent,
+    ) -> RogResult<PreparedAsusdWrite> {
+        limit.validate_control()?;
+        let proxy = Proxy::new_owned(
+            self.conn.clone(),
+            self.endpoint.service,
+            self.endpoint.path,
+            self.endpoint.interface,
+        )
+        .await
+        .map_err(|error| map_dbus_error("build asusd platform proxy", error))?;
+        Ok(Box::pin(async move {
+            proxy
+                .set_property("ChargeControlEndThreshold", limit.0)
+                .await
+                .map_err(|error| map_dbus_fdo_error("set ChargeControlEndThreshold", error))
+        }))
+    }
+
     pub async fn connect_system() -> RogResult<Option<Self>> {
         let conn = zbus::Connection::system()
             .await

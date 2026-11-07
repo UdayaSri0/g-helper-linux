@@ -34,6 +34,35 @@ missing or wrongly typed optional values absent. The audited daemon/UI/CLI/defau
 
 This is the current design, not a placeholder.
 
+### Schema ownership and compatibility policy
+
+`rog-core::dbus_keys` owns stable wire-key names and the session API epoch;
+`rog-daemon` owns serialization and authoritative capability reports; `rog-ui` owns lossless
+decoding into presentation models. Shared typed core models describe contracts where useful, but
+the existing D-Bus signatures remain the public source of truth. The privileged system-bus API has
+its own version and is not part of the session API epoch.
+
+`DAEMON_API_VERSION` is a compatibility epoch, independent of the configuration-file version and
+privileged API version. `GetDaemonInfo` reports that epoch and the package version. The bundled UI
+treats a missing, malformed, mismatched, or unsupported identity as stale and does not present the
+service as ready. Other clients can continue using unchanged method signatures during an additive
+change and ignore unfamiliar map keys. Optional additive `a{sv}` fields do not change the epoch;
+absent or wrongly typed values decode as unavailable, and absent capability fields never mean
+supported. Unknown fields must not be used to infer support or authorize a write.
+
+There is no general mixed-package negotiation for the bundled UI: its exact package-version check
+is a stale-process safety check. External clients that do not use `GetDaemonInfo` may continue to
+use unchanged signatures, but that does not promise compatibility for an older bundled UI with a
+newer daemon.
+
+Additive fields keep the current key and type contract. Removing a field, changing its wire type,
+or changing its meaning requires a reviewed migration plan before code changes; increment the API
+epoch and keep the old field/signature available while supported clients migrate. For an
+incompatible contract, introduce a parallel interface/version, migrate clients, and remove the old
+contract only after a reviewed support window. Rollback restores the previous producer while
+retaining additive fields; it must not require a configuration rewrite or apply hardware controls.
+No public wire change is part of this policy/documentation change.
+
 ## Methods
 
 ### Configuration
@@ -68,14 +97,16 @@ retained through read/serialize cycles. All profile methods are storage-only; th
 hardware setters, request PolicyKit authorization, or activate automatic policy.
 
 Automation preferences use the same version-3 XDG configuration. Rules are opt-in and disabled by
-default. The daemon waits for a power source to remain stable for five seconds, applies a rule only
-on a stable transition (or explicit Resume), and suppresses identical telemetry reapplication.
-Manual hardware actions persist a pause until `ResumeAutomation`. Automatic application currently
-supports only the asusd platform profile and charge limit through asusd or a directly writable
-standard power-supply endpoint. A charge-limit write requiring PolicyKit is reported and skipped
-without opening a prompt. Fan, lighting, and GPU preset fields are retained but skipped; GPU changes
-remain pending/manual because they may require logout or reboot. Per-component results distinguish
-applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
+default. The daemon requires a fresh physical battery sample and five seconds of stable source and
+threshold dwell. An optional upper threshold selects only its explicitly configured recovery preset
+while still on battery; without that preset, it reports a no-write outcome instead of falling back
+to the AC preset. Existing lower-threshold-only rules retain their one-way behavior. Inside the
+hysteresis band, a known session target is held, while restart/resume leaves the target unknown
+until a threshold boundary is stably reached. Manual hardware actions persist a pause until
+`ResumeAutomation`. Automatic hardware writes are currently disabled pending transition, consistency,
+and resume verification. The existing `a{sv}` automation status adds optional component maps with
+state and detail; the legacy component summary and all public method signatures remain available.
+See `BATTERY_AUTOMATION.md` for the transition table and evidence limits.
 
 | DBus method | Arguments | Response | Notes |
 | --- | --- | --- | --- |
@@ -101,7 +132,7 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `GetPrivilegedStatus` | none | `a{sv}` | Bounded optional-helper, compatibility, PolicyKit, authorization, and category diagnostics |
 | `GetFanCaps` | none | `a{sv}` | Returns fan capability summary |
 | `GetFanState` | none | `a{sv}` | Returns dynamic fan inventory, mode, sync, boost, and diagnostics |
-| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves only for exactly verified ASUS WMI channels; never prompts or writes |
+| `GetFanCurves` | none | `a{sv}` | Returns read-only current curves for structurally recognized ASUS WMI channels; never prompts, writes, or implies physical validation |
 | `SetLighting` | `a{sv}` | `()` | Prefers verified asusd Aura, then the allow-listed G615JMR target through the typed helper, then sysfs brightness |
 | `SetProfile` | `s` | `()` | Uses `asusd` when available |
 | `SetGpuMode` | `s` | `()` | Uses `supergfxd` when available |
@@ -112,10 +143,10 @@ applied/readback-confirmed, unchanged, skipped, failed, and blocked settings.
 | `SetCpuEpp` | `s` | `()` | Generic CPU sysfs backend |
 | `SetCpuFreqLimits` | `tt` (`u64`, `u64`) | `()` | `0` means “leave unset / no value” for each side |
 | `SetCpuCoreOnline` | `tb` (`u64`, `bool`) | `()` | Generic CPU sysfs backend |
-| `SetFanAuto` | `s` | `()` | Uses only verified ASUS WMI curve channels; empty string means all safely mapped channels |
+| `SetFanAuto` | `s` | `()` | Uses only narrowly mapped ASUS WMI reset channels; empty string means all safely mapped channels |
 | `SetFanManualPercent` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic hwmon candidates are rejected |
 | `SetFanRpmTarget` | `st` (`string`, `u64`) | `()` | Reserved for a verified backend; generic `fanN_target` candidates are rejected |
-| `SetFanCurve` | `sa{sv}` | `()` | Validates a conservative eight-point curve, then uses a verified direct ASUS WMI endpoint or its typed privileged fallback |
+| `SetFanCurve` | `sa{sv}` | `()` | Re-evaluates exact runtime identity against the approved physical-write policy, validates the eight-point curve, then uses the authorized direct endpoint or typed privileged fallback; production records are currently empty |
 | `SetFanSync` | `b` | `()` | Compatibility state only; not advertised on the current curve-only backend |
 | `SetFanBoost` | `stt` (`string`, `u64`, `u64`) | `()` | Compatibility method; currently rejects because no verified manual-percent backend exists |
 
@@ -127,7 +158,7 @@ support/access keys remain during compatible evolution.
 Fan telemetry rows add `stable_id`, `source`, `sampled_at_ms`, `freshness`,
 `telemetry_available`, and `telemetry_reason`. Fan-state rows mirror source/timestamp/freshness/reason.
 A numeric zero is a valid fresh sample; consumers must not reuse it after the freshness window.
-| `ResetFansToAuto` | none | `()` | Requests all verified ASUS WMI channels return to Auto and reports any failure |
+| `ResetFansToAuto` | none | `()` | Requests all narrowly mapped ASUS WMI channels return to Auto and reports any failure |
 
 ### `GetDaemonInfo` Response
 
@@ -183,7 +214,7 @@ root, request PolicyKit authorization, or replace session D-Bus activation.
 
 Important note:
 
-- `has_aura` is `true` only when the daemon selects a verified asusd or native Aura/RGB backend. `has_kbd_backlight` means brightness support and does not imply RGB. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
+- `has_aura` is `true` only when the daemon selects a verified asusd or native Aura/RGB backend. `has_kbd_backlight` means brightness support and does not imply RGB. `has_fan_curves` indicates a recognized curve interface/readback; `fan_curve_writable` separately reports a verified write route and does not itself imply physical validation or Apply authorization.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.
@@ -268,9 +299,9 @@ than daemon startup failures.
 | `SetCpuEpp` | `s` | `()` | Value must be in every affected policy's detected allow-list |
 | `SetCpuFrequencyLimits` | `tt` | `()` | MHz limits; zero means omitted; bounds and ordering are validated |
 | `SetCpuCoreOnline` | `tb` | `()` | Validated logical CPU ID; boot CPU 0 cannot be offlined |
-| `SetFanAuto` | `s` | `()` | Semantic verified ASUS WMI fan Auto/reset operation |
-| `SetFanCurve` | `sa(yy)` | `()` | Semantic verified eight-point ASUS WMI fan curve |
-| `ResetFansToAuto` | none | `()` | Restores all verified ASUS WMI fan channels to firmware Auto |
+| `SetFanAuto` | `s` | `()` | Semantic, narrowly mapped ASUS WMI fan Auto/reset operation |
+| `SetFanCurve` | `sa(yy)` | `()` | Semantic eight-point ASUS WMI curve; custom Apply requires a current `verified_write` hardware-policy decision |
+| `ResetFansToAuto` | none | `()` | Restores all narrowly mapped ASUS WMI fan channels to firmware Auto |
 | `RecoverFansIfArmed` | none | `()` | No-prompt fail-safe: checks `fans.recover`, acts solely on root-owned armed semantic IDs in an active local session, and can only restore Auto |
 | `SetKeyboardBacklightBrightness` | `t` | `()` | Validated level for the internally discovered canonical ASUS WMI keyboard LED |
 | `SetAuraEffect` | `sssss` | `b` | High-level mode, primary RGB, secondary RGB, speed, and direction; returns `false` when an identical request for the same device generation is suppressed |
@@ -363,9 +394,18 @@ actions.
 Its nested `fan_caps` map adds these read-only discovery keys without renaming existing keys:
 
 - `fan_curve_readable` -> `b`: at least one supported curve layout was completely readable
-- `fan_curve_writable` -> `b`: a backend-specific safe write contract is active
+- `fan_curve_writable` -> `b`: custom Apply is currently authorized by an exact approved support
+  record and a ready write route; ABI detection or endpoint writability alone leaves this false
 - `fan_mapping_confidence` -> `s`: `unknown`, `heuristic`, or `hardware_label`
 - `endpoints`, `notes`, `warnings` include read-only candidate-path evidence
+
+Fan policy diagnostics distinguish `curve_abi_detected`, `fan_curve_readable`, `backend_writable`,
+`helper_ready`,
+`privileged_write` (helper readiness), `physical_validation_recorded`,
+`custom_curve_authorized`, and `recovery_available`. `write_support_state` is one of `read_only`,
+`unverified`, `unsupported`, or `verified_write`; `write_support_reason` and
+`write_support_explanation` state why Apply is blocked. Consumers must default missing policy fields
+to fail-closed values.
 
 Each fan map includes:
 
@@ -376,17 +416,22 @@ Each fan map includes:
 - `supports_manual_rpm_target`
 - `supports_curve`
 - `supports_auto`
+- physical-write policy state, reason code/explanation, and the separate observed-ABI, readback,
+  endpoint-writable, helper-ready, physical-validation, Apply-authorization, and recovery facts
 - optional `curve_readback`, containing `source=backend_current`, `enable_mode`, eight converted
   `points`, and eight lossless `raw_pwm` values
 - `rollback_available`
 - `backend`
 - `endpoints`, `notes`, `warnings`
 
-Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no verified backend is active. Candidate generic hwmon files never authorize a write.
+Fan control methods return `InvalidArgs` for unsafe input and `NotSupported` when no approved support
+record matches. The privileged helper repeats the policy check; PolicyKit success, candidate generic
+hwmon files, and a successful capability probe never authorize a write.
 
 `GetFanCurves` returns `supported`, `reason`, and `curves`. Each curve row contains `fan_id`,
 `source`, `enable_mode`, `raw_pwm`, and `points`. The read uses no privileged method. Import Current
-is a UI draft operation; Reset Draft is local, while Restore Auto is the typed hardware action.
+is a UI draft operation and never activates the curve; Reset Draft is local, while Restore Auto is
+the separate typed recovery action.
 `backend_current` identifies the readback origin only; it does not claim that firmware authored the
 curve or that the values are immutable factory defaults.
 Presets and hysteresis are not DBus hardware concepts: presets are local drafts and hysteresis is

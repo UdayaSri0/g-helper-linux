@@ -1,4 +1,7 @@
 /target
+.issue-orchestrator/
+graphify-out/
+__pycache__/
 **/*.rs.bk
 
 # Editors

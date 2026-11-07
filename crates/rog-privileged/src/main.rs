@@ -22,7 +22,7 @@ use rog_providers::aura_hid::{
     G615JM_REPORT_DESCRIPTOR_SHA256,
 };
 use rog_providers::cpu::CpuTelemetryProvider;
-use rog_providers::hwmon::{HwmonTelemetryProvider, ASUS_WMI_CURVE_POINTS};
+use rog_providers::hwmon::HwmonTelemetryProvider;
 use rog_providers::kbd_backlight::KbdBacklightSysfs;
 use rog_providers::power_supply::{BatteryChargeLimitControl, PowerSupplySysfsProvider};
 use sha2::{Digest, Sha256};
@@ -298,11 +298,15 @@ impl PrivilegedService {
                 .collect(),
         };
         curve
-            .validate_safe(FanCurvePolicy {
-                exact_point_count: Some(ASUS_WMI_CURVE_POINTS),
-                ..Default::default()
-            })
+            .validate_safe(FanCurvePolicy::verified_asus_write())
             .map_err(map_fan_error)?;
+        let policy = self.fans.fan_write_policy(fan_id).map_err(map_fan_error)?;
+        if !policy.custom_curve_authorized {
+            return Err(map_fan_error(RogError::NotSupported(format!(
+                "custom fan-curve Apply is blocked: {} ({})",
+                policy.explanation, policy.reason
+            ))));
+        }
         if !self
             .fans
             .list_fans()
@@ -316,15 +320,8 @@ impl PrivilegedService {
         }
         self.authorize_fans(connection, &header).await?;
         let _transaction = self.lock_fan_mutation().map_err(map_fan_error)?;
-        self.mark_fan_control_active(fan_id)
-            .map_err(map_fan_error)?;
-        if let Err(error) = self.fans.set_fan_curve(fan_id, curve) {
-            // Recovery uses the exact marker set. If any armed channel is
-            // absent or fails to reset, the marker remains for a later retry.
-            let _ = self.restore_fans_if_armed_unlocked();
-            return Err(map_fan_error(error));
-        }
-        Ok(())
+        self.apply_fan_curve_locked(fan_id, curve)
+            .map_err(map_fan_error)
     }
 
     async fn reset_fans_to_auto(
@@ -358,7 +355,8 @@ impl PrivilegedService {
     ) -> fdo::Result<()> {
         self.authorize_fans_noninteractive(connection, &header)
             .await?;
-        self.restore_fans_if_armed().map_err(map_fan_error)
+        self.restore_fans_if_armed_for_active_session()
+            .map_err(map_fan_error)
     }
 
     async fn set_keyboard_backlight_brightness(
@@ -469,6 +467,15 @@ impl PrivilegedService {
 }
 
 impl PrivilegedService {
+    fn apply_fan_curve_locked(&self, fan_id: &str, curve: FanCurve) -> rog_core::RogResult<()> {
+        self.fans.set_fan_curve_with_hooks(
+            fan_id,
+            curve,
+            || self.mark_fan_control_active(fan_id),
+            || self.disarm_fan_channel(fan_id),
+        )
+    }
+
     async fn authorize_battery(
         &self,
         connection: &Connection,
@@ -601,6 +608,14 @@ impl PrivilegedService {
         self.restore_fans_if_armed_unlocked()
     }
 
+    fn restore_fans_if_armed_for_active_session(&self) -> rog_core::RogResult<()> {
+        let _transaction = self.lock_fan_transaction()?;
+        validate_active_session_fan_recovery_scope(&read_fan_safety_marker(
+            &self.fan_safety_marker,
+        )?)?;
+        self.restore_fans_if_armed_unlocked()
+    }
+
     fn lock_fan_transaction(&self) -> rog_core::RogResult<std::sync::MutexGuard<'_, bool>> {
         self.fan_transaction
             .lock()
@@ -705,6 +720,15 @@ where
         )));
     }
     clear_fan_safety_marker_path(path)
+}
+
+fn validate_active_session_fan_recovery_scope(armed: &[String]) -> rog_core::RogResult<()> {
+    if armed.iter().any(|id| id == LEGACY_FAN_SAFETY_MARKER_ENTRY) {
+        return Err(RogError::NotSupported(
+            "legacy fan recovery requires the helper lifecycle recovery path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_fan_safety_marker(path: &std::path::Path, fan_id: &str) -> rog_core::RogResult<()> {
@@ -911,22 +935,19 @@ fn map_fan_error(error: RogError) -> fdo::Error {
             PrivilegedErrorCode::PermissionDenied,
             "the verified fan endpoint could not be written",
         ),
-        RogError::TemporarilyUnavailable(_) => PrivilegedError::new(
-            PrivilegedErrorCode::HardwareUnavailable,
-            "the verified fan hardware is temporarily unavailable",
-        ),
+        RogError::TemporarilyUnavailable(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::HardwareUnavailable, message)
+        }
         RogError::DependencyMissing(_) => PrivilegedError::new(
             PrivilegedErrorCode::BackendFailure,
             "the verified fan backend is unavailable",
         ),
-        RogError::TransientFailure(_) => PrivilegedError::new(
-            PrivilegedErrorCode::BackendFailure,
-            "the privileged fan backend failed and Auto restore was attempted",
-        ),
-        RogError::Unexpected(_) => PrivilegedError::new(
-            PrivilegedErrorCode::Unexpected,
-            "the privileged fan write failed and Auto restore was attempted",
-        ),
+        RogError::TransientFailure(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::BackendFailure, message)
+        }
+        RogError::Unexpected(message) => {
+            PrivilegedError::new(PrivilegedErrorCode::Unexpected, message)
+        }
     };
     map_privileged_error(privileged)
 }
@@ -1462,6 +1483,96 @@ mod tests {
         require_authorized, PrivilegedErrorCode, POLKIT_ACTION_BATTERY_CONTROL,
         POLKIT_ACTION_CPU_CONTROL, POLKIT_ACTION_LIGHTING_CONTROL,
     };
+    use rog_providers::hwmon::ASUS_WMI_CURVE_POINTS;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
+    #[cfg(unix)]
+    fn privileged_fan_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-helper-privileged-fan-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rpm = directory.join("hwmon/hwmon0");
+        let curve = directory.join("hwmon/hwmon1");
+        let device = directory.join("hwmon/asus-nb-wmi");
+        fs::create_dir_all(&rpm).unwrap();
+        fs::create_dir_all(&curve).unwrap();
+        fs::create_dir_all(&device).unwrap();
+        symlink(&device, rpm.join("device")).unwrap();
+        symlink(&device, curve.join("device")).unwrap();
+        fs::write(rpm.join("name"), "asus\n").unwrap();
+        fs::write(rpm.join("fan1_input"), "2400\n").unwrap();
+        fs::write(rpm.join("fan1_label"), "cpu_fan\n").unwrap();
+        fs::write(curve.join("name"), "asus_custom_fan_curve\n").unwrap();
+        fs::write(curve.join("pwm1_enable"), "1\n").unwrap();
+        for point in 1..=ASUS_WMI_CURVE_POINTS {
+            fs::write(
+                curve.join(format!("pwm1_auto_point{point}_temp")),
+                format!("{}\n", 30 + point * 5),
+            )
+            .unwrap();
+            fs::write(
+                curve.join(format!("pwm1_auto_point{point}_pwm")),
+                format!("{}\n", 20 + point * 10),
+            )
+            .unwrap();
+        }
+        (directory, curve)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn privileged_policy_rejection_does_not_write_or_recover_other_channels() {
+        let (directory, curve_path) = privileged_fan_fixture("active-rejection");
+        let mut service = PrivilegedService::new();
+        service.fans = HwmonTelemetryProvider::new(directory.join("hwmon"));
+        service.fan_safety_marker = directory.join("fan-control-active");
+        write_fan_safety_marker(&service.fan_safety_marker, "asus-wmi:gpu").unwrap();
+        let before = fs::read_dir(&curve_path)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_type().unwrap().is_file())
+            .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
+            .collect::<Vec<_>>();
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
+            ]
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
+            .collect(),
+        };
+        let error = service
+            .apply_fan_curve_locked("asus-wmi:cpu", curve)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("custom fan-curve Apply is blocked"));
+        for (path, contents) in before {
+            assert_eq!(fs::read(path).unwrap(), contents);
+        }
+        assert_eq!(
+            read_fan_safety_marker(&service.fan_safety_marker).unwrap(),
+            vec!["asus-wmi:gpu"]
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn fan_transactions_share_a_lock_and_preserve_all_armed_channels() {
@@ -1740,6 +1851,19 @@ mod tests {
     }
 
     #[test]
+    fn active_session_recovery_rejects_legacy_global_marker() {
+        assert!(validate_active_session_fan_recovery_scope(&[
+            LEGACY_FAN_SAFETY_MARKER_ENTRY.to_string()
+        ])
+        .is_err());
+        assert!(validate_active_session_fan_recovery_scope(&[
+            "asus-wmi:cpu".to_string(),
+            "asus-wmi:gpu".to_string(),
+        ])
+        .is_ok());
+    }
+
+    #[test]
     fn armed_channel_validation_rejects_a_missing_channel() {
         let available = vec![FanInfo {
             id: "asus-wmi:cpu".to_string(),
@@ -1765,6 +1889,7 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: true,
             supports_auto: true,
+            fan_write_policy: rog_core::FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: true,
             backend: "asus-wmi-curve".to_string(),
@@ -1859,6 +1984,7 @@ mod tests {
             supports_manual_rpm_target: false,
             supports_curve: true,
             supports_auto: true,
+            fan_write_policy: rog_core::FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: true,
             backend: "asus-wmi-curve".to_string(),
