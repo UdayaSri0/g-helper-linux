@@ -289,9 +289,9 @@ Expected current behavior:
 
 What to do:
 
-- install and start `supergfxd`
-- restart `rog-helperd`
-- recheck the GPU page and Diagnostics
+- treat archived-upstream `supergfxd` as an optional compatibility backend supported by this implementation, not a universal GPU solution
+- check current ASUS Linux/asusctl support for the specific model; this project does not yet use asusd firmware/MUX APIs
+- restart `rog-helperd` after changing provider availability, then recheck the GPU page and Diagnostics
 
 ## Battery, Profile, or GPU Controls Still Unavailable
 

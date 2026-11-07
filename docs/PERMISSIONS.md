@@ -164,7 +164,8 @@ Current effect of failure:
 Architecture decision:
 
 - GPU telemetry remains unprivileged (`hwmon` and optional `nvidia-smi`)
-- GPU mode discovery, validation, switching, and transition safety remain authoritative in `supergfxd`
+- current GPU mode discovery, validation, switching, and transition safety remain authoritative in `supergfxd`; this is an optional backend, not the universal upstream GPU solution
+- upstream asusd supports model-dependent firmware/MUX functionality, but this repository has not validated or implemented that API and must not write GPU mode attributes directly
 - `rog-helper-privileged` deliberately exposes no GPU method
 - ROG Helper does not bind or unbind PCI devices, write GPU sysfs mode files, reload kernel
   modules, power-cycle GPUs, issue raw ACPI calls, or execute commands for GPU switching
@@ -324,6 +325,11 @@ However:
 ## Read-Only Degradation Behavior
 
 The current implementation prefers graceful degradation over hidden failure.
+
+Setup issue counts exclude normal `AuthorizationRequired` (authentication begins only on Apply)
+and fan `ReadOnly` when RPM telemetry is available without a verified write endpoint. Those states
+remain visible in the Permissions section. Missing optional providers remain visible under Service
+Integrations and do not make core session/helper installation health fail.
 
 Current examples:
 

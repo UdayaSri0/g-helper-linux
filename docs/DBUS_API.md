@@ -214,7 +214,7 @@ root, request PolicyKit authorization, or replace session D-Bus activation.
 
 Important note:
 
-- `has_aura` is `true` only when the daemon selects a verified asusd or native Aura/RGB backend. `has_kbd_backlight` means brightness support and does not imply RGB. `has_fan_curves` is true only when a fan-curve backend is explicitly confirmed.
+- `has_aura` is `true` only when the daemon selects a verified asusd or native Aura/RGB backend. `has_kbd_backlight` means brightness support and does not imply RGB. `has_fan_curves` indicates a recognized curve interface/readback; `fan_curve_writable` separately reports a verified write route and does not itself imply physical validation or Apply authorization.
 - `has_fan_reading` is `true` when at least one current fan RPM reading is available. `GetTelemetry.fan_rows` may still include detected fan inputs whose current RPM is unavailable.
 - The `*_access_status` fields use `available`, `unsupported`, `missing_backend`, `permission_denied`, `temporarily_unavailable`, or `unknown`.
 - The paired `*_access_reason` fields are short human-readable explanations intended for UI status text and troubleshooting summaries.

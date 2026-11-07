@@ -2663,9 +2663,9 @@ impl SetupStatus {
                     entry.state,
                     PermissionState::AuthorizationDenied
                         | PermissionState::HelperMissing
-                        | PermissionState::ReadOnly
                         | PermissionState::Unavailable
-                )
+                ) || (entry.kind != PermissionKind::FanControls
+                    && entry.state == PermissionState::ReadOnly)
             })
             .count();
         dependency_issues + permission_issues

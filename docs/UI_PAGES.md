@@ -70,11 +70,12 @@ Current behavior:
 - live readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and `nvidia-smi` when relevant
 - the controls each service enables and whether the expected API actually responded
 - an Administrator Access section for the privileged helper, system DBus, PolicyKit, CPU, fans, lighting, GPU switching, and battery-limit ownership
-- reusable access language: Available, Administrator access required, Authorized, Authorization denied, Read only, Backend missing, Privileged helper missing, Unsupported hardware, Setup required, and External service required
+- reusable access language: Ready, Missing optional backend, Authentication on Apply, Telemetry only, Unverified, Unsupported, plus distinct denied/unavailable/helper states
 - CPU policy, keyboard-lighting, and fan-control write states as Writable, Read-only, Unsupported, Unavailable, or Checking
 - a hardware-support summary that preserves unsupported states instead of treating them as permission failures
 - human-readable next steps without unverified package-manager commands
 - technical DBus, systemd, binary, and sysfs evidence under collapsed Advanced details
+- normal CPU authentication-on-Apply and fan telemetry-only states remain visible as capabilities but are excluded from setup issue counts; missing optional integrations remain individually visible without marking core installation unhealthy
 
 ### What it supports
 

@@ -27,7 +27,7 @@ The project is split into four main runtime layers, plus a shared model layer an
    - Uses PolicyKit actions tied to the calling system-bus peer
    - Exposes typed, validated CPU, fan, canonical keyboard-brightness, standard
      battery-threshold, and allow-listed native Aura effect writes plus probes
-   - Exposes no GPU operation: supergfxd remains the authoritative switching and safety service
+   - Exposes no GPU operation: current switching uses optional supergfxd; no direct GPU mode writes are permitted
 
 Shared model layer:
 

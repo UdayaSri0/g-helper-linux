@@ -316,7 +316,7 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan curve backend available | exact recognized ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply remains blocked unless the exact environment has an approved support record | `fan-caps`, `GetFanCurves`, Fans screenshot |
+| fan curve backend available | exact recognized ASUS WMI mapping reports `has_fan_curves: true`; `fan_curve_writable` is a separate gate | Import Current shows eight raw/percentage pairs without prompting; Apply remains blocked unless the exact environment has an approved support record | `fan-caps`, `GetFanCurves`, Fans screenshot |
 | fan restore Auto | narrowly mapped ASUS WMI reset endpoint | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 

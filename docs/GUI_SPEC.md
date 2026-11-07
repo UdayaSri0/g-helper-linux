@@ -133,6 +133,8 @@ Current content and behavior:
 
 - grouped Session Daemon, Administrator Access, Control Services, Permissions, Hardware Support, and Recommended Next Steps sections
 - verified readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and relevant `nvidia-smi` support
+- core installation health stays independent from missing optional integrations; routine authentication-on-Apply and telemetry-only states are not counted as installation/setup failures
+- statuses use direct labels such as Ready, Missing optional backend, Authentication on Apply, Telemetry only, Unverified, and Unsupported
 - live API checks are authoritative; executable and systemd-unit discovery is advanced evidence
 - explicit available, administrator-required, authorized, denied, read-only, missing-backend/helper, external-service, unsupported, and unavailable language
 - Refresh checks, Copy setup diagnostics, Copy privilege diagnostics, and Open full Diagnostics actions

@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | Performance profile | verified `asusd` API | none | Missing `asusd` affects profiles only |
 | Battery limit | verified `asusd` API | exactly one Battery `charge_control_end_threshold` | Direct write or typed battery-helper Apply with readback |
-| GPU mode | `supergfxd` | none | `supergfxd` remains authoritative |
+| GPU mode | optional, archived-upstream `supergfxd` | none | Current switching uses this provider when available; upstream asusd has model-dependent firmware/MUX support, but this repository has not validated or implemented that contract. Do not recommend supergfxd as a universal GPU solution |
 | ASUS fan curves | exact ASUS WMI CPU/GPU/Mid ABI mapping plus approved physical-write record | typed fan helper enforcing the same record | Production write records are empty; telemetry and curve import remain read-only |
 | Native Aura | verified `asusd` Aura API | allow-listed G615JMR identity + descriptor + alias + typed lighting helper | No arbitrary HID path or packet API |
 

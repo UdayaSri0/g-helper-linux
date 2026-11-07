@@ -624,7 +624,7 @@ impl AccessUiState {
     const fn label(self) -> &'static str {
         match self {
             Self::Available => "Available",
-            Self::AvailableWithAdministrator => "Administrator access required",
+            Self::AvailableWithAdministrator => "Authentication on Apply",
             Self::Authorized => "Authorized",
             Self::AuthorizationDenied => "Authorization denied",
             Self::NotRequired => "Not required",
@@ -632,7 +632,7 @@ impl AccessUiState {
             Self::BackendMissing => "Backend missing",
             Self::PrivilegedHelperMissing => "Privileged helper missing",
             Self::UnsupportedHardware => "Unsupported hardware",
-            Self::UnsafeMapping => "Unsafe mapping",
+            Self::UnsafeMapping => "Unverified",
             Self::SetupRequired => "Setup required",
             Self::ExternalServiceRequired => "External service required",
             Self::Unavailable => "Unavailable",
@@ -6628,10 +6628,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             setup_issues_row
                 .set_subtitle("All relevant live service and permission checks currently pass.");
         } else {
-            setup_issues_row.set_title(&format!(
-                "{} control areas need setup",
-                setup_status.issue_count()
-            ));
+            setup_issues_row
+                .set_title(&format!("{} items need review", setup_status.issue_count()));
             setup_issues_row.set_subtitle(
                 &setup_status
                     .issues
@@ -8135,7 +8133,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             "Read-only".to_string()
         };
         system_state_details.set_text(&format!(
-            "Controls  {control_state}  ·  Setup issues  {missing_services}"
+            "Controls  {control_state}  ·  Items to review  {missing_services}"
         ));
 
         let health_warning_count = support_messages.len() + warnings.len();
@@ -8185,7 +8183,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             warning_banner.remove_css_class("warning-error");
             warning_banner.add_css_class("warning-warning");
             warning_banner.set_title(&format!(
-                "{} control areas need setup",
+                "{} items need review",
                 setup_status.control_issue_count()
             ));
             warning_banner.set_button_label(Some("Review"));
@@ -13274,7 +13272,7 @@ fn update_setup_dependency_row(
     value: &gtk::Label,
 ) {
     if let Some(dependency) = status.dependency(kind) {
-        value.set_text(dependency.state.label());
+        value.set_text(setup_dependency_label(kind, dependency.state));
         set_setup_value_status(
             value,
             match dependency.state {
@@ -13296,6 +13294,14 @@ fn update_setup_dependency_row(
     }
 }
 
+fn setup_dependency_label(kind: DependencyKind, state: DependencyState) -> &'static str {
+    if kind != DependencyKind::RogHelperd && state == DependencyState::NotAvailable {
+        "Missing optional backend"
+    } else {
+        state.label()
+    }
+}
+
 fn update_setup_permission_row(
     status: &SetupStatus,
     kind: PermissionKind,
@@ -13303,11 +13309,18 @@ fn update_setup_permission_row(
     value: &gtk::Label,
 ) {
     if let Some(permission) = status.permission(kind) {
-        value.set_text(permission.state.label());
+        value.set_text(setup_permission_label(kind, permission.state));
         set_setup_value_status(
             value,
             match permission.state {
                 PermissionState::Writable => "status-ok",
+                PermissionState::Unknown
+                | PermissionState::Unsupported
+                | PermissionState::ReadOnly
+                    if kind == PermissionKind::FanControls =>
+                {
+                    "status-info"
+                }
                 PermissionState::Unknown | PermissionState::Unsupported => "status-info",
                 PermissionState::AuthorizationRequired | PermissionState::ReadOnly => {
                     "status-warning"
@@ -13321,6 +13334,16 @@ fn update_setup_permission_row(
     } else {
         value.set_text("Checking");
         row.set_subtitle("No permission result has been received yet.");
+    }
+}
+
+fn setup_permission_label(kind: PermissionKind, state: PermissionState) -> &'static str {
+    match (kind, state) {
+        (PermissionKind::FanControls, PermissionState::ReadOnly) => "Telemetry only",
+        (PermissionKind::CpuPolicyWrites, PermissionState::AuthorizationRequired) => {
+            "Authentication on Apply"
+        }
+        _ => state.label(),
     }
 }
 
@@ -15805,6 +15828,25 @@ fn text_or_unknown(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_access_labels_fan_telemetry_without_calling_it_a_failure() {
+        assert_eq!(
+            setup_permission_label(PermissionKind::FanControls, PermissionState::ReadOnly),
+            "Telemetry only"
+        );
+        assert_eq!(
+            setup_permission_label(
+                PermissionKind::CpuPolicyWrites,
+                PermissionState::AuthorizationRequired
+            ),
+            "Authentication on Apply"
+        );
+        assert_eq!(
+            setup_dependency_label(DependencyKind::Supergfxd, DependencyState::NotAvailable),
+            "Missing optional backend"
+        );
+    }
 
     fn ov<T>(value: T) -> OwnedValue
     where
