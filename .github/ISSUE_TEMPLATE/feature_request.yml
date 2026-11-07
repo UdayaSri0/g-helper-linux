@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an improvement or explain a user need that ROG Helper could address.
+title: "[Feature]: "
+labels:
+  - type:feature
+  - status:needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please search existing issues first. Do not include secrets or private system information in examples or attachments.
+
+  - type: textarea
+    id: user-need
+    attributes:
+      label: Problem or user need
+      description: What task is difficult today, and who would benefit from solving it?
+      placeholder: I need to ... because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the user-visible behavior, controls, or workflow you are proposing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-benefits
+    attributes:
+      label: Expected benefits
+      description: Explain the practical benefit and how success could be recognized.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative approaches
+      description: What workarounds, existing tools, or other designs have you considered?
+
+  - type: textarea
+    id: hardware-platform-constraints
+    attributes:
+      label: Hardware and platform constraints
+      description: Include affected laptop models, Linux distributions, desktop sessions, kernel interfaces, or service dependencies. Mark unknown items as unknown.
+
+  - type: textarea
+    id: existing-functionality
+    attributes:
+      label: Relevant existing functionality
+      description: Link to related issues or explain which current ROG Helper page, command, API, or diagnostic already comes close.
+
+  - type: textarea
+    id: screenshots-examples
+    attributes:
+      label: Optional screenshots or examples
+      description: Attach mockups or examples only after removing personal information, hostnames, paths, and other sensitive data.

@@ -70,11 +70,12 @@ Current behavior:
 - live readiness for `rog-helperd`, `asusd`, `supergfxd`, UPower, and `nvidia-smi` when relevant
 - the controls each service enables and whether the expected API actually responded
 - an Administrator Access section for the privileged helper, system DBus, PolicyKit, CPU, fans, lighting, GPU switching, and battery-limit ownership
-- reusable access language: Available, Administrator access required, Authorized, Authorization denied, Read only, Backend missing, Privileged helper missing, Unsupported hardware, Setup required, and External service required
+- reusable access language: Ready, Missing optional backend, Authentication on Apply, Telemetry only, Unverified, Unsupported, plus distinct denied/unavailable/helper states
 - CPU policy, keyboard-lighting, and fan-control write states as Writable, Read-only, Unsupported, Unavailable, or Checking
 - a hardware-support summary that preserves unsupported states instead of treating them as permission failures
 - human-readable next steps without unverified package-manager commands
 - technical DBus, systemd, binary, and sysfs evidence under collapsed Advanced details
+- normal CPU authentication-on-Apply and fan telemetry-only states remain visible as capabilities but are excluded from setup issue counts; missing optional integrations remain individually visible without marking core installation unhealthy
 
 ### What it supports
 
@@ -285,7 +286,10 @@ Current behavior:
 - named Saved Profiles with create, duplicate, rename/save, and confirmed delete
 - saved platform-profile and battery-limit fields; profile edits remain local until Save Changes
 - a live capability note for saved lighting effects and semantic fan roles when those fields exist
-- AC/Battery preset selectors, optional Battery threshold, opt-in enable switch, daemon policy state/result, and explicit Resume after manual override
+- AC/Battery preset selectors, optional Battery lower/upper thresholds, optional explicit recovery
+  preset (no implicit AC fallback), opt-in enable switch, current source and battery zone, source
+  freshness, pending and last-confirmed preset, component outcomes, retry state, blocker/manual
+  pause reason, and explicit Resume; automatic writes currently remain disabled
 - a clear note that privileged, fan, lighting, and potentially disruptive GPU fields are skipped automatically
 - X11-only internal-panel refresh-rate discovery, current mode/rate, advertised same-mode rates, manual Apply, and unsupported-backend explanation
 - semantic CLI commands for desktop-owned shortcuts, with explicit note that ROG Helper does not capture keys or own global mappings
@@ -363,16 +367,15 @@ Current behavior:
 
 ### What it supports
 
-- manual `Check for Updates`
-- best-effort `Update Now` for safe user-local direct-binary installs
+- executable replacement is disabled until signed release metadata can be verified with a pinned public key
 - browser actions for source / GitHub, support / repository, and issue reporting
-- safe fallback to opening the latest release page when automatic in-place replacement is not supported
+- the latest release page is opened for manual downloads
 
 ### Capability dependencies
 
 - static metadata has no daemon capability dependency
 - release checks depend on network access to GitHub
-- automatic in-place replacement depends on a matching direct release asset plus a writable user-local binary path
+- automatic in-place replacement requires a separately authenticated signed release manifest and pinned public verification key; no signing key is currently provisioned
 
 ### Missing or planned
 

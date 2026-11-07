@@ -36,7 +36,7 @@ The following features are present in the current codebase.
   single-target RGB protocol
 - fan monitoring and safe fan controls for supported ASUS/Linux hardware
   - dynamic 0..N fan telemetry
-  - verified ASUS WMI eight-point curves with direct or typed privileged writes
+  - recognized ASUS WMI eight-point curves, with Apply limited to reviewed support records through direct or typed privileged writes
   - Auto/BIOS restore and root-owned recovery marker
   - generic manual percentage, RPM-target, and boost writes deliberately unsupported
   - sync state/API/UI present, but not operational for the verified curve backend
@@ -69,7 +69,7 @@ The daemon already exposes:
 - `SetGpuMode`
 - `SetBatteryLimit`
 - CPU control setters
-- verified fan control setters and Auto restore
+- policy-authorized fan control setters and separately constrained Auto restore
 
 See [DBUS_API.md](DBUS_API.md) for the current details.
 
@@ -201,14 +201,20 @@ Still missing:
 
 Implemented as an opt-in daemon-owned policy runtime:
 
-- versioned AC/Battery preset rules, optional Battery percentage threshold, disabled by default
+- versioned AC/Battery preset rules, optional lower/upper Battery thresholds, optional explicitly
+  selected recovery preset, disabled by default
 - stable-source debounce, duplicate suppression, persistent manual override, and explicit Resume
 - automatic application is limited to asusd platform profile and asusd/direct-writable battery limit
 - PolicyKit-requiring, fan, lighting, and GPU changes are skipped; GPU remains manual because it may require logout/reboot
 - runtime reports per-component applied, unchanged, skipped, failed, and blocked results
 
-Remaining limitation: the Battery threshold is a one-way activation condition for the selected
-Battery preset; it does not switch to a second preset when charge later rises above the threshold.
+Recovery behavior is opt-in: at the upper threshold, automation selects only the explicitly
+configured recovery preset. If none is selected, the policy reports a no-write outcome and never
+infers that the AC preset is intended. Existing lower-threshold-only configuration keeps its
+one-way activation behavior. Automatic hardware writes remain disabled until per-operation safety
+checks, per-component readback confirmation, and three-attempt backoff are implemented. The
+runtime retry path is present but remains unreachable while the safety write gate is false; physical
+transition, consistency, and resume validation are still required before changing that gate.
 
 ### Aura / RGB lighting
 

@@ -57,6 +57,36 @@ Missing backend services remain diagnostic results rather than requiring hardwar
 Freeform policy results, warning text, and broad Aura DBus discovery content are omitted from the
 shareable report. Use local UI diagnostics or the targeted CLI diagnostics for detailed errors.
 
+## Choosing an issue form
+
+Use **Bug report** for a reproducible software problem. Include the exact steps, expected and
+actual results, environment details, and a focused redacted diagnostic report when useful.
+
+Use **Feature request** for a user need or proposed behavior. Describe the use case, benefits,
+alternatives, and any hardware or platform constraints; priority selection is not required.
+
+Use **Hardware compatibility / validation report** for model-specific discovery, physical tests,
+unsupported features, or untested features. Report the evidence level accurately:
+
+- **Read-only discovery** means an endpoint, service, or capability was detected; it does not prove
+  that hardware control works.
+- **Physical functionality tested** means a safe user-observable function was tested and observed.
+- **Verified hardware write with post-write evidence** means a supported write completed and was
+  read back or physically observed, with the evidence recorded.
+- **Unsupported** means the feature is not supported by the hardware/backend or is deliberately
+  unavailable for safety. **Untested** means no conclusion was reached.
+
+Do not perform a potentially dangerous fan, power, GPU, or lighting operation just to complete a
+report. For any public attachment, remove API tokens, passwords, usernames, personal information,
+hostnames, serial numbers, private filesystem paths, unrelated logs or command output, and other
+sensitive hardware or system identifiers. Review `rog-helper issue-report` output before sharing it:
+it is read-only and redacted by default, but it is not a substitute for reviewing the final text.
+
+For suspected security vulnerabilities, do not open a public issue. Use the private security
+advisory link in the issue chooser. The repository currently has no published `SECURITY.md` policy;
+if GitHub's private advisory route is unavailable for your account, contact the maintainer privately
+before disclosing sensitive details.
+
 ## `Cargo.lock` parse error (`version = 4`)
 
 If you see:
@@ -259,9 +289,9 @@ Expected current behavior:
 
 What to do:
 
-- install and start `supergfxd`
-- restart `rog-helperd`
-- recheck the GPU page and Diagnostics
+- treat archived-upstream `supergfxd` as an optional compatibility backend supported by this implementation, not a universal GPU solution
+- check current ASUS Linux/asusctl support for the specific model; this project does not yet use asusd firmware/MUX APIs
+- restart `rog-helperd` after changing provider availability, then recheck the GPU page and Diagnostics
 
 ## Battery, Profile, or GPU Controls Still Unavailable
 
@@ -312,21 +342,25 @@ Expected behavior:
 
 - fan rows remain visible
 - the Fans page still shows animated RPM rotors and individual fan cards for telemetry
-- curve controls are enabled only for a fully verified ASUS WMI curve layout and hardware mapping
+- curve readback and local editing remain available for a structurally recognized ASUS WMI layout;
+  Apply is enabled only for an exact approved physical-write support record
 - generic manual percentage and RPM-target controls remain disabled even if candidate files are writable
 - Diagnostics lists endpoint paths and permission warnings
 
 ## Fan RPM Appears, But Manual Control Is Unavailable
 
 `fan*_input` is normally read-only RPM telemetry. ROG Helper does not treat a matching writable
-PWM file as sufficient proof that manual control is safe. The current writable fan contract is the
-exact, identity-checked ASUS WMI eight-point curve ABI with a verified Auto restore endpoint.
+PWM file as sufficient proof that manual control is safe. A recognized ASUS WMI eight-point ABI and
+Auto restore endpoint permit readback and narrow recovery, but custom Apply additionally requires an
+exact approved model/board/BIOS/kernel/driver/channel record. No production record currently exists.
 
 Common reasons:
 
 - the kernel driver exposes telemetry only
 - the exact ASUS WMI curve device or complete eight-point layout is absent
 - the curve files exist but neither the daemon nor the privileged helper can write them
+- the ABI is writable but the current environment has no approved physical-write record
+- the BIOS, kernel build, driver, board identity, or channel mapping differs from an approved record
 - the RPM device labels cannot safely map the curve channel to CPU, GPU, or mid fan
 - firmware/BIOS owns the fan policy and ignores software control
 
@@ -354,8 +388,9 @@ ls -l /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/nu
 ```
 
 Do not grant broad sysfs write access. Candidate generic PWM and RPM-target endpoints are not a
-supported control backend. For a verified ASUS WMI curve layout, use the packaged typed helper and
-its `io.github.roghelper.fans.control` PolicyKit action rather than changing sysfs permissions.
+supported control backend. The packaged typed helper and its
+`io.github.roghelper.fans.control` PolicyKit action do not override the physical-write policy;
+administrator authorization is necessary for a privileged write but is never sufficient.
 
 ## asusd Present, But Fan Curves Unsupported
 
@@ -377,11 +412,12 @@ Some laptops accept a software fan value briefly and then firmware policy takes 
 
 ## Import Current, Reset Draft, and Restore Auto
 
-**Import Current** reads the verified eight-point curve into the preview. It does not write, enable
+**Import Current** reads the structurally recognized eight-point curve into the preview. It does not write, enable
 a curve, or request PolicyKit. The displayed source is the current firmware/backend data, not a
 claim that it is the immutable ASUS factory default. **Reset Draft** only returns the local preview
 to the Balanced application preset. **Restore Auto** is the separate hardware action that returns
-the verified channel(s) to firmware/profile control.
+the narrowly mapped channel(s) to firmware/profile control. Restore Auto does not authorize a custom
+curve and a denied Apply must not trigger an unrelated reset.
 
 Quiet, Balanced, and Performance are ordinary ROG Helper drafts and must not be interpreted as ASUS
 platform modes. All eight points remain visible before Apply.
@@ -398,7 +434,7 @@ If `fan*_label` is missing, the app uses `Fan 1`, `Fan 2`, and so on. It does no
 
 ## Boost Failed or Restored Auto
 
-Boost is currently unsupported because the verified ASUS WMI backend has no manual-percentage
+Boost is currently unsupported because the recognized ASUS WMI curve ABI has no manual-percentage
 contract; the compatibility method rejects the request. A future boost backend would have to be
 time-limited and restore Auto on telemetry loss or critical temperature.
 

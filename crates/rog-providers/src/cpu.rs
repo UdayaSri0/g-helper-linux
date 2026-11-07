@@ -46,6 +46,12 @@ struct PolicyData {
     scaling_driver: Option<String>,
 }
 
+struct CpuWrite {
+    path: PathBuf,
+    expected: Option<String>,
+    value: String,
+}
+
 #[derive(Debug, Clone)]
 struct BoostPath {
     path: PathBuf,
@@ -579,17 +585,22 @@ impl CpuTelemetryProvider {
             selected_paths,
             "CPU power mode requires administrator authorization",
         )?;
-        if let Some(governor) = governor.as_deref() {
-            for policy in governor_endpoints {
-                write_sysfs(&policy.path.join("scaling_governor"), governor)?;
-            }
+        let mut writes = Vec::new();
+        if let Some(governor) = governor {
+            writes.extend(governor_endpoints.into_iter().map(|policy| CpuWrite {
+                path: policy.path.join("scaling_governor"),
+                expected: policy.governor.clone(),
+                value: governor.clone(),
+            }));
         }
-        if let Some(epp) = epp.as_deref() {
-            for policy in epp_endpoints {
-                write_sysfs(&policy.path.join("energy_performance_preference"), epp)?;
-            }
+        if let Some(epp) = epp {
+            writes.extend(epp_endpoints.into_iter().map(|policy| CpuWrite {
+                path: policy.path.join("energy_performance_preference"),
+                expected: policy.epp.clone(),
+                value: epp.clone(),
+            }));
         }
-        Ok(())
+        apply_cpu_writes(&writes)
     }
 
     pub fn set_governor(&self, governor: &str) -> RogResult<()> {
@@ -616,11 +627,15 @@ impl CpuTelemetryProvider {
             endpoints.iter().map(|p| p.path.join("scaling_governor")),
             "scaling governor controls require administrator authorization",
         )?;
-        for p in endpoints {
-            let path = p.path.join("scaling_governor");
-            write_sysfs(&path, governor)?;
-        }
-        Ok(())
+        let writes = endpoints
+            .into_iter()
+            .map(|policy| CpuWrite {
+                path: policy.path.join("scaling_governor"),
+                expected: policy.governor.clone(),
+                value: governor.to_string(),
+            })
+            .collect::<Vec<_>>();
+        apply_cpu_writes(&writes)
     }
 
     pub fn set_epp(&self, epp: &str) -> RogResult<()> {
@@ -650,11 +665,15 @@ impl CpuTelemetryProvider {
                 .map(|p| p.path.join("energy_performance_preference")),
             "EPP controls require administrator authorization",
         )?;
-        for p in endpoints {
-            let path = p.path.join("energy_performance_preference");
-            write_sysfs(&path, epp)?;
-        }
-        Ok(())
+        let writes = endpoints
+            .into_iter()
+            .map(|policy| CpuWrite {
+                path: policy.path.join("energy_performance_preference"),
+                expected: policy.epp.clone(),
+                value: epp.to_string(),
+            })
+            .collect::<Vec<_>>();
+        apply_cpu_writes(&writes)
     }
 
     pub fn set_freq_limits(&self, min_mhz: Option<u32>, max_mhz: Option<u32>) -> RogResult<()> {
@@ -705,6 +724,7 @@ impl CpuTelemetryProvider {
             }),
             "CPU frequency limits require administrator authorization",
         )?;
+        let mut writes = Vec::new();
         for p in endpoints {
             let min_path = p.path.join("scaling_min_freq");
             let max_path = p.path.join("scaling_max_freq");
@@ -717,22 +737,24 @@ impl CpuTelemetryProvider {
             let (target_min, target_max) =
                 effective_frequency_range(min_mhz, max_mhz, current_min, current_max)?;
 
-            if target_max < current_min {
-                write_sysfs(&min_path, &target_min.to_string())?;
-                write_sysfs(&max_path, &target_max.to_string())?;
-            } else if target_min > current_max {
-                write_sysfs(&max_path, &target_max.to_string())?;
-                write_sysfs(&min_path, &target_min.to_string())?;
+            let min_first = target_max < current_min;
+            let min_write = CpuWrite {
+                path: min_path,
+                expected: Some(current_min.to_string()),
+                value: target_min.to_string(),
+            };
+            let max_write = CpuWrite {
+                path: max_path,
+                expected: Some(current_max.to_string()),
+                value: target_max.to_string(),
+            };
+            writes.extend(if min_first {
+                [min_write, max_write]
             } else {
-                if target_max != current_max {
-                    write_sysfs(&max_path, &target_max.to_string())?;
-                }
-                if target_min != current_min {
-                    write_sysfs(&min_path, &target_min.to_string())?;
-                }
-            }
+                [max_write, min_write]
+            });
         }
-        Ok(())
+        apply_cpu_writes(&writes)
     }
 
     pub fn set_core_online(&self, core_id: u32, online: bool) -> RogResult<()> {
@@ -1579,9 +1601,122 @@ fn write_sysfs(path: &Path, value: &str) -> RogResult<()> {
     Ok(())
 }
 
+fn apply_cpu_writes(writes: &[CpuWrite]) -> RogResult<()> {
+    apply_transactional_writes(
+        writes,
+        |path| {
+            read_to_string(path).map_err(|error| {
+                RogError::TemporarilyUnavailable(format!(
+                    "could not snapshot CPU control {}: {error}",
+                    path.display()
+                ))
+            })
+        },
+        write_sysfs,
+    )
+}
+
+fn apply_transactional_writes<Read, Write>(
+    writes: &[CpuWrite],
+    mut read: Read,
+    mut write: Write,
+) -> RogResult<()>
+where
+    Read: FnMut(&Path) -> RogResult<String>,
+    Write: FnMut(&Path, &str) -> RogResult<()>,
+{
+    let mut originals: HashMap<PathBuf, String> = HashMap::new();
+    let mut targets: HashMap<PathBuf, String> = HashMap::new();
+    for operation in writes {
+        let current = if let Some(current) = originals.get(&operation.path) {
+            current.clone()
+        } else {
+            let current = read(&operation.path)?;
+            originals.insert(operation.path.clone(), current.clone());
+            current
+        };
+        if operation
+            .expected
+            .as_deref()
+            .is_some_and(|expected| current.trim() != expected)
+        {
+            return Err(RogError::TemporarilyUnavailable(format!(
+                "CPU control {} changed before it could be updated",
+                operation.path.display()
+            )));
+        }
+        targets.insert(operation.path.clone(), operation.value.clone());
+    }
+
+    let mut attempted = Vec::new();
+    for operation in writes {
+        if originals[&operation.path].trim() == operation.value {
+            continue;
+        }
+        attempted.push(operation.path.clone());
+        if let Err(error) = write(&operation.path, &operation.value) {
+            return Err(rollback_cpu_writes(
+                error, &attempted, &originals, &mut write,
+            ));
+        }
+    }
+
+    for (path, expected) in &targets {
+        let actual = match read(path) {
+            Ok(actual) => actual,
+            Err(error) => {
+                return Err(rollback_cpu_writes(
+                    error, &attempted, &originals, &mut write,
+                ));
+            }
+        };
+        if actual.trim() != expected {
+            let error = RogError::Unexpected(format!(
+                "CPU control {} did not retain its requested value",
+                path.display()
+            ));
+            return Err(rollback_cpu_writes(
+                error, &attempted, &originals, &mut write,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn rollback_cpu_writes<Write>(
+    primary_error: RogError,
+    attempted: &[PathBuf],
+    originals: &HashMap<PathBuf, String>,
+    write: &mut Write,
+) -> RogError
+where
+    Write: FnMut(&Path, &str) -> RogResult<()>,
+{
+    let mut restored = BTreeSet::new();
+    let mut rollback_errors = Vec::new();
+    for path in attempted.iter().rev() {
+        if !restored.insert(path) {
+            continue;
+        }
+        let original = &originals[path];
+        if let Err(error) = write(path, original.trim()) {
+            rollback_errors.push(format!("{}: {error}", path.display()));
+        }
+    }
+    if rollback_errors.is_empty() {
+        primary_error
+    } else {
+        RogError::Unexpected(format!(
+            "CPU control update failed: {primary_error}; rollback failed for {}",
+            rollback_errors.join(", ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod security_tests {
     use super::*;
+    use std::cell::RefCell;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1594,6 +1729,237 @@ mod security_tests {
             effective_frequency_range(Some(1200), None, 800_000, 2_500_000).unwrap(),
             (1_200_000, 2_500_000)
         );
+    }
+
+    #[test]
+    fn failed_policy_write_restores_every_attempted_endpoint() {
+        let paths = [PathBuf::from("policy0"), PathBuf::from("policy1")];
+        let values = RefCell::new(HashMap::from([
+            (paths[0].clone(), "powersave".to_string()),
+            (paths[1].clone(), "powersave".to_string()),
+        ]));
+        let writes = paths
+            .iter()
+            .map(|path| CpuWrite {
+                path: path.clone(),
+                expected: Some("powersave".to_string()),
+                value: "performance".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut write_count = 0;
+
+        let result = apply_transactional_writes(
+            &writes,
+            |path| {
+                values
+                    .borrow()
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| RogError::TemporarilyUnavailable("missing test file".into()))
+            },
+            |path, value| {
+                write_count += 1;
+                values
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), value.to_string());
+                if write_count == 2 {
+                    return Err(RogError::Unexpected("injected write failure".into()));
+                }
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(RogError::Unexpected(_))));
+        assert_eq!(values.borrow()[&paths[0]], "powersave");
+        assert_eq!(values.borrow()[&paths[1]], "powersave");
+    }
+
+    #[test]
+    fn successful_policy_write_verifies_every_endpoint() {
+        let paths = [PathBuf::from("policy0"), PathBuf::from("policy1")];
+        let values = RefCell::new(HashMap::from([
+            (paths[0].clone(), "powersave".to_string()),
+            (paths[1].clone(), "powersave".to_string()),
+        ]));
+        let writes = paths
+            .iter()
+            .map(|path| CpuWrite {
+                path: path.clone(),
+                expected: Some("powersave".to_string()),
+                value: "performance".to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        apply_transactional_writes(
+            &writes,
+            |path| {
+                values
+                    .borrow()
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| RogError::TemporarilyUnavailable("missing test file".into()))
+            },
+            |path, value| {
+                values
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), value.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(values.borrow()[&paths[0]], "performance");
+        assert_eq!(values.borrow()[&paths[1]], "performance");
+    }
+
+    #[test]
+    fn changed_snapshot_prevents_any_policy_write() {
+        let path = PathBuf::from("policy0");
+        let values = RefCell::new(HashMap::from([(path.clone(), "performance".to_string())]));
+        let writes = [CpuWrite {
+            path: path.clone(),
+            expected: Some("powersave".to_string()),
+            value: "balanced".to_string(),
+        }];
+        let mut write_count = 0;
+
+        let result = apply_transactional_writes(
+            &writes,
+            |path| {
+                values
+                    .borrow()
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| RogError::TemporarilyUnavailable("missing test file".into()))
+            },
+            |path, value| {
+                write_count += 1;
+                values
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), value.to_string());
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(RogError::TemporarilyUnavailable(_))));
+        assert_eq!(write_count, 0);
+        assert_eq!(values.borrow()[&path], "performance");
+    }
+
+    #[test]
+    fn cross_policy_readback_mismatch_rolls_back_changed_values() {
+        let paths = [PathBuf::from("policy0"), PathBuf::from("policy1")];
+        let values = RefCell::new(HashMap::from([
+            (paths[0].clone(), "powersave".to_string()),
+            (paths[1].clone(), "powersave".to_string()),
+        ]));
+        let writes = paths
+            .iter()
+            .map(|path| CpuWrite {
+                path: path.clone(),
+                expected: Some("powersave".to_string()),
+                value: "performance".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut write_count = 0;
+
+        let result = apply_transactional_writes(
+            &writes,
+            |path| {
+                values
+                    .borrow()
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| RogError::TemporarilyUnavailable("missing test file".into()))
+            },
+            |path, value| {
+                write_count += 1;
+                let actual = if write_count == 2 && value == "performance" {
+                    "powersave"
+                } else {
+                    value
+                };
+                values
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), actual.to_string());
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(RogError::Unexpected(_))));
+        assert_eq!(values.borrow()[&paths[0]], "powersave");
+        assert_eq!(values.borrow()[&paths[1]], "powersave");
+    }
+
+    #[test]
+    fn failed_rollback_is_reported_with_the_endpoint() {
+        let paths = [PathBuf::from("policy0"), PathBuf::from("policy1")];
+        let values = RefCell::new(HashMap::from([
+            (paths[0].clone(), "powersave".to_string()),
+            (paths[1].clone(), "powersave".to_string()),
+        ]));
+        let writes = paths
+            .iter()
+            .map(|path| CpuWrite {
+                path: path.clone(),
+                expected: Some("powersave".to_string()),
+                value: "performance".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut write_count = 0;
+
+        let result = apply_transactional_writes(
+            &writes,
+            |path| {
+                values
+                    .borrow()
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| RogError::TemporarilyUnavailable("missing test file".into()))
+            },
+            |path, value| {
+                write_count += 1;
+                if write_count == 2 {
+                    values
+                        .borrow_mut()
+                        .insert(path.to_path_buf(), value.to_string());
+                    return Err(RogError::Unexpected("injected write failure".into()));
+                }
+                if write_count == 4 && path == paths[0] {
+                    return Err(RogError::Unexpected("injected rollback failure".into()));
+                }
+                values
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), value.to_string());
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(RogError::Unexpected(message))
+            if message.contains("rollback failed") && message.contains("policy0")));
+    }
+
+    #[test]
+    fn heterogeneous_policy_bounds_keep_khz_ordering_and_mhz_conversion() {
+        let policy_bounds = [(800_500, 4_200_000), (1_200_900, 3_800_000)];
+        let hardware_min = policy_bounds
+            .iter()
+            .filter_map(|(min, _)| khz_to_mhz_u32(*min))
+            .max()
+            .unwrap();
+        let hardware_max = policy_bounds
+            .iter()
+            .filter_map(|(_, max)| khz_to_mhz_u32(*max))
+            .min()
+            .unwrap();
+        assert_eq!((hardware_min, hardware_max), (1200, 3800));
+        for (current_min, current_max) in policy_bounds {
+            assert_eq!(
+                effective_frequency_range(Some(1300), Some(3700), current_min, current_max)
+                    .unwrap(),
+                (1_300_000, 3_700_000)
+            );
+        }
     }
 
     #[test]

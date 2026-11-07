@@ -1,0 +1,149 @@
+name: Hardware compatibility / validation report
+description: Report what was discovered or tested on a specific ASUS laptop without implying unsupported hardware is broken.
+title: "[Hardware]: "
+labels:
+  - area:hardware
+  - status:needs-hw-logs
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for hardware compatibility evidence, including unsupported or untested features. You do **not** need to perform a fan, power, GPU, or lighting write to submit a report.
+
+        Validation levels are deliberately separate:
+
+        1. **Read-only discovery:** software detected an endpoint, service, capability, or identity. This is not proof that hardware control works.
+        2. **Physical functionality tested:** a safe user-observable function was tested and its physical result was observed.
+        3. **Verified hardware write with post-write evidence:** a supported write completed and the resulting state was read back or physically observed. Include the evidence and any safety/rollback result.
+        4. **Unsupported:** the feature is known not to be supported by this hardware/backend or is deliberately unavailable for safety.
+        5. **Untested:** no conclusion was reached.
+
+        **Privacy and safety:** redact API tokens, passwords, usernames, personal information, hostnames, serial numbers, private filesystem paths, unrelated logs or command output, and sensitive hardware or system identifiers. `rog-helper issue-report` produces read-only, redacted-by-default Markdown, but inspect it before publishing. Do not run the GUI or daemon as root, change permissions broadly, or perform an operation you consider unsafe.
+
+        Do not use public issues for security vulnerabilities. Use the private security-reporting link in the issue chooser instead.
+
+  - type: input
+    id: laptop-model
+    attributes:
+      label: Exact laptop model
+      description: Include the marketed model and product identifier when known; redact serial numbers.
+      placeholder: "ASUS ROG Zephyrus G14 GA402RK"
+    validations:
+      required: true
+
+  - type: input
+    id: linux-distribution
+    attributes:
+      label: Linux distribution and version
+      placeholder: "Fedora 42, Ubuntu 24.04, Arch (rolling)"
+    validations:
+      required: true
+
+  - type: input
+    id: kernel-version
+    attributes:
+      label: Kernel version
+      placeholder: "uname -r output"
+    validations:
+      required: true
+
+  - type: input
+    id: desktop-session
+    attributes:
+      label: Desktop and display session
+      placeholder: "KDE Plasma 6 / Wayland"
+    validations:
+      required: true
+
+  - type: input
+    id: helper-version
+    attributes:
+      label: ROG Helper version
+      placeholder: "0.4.0, package build, or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: cpu-gpu
+    attributes:
+      label: CPU and GPU
+      description: Optional where not relevant, but useful for platform-specific reports.
+      placeholder: "CPU; integrated GPU; discrete GPU"
+
+  - type: input
+    id: asusd-status
+    attributes:
+      label: asusd status and version
+      description: Optional. State missing or unavailable when applicable; do not install or change services just to complete this field.
+      placeholder: "Present, version ... / missing / unavailable"
+
+  - type: input
+    id: supergfxd-status
+    attributes:
+      label: supergfxd status and version
+      description: Optional. State missing or unavailable when applicable.
+      placeholder: "Present, version ... / missing / unavailable"
+
+  - type: input
+    id: affected-feature
+    attributes:
+      label: Affected hardware feature
+      description: For example, battery limit, GPU mode, keyboard backlight, RGB, fan telemetry, or fan curves.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: validation-level
+    attributes:
+      label: Highest validation level for this feature
+      description: Select the strongest evidence actually collected. Read-only discovery alone is not a working-control result.
+      options:
+        - Read-only discovery
+        - Physical functionality tested
+        - Verified hardware write with post-write evidence
+        - Unsupported
+        - Untested
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What should this hardware feature do according to the supported backend or documentation?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior and evidence
+      description: Describe what was observed. For a write, include post-write readback or physical evidence; for unsupported/untested, say why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue-report
+    attributes:
+      label: Diagnostics from rog-helper issue-report
+      description: Optional but recommended. Paste only the reviewed, redacted output from `rog-helper issue-report`; it is read-only and redacted by default, not proof of a hardware write.
+      render: markdown
+
+  - type: textarea
+    id: test-evidence
+    attributes:
+      label: Optional screenshots or test evidence
+      description: Attach relevant screenshots, focused command output, or safe physical observations. Do not paste unrelated logs or sensitive identifiers.
+      render: text
+
+  - type: checkboxes
+    id: privacy-safety-acknowledgment
+    attributes:
+      label: Privacy and safety acknowledgment
+      options:
+        - label: I removed tokens, passwords, usernames, personal information, hostnames, serial numbers, private paths, unrelated output, and sensitive identifiers.
+          required: true
+        - label: I did not perform a potentially dangerous hardware write merely to submit this report, and I will not present read-only discovery as proof of working control.
+          required: true
+        - label: I understand that issue attachments and comments are public and that generated diagnostics must be reviewed before publishing.
+          required: true

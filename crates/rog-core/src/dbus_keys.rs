@@ -126,6 +126,13 @@ pub mod state {
     pub const AUTOMATION_PROFILE_ID: &str = "profile_id";
     pub const AUTOMATION_EXPLANATION: &str = "explanation";
     pub const AUTOMATION_LAST_RESULT: &str = "last_result";
+    pub const AUTOMATION_PENDING_PROFILE_ID: &str = "pending_profile_id";
+    pub const AUTOMATION_COMPONENT_RESULTS: &str = "component_results";
+    pub const AUTOMATION_COMPONENT_PLATFORM_PROFILE: &str = "platform_profile";
+    pub const AUTOMATION_COMPONENT_BATTERY_LIMIT: &str = "battery_charge_limit";
+    pub const AUTOMATION_COMPONENT_UNSUPPORTED: &str = "unsupported_profile_field";
+    pub const AUTOMATION_SOURCE_FRESHNESS: &str = "source_freshness";
+    pub const AUTOMATION_RETRY_STATUS: &str = "retry_status";
     pub const FAN_STATE: &str = FAN_STATE_KEY;
     pub const FAN_CAPS: &str = FAN_CAPS_KEY;
 }
@@ -318,6 +325,15 @@ pub mod fan_caps {
     pub const FAN_CURVE_READABLE: &str = "fan_curve_readable";
     pub const FAN_CURVE_WRITABLE: &str = "fan_curve_writable";
     pub const FAN_MAPPING_CONFIDENCE: &str = "fan_mapping_confidence";
+    pub const CURVE_ABI_DETECTED: &str = "curve_abi_detected";
+    pub const BACKEND_WRITABLE: &str = "backend_writable";
+    pub const HELPER_READY: &str = "helper_ready";
+    pub const PHYSICAL_VALIDATION_RECORDED: &str = "physical_validation_recorded";
+    pub const CUSTOM_CURVE_AUTHORIZED: &str = "custom_curve_authorized";
+    pub const RECOVERY_AVAILABLE: &str = "recovery_available";
+    pub const WRITE_SUPPORT_STATE: &str = "write_support_state";
+    pub const WRITE_SUPPORT_REASON: &str = "write_support_reason";
+    pub const WRITE_SUPPORT_EXPLANATION: &str = "write_support_explanation";
 }
 
 pub mod fan_state {

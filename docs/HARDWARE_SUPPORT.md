@@ -18,6 +18,70 @@ Implication:
 
 - the repository currently has implementation coverage, not hardware-certification coverage
 - unless a machine record is added, treat that machine or scenario as untested
+- the production custom-fan-curve write allowlist is empty; no laptop is currently authorized for
+  custom curve Apply
+
+### Compatibility evidence matrix
+
+These statuses describe only the evidence linked in this document. A read-only observation or
+automated fixture does not verify a physical write, and no row below is a complete machine
+validation record.
+
+| Area / scope | Status | Evidence and date | Limit |
+| --- | --- | --- | --- |
+| Complete machine validation record | **Blocked** | None committed | No dated run with a named tester and the required startup, UI, service, and feature results exists. |
+| G615JMR identity, fan discovery, and telemetry snapshot | **Read-only only** | [2026-10-06 discovery record](#structured-fan-discovery-record-read-only-no-physical-writes) | Readback and RPM snapshots only; no fan Apply, Auto restore, suspend/resume, or recovery test. |
+| G615JMR provider and battery endpoint observations | **Read-only only** | [2026-10-08 follow-up](#g615jmr-follow-up-observation-2026-10-08-read-only) | `asusd` and `supergfxd` were absent in that session; no provider write was attempted. |
+| G615JMR installed-target and Aura identity | **Read-only only** | [2026-08-21 installed-target audit](#structured-lighting-implementation-record-not-physical-validation) | Identity and packaging path evidence only; no physical RGB effect was observed. |
+| G615JMR custom fan-curve Apply and Auto restoration | **Blocked** | [Fan write policy](#custom-fan-write-support-policy); physical workflow tracked by [#64](https://github.com/UdayaSri0/g-helper-linux/issues/64) | Production write allowlist is empty pending supervised evidence and maintainer review. |
+| G615JMR native Aura physical Apply | **Untested** | [Lighting record](#structured-lighting-implementation-record-not-physical-validation); focused validation tracked by [#63](https://github.com/UdayaSri0/g-helper-linux/issues/63) | Descriptor matching and accepted writes do not establish a visible physical effect. |
+| `asusd` / `supergfxd` missing flows, CPU write permissions, fan-count layouts, tray behavior | **Untested** | [Untested scenario list](#untested-and-not-yet-validated) | Existing implementation and fixture coverage are not machine-session evidence. |
+| Additional ASUS models, Linux distributions, and desktop environments | **Not represented in current test fleet** | No complete machine records committed; the dated G615JMR entries above are limited observations | Do not infer compatibility outside the recorded G615JMR observations. |
+| Manual fan percent, RPM target, and boost | **Unsupported** | [Fan write policy](#custom-fan-write-support-policy) | These controls are intentionally unavailable; no support claim is made. |
+| RGB zones and per-key RGB | **Unsupported** | [Lighting implementation record](#structured-lighting-implementation-record-not-physical-validation) | These controls are intentionally unavailable; no support claim is made. |
+
+`Verified` is reserved for a feature and environment covered by a completed, dated machine record.
+The machine-specific evidence and scenario tables below remain the source for detailed results.
+
+## Custom fan-write support policy
+
+Fan telemetry, readable firmware curves, a structurally recognized ASUS curve ABI, writable kernel
+files, helper availability, physical validation, and current write authorization are separate facts.
+A compatible filename or an accepted sysfs write is not evidence that a curve is mechanically,
+thermally, or recoverably safe on a laptop.
+
+The runtime decision has four states:
+
+- `read_only`: useful telemetry or curve readback is available, but there is no custom write route
+- `unverified`: the expected ABI may be present and writable, but no approved physical-validation
+  record exactly matches the current machine and software environment
+- `unsupported`: the identity, channel mapping, ABI, or backend contradicts the reviewed contract
+- `verified_write`: an approved record exactly matches and all live pre-write checks pass
+
+Only `verified_write` authorizes custom curve Apply. Missing, unreadable, ambiguous, stale, or
+contradictory evidence fails closed. Eligibility is re-evaluated for every Apply; a capability
+observed at startup is not a retained authorization.
+
+### Production support records
+
+Production records are compiled into the reviewed binary and identify the exact system vendor, DMI
+product/model, board vendor and board name, BIOS vendor and exact BIOS version, kernel release and
+build identity, relevant driver identity/compatibility, ASUS WMI hwmon identity, approved CPU/GPU/Mid
+channel labels, eight-point ABI, reset/readback behavior, safe envelope and minimum-duty evidence.
+They also record recovery after interruption/restart, suspend/resume results, test date, tester,
+maintainer review status, and committed physical-evidence references.
+
+A proposed record is not eligible until supervised work under #64, a dated machine record under #65,
+and maintainer review are complete. BIOS, kernel, driver, board, backend, or channel changes require a
+new evidence review or an explicitly evidenced compatibility range; family prefixes and arbitrary
+minimum versions are insufficient. Test-only verified fixtures must never be promoted into the
+production record table. The G615JMR observations below remain read-only evidence and are not a
+production write record.
+
+Read-only RPM, temperatures, raw PWM values, current-curve readback, Import Current, draft editing,
+and local preset import/export do not require a write record. Import Current never activates a
+curve. The narrow Auto/BIOS recovery operation is evaluated separately: it may use only the already
+recognized driver reset endpoint and cannot be repurposed as general write authorization.
 
 ### Structured lighting implementation record (not physical validation)
 
@@ -120,7 +184,7 @@ PolicyKit success or `accepted_no_readback` is not a validation result: a human 
 colour, Breathe pair, Rainbow Cycle, four Rainbow Wave directions, Pulse, and final Static restore as
 `observed`, `not observed`, or `uncertain`. Only a dated committed record may change this table.
 
-## Untested / Not Yet Validated
+## Untested and Not Yet Validated
 
 The scenarios below are the minimum release hardware checks that still need real evidence unless a linked record is added.
 
@@ -252,8 +316,8 @@ The rows below describe what the first release should eventually have evidence f
 | fan count `1` | exactly one `fan_rows` entry is detected | UI shows one row with a friendly label or `Fan 1` fallback | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `2` | exactly two `fan_rows` entries are detected | UI shows exactly two rows in deterministic order | `sensors`, Dashboard screenshot, Diagnostics screenshot |
 | fan count `3+` | three or more `fan_rows` entries are detected | UI expands to all detected rows without assuming a fixed layout | `sensors`, Dashboard screenshot, Diagnostics screenshot |
-| fan curve backend available | exact verified ASUS WMI mapping reports `has_fan_curves: true` | Import Current shows eight raw/percentage pairs without prompting; Apply validates safe points | `fan-caps`, `GetFanCurves`, Fans screenshot |
-| fan restore Auto | exact verified ASUS WMI curve backend | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
+| fan curve backend available | exact recognized ASUS WMI mapping reports `has_fan_curves: true`; `fan_curve_writable` is a separate gate | Import Current shows eight raw/percentage pairs without prompting; Apply remains blocked unless the exact environment has an approved support record | `fan-caps`, `GetFanCurves`, Fans screenshot |
+| fan restore Auto | narrowly mapped ASUS WMI reset endpoint | Restore Auto sends the driver factory/Auto command and firmware control physically resumes | `fans`, before/after readbacks and observation |
 | hybrid CPU topology | physical cores != logical threads | CPU page shows correct physical-core count, logical-thread count, and all logical CPU rows | `caps`, CPU screenshot, CPU Diagnostics copy |
 
 ## Fan-Control Validation Fields

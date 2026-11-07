@@ -1,8 +1,11 @@
-use std::time::Duration;
+use std::{
+    process::{Output, Stdio},
+    time::Duration,
+};
 
 use rog_core::{RogError, RogResult};
-use tokio::process::Command;
 use tokio::time::timeout;
+use tokio::{io::AsyncReadExt, process::Command};
 
 const MIB: u64 = 1024 * 1024;
 const TELEMETRY_FIELDS: &str = "index,uuid,pci.bus_id,name,temperature.gpu,utilization.gpu,memory.used,memory.total,clocks.gr,clocks.mem,power.draw";
@@ -68,18 +71,23 @@ impl NvidiaSmiTelemetryProvider {
         let mut cmd = Command::new("nvidia-smi");
         cmd.args(["--query-gpu=name", "--format=csv,noheader"]);
 
-        let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return NvidiaSmiProbe::NotFound
-            }
-            Ok(Err(error)) => {
-                return NvidiaSmiProbe::Unavailable(format!(
-                    "failed to execute nvidia-smi: {error}"
-                ))
-            }
-            Err(_) => return NvidiaSmiProbe::Unavailable("nvidia-smi timed out".to_string()),
-        };
+        let output =
+            match run_bounded_output(&mut cmd, Duration::from_millis(self.timeout_ms)).await {
+                Ok(output) => output,
+                Err(BoundedOutputError::Command(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    return NvidiaSmiProbe::NotFound
+                }
+                Err(BoundedOutputError::Command(error)) => {
+                    return NvidiaSmiProbe::Unavailable(format!(
+                        "failed to execute nvidia-smi: {error}"
+                    ))
+                }
+                Err(BoundedOutputError::TimedOut) => {
+                    return NvidiaSmiProbe::Unavailable("nvidia-smi timed out".to_string())
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -108,20 +116,25 @@ impl NvidiaSmiTelemetryProvider {
             "--format=csv,noheader,nounits",
         ]);
 
-        let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Ok(Err(error)) => {
-                return Err(RogError::Unexpected(format!(
-                    "failed to execute nvidia-smi: {error}"
-                )))
-            }
-            Err(_) => {
-                return Err(RogError::TransientFailure(
-                    "nvidia-smi timed out".to_string(),
-                ))
-            }
-        };
+        let output =
+            match run_bounded_output(&mut cmd, Duration::from_millis(self.timeout_ms)).await {
+                Ok(output) => output,
+                Err(BoundedOutputError::Command(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    return Ok(None)
+                }
+                Err(BoundedOutputError::Command(error)) => {
+                    return Err(RogError::Unexpected(format!(
+                        "failed to execute nvidia-smi: {error}"
+                    )))
+                }
+                Err(BoundedOutputError::TimedOut) => {
+                    return Err(RogError::TransientFailure(
+                        "nvidia-smi timed out".to_string(),
+                    ))
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -135,6 +148,49 @@ impl NvidiaSmiTelemetryProvider {
         Ok(parse_telemetry_output(&String::from_utf8_lossy(
             &output.stdout,
         )))
+    }
+}
+
+#[derive(Debug)]
+enum BoundedOutputError {
+    Command(std::io::Error),
+    TimedOut,
+}
+
+async fn run_bounded_output(
+    command: &mut Command,
+    duration: Duration,
+) -> Result<Output, BoundedOutputError> {
+    command.kill_on_drop(true);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(BoundedOutputError::Command)?;
+    let mut stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let output = timeout(duration, async {
+        let (status, _, _) = tokio::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut stdout_bytes),
+            stderr.read_to_end(&mut stderr_bytes),
+        )?;
+        Ok::<_, std::io::Error>(Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        })
+    })
+    .await;
+    match output {
+        Ok(result) => result.map_err(BoundedOutputError::Command),
+        Err(_) => {
+            let kill_error = child.start_kill().err();
+            child.wait().await.map_err(BoundedOutputError::Command)?;
+            if let Some(error) = kill_error {
+                return Err(BoundedOutputError::Command(error));
+            }
+            Err(BoundedOutputError::TimedOut)
+        }
     }
 }
 
@@ -245,6 +301,129 @@ fn parse_mib(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    async fn wait_for_pid(pid_file: &std::path::Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                    if let Ok(pid) = pid.trim().parse() {
+                        return pid;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake nvidia-smi did not report its pid")
+    }
+
+    #[tokio::test]
+    async fn timed_out_command_is_reaped() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "rog-helper-nvidia-smi-timeout-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        let mut command = Command::new("sh");
+        command
+            .env("PID_FILE", &pid_file)
+            .args(["-c", "echo $$ > \"$PID_FILE\"; exec sleep 30"]);
+
+        assert!(matches!(
+            run_bounded_output(&mut command, Duration::from_millis(20)).await,
+            Err(BoundedOutputError::TimedOut)
+        ));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(tokio::time::timeout(Duration::from_secs(1), async {
+            while std::path::Path::new(&format!("/proc/{}", pid.trim())).exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn repeated_timeouts_and_command_outcomes_remain_bounded() {
+        for _ in 0..2 {
+            let mut hung = Command::new("sh");
+            hung.args(["-c", "exec sleep 30"]);
+            assert!(matches!(
+                run_bounded_output(&mut hung, Duration::from_millis(20)).await,
+                Err(BoundedOutputError::TimedOut)
+            ));
+        }
+        let mut success = Command::new("sh");
+        success.args(["-c", "printf ok"]);
+        assert_eq!(
+            run_bounded_output(&mut success, Duration::from_secs(1))
+                .await
+                .unwrap()
+                .stdout,
+            b"ok"
+        );
+        let mut missing = Command::new("/definitely/not/nvidia-smi");
+        assert!(
+            matches!(run_bounded_output(&mut missing, Duration::from_secs(1)).await, Err(BoundedOutputError::Command(error)) if error.kind() == std::io::ErrorKind::NotFound)
+        );
+        let mut nonzero = Command::new("sh");
+        nonzero.args(["-c", "exit 7"]);
+        assert_eq!(
+            run_bounded_output(&mut nonzero, Duration::from_secs(1))
+                .await
+                .unwrap()
+                .status
+                .code(),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_the_direct_nvidia_smi_child() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rog-helper-nvidia-smi-cancel-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).unwrap();
+        let pid_file = temp_dir.join("pid");
+        let fake_nvidia_smi = temp_dir.join("nvidia-smi");
+        std::fs::write(
+            &fake_nvidia_smi,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$PID_FILE\"\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_nvidia_smi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let task = tokio::spawn({
+            let fake_nvidia_smi = fake_nvidia_smi.clone();
+            let pid_file = pid_file.clone();
+            async move {
+                let mut command = Command::new(fake_nvidia_smi);
+                command.env("PID_FILE", pid_file);
+                run_bounded_output(&mut command, Duration::from_secs(30)).await
+            }
+        });
+        let pid = wait_for_pid(&pid_file).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(tokio::time::timeout(Duration::from_secs(1), async {
+            while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok());
+        std::fs::remove_dir_all(temp_dir).unwrap();
+    }
 
     #[test]
     fn parses_normal_result() {

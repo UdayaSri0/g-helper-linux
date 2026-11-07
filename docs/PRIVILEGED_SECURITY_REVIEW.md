@@ -90,7 +90,7 @@ name, path, or authorization token supplied as a method argument.
 | `SetCpuFrequencyLimits` | optional MHz minimum/maximum | `cpu.control` | Detected policy frequency attributes |
 | `SetCpuCoreOnline` | logical CPU ID and boolean | `cpu.control` | Detected `cpuN/online` |
 | `SetFanAuto` | empty/all or fixed `asus-wmi:{cpu,gpu,mid}` ID | `fans.control` | Verified ASUS WMI reset ABI |
-| `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Verified ASUS WMI curve ABI |
+| `SetFanCurve` | fixed fan ID and exactly eight `(u8,u8)` points | `fans.control` | Exact approved runtime support record plus ASUS WMI curve ABI; production records are empty |
 | `ResetFansToAuto` | none | `fans.control` | Verified ASUS WMI reset ABI |
 | `RecoverFansIfArmed` | none | `fans.recover`, non-interactive | Auto only for exact IDs in the root-owned marker; active local session only; never prompts |
 | `SetKeyboardBacklightBrightness` | integer level | `lighting.control` | Canonical ASUS WMI keyboard LED |
@@ -145,7 +145,9 @@ No external command is executed by `rog-helper-privileged`.
   non-symlink files, and canonical paths must remain under the CPU sysfs hierarchy.
 - Fan IDs are a fixed three-value semantic set. Curves require eight ordered, monotonic points,
   30–100 °C and 0–100%, including the high-temperature safe floor. Raw PWM is derived internally.
-- Every fan write rechecks the ASUS WMI identity, channel number, endpoint name, regular-file type,
+- Every custom curve request independently rechecks system/DMI/board/BIOS/kernel/driver identity
+  against the integrity-protected support records before authorization and before hardware I/O.
+  Every fan write also rechecks the ASUS WMI identity, channel number, endpoint name, regular-file type,
   canonical parent, and readback. Failure attempts an Auto reset.
 - Keyboard brightness must be `0..=max_brightness`; identity, fixed maximum, canonical parent, and
   regular attribute type are rechecked immediately before the write and readback is required.

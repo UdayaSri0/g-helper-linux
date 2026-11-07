@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation and troubleshooting
+    url: https://github.com/UdayaSri0/g-helper-linux/blob/main/docs/TROUBLESHOOTING.md
+    about: Read the troubleshooting guide and safe diagnostic-report instructions before opening an issue.
+  - name: Report a security vulnerability privately
+    url: https://github.com/UdayaSri0/g-helper-linux/security/advisories/new
+    about: Do not disclose vulnerabilities in public issues; use GitHub's private security advisory route.

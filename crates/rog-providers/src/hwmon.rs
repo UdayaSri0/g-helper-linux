@@ -12,9 +12,16 @@ use rog_core::{
 };
 use tracing::debug;
 
+use crate::fan_write_policy::{
+    evaluate as evaluate_fan_write_policy, FanIdentityPaths, FanWriteContext,
+    VerifiedFanWriteRecord, PRODUCTION_FAN_WRITE_RECORDS,
+};
+
 #[derive(Debug, Clone)]
 pub struct HwmonTelemetryProvider {
     root: PathBuf,
+    identity_paths: FanIdentityPaths,
+    support_records: &'static [VerifiedFanWriteRecord],
     write_lock: Arc<Mutex<()>>,
 }
 
@@ -22,6 +29,8 @@ impl Default for HwmonTelemetryProvider {
     fn default() -> Self {
         Self {
             root: PathBuf::from("/sys/class/hwmon"),
+            identity_paths: FanIdentityPaths::default(),
+            support_records: PRODUCTION_FAN_WRITE_RECORDS,
             write_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -31,6 +40,22 @@ impl HwmonTelemetryProvider {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
+            identity_paths: FanIdentityPaths::default(),
+            support_records: PRODUCTION_FAN_WRITE_RECORDS,
+            write_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_test_policy(
+        root: impl Into<PathBuf>,
+        identity_paths: FanIdentityPaths,
+        support_records: &'static [VerifiedFanWriteRecord],
+    ) -> Self {
+        Self {
+            root: root.into(),
+            identity_paths,
+            support_records,
             write_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -106,7 +131,7 @@ impl HwmonTelemetryProvider {
         for (hwname, hwpath) in &hwmons {
             out.extend(read_fan_infos(hwname, hwpath));
         }
-        enrich_verified_asus_curve_fans(&mut out, &hwmons);
+        self.enrich_recognized_asus_curve_fans(&mut out, &hwmons);
         finalize_fan_info_labels(&mut out);
         Ok(out)
     }
@@ -196,20 +221,66 @@ impl HwmonTelemetryProvider {
     }
 
     pub fn set_fan_curve(&self, fan_id: &str, curve: FanCurve) -> RogResult<()> {
+        self.set_fan_curve_with_hooks(fan_id, curve, || Ok(()), || Ok(()))
+    }
+
+    /// Apply a verified curve after calling `prepare` at the last safe point:
+    /// after the complete snapshot and active-mode rejection, but before the
+    /// first hardware write.
+    pub fn set_fan_curve_with_hooks<F, R>(
+        &self,
+        fan_id: &str,
+        curve: FanCurve,
+        prepare: F,
+        recovered: R,
+    ) -> RogResult<()>
+    where
+        F: FnOnce() -> RogResult<()>,
+        R: FnOnce() -> RogResult<()>,
+    {
         let _guard = self
             .write_lock
             .lock()
             .map_err(|_| RogError::Unexpected("fan write lock is unavailable".to_string()))?;
-        let policy = rog_core::FanCurvePolicy {
-            exact_point_count: Some(ASUS_WMI_CURVE_POINTS),
-            ..Default::default()
-        };
-        curve.validate_safe(policy)?;
         let channels = self.verified_asus_curve_channels()?;
         let channel = select_verified_channels(&channels, Some(fan_id))?
             .into_iter()
             .next()
             .ok_or_else(|| RogError::NotSupported("no verified fan curve channel".to_string()))?;
+        let authorization = self.policy_for_channel(channel);
+        if authorization.state != rog_core::FanWriteSupportState::VerifiedWrite {
+            return Err(RogError::NotSupported(format!(
+                "custom fan-curve Apply is blocked: {} ({})",
+                authorization.explanation, authorization.reason
+            )));
+        }
+        if !authorization.backend_writable {
+            return Err(RogError::PermissionDenied(
+                "the verified fan-curve endpoint requires the typed privileged helper".to_string(),
+            ));
+        }
+        let mut policy = rog_core::FanCurvePolicy::verified_asus_write();
+        policy.duty_min_percent = authorization.minimum_duty_percent.ok_or_else(|| {
+            RogError::NotSupported(
+                "verified fan-write record has no minimum-duty envelope".to_string(),
+            )
+        })?;
+        policy.temp_min_c = authorization.minimum_temperature_c.ok_or_else(|| {
+            RogError::NotSupported(
+                "verified fan-write record has no minimum-temperature envelope".to_string(),
+            )
+        })?;
+        policy.temp_max_c = authorization.maximum_temperature_c.ok_or_else(|| {
+            RogError::NotSupported(
+                "verified fan-write record has no maximum-temperature envelope".to_string(),
+            )
+        })?;
+        policy.terminal_temp_c = authorization.terminal_temperature_c.ok_or_else(|| {
+            RogError::NotSupported(
+                "verified fan-write record has no terminal-temperature envelope".to_string(),
+            )
+        })?;
+        curve.validate_safe(policy)?;
         let domain_matches = matches!(
             (&curve.domain, fan_id),
             (FanDomain::Cpu, "asus-wmi:cpu")
@@ -221,7 +292,7 @@ impl HwmonTelemetryProvider {
                 "fan curve domain does not match the selected fan id".to_string(),
             ));
         }
-        write_asus_curve_transaction(channel, &curve)
+        write_asus_curve_transaction(channel, &curve, prepare, recovered)
     }
 
     /// Read the current curve from an exactly verified ASUS WMI channel.
@@ -264,6 +335,96 @@ impl HwmonTelemetryProvider {
 
     fn verified_asus_curve_channels(&self) -> RogResult<Vec<AsusCurveChannel>> {
         discover_verified_asus_curve_channels(&self.list_hwmon()?)
+    }
+
+    pub fn fan_write_policy(&self, fan_id: &str) -> RogResult<rog_core::FanWritePolicyDecision> {
+        let channels = self.verified_asus_curve_channels()?;
+        let channel = select_verified_channels(&channels, Some(fan_id))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| RogError::NotSupported("no recognized fan curve channel".to_string()))?;
+        Ok(self.policy_for_channel(channel))
+    }
+
+    fn policy_for_channel(&self, channel: &AsusCurveChannel) -> rog_core::FanWritePolicyDecision {
+        evaluate_fan_write_policy(
+            &self.identity_paths,
+            self.support_records,
+            FanWriteContext {
+                fan_id: &channel.fan_id,
+                channel: channel.channel,
+                channel_label: match channel.channel {
+                    1 => "cpu_fan",
+                    2 => "gpu_fan",
+                    3 => "mid_fan",
+                    _ => "",
+                },
+                abi_detected: true,
+                curve_readable: read_asus_curve(channel).is_ok(),
+                backend_writable: channel.direct_write,
+                recovery_available: true,
+            },
+        )
+    }
+
+    fn enrich_recognized_asus_curve_fans(
+        &self,
+        fans: &mut [FanInfo],
+        hwmons: &[(String, PathBuf)],
+    ) {
+        let Ok(channels) = discover_verified_asus_curve_channels(hwmons) else {
+            return;
+        };
+        for channel in channels {
+            let original_id = format!(
+                "{}:fan{}",
+                stable_hwmon_id(&channel.rpm_path),
+                channel.channel
+            );
+            let Some(fan) = fans.iter_mut().find(|fan| {
+                fan.id == original_id
+                    && fan.mapping_confidence == FanMappingConfidence::HardwareLabel
+            }) else {
+                continue;
+            };
+            let policy = self.policy_for_channel(&channel);
+            fan.id = channel.fan_id.clone();
+            fan.controllable = policy.custom_curve_authorized;
+            fan.supports_auto = true;
+            // Legacy `supports_curve` describes the recognized/readable ABI.
+            // Apply authorization is carried separately and remains fail-closed.
+            fan.supports_curve = true;
+            match read_asus_curve(&channel) {
+                Ok(readback) => fan.curve_readback = Some(readback),
+                Err(error) => fan
+                    .warnings
+                    .push(format!("Recognized curve readback failed: {error}")),
+            }
+            fan.rollback_available = true;
+            fan.backend = "asus-wmi-curve".to_string();
+            fan.pwm_endpoint_verified = true;
+            fan.direct_write = channel.direct_write;
+            fan.access_state = if policy.custom_curve_authorized {
+                if channel.direct_write {
+                    "direct".to_string()
+                } else {
+                    "authorization_required".to_string()
+                }
+            } else {
+                "read_only".to_string()
+            };
+            fan.authorization = if policy.custom_curve_authorized {
+                "not_checked".to_string()
+            } else {
+                "blocked_by_hardware_policy".to_string()
+            };
+            fan.notes.push(policy.explanation.clone());
+            fan.fan_write_policy = policy;
+            fan.endpoints.push(format!(
+                "recognized_mapping:semantic_id={},channel={},rpm_hwmon=asus,curve_hwmon=asus_custom_fan_curve,canonical_device=asus-nb-wmi,same_device=true",
+                channel.fan_id, channel.channel
+            ));
+        }
     }
 }
 
@@ -585,6 +746,7 @@ fn read_fan_infos(_hwname: &str, hwpath: &Path) -> Vec<FanInfo> {
             supports_manual_rpm_target,
             supports_curve,
             supports_auto,
+            fan_write_policy: rog_core::FanWritePolicyDecision::default(),
             curve_readback: None,
             rollback_available: false,
             backend: if supports_manual_percent || supports_manual_rpm_target {
@@ -610,56 +772,6 @@ struct AsusCurveChannel {
     rpm_path: PathBuf,
     curve_path: PathBuf,
     direct_write: bool,
-}
-
-fn enrich_verified_asus_curve_fans(fans: &mut [FanInfo], hwmons: &[(String, PathBuf)]) {
-    let Ok(channels) = discover_verified_asus_curve_channels(hwmons) else {
-        return;
-    };
-    for channel in channels {
-        let original_id = format!(
-            "{}:fan{}",
-            stable_hwmon_id(&channel.rpm_path),
-            channel.channel
-        );
-        let Some(fan) = fans.iter_mut().find(|fan| {
-            fan.id == original_id && fan.mapping_confidence == FanMappingConfidence::HardwareLabel
-        }) else {
-            continue;
-        };
-        fan.id = channel.fan_id.clone();
-        fan.controllable = channel.direct_write;
-        fan.supports_auto = true;
-        fan.supports_curve = true;
-        match read_asus_curve(&channel) {
-            Ok(readback) => fan.curve_readback = Some(readback),
-            Err(error) => fan
-                .warnings
-                .push(format!("Verified curve readback failed: {error}")),
-        }
-        fan.rollback_available = true;
-        fan.backend = "asus-wmi-curve".to_string();
-        fan.pwm_endpoint_verified = true;
-        fan.direct_write = channel.direct_write;
-        fan.access_state = if channel.direct_write {
-            "direct".to_string()
-        } else {
-            "authorization_required".to_string()
-        };
-        fan.authorization = if channel.direct_write {
-            "not_required".to_string()
-        } else {
-            "not_checked".to_string()
-        };
-        fan.notes.push(
-            "ASUS WMI curve channel verified by device identity, hardware label, exact point layout, and Auto reset ABI."
-                .to_string(),
-        );
-        fan.endpoints.push(format!(
-            "verified_mapping:semantic_id={},channel={},rpm_hwmon=asus,curve_hwmon=asus_custom_fan_curve,canonical_device=asus-nb-wmi,same_device=true",
-            channel.fan_id, channel.channel
-        ));
-    }
 }
 
 fn discover_verified_asus_curve_channels(
@@ -911,16 +1023,39 @@ fn select_verified_channels<'a>(
     }
 }
 
-fn write_asus_curve_transaction(channel: &AsusCurveChannel, curve: &FanCurve) -> RogResult<()> {
+fn write_asus_curve_transaction<F, R>(
+    channel: &AsusCurveChannel,
+    curve: &FanCurve,
+    prepare: F,
+    recovered: R,
+) -> RogResult<()>
+where
+    F: FnOnce() -> RogResult<()>,
+    R: FnOnce() -> RogResult<()>,
+{
     // Snapshot all eight raw values before the first write. A read failure
     // aborts the request instead of silently falling back to lossy percents.
     let current = read_asus_curve(channel)?;
+    if current.enable_mode == 1 {
+        return Err(RogError::TemporarilyUnavailable(
+            "re-applying a curve while custom mode is active is blocked until an atomic transition is verified"
+                .to_string(),
+        ));
+    }
+    prepare()?;
     write_asus_curve_transaction_with(
         channel,
         curve,
         Some(&current),
         write_and_verify,
-        reset_asus_channel_to_auto,
+        |channel| {
+            reset_asus_channel_to_auto(channel)?;
+            recovered().map_err(|error| {
+                RogError::TransientFailure(format!(
+                    "Auto recovery succeeded, but recovery marker cleanup failed and the marker was retained ({error})"
+                ))
+            })
+        },
     )
 }
 
@@ -929,11 +1064,11 @@ fn write_asus_curve_transaction_with<W, R>(
     curve: &FanCurve,
     current: Option<&FanCurveReadback>,
     mut write_and_readback: W,
-    mut restore_auto: R,
+    restore_auto: R,
 ) -> RogResult<()>
 where
     W: FnMut(&Path, u32) -> RogResult<()>,
-    R: FnMut(&AsusCurveChannel) -> RogResult<()>,
+    R: FnOnce(&AsusCurveChannel) -> RogResult<()>,
 {
     let result = (|| {
         for (offset, point) in curve.points.iter().enumerate() {
@@ -967,13 +1102,36 @@ where
     })();
     if let Err(error) = result {
         return match restore_auto(channel) {
-            Ok(()) => Err(error),
+            Ok(()) => Err(with_error_context(
+                error,
+                "Auto recovery succeeded after the failed transaction; staged point values may remain but custom mode is not active",
+            )),
+            Err(RogError::TransientFailure(cleanup))
+                if cleanup.starts_with("Auto recovery succeeded, but recovery marker cleanup failed") =>
+            {
+                Err(RogError::Unexpected(format!(
+                    "fan curve write failed ({error}); {cleanup}"
+                )))
+            }
             Err(rollback) => Err(RogError::Unexpected(format!(
-                "fan curve write failed ({error}); Auto rollback also failed ({rollback})"
+                "fan curve write failed ({error}); Auto rollback also failed and hardware state may be partial or unknown ({rollback})"
             ))),
         };
     }
     Ok(())
+}
+
+fn with_error_context(error: RogError, context: &str) -> RogError {
+    let message = |value: String| format!("{value}; {context}");
+    match error {
+        RogError::DependencyMissing(value) => RogError::DependencyMissing(message(value)),
+        RogError::NotSupported(value) => RogError::NotSupported(message(value)),
+        RogError::PermissionDenied(value) => RogError::PermissionDenied(message(value)),
+        RogError::InvalidInput(value) => RogError::InvalidInput(message(value)),
+        RogError::TransientFailure(value) => RogError::TransientFailure(message(value)),
+        RogError::TemporarilyUnavailable(value) => RogError::TemporarilyUnavailable(message(value)),
+        RogError::Unexpected(value) => RogError::Unexpected(message(value)),
+    }
 }
 
 fn reset_asus_channel_to_auto(channel: &AsusCurveChannel) -> RogResult<()> {
@@ -1376,7 +1534,7 @@ mod tests {
         fs::write(hwmon0.join("fan1_input"), "2400\n").unwrap();
         fs::write(hwmon0.join("fan1_label"), "cpu_fan\n").unwrap();
 
-        let provider = HwmonTelemetryProvider::new(root.clone());
+        let provider = verified_test_provider(&root);
         let fans = provider.list_fans().unwrap();
 
         assert_eq!(fans.len(), 1);
@@ -1563,6 +1721,114 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn verified_test_provider(root: &Path) -> HwmonTelemetryProvider {
+        let identity = root.join("identity");
+        let dmi = identity.join("dmi");
+        let driver = identity.join("asus_nb_wmi");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::create_dir_all(&driver).unwrap();
+        for (name, value) in [
+            ("sys_vendor", "ASUSTeK COMPUTER INC."),
+            ("product_name", "TEST-MODEL"),
+            ("product_version", "1.0"),
+            ("board_vendor", "ASUSTeK COMPUTER INC."),
+            ("board_name", "TEST-BOARD"),
+            ("bios_vendor", "American Megatrends International, LLC."),
+            ("bios_version", "TEST.100"),
+        ] {
+            fs::write(dmi.join(name), value).unwrap();
+        }
+        fs::write(identity.join("osrelease"), "6.99.0-test").unwrap();
+        fs::write(identity.join("version"), "Linux test build").unwrap();
+        fs::write(driver.join("srcversion"), "TESTDRIVER").unwrap();
+        HwmonTelemetryProvider::new_with_test_policy(
+            root,
+            FanIdentityPaths {
+                dmi,
+                kernel_release: identity.join("osrelease"),
+                kernel_build: identity.join("version"),
+                driver,
+            },
+            crate::fan_write_policy::TEST_FAN_WRITE_RECORDS,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_policy_denies_before_prepare_or_curve_write() {
+        let (root, curve_path) = verified_asus_fixture("production-policy-deny");
+        let provider = HwmonTelemetryProvider::new(root.clone());
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read(&path).unwrap()))
+            .collect::<Vec<_>>();
+        let mut prepared = false;
+        let requested = FanCurve {
+            domain: FanDomain::Cpu,
+            points: [35, 45, 55, 65, 75, 85, 90, 95]
+                .into_iter()
+                .zip([20, 30, 40, 50, 60, 70, 90, 100])
+                .map(|(temp_c, duty_percent)| FanPoint {
+                    temp_c,
+                    duty_percent,
+                })
+                .collect(),
+        };
+        let error = provider
+            .set_fan_curve_with_hooks(
+                "asus-wmi:cpu",
+                requested,
+                || {
+                    prepared = true;
+                    Ok(())
+                },
+                || panic!("policy denial must not invoke recovery bookkeeping"),
+            )
+            .expect_err("empty production allowlist must deny Apply");
+        assert!(
+            !provider
+                .fan_write_policy("asus-wmi:cpu")
+                .unwrap()
+                .custom_curve_authorized
+        );
+        assert!(!error.to_string().is_empty());
+        assert!(!prepared);
+        for (path, value) in before {
+            assert_eq!(fs::read(path).unwrap(), value);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_identity_change_after_discovery_denies_apply() {
+        let (root, curve_path) = verified_asus_fixture("identity-change");
+        let provider = verified_test_provider(&root);
+        assert!(
+            provider
+                .fan_write_policy("asus-wmi:cpu")
+                .unwrap()
+                .custom_curve_authorized
+        );
+        fs::write(root.join("identity/dmi/bios_version"), "TEST.101").unwrap();
+        let before = fs::read(curve_path.join("pwm1_enable")).unwrap();
+        let requested = FanCurve {
+            domain: FanDomain::Cpu,
+            points: [35, 45, 55, 65, 75, 85, 90, 95]
+                .into_iter()
+                .zip([20, 30, 40, 50, 60, 70, 90, 100])
+                .map(|(temp_c, duty_percent)| FanPoint {
+                    temp_c,
+                    duty_percent,
+                })
+                .collect(),
+        };
+        assert!(provider.set_fan_curve("asus-wmi:cpu", requested).is_err());
+        assert_eq!(fs::read(curve_path.join("pwm1_enable")).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn verified_asus_mapping_exposes_only_curve_and_auto_control() {
         let (root, _) = verified_asus_fixture("verified");
@@ -1573,6 +1839,12 @@ mod tests {
         assert!(fans[0].pwm_endpoint_verified);
         assert!(fans[0].supports_curve);
         assert!(fans[0].supports_auto);
+        assert_eq!(
+            fans[0].fan_write_policy.state,
+            rog_core::FanWriteSupportState::Unverified
+        );
+        assert!(!fans[0].fan_write_policy.custom_curve_authorized);
+        assert!(fans[0].curve_readback.is_some());
         assert!(!fans[0].supports_manual_percent);
         assert!(!fans[0].supports_manual_rpm_target);
         let readback = fans[0].curve_readback.as_ref().unwrap();
@@ -1629,20 +1901,128 @@ mod tests {
             domain: FanDomain::Cpu,
             points: (0..ASUS_WMI_CURVE_POINTS)
                 .map(|point| FanPoint {
-                    temp_c: 35 + point as u8 * 5,
-                    duty_percent: 20 + point as u8 * 10,
+                    temp_c: [35, 45, 55, 65, 75, 85, 90, 95][point],
+                    duty_percent: [20, 30, 40, 50, 60, 70, 90, 100][point],
                 })
                 .collect(),
         };
 
-        let error = HwmonTelemetryProvider::new(root.clone())
+        let error = verified_test_provider(&root)
             .set_fan_curve("asus-wmi:cpu", requested)
             .expect_err("an incomplete raw snapshot must stop the write");
-        assert!(error.to_string().contains("readback is unavailable"));
+        assert!(error.to_string().contains("PWM readback is unavailable"));
         for (path, contents) in before {
             assert_eq!(fs::read(path).unwrap(), contents);
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_or_unexpected_enable_mode_never_prepares_or_writes() {
+        for (name, mode) in [("missing-mode", None), ("unexpected-mode", Some("9\n"))] {
+            let (root, curve_path) = verified_asus_fixture(name);
+            let enable = curve_path.join("pwm1_enable");
+            if let Some(mode) = mode {
+                fs::write(&enable, mode).unwrap();
+            } else {
+                fs::remove_file(&enable).unwrap();
+            }
+            let before = fs::read_dir(&curve_path)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_type().unwrap().is_file())
+                .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
+                .collect::<Vec<_>>();
+            let requested = FanCurve {
+                domain: FanDomain::Cpu,
+                points: vec![
+                    (35, 20),
+                    (45, 30),
+                    (55, 40),
+                    (65, 50),
+                    (75, 60),
+                    (85, 70),
+                    (90, 90),
+                    (95, 100),
+                ]
+                .into_iter()
+                .map(|(temp_c, duty_percent)| FanPoint {
+                    temp_c,
+                    duty_percent,
+                })
+                .collect(),
+            };
+            let mut prepared = false;
+            let error = HwmonTelemetryProvider::new(root.clone())
+                .set_fan_curve_with_hooks(
+                    "asus-wmi:cpu",
+                    requested,
+                    || {
+                        prepared = true;
+                        Ok(())
+                    },
+                    || panic!("preflight failure must not run recovery bookkeeping"),
+                )
+                .unwrap_err();
+            assert!(!prepared);
+            assert!(matches!(
+                error,
+                RogError::NotSupported(_) | RogError::TemporarilyUnavailable(_)
+            ));
+            for (path, contents) in before {
+                assert_eq!(fs::read(path).unwrap(), contents);
+            }
+            if mode.is_none() {
+                assert!(
+                    !enable.exists(),
+                    "a missing enable endpoint must not be created"
+                );
+            }
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_marker_prepare_failure_aborts_before_endpoint_writes() {
+        let (root, curve_path) = verified_asus_fixture("prepare-failure");
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read(&path).unwrap()))
+            .collect::<Vec<_>>();
+        let requested = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
+            ]
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
+            .collect(),
+        };
+        let error = verified_test_provider(&root)
+            .set_fan_curve_with_hooks(
+                "asus-wmi:cpu",
+                requested,
+                || Err(RogError::Unexpected("injected marker failure".to_string())),
+                || panic!("prepare failure must not run recovery bookkeeping"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("marker failure"));
+        for (path, contents) in before {
+            assert_eq!(fs::read(path).unwrap(), contents);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1700,13 +2080,13 @@ mod tests {
     #[test]
     fn verified_curve_write_converts_percent_and_can_reset_auto() {
         let (root, curve_path) = verified_asus_fixture("write-curve");
-        let provider = HwmonTelemetryProvider::new(root.clone());
+        let provider = verified_test_provider(&root);
         let curve = FanCurve {
             domain: FanDomain::Cpu,
             points: (0..8)
                 .map(|point| FanPoint {
-                    temp_c: 40 + point * 5,
-                    duty_percent: 20 + point * 10,
+                    temp_c: [35, 45, 55, 65, 75, 85, 90, 95][point as usize],
+                    duty_percent: [20, 30, 40, 50, 60, 70, 90, 100][point as usize],
                 })
                 .collect(),
         };
@@ -1730,6 +2110,75 @@ mod tests {
                 .trim(),
             "3"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_custom_curve_reapply_is_blocked_before_any_write() {
+        let (root, curve_path) = verified_asus_fixture("active-reapply");
+        fs::write(curve_path.join("pwm1_enable"), "1\n").unwrap();
+        let curve = FanCurve {
+            domain: FanDomain::Cpu,
+            points: vec![
+                (35, 20),
+                (45, 30),
+                (55, 40),
+                (65, 50),
+                (75, 60),
+                (85, 70),
+                (90, 90),
+                (95, 100),
+            ]
+            .into_iter()
+            .map(|(temp_c, duty_percent)| FanPoint {
+                temp_c,
+                duty_percent,
+            })
+            .collect(),
+        };
+        for (offset, point) in curve.points.iter().enumerate() {
+            let index = offset + 1;
+            fs::write(
+                curve_path.join(format!("pwm1_auto_point{index}_temp")),
+                format!("{}\n", point.temp_c),
+            )
+            .unwrap();
+            fs::write(
+                curve_path.join(format!("pwm1_auto_point{index}_pwm")),
+                format!("{}\n", (u32::from(point.duty_percent) * 255 + 50) / 100),
+            )
+            .unwrap();
+        }
+        let before = asus_channel_paths(&curve_path, 1)
+            .into_iter()
+            .map(|path| (path.clone(), fs::read_to_string(path).unwrap()))
+            .collect::<Vec<_>>();
+        let provider = verified_test_provider(&root);
+        let identical = read_asus_curve(&provider.verified_asus_curve_channels().unwrap()[0])
+            .unwrap()
+            .curve;
+        let mut replacement = curve.clone();
+        replacement.points[0].duty_percent += 1;
+        for requested in [replacement, identical] {
+            let mut prepared = false;
+            let error = provider
+                .set_fan_curve_with_hooks(
+                    "asus-wmi:cpu",
+                    requested,
+                    || {
+                        prepared = true;
+                        Ok(())
+                    },
+                    || panic!("active rejection must not run recovery bookkeeping"),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("re-applying"));
+            assert!(!prepared, "active-mode rejection must not arm recovery");
+            for (path, contents) in &before {
+                assert_eq!(fs::read_to_string(path).unwrap(), *contents);
+            }
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1803,7 +2252,7 @@ mod tests {
     }
 
     #[test]
-    fn readback_mismatch_or_partial_write_attempts_auto_rollback() {
+    fn every_curve_write_failure_stops_and_attempts_auto_rollback() {
         let channel = AsusCurveChannel {
             fan_id: "asus-wmi:cpu".to_string(),
             channel: 1,
@@ -1820,31 +2269,44 @@ mod tests {
                 })
                 .collect(),
         };
-        let mut writes = 0;
-        let mut rollbacks = 0;
-        let error = write_asus_curve_transaction_with(
-            &channel,
-            &curve,
-            None,
-            |_, _| {
-                writes += 1;
-                if writes == 5 {
-                    Err(RogError::Unexpected(
-                        "injected readback mismatch".to_string(),
-                    ))
-                } else {
+        for fail_at in 1..=17 {
+            let mut writes = 0;
+            let mut rollbacks = 0;
+            let mut attempted = Vec::new();
+            let error = write_asus_curve_transaction_with(
+                &channel,
+                &curve,
+                None,
+                |path, _| {
+                    writes += 1;
+                    attempted.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                    if writes == fail_at {
+                        Err(RogError::Unexpected(format!(
+                            "injected failure at stage {fail_at}"
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_| {
+                    rollbacks += 1;
                     Ok(())
-                }
-            },
-            |_| {
-                rollbacks += 1;
-                Ok(())
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("readback mismatch"));
-        assert_eq!(writes, 5);
-        assert_eq!(rollbacks, 1);
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(&format!("stage {fail_at}")));
+            assert!(error.to_string().contains("Auto recovery succeeded"));
+            assert_eq!(writes, fail_at);
+            assert_eq!(rollbacks, 1);
+            let expected = if fail_at == 17 {
+                "pwm1_enable".to_string()
+            } else {
+                let point = (fail_at + 1) / 2;
+                let suffix = if fail_at % 2 == 1 { "temp" } else { "pwm" };
+                format!("pwm1_auto_point{point}_{suffix}")
+            };
+            assert_eq!(attempted.last(), Some(&expected));
+        }
 
         let error = write_asus_curve_transaction_with(
             &channel,
@@ -1860,6 +2322,24 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("Auto rollback also failed"));
         assert!(error.to_string().contains("rollback failure"));
+        assert!(error.to_string().contains("partial or unknown"));
+
+        let error = write_asus_curve_transaction_with(
+            &channel,
+            &curve,
+            None,
+            |_, _| Err(RogError::Unexpected("injected write failure".to_string())),
+            |_| {
+                Err(RogError::TransientFailure(
+                    "Auto recovery succeeded, but recovery marker cleanup failed and the marker was retained (injected cleanup failure)"
+                        .to_string(),
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Auto recovery succeeded"));
+        assert!(error.to_string().contains("marker cleanup failed"));
+        assert!(!error.to_string().contains("partial or unknown"));
     }
 
     #[test]
@@ -1938,7 +2418,7 @@ mod tests {
     #[test]
     fn curve_write_rejects_wrong_point_count_and_unknown_id() {
         let (root, _) = verified_asus_fixture("invalid-curve");
-        let provider = HwmonTelemetryProvider::new(root.clone());
+        let provider = verified_test_provider(&root);
         let curve = FanCurve {
             domain: FanDomain::Cpu,
             points: vec![FanPoint {
