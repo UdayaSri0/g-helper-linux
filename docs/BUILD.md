@@ -554,3 +554,8 @@ The privileged service's systemd hardening decisions and required sysfs exceptio
 in [PRIVILEGED_SECURITY_REVIEW.md](PRIVILEGED_SECURITY_REVIEW.md). Run
 `python3 packaging/scripts/check-release-metadata.py` to enforce the expected PolicyKit action set
 and hardening baseline.
+
+
+## Guided first-run setup
+
+For first-run review and native-package repair guidance, see [Smart Setup](SMART_SETUP.md). Installation actions in the assistant currently require manual native package-manager review.

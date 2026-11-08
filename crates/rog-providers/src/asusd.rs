@@ -6,6 +6,7 @@ use zbus::fdo::DBusProxy;
 use zbus::zvariant::OwnedValue;
 use zbus::Proxy;
 
+use crate::dbus::system_introspect;
 use crate::traits::{BatteryProvider, ProfileProvider};
 
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +60,11 @@ impl AsusdPlatformProvider {
         )
         .await
         .map_err(|error| map_dbus_error("build asusd platform proxy", error))?;
+        let provider = self.clone();
         Ok(Box::pin(async move {
+            provider
+                .validate_write_contract("PlatformProfile", "u")
+                .await?;
             proxy
                 .set_property("PlatformProfile", wire)
                 .await
@@ -80,7 +85,11 @@ impl AsusdPlatformProvider {
         )
         .await
         .map_err(|error| map_dbus_error("build asusd platform proxy", error))?;
+        let provider = self.clone();
         Ok(Box::pin(async move {
+            provider
+                .validate_write_contract("ChargeControlEndThreshold", "y")
+                .await?;
             proxy
                 .set_property("ChargeControlEndThreshold", limit.0)
                 .await
@@ -145,13 +154,24 @@ impl AsusdPlatformProvider {
     }
 
     pub async fn probe_caps(&self) -> RogResult<AsusdCaps> {
-        let has_profiles = match self.get_profile().await {
+        let has_profiles = match async {
+            self.validate_write_contract("PlatformProfile", "u").await?;
+            self.get_profile().await
+        }
+        .await
+        {
             Ok(_) => true,
             Err(RogError::NotSupported(_)) => false,
             Err(e) => return Err(e),
         };
 
-        let has_charge_limit = match self.get_limit().await {
+        let has_charge_limit = match async {
+            self.validate_write_contract("ChargeControlEndThreshold", "y")
+                .await?;
+            self.get_limit().await
+        }
+        .await
+        {
             Ok(_) => true,
             Err(RogError::NotSupported(_)) => false,
             Err(e) => return Err(e),
@@ -159,11 +179,16 @@ impl AsusdPlatformProvider {
 
         let profile_choices = self.read_profile_choices().await.unwrap_or_default();
 
-        Ok(AsusdCaps {
+        validate_caps(AsusdCaps {
             has_profiles,
             has_charge_limit,
             profile_choices,
         })
+    }
+
+    async fn validate_write_contract(&self, property: &str, signature: &str) -> RogResult<()> {
+        let xml = system_introspect(self.endpoint.service, self.endpoint.path, 1500).await?;
+        validate_property_contract(&xml, self.endpoint.interface, property, signature)
     }
 
     async fn proxy(&self) -> RogResult<Proxy<'_>> {
@@ -237,13 +262,7 @@ impl ProfileProvider for AsusdPlatformProvider {
     }
 
     async fn set_profile(&self, profile: PerformanceProfile) -> RogResult<()> {
-        let proxy = self.proxy().await?;
-        let wire = to_asusd_profile(profile)?;
-        proxy
-            .set_property("PlatformProfile", wire)
-            .await
-            .map_err(|e| map_dbus_fdo_error("set PlatformProfile", e))?;
-        Ok(())
+        self.prepare_profile_write(profile).await?.await
     }
 }
 
@@ -265,15 +284,64 @@ impl BatteryProvider for AsusdPlatformProvider {
     }
 
     async fn set_limit(&self, limit: BatteryLimitPercent) -> RogResult<()> {
-        limit.validate_control()?;
-
-        let proxy = self.proxy().await?;
-        proxy
-            .set_property("ChargeControlEndThreshold", limit.0)
-            .await
-            .map_err(|e| map_dbus_fdo_error("set ChargeControlEndThreshold", e))?;
-        Ok(())
+        self.prepare_battery_limit_write(limit).await?.await
     }
+}
+
+fn validate_caps(caps: AsusdCaps) -> RogResult<AsusdCaps> {
+    if !caps.has_profiles && !caps.has_charge_limit {
+        return Err(RogError::NotSupported(
+            "asusd API incompatible: no supported profile or battery write contract".to_string(),
+        ));
+    }
+    Ok(caps)
+}
+
+fn validate_property_contract(
+    xml: &str,
+    interface: &str,
+    property: &str,
+    signature: &str,
+) -> RogResult<()> {
+    let incompatible = || {
+        RogError::NotSupported(format!(
+            "asusd API incompatible: {interface}.{property} requires {signature} readwrite"
+        ))
+    };
+    if xml.len() > 256 * 1024 {
+        return Err(incompatible());
+    }
+    // D-Bus introspection normally includes a DOCTYPE; roxmltree never fetches it.
+    let document = roxmltree::Document::parse_with_options(
+        xml,
+        roxmltree::ParsingOptions {
+            allow_dtd: true,
+            nodes_limit: 16_384,
+        },
+    )
+    .map_err(|_| incompatible())?;
+    let root = document.root_element();
+    if root.tag_name().name() != "node" {
+        return Err(incompatible());
+    }
+    let interfaces: Vec<_> = root
+        .children()
+        .filter(|node| node.has_tag_name("interface") && node.attribute("name") == Some(interface))
+        .collect();
+    if interfaces.len() != 1 {
+        return Err(incompatible());
+    }
+    let properties: Vec<_> = interfaces[0]
+        .children()
+        .filter(|node| node.has_tag_name("property") && node.attribute("name") == Some(property))
+        .collect();
+    if properties.len() != 1
+        || properties[0].attribute("type") != Some(signature)
+        || properties[0].attribute("access") != Some("readwrite")
+    {
+        return Err(incompatible());
+    }
+    Ok(())
 }
 
 fn parse_profile_from_value(v: &OwnedValue) -> Option<PerformanceProfile> {
@@ -386,4 +454,148 @@ fn classify_dbus_error(ctx: &str, msg: &str) -> RogError {
         return RogError::DependencyMissing(format!("{ctx}: {msg}"));
     }
     RogError::Unexpected(format!("{ctx}: {msg}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contract(interface: &str, signature: &str, access: &str) -> String {
+        format!(
+            r#"<node><interface name="{interface}">
+                <property name="PlatformProfile" type="{signature}" access="{access}"/>
+                <property name="ChargeControlEndThreshold" type="y" access="readwrite"/>
+            </interface></node>"#
+        )
+    }
+
+    #[test]
+    fn incompatible_caps_never_report_a_ready_platform() {
+        assert!(matches!(
+            validate_caps(AsusdCaps::default()),
+            Err(RogError::NotSupported(_))
+        ));
+        for (has_profiles, has_charge_limit) in [(true, false), (false, true), (true, true)] {
+            assert!(validate_caps(AsusdCaps {
+                has_profiles,
+                has_charge_limit,
+                profile_choices: vec![]
+            })
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn supported_endpoints_keep_profile_and_battery_write_contracts() {
+        for endpoint in ASUSD_ENDPOINTS {
+            let xml = contract(endpoint.interface, "u", "readwrite");
+            assert!(
+                validate_property_contract(&xml, endpoint.interface, "PlatformProfile", "u")
+                    .is_ok()
+            );
+            assert!(validate_property_contract(
+                &xml,
+                endpoint.interface,
+                "ChargeControlEndThreshold",
+                "y"
+            )
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn incompatible_types_and_access_never_authorize_writes() {
+        for (signature, access) in [
+            ("s", "readwrite"),
+            ("y", "readwrite"),
+            ("u", "read"),
+            ("u", "write"),
+            ("u", "readwritejunk"),
+            ("", "readwrite"),
+        ] {
+            let xml = contract(ASUSD_ENDPOINTS[0].interface, signature, access);
+            assert!(matches!(
+                validate_property_contract(
+                    &xml,
+                    ASUSD_ENDPOINTS[0].interface,
+                    "PlatformProfile",
+                    "u"
+                ),
+                Err(RogError::NotSupported(_))
+            ));
+        }
+        let xml = contract(ASUSD_ENDPOINTS[0].interface, "u", "readwrite");
+        assert!(validate_property_contract(
+            &xml,
+            ASUSD_ENDPOINTS[0].interface,
+            "ChargeControlEndThreshold",
+            "u"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn malformed_missing_and_ambiguous_interfaces_are_incompatible() {
+        let interface = ASUSD_ENDPOINTS[0].interface;
+        let valid = contract(interface, "u", "readwrite");
+        for xml in [
+            String::new(),
+            valid.replace("</node>", ""),
+            valid.replace("type=\"u\"", "type=\"u\" type=\"s\""),
+            valid.replace(interface, "unexpected.Platform"),
+            valid.replace(
+                "</interface>",
+                r#"<property name="PlatformProfile" type="u" access="readwrite"/></interface>"#,
+            ),
+            format!(
+                "<node>{}{}</node>",
+                valid
+                    .trim_start_matches("<node>")
+                    .trim_end_matches("</node>"),
+                valid
+                    .trim_start_matches("<node>")
+                    .trim_end_matches("</node>")
+            ),
+            format!(
+                "<node><node>{}</node></node>",
+                valid
+                    .trim_start_matches("<node>")
+                    .trim_end_matches("</node>")
+            ),
+        ] {
+            assert!(
+                validate_property_contract(&xml, interface, "PlatformProfile", "u").is_err(),
+                "{xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn xml_attribute_order_and_quotes_do_not_change_the_contract() {
+        let xml = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+            "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+            <node><interface name='xyz.ljones.Platform'>
+            <property access='readwrite' type = 'u' name = 'PlatformProfile' />
+        </interface></node>"#;
+        assert!(validate_property_contract(
+            xml,
+            ASUSD_ENDPOINTS[0].interface,
+            "PlatformProfile",
+            "u"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn existing_profile_encodings_and_input_validation_remain_supported() {
+        assert_eq!(to_asusd_profile(PerformanceProfile::Balanced).unwrap(), 0);
+        assert_eq!(to_asusd_profile(PerformanceProfile::Turbo).unwrap(), 1);
+        assert_eq!(to_asusd_profile(PerformanceProfile::Silent).unwrap(), 2);
+        assert_eq!(parse_profile_from_u32(3), Some(PerformanceProfile::Silent));
+        assert_eq!(
+            parse_profile_from_text("performance"),
+            Some(PerformanceProfile::Turbo)
+        );
+        assert!(to_asusd_profile(PerformanceProfile::Custom("unknown".into())).is_err());
+    }
 }

@@ -376,3 +376,8 @@ When documenting a new feature, always note:
 - whether it depends on system DBus or sysfs
 - whether it can degrade to read-only
 - whether the daemon or UI should surface a warning when it is unavailable
+
+
+## Guided first-run setup
+
+The GUI and session daemon refuse root startup. The Setup Assistant performs read-only discovery and presents manual package-manager guidance. Hardware authorization and helper confinement remain separate. See [Smart Setup](SMART_SETUP.md).

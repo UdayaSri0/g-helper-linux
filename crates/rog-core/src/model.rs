@@ -2394,6 +2394,7 @@ pub enum DependencyState {
     NotAvailable,
     Inactive,
     Unreachable,
+    Incompatible,
     NotRelevant,
 }
 
@@ -2406,6 +2407,7 @@ impl DependencyState {
             Self::NotAvailable => "not_available",
             Self::Inactive => "inactive",
             Self::Unreachable => "unreachable",
+            Self::Incompatible => "incompatible",
             Self::NotRelevant => "not_relevant",
         }
     }
@@ -2417,6 +2419,7 @@ impl DependencyState {
             "not_available" => Self::NotAvailable,
             "inactive" => Self::Inactive,
             "unreachable" => Self::Unreachable,
+            "incompatible" => Self::Incompatible,
             "not_relevant" => Self::NotRelevant,
             _ => Self::Unknown,
         }
@@ -2434,6 +2437,7 @@ impl DependencyState {
             Self::NotAvailable => "Not available",
             Self::Inactive => "Inactive",
             Self::Unreachable => "Unreachable",
+            Self::Incompatible => "Incompatible API",
             Self::NotRelevant => "Not needed",
         }
     }
@@ -2445,6 +2449,7 @@ impl DependencyState {
             Self::NotAvailable => ContractStatus::MissingDependency,
             Self::Inactive => ContractStatus::Unavailable,
             Self::Unreachable => ContractStatus::TransientFailure,
+            Self::Incompatible => ContractStatus::Unsupported,
         }
     }
 }
@@ -3891,6 +3896,18 @@ status = "available"
         assert!(report.contains("ASUS HID candidates: 2 (verified: 1)"));
         assert!(report.contains("Rejected because: USB interface 01"));
         assert!(!report.contains("/sys/devices/"));
+    }
+
+    #[test]
+    fn incompatible_dependency_round_trips_without_becoming_ready() {
+        let state = DependencyState::Incompatible;
+        assert_eq!(DependencyState::parse(state.as_str()), state);
+        assert!(!state.is_ready());
+        assert_eq!(state.contract_status(), ContractStatus::Unsupported);
+        assert_eq!(
+            DependencyState::parse("future_state"),
+            DependencyState::Unknown
+        );
     }
 
     #[test]
