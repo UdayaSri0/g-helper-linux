@@ -703,6 +703,12 @@ async fn cmd_setup_check() -> anyhow::Result<()> {
     )
     .await;
     println!("{}", status.to_report_text(true));
+    let system = rog_providers::setup_assistant::inspect_setup_system();
+    let plan = rog_providers::setup_assistant::plan_setup(&system, &status);
+    println!(
+        "{}",
+        rog_providers::setup_assistant::format_setup_report(&system, &plan)
+    );
     Ok(())
 }
 

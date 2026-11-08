@@ -183,7 +183,7 @@ async fn probe_asusd() -> DependencyStatus {
                     evidence.push(format!("API capability check failed: {error}"));
                     DependencyStatus {
                         kind: DependencyKind::Asusd,
-                        state: DependencyState::Unreachable,
+                        state: asusd_error_state(&error),
                         summary: "asusd is visible, but its expected platform API did not respond correctly."
                             .to_string(),
                         required_for,
@@ -204,12 +204,19 @@ async fn probe_asusd() -> DependencyStatus {
             evidence.push(format!("DBus connection failed: {error}"));
             DependencyStatus {
                 kind: DependencyKind::Asusd,
-                state: DependencyState::Unreachable,
+                state: asusd_error_state(&error),
                 summary: "The system bus or asusd API could not be reached.".to_string(),
                 required_for,
                 evidence,
             }
         }
+    }
+}
+
+fn asusd_error_state(error: &rog_core::RogError) -> DependencyState {
+    match error {
+        rog_core::RogError::NotSupported(_) => DependencyState::Incompatible,
+        _ => DependencyState::Unreachable,
     }
 }
 
@@ -740,6 +747,20 @@ mod tests {
     use rog_core::{
         CpuControlAccess, CpuControlKind, CpuPathAccess, FeatureAccessState, FeatureAvailability,
     };
+
+    #[test]
+    fn asusd_contract_failure_is_distinct_from_an_unreachable_service() {
+        assert_eq!(
+            asusd_error_state(&rog_core::RogError::NotSupported(
+                "signature mismatch".into()
+            )),
+            DependencyState::Incompatible
+        );
+        assert_eq!(
+            asusd_error_state(&rog_core::RogError::TransientFailure("timeout".into())),
+            DependencyState::Unreachable
+        );
+    }
 
     #[test]
     fn cpu_permission_reports_read_only_paths() {

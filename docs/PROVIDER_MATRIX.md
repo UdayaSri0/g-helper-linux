@@ -406,3 +406,8 @@ When updating provider-related docs, compare against:
 - `crates/rog-providers/src/lib.rs`
 - `crates/rog-providers/src/traits.rs`
 - `crates/rog-daemon/src/main.rs`
+
+
+## Guided first-run setup
+
+Guided setup reuses service probes and reports distro/kernel/driver identity and observed manager processes. asusd writes require matching runtime XML signatures. See [Smart Setup](SMART_SETUP.md).
