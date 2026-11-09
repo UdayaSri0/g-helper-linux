@@ -4906,8 +4906,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let fans_root = gtk::Box::new(gtk::Orientation::Vertical, 20);
     fans_root.add_css_class("fans-page");
-    fans_root.set_margin_top(24);
-    fans_root.set_margin_bottom(32);
+    fans_root.set_margin_top(20);
+    fans_root.set_margin_bottom(28);
     fans_root.set_margin_start(24);
     fans_root.set_margin_end(24);
 
@@ -6045,6 +6045,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let last_rendered_revision = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
     let last_lighting_apply_success = std::rc::Rc::new(std::cell::Cell::new(0_u64));
     let last_dashboard_layout = std::rc::Rc::new(std::cell::Cell::new(None::<DashboardLayout>));
+    let last_fan_layout = std::rc::Rc::new(std::cell::Cell::new(None::<FanLayout>));
     let detail_fan_rows_ref = detail_fan_rows.clone();
     let details_fan_group_ref = details_fan_group.clone();
     let fan_animation_rotors = hero_fan_slots
@@ -6233,6 +6234,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &live_performance_grid,
             &cockpit_lower_grid,
             &last_dashboard_layout,
+        );
+        let horizontal_margin = if dashboard_layout(dash.width()) == DashboardLayout::Narrow {
+            16
+        } else {
+            24
+        };
+        dash_root.set_margin_start(horizontal_margin);
+        dash_root.set_margin_end(horizontal_margin);
+        update_fan_flow_layout(
+            fans_root.width(),
+            &fans_root,
+            &fans_pills,
+            &gauge_row,
+            &hero_fans_flow,
+            &fan_cards_flow,
+            &last_fan_layout,
         );
         if last_rendered_revision.get() == Some(render_revision) {
             return glib::ControlFlow::Continue;
@@ -13487,6 +13504,59 @@ enum DashboardLayout {
     Wide,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanLayout {
+    Narrow,
+    Medium,
+    Wide,
+}
+
+fn update_fan_flow_layout(
+    width: i32,
+    page: &gtk::Box,
+    status_pills: &gtk::FlowBox,
+    gauges: &gtk::FlowBox,
+    rotors: &gtk::FlowBox,
+    fan_cards: &gtk::FlowBox,
+    previous: &std::cell::Cell<Option<FanLayout>>,
+) {
+    if width <= 0 {
+        return;
+    }
+    let layout = fan_layout(width);
+    if previous.replace(Some(layout)) == Some(layout) {
+        return;
+    }
+    let (status_columns, gauge_columns, rotor_columns, card_columns) = match layout {
+        FanLayout::Narrow => (2, 1, 2, 1),
+        FanLayout::Medium => (4, 2, 3, 1),
+        FanLayout::Wide => (4, 2, 4, 2),
+    };
+    let horizontal_margin = match layout {
+        FanLayout::Narrow => 16,
+        FanLayout::Medium => 20,
+        FanLayout::Wide => 24,
+    };
+    page.set_margin_start(horizontal_margin);
+    page.set_margin_end(horizontal_margin);
+    for (flow, columns) in [
+        (status_pills, status_columns),
+        (gauges, gauge_columns),
+        (rotors, rotor_columns),
+        (fan_cards, card_columns),
+    ] {
+        flow.set_max_children_per_line(columns);
+    }
+}
+
+fn fan_layout(width: i32) -> FanLayout {
+    match width {
+        ..720 => FanLayout::Narrow,
+        720..1120 => FanLayout::Medium,
+        _ => FanLayout::Wide,
+    }
+}
+
 fn dashboard_layout(width: i32) -> DashboardLayout {
     match width {
         ..640 => DashboardLayout::Narrow,
@@ -15911,6 +15981,14 @@ fn text_or_unknown(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cooling_layout_breakpoints_keep_controls_readable() {
+        assert_eq!(fan_layout(719), FanLayout::Narrow);
+        assert_eq!(fan_layout(720), FanLayout::Medium);
+        assert_eq!(fan_layout(1119), FanLayout::Medium);
+        assert_eq!(fan_layout(1120), FanLayout::Wide);
+    }
 
     #[test]
     fn desktop_identity_uses_effective_uid_and_rejects_missing_identity() {
