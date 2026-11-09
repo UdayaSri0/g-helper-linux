@@ -1,0 +1,7 @@
+{"caller":"ui","duration_ms":0,"kind":"tool_call","ok":true,"params":{},"time":"2026-11-07T17:33:05Z","tool":"project_pins_list","ts":1794072785}
+{"caller":"mcp","duration_ms":0,"kind":"tool_call","ok":true,"params":{},"time":"2026-11-07T17:33:06Z","tool":"core_investigation_show","ts":1794072786}
+{"caller":"mcp","duration_ms":0,"kind":"tool_call","ok":true,"params":{},"time":"2026-11-07T17:33:06Z","tool":"core_session_show","ts":1794072786}
+{"caller":"mcp","duration_ms":0,"kind":"tool_call","ok":true,"params":{"path":"/home/rog/Documents/GitHub/g-helper-linux"},"time":"2026-11-07T17:33:06Z","tool":"core_target_open","ts":1794072786}
+{"caller":"mcp","duration_ms":7,"kind":"tool_call","ok":true,"params":{"based_on_revision":0,"steps":[{"status":"doing","title":"Map the current setup and install flow","why":"Find the narrowest safe improvement"},{"status":"todo","title":"Improve capability detection and setup guidance"},{"status":"todo","title":"Add focused checks and documentation"},{"status":"todo","title":"Build and compare the result"}]},"time":"2026-11-07T17:33:20Z","tool":"core_plan_update","ts":1794072800}
+{"caller":"ui","duration_ms":0,"kind":"tool_call","ok":true,"params":{},"time":"2026-11-07T17:33:22Z","tool":"project_pins_list","ts":1794072802}
+{"caller":"ui","duration_ms":0,"kind":"tool_call","ok":true,"params":{},"time":"2026-11-07T17:33:40Z","tool":"project_pins_list","ts":1794072820}

@@ -1,0 +1,27 @@
+{
+  "revision": 1,
+  "brief": null,
+  "plan": [
+    {
+      "title": "Map the current setup and install flow",
+      "status": "doing",
+      "why": "Find the narrowest safe improvement"
+    },
+    {
+      "title": "Improve capability detection and setup guidance",
+      "status": "todo"
+    },
+    {
+      "title": "Add focused checks and documentation",
+      "status": "todo"
+    },
+    {
+      "title": "Build and compare the result",
+      "status": "todo"
+    }
+  ],
+  "hypotheses": [],
+  "findings": [],
+  "handoff": null,
+  "updated": "2026-11-07T17:33:20Z"
+}
