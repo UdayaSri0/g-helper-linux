@@ -30,6 +30,7 @@ Shared presentation rules:
 - semantic chips consistently distinguish available, informational, attention, and unavailable states
 - long capability, endpoint, and metadata values wrap instead of being silently truncated
 - page content uses restrained 20 px vertical rhythm and native GTK/Adwaita controls
+- Dashboard and Cooling share 20/28 px vertical page margins; side gutters contract at narrow widths, and Cooling status, gauge, rotor, and fan-card grids reduce columns as space narrows
 - support and access are separate: a verified feature may show Authentication required or
   Authorization denied without being relabeled unsupported
 - fan counts are RPM endpoint counts, not claims about distinct physical fans
@@ -121,6 +122,7 @@ Current behavior:
 - the remaining major `GtkFlowBox` groups transition together through wide, medium, and narrow modes without horizontal scrolling; Current System Mode uses 5-wide, 3+2, or a single stacked column
 - GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
 - Settings can hide Advanced System Health, the conditional NVMe card, or Cooling Snapshot and can enable a compact vertical layout
+- Dashboard uses 16 px side gutters below its narrow breakpoint and 24 px otherwise
 
 ### Setup & Access
 
@@ -395,6 +397,7 @@ Cooling is the user-facing name of the existing internal `fans` page and backend
 
 - uses the standard page header followed by compact backend, detected fan count, current mode, and mapping warning pills
 - includes large side-by-side CPU/GPU temperature gauges when space allows, with operating MHz lines where telemetry is available
+- reflows status pills, gauges, rotor cards, and detected-fan cards through narrow, medium, and wide column layouts
 - includes animated fan rotors whose visual speed is scaled from live RPM, capped for readability, refreshed at 20 FPS only while mapped, and reduced when GTK animations are disabled
 - keeps per-fan telemetry visible for every detected fan, including read-only fans
 - shows individual fan cards with RPM, ID, backend, control support, endpoint details, notes, and warnings
