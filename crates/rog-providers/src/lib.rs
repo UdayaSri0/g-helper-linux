@@ -14,6 +14,7 @@ pub mod memory;
 pub mod nvidia_smi;
 pub mod power_supply;
 pub mod setup;
+pub mod setup_assistant;
 pub mod supergfx;
 pub mod upower;
 

@@ -46,6 +46,7 @@ pub struct UiPreferences {
     pub start_minimized_to_tray: bool,
     pub close_to_tray_hint_shown: bool,
     pub fan_warning_acknowledged: bool,
+    pub setup_assistant_completed: bool,
     #[serde(flatten)]
     pub future_fields: BTreeMap<String, toml::Value>,
 }
@@ -58,6 +59,7 @@ impl Default for UiPreferences {
             start_minimized_to_tray: false,
             close_to_tray_hint_shown: false,
             fan_warning_acknowledged: false,
+            setup_assistant_completed: false,
             future_fields: BTreeMap::new(),
         }
     }
@@ -382,6 +384,12 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
             &mut config.ui.fan_warning_acknowledged,
             &mut warnings,
         );
+        bool_field(
+            ui,
+            "setup_assistant_completed",
+            &mut config.ui.setup_assistant_completed,
+            &mut warnings,
+        );
         preserve_unknown(
             ui,
             &[
@@ -390,6 +398,7 @@ pub fn parse_config(contents: &str) -> ConfigLoad {
                 "start_minimized_to_tray",
                 "close_to_tray_hint_shown",
                 "fan_warning_acknowledged",
+                "setup_assistant_completed",
             ],
             &mut config.ui.future_fields,
         );
@@ -945,6 +954,21 @@ mod tests {
             "rog-helper-config-{name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn setup_review_preference_round_trips_and_legacy_defaults_to_unreviewed() {
+        assert!(!parse_config("").config.ui.setup_assistant_completed);
+        let mut config = AppConfig::default();
+        config.ui.setup_assistant_completed = true;
+        let encoded = config_to_toml(&config).unwrap();
+        let decoded = parse_config(&encoded);
+        assert!(decoded.config.ui.setup_assistant_completed);
+        assert!(!decoded
+            .config
+            .ui
+            .future_fields
+            .contains_key("setup_assistant_completed"));
     }
 
     #[test]

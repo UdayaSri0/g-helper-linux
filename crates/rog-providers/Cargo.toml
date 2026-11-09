@@ -12,6 +12,7 @@ repository.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 regex.workspace = true
+roxmltree = "0.20"
 serde.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true

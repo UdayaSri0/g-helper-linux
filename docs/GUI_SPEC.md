@@ -443,3 +443,8 @@ Related note:
 ## Maintenance Note
 
 This file is intended to describe the real current UI. If `crates/rog-ui/src/` changes, update this document at the same time rather than leaving planned and current behavior mixed together.
+
+
+## Guided first-run setup
+
+Setup & Access includes the eight-stage first-run assistant, progress for live checks, and a per-user completion preference. See [Smart Setup](SMART_SETUP.md) for the manual installation boundary.

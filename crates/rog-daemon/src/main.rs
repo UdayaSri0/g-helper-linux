@@ -2710,6 +2710,26 @@ impl RogHelperDaemon {
         setup_status_to_dbus(&setup)
     }
 
+    async fn get_setup_assistant_snapshot(&self) -> String {
+        let state = self.read_state();
+        let keyboard_paths = self
+            .kbd_backlight
+            .as_ref()
+            .map(|kbd| vec![kbd.brightness_path().display().to_string()])
+            .unwrap_or_default();
+        let setup = probe_setup_status(
+            RogHelperdProbe::AssumeConnected,
+            &state.caps,
+            &state.cpu_caps,
+            &state.fan_state.caps,
+            keyboard_paths,
+        )
+        .await;
+        let system = rog_providers::setup_assistant::inspect_setup_system();
+        let plan = rog_providers::setup_assistant::plan_setup(&system, &setup);
+        toml::to_string(&rog_core::SetupSnapshot { system, plan }).unwrap_or_default()
+    }
+
     async fn get_privileged_status(&self) -> HashMap<String, OwnedValue> {
         privileged_status_to_dbus(&self.refresh_privileged_status().await)
     }
@@ -3549,6 +3569,18 @@ impl RogHelperDaemon {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    let effective_uid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|uids| uids.split_whitespace().nth(1))
+        .and_then(|uid| uid.parse::<u32>().ok());
+    if effective_uid.is_none_or(|uid| uid == 0) {
+        anyhow::bail!(
+            "Run rog-helperd as your desktop user. Hardware authorization is handled separately."
+        );
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

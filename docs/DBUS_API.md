@@ -811,3 +811,8 @@ The following features are not part of the current daemon API:
   `rog-helper hardware-report`)
 
 If those are added later, update this file at the same time as `crates/rog-daemon/src/main.rs`.
+
+
+## Guided first-run setup
+
+GetSetupAssistantSnapshot() → string is an additive read-only session method returning a TOML-encoded SetupSnapshot with bounded system inventory and the typed manual setup plan. Older daemons may lack it; clients show a plan-unavailable message and retain existing status diagnostics. See [Smart Setup](SMART_SETUP.md).

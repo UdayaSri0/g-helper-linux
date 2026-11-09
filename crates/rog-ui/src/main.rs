@@ -35,6 +35,7 @@ use zbus::zvariant::{OwnedValue, Value};
 mod dbus_decode;
 use rog_providers::display;
 mod fan_widgets;
+mod setup_assistant;
 mod shell;
 mod theme;
 mod widgets;
@@ -90,6 +91,8 @@ trait Daemon1 {
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
+    fn get_setup_assistant_snapshot(&self) -> zbus::Result<String>;
+
     fn get_setup_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_privileged_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -221,6 +224,7 @@ struct SharedUiState {
     caps: DeviceCaps,
     caps_text: String,
     setup_status: SetupStatus,
+    setup_assistant_report: String,
     privileged_status: Option<PrivilegedStatus>,
     daemon_identity: DaemonIdentity,
     pending_setup_refresh: bool,
@@ -297,6 +301,7 @@ impl Default for SharedUiState {
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
             setup_status: SetupStatus::unknown(),
+            setup_assistant_report: String::new(),
             privileged_status: None,
             daemon_identity: DaemonIdentity::checking(),
             pending_setup_refresh: true,
@@ -1145,7 +1150,21 @@ impl Tray for RogTray {
     }
 }
 
+fn effective_uid_from_status(status: &str) -> anyhow::Result<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|uids| uids.split_whitespace().nth(1))
+        .and_then(|uid| uid.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("Could not establish desktop user identity"))
+}
+
 fn main() -> anyhow::Result<()> {
+    let process_status = fs::read_to_string("/proc/self/status")?;
+    anyhow::ensure!(
+        effective_uid_from_status(&process_status)? != 0,
+        "Run ROG Helper as your desktop user. Administrator authentication is requested separately for supported actions."
+    );
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -2822,6 +2841,36 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         "Setup & Access",
         "Understand which services, permissions, or hardware capabilities affect controls.",
     ));
+
+    let guided_setup = setup_assistant::SetupAssistant::new(
+        app_settings.ui.setup_assistant_completed,
+        {
+            let shared = shared.clone();
+            move || {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_setup_refresh = true;
+                    state.setup_refreshing = true;
+                    state.mark_render_dirty();
+                }
+            }
+        },
+        {
+            let shared = shared.clone();
+            move || {
+                if let Ok(mut state) = shared.lock() {
+                    state.settings.ui.setup_assistant_completed = true;
+                    state.pending_config_save = Some(state.settings.clone());
+                    state.pending_toast = Some((
+                        "Saving assistant preference. Remaining issues are shown below."
+                            .to_string(),
+                        false,
+                    ));
+                    state.mark_render_dirty();
+                }
+            }
+        },
+    );
+    setup_root.append(&guided_setup.widget);
 
     let setup_safety_banner = adw::Banner::new(
         "Checks are read-only. rog-helper never runs sudo, changes permissions, or installs packages.",
@@ -5833,7 +5882,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&settings, Some("settings"), "Settings", ICON_SETTINGS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
-
     let connection_status = gtk::Label::new(Some("Connecting…"));
     let navigation_items = [
         NavigationItem {
@@ -5893,6 +5941,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         },
     ];
     let view = shell::build_shell(&stack, &connection_status, &navigation_items, APP_ICON_NAME);
+    if !app_settings.ui.setup_assistant_completed {
+        stack.set_visible_child_name("setup");
+    }
 
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view));
@@ -6034,6 +6085,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             caps,
             caps_text,
             setup_status,
+            setup_assistant_report,
             privileged_status,
             daemon_identity,
             setup_refreshing,
@@ -6100,6 +6152,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.caps.clone(),
                 st.caps_text.clone(),
                 st.setup_status.clone(),
+                st.setup_assistant_report.clone(),
                 st.privileged_status.clone(),
                 st.daemon_identity.clone(),
                 st.setup_refreshing,
@@ -6622,6 +6675,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             "Recheck Installation"
         });
+        guided_setup.update(
+            &setup_status,
+            privileged_status.as_ref(),
+            &setup_assistant_report,
+            setup_refreshing,
+        );
         setup_advanced_buffer.set_text(&setup_status.to_report_text(true));
         if setup_status.issues.is_empty() {
             setup_issues_row.set_title("No setup issues detected");
@@ -9438,12 +9497,15 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         state.setup_refreshing = true;
                         state.mark_render_dirty();
                     }
-                    let (setup_result, privileged_result, identity_result) = tokio::join!(
+                    let (setup_result, privileged_result, identity_result, assistant_result) = tokio::join!(
                         fetch_setup_status(),
                         fetch_privileged_status(),
-                        fetch_daemon_identity()
+                        fetch_daemon_identity(),
+                        fetch_setup_assistant_report()
                     );
                     if let Ok(mut state) = shared.lock() {
+                        state.setup_assistant_report = assistant_result.unwrap_or_else(|error|
+                            format!("Setup plan unavailable: {error}. Recheck services after updating the session daemon."));
                         state.privileged_status = Some(privileged_result.unwrap_or_else(|_| {
                             PrivilegedStatus::unavailable(false, false)
                         }));
@@ -9600,6 +9662,27 @@ async fn fetch_daemon_identity() -> Result<DaemonIdentity, String> {
         .await
         .map_err(|error| format!("daemon GetDaemonInfo failed: {error}"))?;
     Ok(daemon_identity_from_dbus(&map, env!("CARGO_PKG_VERSION")))
+}
+
+async fn fetch_setup_assistant_report() -> Result<String, String> {
+    tokio::time::timeout(Duration::from_secs(12), async {
+        let conn = zbus::Connection::session()
+            .await
+            .map_err(|e| e.to_string())?;
+        let proxy = Daemon1Proxy::new(&conn).await.map_err(|e| e.to_string())?;
+        let encoded = proxy
+            .get_setup_assistant_snapshot()
+            .await
+            .map_err(|e| e.to_string())?;
+        let snapshot: rog_core::SetupSnapshot =
+            toml::from_str(&encoded).map_err(|e| e.to_string())?;
+        Ok::<_, String>(rog_providers::setup_assistant::format_setup_report(
+            &snapshot.system,
+            &snapshot.plan,
+        ))
+    })
+    .await
+    .map_err(|_| "Setup discovery timed out".to_string())?
 }
 
 async fn fetch_setup_status() -> Result<SetupStatus, String> {
@@ -13279,7 +13362,7 @@ fn update_setup_dependency_row(
                 DependencyState::Connected | DependencyState::Ready => "status-ok",
                 DependencyState::NotRelevant | DependencyState::Unknown => "status-info",
                 DependencyState::NotAvailable | DependencyState::Inactive => "status-warning",
-                DependencyState::Unreachable => "status-error",
+                DependencyState::Unreachable | DependencyState::Incompatible => "status-error",
             },
         );
         let required_for = if dependency.required_for.is_empty() {
@@ -15828,6 +15911,20 @@ fn text_or_unknown(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_identity_uses_effective_uid_and_rejects_missing_identity() {
+        assert_eq!(
+            effective_uid_from_status("Uid:\t1000\t0\t0\t0\n").unwrap(),
+            0
+        );
+        assert_eq!(
+            effective_uid_from_status("Uid:\t0\t1000\t1000\t1000\n").unwrap(),
+            1000
+        );
+        assert!(effective_uid_from_status("Uid: broken").is_err());
+        assert!(effective_uid_from_status("").is_err());
+    }
 
     #[test]
     fn setup_access_labels_fan_telemetry_without_calling_it_a_failure() {

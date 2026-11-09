@@ -355,3 +355,8 @@ The current architecture has several known limitations:
 - Saved control preferences are deliberately not an automation engine and are never auto-applied
 
 These limitations are important when reading older roadmap and GUI documents. Some design ideas are already present in the model layer, while the runtime still exposes only a subset of that design.
+
+
+## Guided first-run setup
+
+The guided first-run assistant reuses SetupStatus and adds a read-only GetSetupAssistantSnapshot. Package changes use explicit manual native-package review. See [Smart Setup](SMART_SETUP.md).

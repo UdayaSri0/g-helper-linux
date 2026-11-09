@@ -12,6 +12,7 @@ pub mod model;
 pub mod policy;
 pub mod power_freshness;
 pub mod privileged;
+pub mod setup;
 
 pub use config::*;
 pub use cpu_control::*;
@@ -22,3 +23,4 @@ pub use model::*;
 pub use policy::*;
 pub use power_freshness::*;
 pub use privileged::*;
+pub use setup::*;

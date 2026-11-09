@@ -429,3 +429,8 @@ Related note:
 - some controls associated with those planned areas already exist on the Dashboard, GPU page, or CPU page
 
 When those pages are implemented, update both this file and `docs/GUI_SPEC.md`.
+
+
+## Guided first-run setup
+
+Setup & Access exposes a guided first-run review alongside existing detailed status. Technical plans and diagnostics use expandable details. See [Smart Setup](SMART_SETUP.md).
