@@ -117,6 +117,10 @@ Key file:
 
 ## Common Contributor Workflow
 
+Start from lowercase `dev` and target feature/fix PRs to `dev`. Follow the
+[branching policy](BRANCHING.md) for promotion to `main`, urgent hotfix back-syncs,
+and the preserved legacy `Dev` branch.
+
 1. Read the relevant crate and module first.
 2. Check whether the behavior is already documented in `docs/`.
 3. Prefer the source when docs and code disagree.
@@ -131,16 +135,22 @@ Key file:
 
 ## Build and Validation Commands
 
-Current useful commands:
+From the repository root, after installing the Rust toolchain (including rustfmt
+and Clippy) and the native dependencies in the [build guide](BUILD.md), run:
 
 ```bash
 cargo fmt --all -- --check
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-The CI workflow currently runs the same validation set.
+These are the exact Rust checks in [CI](../.github/workflows/ci.yml). Missing local
+tooling or dependencies blocks validation; report it rather than marking a check
+as passed. CI also runs packaging tests and package validation, with separate
+AppImage and Fedora RPM jobs. Run the relevant packaging checks when changing
+packaging; see the workflow and [build guide](BUILD.md). Passing checks or merging
+a PR does not authorize a release; see the [release checklist](RELEASE_CHECKLIST.md).
 
 ## Running the Project Locally
 
