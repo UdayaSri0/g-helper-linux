@@ -12,6 +12,12 @@ Health & SMART, and Partitions & Volumes tabs, graph widgets, selection,
 expanded technical details, and scroll container survive telemetry updates.
 Device rows are changed only when the physical inventory changes.
 
+The detail stack is vertically non-homogeneous and each tab begins at its top,
+so Overview does not reserve the height of Performance or a long SMART list.
+Overview shows compact drive metrics, paired I/O history, a SMART summary, and
+mounted filesystem usage. Volume filesystem capacity remains distinct from
+physical partition size; unsupported SMART attributes remain unavailable.
+
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope

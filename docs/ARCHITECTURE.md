@@ -13,6 +13,11 @@ applies per-field freshness limits before displaying readings. The global UI
 render revision can still call the page update, but ordinary refreshes do not
 replace its children or reconnect signals.
 
+The detail `gtk::Stack` is vertically non-homogeneous so each tab uses its own
+natural height within the single outer scroller. Filesystem total capacity,
+used bytes, and user-available bytes come from `statvfs`; partition size stays
+a separate physical value on the D-Bus volume record.
+
 This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 ## Layered Structure

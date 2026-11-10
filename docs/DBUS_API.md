@@ -4,7 +4,9 @@ Storage adds read-only `GetStorageState() -> a{sv}` and
 `GetStorageDiagnostics() -> a{sv}`. Both return `status`, `sampled_at_ms`, and
 `drives`; the latter also includes detailed health attributes. Neither accepts
 a device path. Missing optional fields mean unavailable, and the additive
-methods retain API epoch 1. See [Storage Management](STORAGE_MANAGEMENT.md).
+methods retain API epoch 1. Volume rows keep physical partition `size_bytes`
+separate from optional filesystem `filesystem_size_bytes`, `used_bytes`, and
+`available_bytes`. See [Storage Management](STORAGE_MANAGEMENT.md).
 
 This document describes the current session-DBus API exported by `rog-helperd`.
 
