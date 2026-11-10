@@ -15,12 +15,23 @@ SMART diagnostics update the existing Health & SMART tab and do not change the
 selected drive or active tab. Wide content uses two columns; below 900 px the
 drive selector stacks above details. There is one vertical scroller.
 
-The overview summarizes physical-drive count, summed raw physical capacity,
-evidence-based aggregate health, and combined current read/write throughput.
-Unknown or unsupported health is never counted as healthy. Per-drive Overview,
-Performance, Health & SMART, and Partitions & Volumes tabs show available data;
-volume usage percentages are shown only when both used and available bytes are
-present. Opening the page performs no privileged request.
+The compact overview summarizes physical-drive count, summed raw physical
+capacity, evidence-based aggregate health, and combined current read/write
+throughput. Unknown or unsupported health is never counted as healthy. The
+selected-drive Overview uses persistent quick metrics, paired read/write
+history charts, a SMART summary, and mounted-filesystem usage. Performance
+shows IOPS and three bounded histories; Health & SMART presents supported
+attributes as individually labelled values; Partitions & Volumes keeps
+partition size separate from measured filesystem capacity. Usage bars appear
+only when both used and available bytes are present. Opening or refreshing the
+page performs no privileged request.
+
+The detail stack is vertically non-homogeneous so short tabs use their natural
+height instead of inheriting the height of Performance or a long SMART list.
+The outer page remains the only vertical scroller. Overview values, health rows,
+volume rows, graphs, selection, tabs, and expanded details update in place.
+Long device names are ellipsized in the selector and remain available in the
+tooltip and selected-drive heading.
 
 ## Data flow and identity
 
@@ -35,8 +46,8 @@ are not attributed to a physical drive unless the relation is unambiguous.
 
 Capacity is the sum of a drive's physical namespaces. Filesystem use is
 reported separately for mounted volumes, using mountinfo to identify mounts
-and `statvfs` for used and available bytes. Unmounted, locked, or unattributed
-volumes have no invented usage percentage. Multiple mounts of the same
+and `statvfs` for filesystem capacity, used, and available bytes. Unmounted,
+locked, or unattributed volumes have no invented usage percentage. Multiple mounts of the same
 filesystem are shown as one volume with multiple mount paths.
 
 ## Refresh and freshness

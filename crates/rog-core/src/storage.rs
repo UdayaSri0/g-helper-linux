@@ -41,6 +41,7 @@ pub struct StorageVolume {
     pub mount_points: Vec<String>,
     pub used_bytes: Option<u64>,
     pub available_bytes: Option<u64>,
+    pub filesystem_size_bytes: Option<u64>,
     pub status: String,
 }
 

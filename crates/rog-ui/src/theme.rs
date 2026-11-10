@@ -92,6 +92,33 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   background-image: linear-gradient(145deg, alpha(#4da3ff, 0.055), alpha(#1a1f27, 0.0) 62%);
 }
 .metric-card-compact { padding: 12px 14px; }
+.storage-summary-grid .metric-card { padding: 12px 14px; }
+.storage-summary-grid .metric-value { font-size: 24px; }
+.storage-summary-grid .metric-subtitle { font-size: 11px; }
+.storage-status-caption { color: alpha(white, 0.52); font-size: 11px; }
+.storage-drive-row {
+  padding: 10px 12px;
+  border: 1px solid alpha(white, 0.07);
+  border-radius: 10px;
+  background: #1a1f27;
+  text-align: left;
+}
+.storage-drive-row:hover { background: #202733; }
+.storage-drive-row:focus-visible { outline: 2px solid alpha(#4da3ff, 0.82); outline-offset: 2px; }
+.storage-drive-row.storage-drive-selected {
+  background: alpha(#4da3ff, 0.13);
+  border-color: alpha(#4da3ff, 0.60);
+  box-shadow: inset 3px 0 #4da3ff;
+}
+.storage-drive-row .status-chip { padding: 3px 8px; }
+.smart-attribute-row {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: alpha(white, 0.035);
+}
+.smart-attribute-warning { background: alpha(#e9a23b, 0.12); }
+.volume-usage progress { background: #4da3ff; min-height: 8px; border-radius: 99px; }
+.volume-usage trough { background: alpha(white, 0.08); min-height: 8px; border-radius: 99px; }
 .metric-card-icon,
 .dashboard-panel-icon,
 .dashboard-fan-icon { color: #73b7ff; }

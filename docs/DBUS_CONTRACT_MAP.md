@@ -4,6 +4,8 @@ Storage's additive `GetStorageState` and `GetStorageDiagnostics` methods use
 `rog-core::dbus_keys::storage` for top-level and drive keys. Nested optional
 values decode as unavailable, never as healthy or zero usage. See
 [Storage Management](STORAGE_MANAGEMENT.md).
+Volume maps distinguish partition `size_bytes` from filesystem
+`filesystem_size_bytes`; used and available values remain optional.
 
 This is the release audit of the `io.github.roghelper.Daemon1` contract. The public wire format remains the existing string-keyed `a{sv}` API. Shared constants in `rog-core::dbus_keys` cover the high-risk state, capability, telemetry, CPU, fan, setup, lighting, and daemon identity names. The read-only `GetDaemonInfo` identity uses a shared core type; no public key or signature changed.
 

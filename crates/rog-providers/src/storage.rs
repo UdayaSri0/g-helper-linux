@@ -557,10 +557,12 @@ fn volumes_for_disk(
                 .unwrap_or_default();
             let filesystem =
                 associated.and_then(|rows| rows.first().map(|row| row.filesystem.clone()));
-            let (used_bytes, available_bytes) = associated
+            let (used_bytes, available_bytes, filesystem_size_bytes) = associated
                 .and_then(|rows| rows.first())
                 .and_then(|row| filesystem_usage(&row.point))
-                .map_or((None, None), |(used, avail)| (Some(used), Some(avail)));
+                .map_or((None, None, None), |(used, avail, total)| {
+                    (Some(used), Some(avail), Some(total))
+                });
             Some(StorageVolume {
                 label: labels.get(&name).cloned(),
                 name,
@@ -569,6 +571,7 @@ fn volumes_for_disk(
                 mount_points,
                 used_bytes,
                 available_bytes,
+                filesystem_size_bytes,
                 status: if associated.is_some() {
                     "mounted"
                 } else {
@@ -580,7 +583,7 @@ fn volumes_for_disk(
         .collect()
 }
 
-fn filesystem_usage(path: &str) -> Option<(u64, u64)> {
+fn filesystem_usage(path: &str) -> Option<(u64, u64, u64)> {
     let cpath = CString::new(path).ok()?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: `cpath` is NUL-terminated and `stats` points to writable memory.
@@ -596,6 +599,7 @@ fn filesystem_usage(path: &str) -> Option<(u64, u64)> {
             .saturating_sub(stats.f_bfree)
             .saturating_mul(unit),
         stats.f_bavail.saturating_mul(unit),
+        stats.f_blocks.saturating_mul(unit),
     ))
 }
 
@@ -742,6 +746,14 @@ mod tests {
         assert_eq!(rows["8:1"].len(), 2);
         assert_eq!(rows["8:1"][0].point, "/mnt/a b");
         assert_eq!(decode_mount_path("/mnt/\\777"), "/mnt/\\777");
+    }
+
+    #[test]
+    fn filesystem_usage_keeps_full_capacity_separate_from_available_bytes() {
+        let (used, available, total) = filesystem_usage("/").unwrap();
+        assert!(used <= total);
+        assert!(available <= total);
+        assert!(used.saturating_add(available) <= total);
     }
 
     #[test]

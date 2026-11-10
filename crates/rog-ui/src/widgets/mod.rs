@@ -309,11 +309,14 @@ impl HistoryGraph {
         &self.area
     }
 
+    pub fn set_content_height(&self, height: i32) {
+        self.area.set_content_height(height);
+    }
+
     pub fn set_samples(&self, samples: &[f32]) {
         let changed = {
             let current = self.state.borrow();
-            current.samples.len() != samples.len()
-                || current.samples.last().copied() != samples.last().copied()
+            !history_samples_equal(&current.samples, samples)
         };
         if changed {
             self.state.borrow_mut().samples = samples.to_vec();
@@ -322,6 +325,14 @@ impl HistoryGraph {
             }
         }
     }
+}
+
+fn history_samples_equal(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
 }
 
 fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGraphState) {
@@ -424,5 +435,17 @@ fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGra
     if let Ok(extents) = ctx.text_extents(end_label) {
         ctx.move_to(left + plot_width - extents.width(), height - 9.0);
         ctx.show_text(end_label).ok();
+    }
+}
+
+#[cfg(test)]
+mod history_graph_tests {
+    use super::history_samples_equal;
+
+    #[test]
+    fn rolling_history_detects_interior_changes_and_equal_gaps() {
+        assert!(!history_samples_equal(&[1.0, 2.0], &[1.0, 3.0]));
+        assert!(history_samples_equal(&[1.0, f32::NAN], &[1.0, f32::NAN]));
+        assert!(!history_samples_equal(&[1.0], &[1.0, 2.0]));
     }
 }
