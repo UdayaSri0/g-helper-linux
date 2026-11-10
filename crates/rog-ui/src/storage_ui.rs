@@ -402,7 +402,6 @@ impl StoragePage {
                 .is_some_and(|sampled| now_ms.saturating_sub(sampled) <= 15 * 60_000)
         });
         let Some(snapshot) = snapshot else {
-            self.summary[0].set_value("—");
             self.status.set_text("Waiting for the storage service…");
             self.mark_live_metrics_unavailable();
             return;
@@ -412,7 +411,6 @@ impl StoragePage {
             .is_some_and(|sampled| now_ms.saturating_sub(sampled) <= 10_000);
         let available = snapshot.status.eq_ignore_ascii_case("available") && fresh;
         if !available {
-            self.summary[0].set_value("—");
             self.status.set_text(
                 if !fresh && snapshot.status.eq_ignore_ascii_case("available") {
                     "Last storage reading is stale."
