@@ -54,6 +54,7 @@ Current behavior:
 - Cooling Snapshot is content-driven and ends directly after its last detected fan row
 - Current System Mode uses five columns when wide, 3+2 packing at medium widths, and one column at narrow widths
 - primary metrics, quick controls, cockpit panels, live trends, and system health share the same cached responsive mode so they reflow only when a breakpoint changes
+- Dashboard side gutters contract from 24 px to 16 px at the narrow breakpoint
 - CPU, GPU-temperature, and memory histories are bounded to 60 cached samples and never poll from a draw callback
 - highly prominent warning styling is reserved for daemon disconnection; optional capability gaps use compact warning language
 
@@ -390,6 +391,7 @@ Current page. The internal page identifier remains `fans` for compatibility.
 
 - standard page header with compact backend/count/mode/mapping status pills
 - large CPU/GPU temperature gauges that sit side by side on normal laptop widths and stack on narrow windows
+- status pills, rotor cards, and detected-fan cards reduce their column counts at narrower widths; Cooling side gutters scale from 24 px to 16 px
 - operating MHz display in the CPU/GPU gauge cards when telemetry is available
 - animated fan rotors in the hero dashboard, scaled from live RPM telemetry, limited to 20 FPS, paused while unmapped, and reduced with GTK's animation setting
 - capability warning banner
@@ -429,3 +431,8 @@ Related note:
 - some controls associated with those planned areas already exist on the Dashboard, GPU page, or CPU page
 
 When those pages are implemented, update both this file and `docs/GUI_SPEC.md`.
+
+
+## Guided first-run setup
+
+Setup & Access exposes a guided first-run review alongside existing detailed status. Technical plans and diagnostics use expandable details. See [Smart Setup](SMART_SETUP.md).

@@ -88,6 +88,9 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
   padding: 18px;
   background-image: linear-gradient(145deg, alpha(#4da3ff, 0.08), alpha(#1a1f27, 0.0) 62%);
 }
+.fans-hero {
+  background-image: linear-gradient(145deg, alpha(#4da3ff, 0.055), alpha(#1a1f27, 0.0) 62%);
+}
 .metric-card-compact { padding: 12px 14px; }
 .metric-card-icon,
 .dashboard-panel-icon,

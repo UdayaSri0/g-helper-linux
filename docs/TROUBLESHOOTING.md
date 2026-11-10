@@ -668,3 +668,8 @@ If documentation and runtime behavior still seem inconsistent, inspect the curre
 - `crates/rog-daemon/src/main.rs`
 - `crates/rog-ui/src/main.rs`
 - `crates/rog-providers/src/`
+
+
+## Guided first-run setup
+
+If setup plans are unavailable, update or restart the session daemon and recheck services. Optional ASUS dependencies on Ubuntu 26.10 use manual guidance. See [Smart Setup](SMART_SETUP.md).

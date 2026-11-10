@@ -389,3 +389,8 @@ These areas still need more real machine coverage:
 - how often CPU write access can be granted safely without custom local policy work
 
 Until real records exist here, treat support claims as “implemented in code” rather than “verified across hardware.”
+
+
+## Guided first-run setup
+
+Setup can detect ASUS WMI channels without enabling custom writes. The existing production evidence gate remains required. See [Smart Setup](SMART_SETUP.md).

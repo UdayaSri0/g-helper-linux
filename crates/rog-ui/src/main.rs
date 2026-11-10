@@ -35,6 +35,7 @@ use zbus::zvariant::{OwnedValue, Value};
 mod dbus_decode;
 use rog_providers::display;
 mod fan_widgets;
+mod setup_assistant;
 mod shell;
 mod theme;
 mod widgets;
@@ -90,6 +91,8 @@ trait Daemon1 {
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
+    fn get_setup_assistant_snapshot(&self) -> zbus::Result<String>;
+
     fn get_setup_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_privileged_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_fan_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
@@ -221,6 +224,7 @@ struct SharedUiState {
     caps: DeviceCaps,
     caps_text: String,
     setup_status: SetupStatus,
+    setup_assistant_report: String,
     privileged_status: Option<PrivilegedStatus>,
     daemon_identity: DaemonIdentity,
     pending_setup_refresh: bool,
@@ -297,6 +301,7 @@ impl Default for SharedUiState {
             caps: DeviceCaps::unknown(),
             caps_text: String::new(),
             setup_status: SetupStatus::unknown(),
+            setup_assistant_report: String::new(),
             privileged_status: None,
             daemon_identity: DaemonIdentity::checking(),
             pending_setup_refresh: true,
@@ -1145,7 +1150,21 @@ impl Tray for RogTray {
     }
 }
 
+fn effective_uid_from_status(status: &str) -> anyhow::Result<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|uids| uids.split_whitespace().nth(1))
+        .and_then(|uid| uid.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("Could not establish desktop user identity"))
+}
+
 fn main() -> anyhow::Result<()> {
+    let process_status = fs::read_to_string("/proc/self/status")?;
+    anyhow::ensure!(
+        effective_uid_from_status(&process_status)? != 0,
+        "Run ROG Helper as your desktop user. Administrator authentication is requested separately for supported actions."
+    );
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -2822,6 +2841,36 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         "Setup & Access",
         "Understand which services, permissions, or hardware capabilities affect controls.",
     ));
+
+    let guided_setup = setup_assistant::SetupAssistant::new(
+        app_settings.ui.setup_assistant_completed,
+        {
+            let shared = shared.clone();
+            move || {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_setup_refresh = true;
+                    state.setup_refreshing = true;
+                    state.mark_render_dirty();
+                }
+            }
+        },
+        {
+            let shared = shared.clone();
+            move || {
+                if let Ok(mut state) = shared.lock() {
+                    state.settings.ui.setup_assistant_completed = true;
+                    state.pending_config_save = Some(state.settings.clone());
+                    state.pending_toast = Some((
+                        "Saving assistant preference. Remaining issues are shown below."
+                            .to_string(),
+                        false,
+                    ));
+                    state.mark_render_dirty();
+                }
+            }
+        },
+    );
+    setup_root.append(&guided_setup.widget);
 
     let setup_safety_banner = adw::Banner::new(
         "Checks are read-only. rog-helper never runs sudo, changes permissions, or installs packages.",
@@ -4857,8 +4906,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let fans_root = gtk::Box::new(gtk::Orientation::Vertical, 20);
     fans_root.add_css_class("fans-page");
-    fans_root.set_margin_top(24);
-    fans_root.set_margin_bottom(32);
+    fans_root.set_margin_top(20);
+    fans_root.set_margin_bottom(28);
     fans_root.set_margin_start(24);
     fans_root.set_margin_end(24);
 
@@ -5833,7 +5882,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&settings, Some("settings"), "Settings", ICON_SETTINGS);
     stack.add_titled_with_icon(&diag, Some("diagnostics"), "Diagnostics", ICON_DIAGNOSTICS);
     stack.add_titled_with_icon(&about, Some("about"), "About", ICON_ABOUT);
-
     let connection_status = gtk::Label::new(Some("Connecting…"));
     let navigation_items = [
         NavigationItem {
@@ -5893,6 +5941,9 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         },
     ];
     let view = shell::build_shell(&stack, &connection_status, &navigation_items, APP_ICON_NAME);
+    if !app_settings.ui.setup_assistant_completed {
+        stack.set_visible_child_name("setup");
+    }
 
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view));
@@ -5994,6 +6045,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let last_rendered_revision = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
     let last_lighting_apply_success = std::rc::Rc::new(std::cell::Cell::new(0_u64));
     let last_dashboard_layout = std::rc::Rc::new(std::cell::Cell::new(None::<DashboardLayout>));
+    let last_fan_layout = std::rc::Rc::new(std::cell::Cell::new(None::<FanLayout>));
     let detail_fan_rows_ref = detail_fan_rows.clone();
     let details_fan_group_ref = details_fan_group.clone();
     let fan_animation_rotors = hero_fan_slots
@@ -6034,6 +6086,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             caps,
             caps_text,
             setup_status,
+            setup_assistant_report,
             privileged_status,
             daemon_identity,
             setup_refreshing,
@@ -6100,6 +6153,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 st.caps.clone(),
                 st.caps_text.clone(),
                 st.setup_status.clone(),
+                st.setup_assistant_report.clone(),
                 st.privileged_status.clone(),
                 st.daemon_identity.clone(),
                 st.setup_refreshing,
@@ -6180,6 +6234,22 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             &live_performance_grid,
             &cockpit_lower_grid,
             &last_dashboard_layout,
+        );
+        let horizontal_margin = if dashboard_layout(dash.width()) == DashboardLayout::Narrow {
+            16
+        } else {
+            24
+        };
+        dash_root.set_margin_start(horizontal_margin);
+        dash_root.set_margin_end(horizontal_margin);
+        update_fan_flow_layout(
+            fans_root.width(),
+            &fans_root,
+            &fans_pills,
+            &gauge_row,
+            &hero_fans_flow,
+            &fan_cards_flow,
+            &last_fan_layout,
         );
         if last_rendered_revision.get() == Some(render_revision) {
             return glib::ControlFlow::Continue;
@@ -6622,6 +6692,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         } else {
             "Recheck Installation"
         });
+        guided_setup.update(
+            &setup_status,
+            privileged_status.as_ref(),
+            &setup_assistant_report,
+            setup_refreshing,
+        );
         setup_advanced_buffer.set_text(&setup_status.to_report_text(true));
         if setup_status.issues.is_empty() {
             setup_issues_row.set_title("No setup issues detected");
@@ -9438,12 +9514,15 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                         state.setup_refreshing = true;
                         state.mark_render_dirty();
                     }
-                    let (setup_result, privileged_result, identity_result) = tokio::join!(
+                    let (setup_result, privileged_result, identity_result, assistant_result) = tokio::join!(
                         fetch_setup_status(),
                         fetch_privileged_status(),
-                        fetch_daemon_identity()
+                        fetch_daemon_identity(),
+                        fetch_setup_assistant_report()
                     );
                     if let Ok(mut state) = shared.lock() {
+                        state.setup_assistant_report = assistant_result.unwrap_or_else(|error|
+                            format!("Setup plan unavailable: {error}. Recheck services after updating the session daemon."));
                         state.privileged_status = Some(privileged_result.unwrap_or_else(|_| {
                             PrivilegedStatus::unavailable(false, false)
                         }));
@@ -9600,6 +9679,27 @@ async fn fetch_daemon_identity() -> Result<DaemonIdentity, String> {
         .await
         .map_err(|error| format!("daemon GetDaemonInfo failed: {error}"))?;
     Ok(daemon_identity_from_dbus(&map, env!("CARGO_PKG_VERSION")))
+}
+
+async fn fetch_setup_assistant_report() -> Result<String, String> {
+    tokio::time::timeout(Duration::from_secs(12), async {
+        let conn = zbus::Connection::session()
+            .await
+            .map_err(|e| e.to_string())?;
+        let proxy = Daemon1Proxy::new(&conn).await.map_err(|e| e.to_string())?;
+        let encoded = proxy
+            .get_setup_assistant_snapshot()
+            .await
+            .map_err(|e| e.to_string())?;
+        let snapshot: rog_core::SetupSnapshot =
+            toml::from_str(&encoded).map_err(|e| e.to_string())?;
+        Ok::<_, String>(rog_providers::setup_assistant::format_setup_report(
+            &snapshot.system,
+            &snapshot.plan,
+        ))
+    })
+    .await
+    .map_err(|_| "Setup discovery timed out".to_string())?
 }
 
 async fn fetch_setup_status() -> Result<SetupStatus, String> {
@@ -13279,7 +13379,7 @@ fn update_setup_dependency_row(
                 DependencyState::Connected | DependencyState::Ready => "status-ok",
                 DependencyState::NotRelevant | DependencyState::Unknown => "status-info",
                 DependencyState::NotAvailable | DependencyState::Inactive => "status-warning",
-                DependencyState::Unreachable => "status-error",
+                DependencyState::Unreachable | DependencyState::Incompatible => "status-error",
             },
         );
         let required_for = if dependency.required_for.is_empty() {
@@ -13402,6 +13502,59 @@ enum DashboardLayout {
     Narrow,
     Medium,
     Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanLayout {
+    Narrow,
+    Medium,
+    Wide,
+}
+
+fn update_fan_flow_layout(
+    width: i32,
+    page: &gtk::Box,
+    status_pills: &gtk::FlowBox,
+    gauges: &gtk::FlowBox,
+    rotors: &gtk::FlowBox,
+    fan_cards: &gtk::FlowBox,
+    previous: &std::cell::Cell<Option<FanLayout>>,
+) {
+    if width <= 0 {
+        return;
+    }
+    let layout = fan_layout(width);
+    if previous.replace(Some(layout)) == Some(layout) {
+        return;
+    }
+    let (status_columns, gauge_columns, rotor_columns, card_columns) = match layout {
+        FanLayout::Narrow => (2, 1, 2, 1),
+        FanLayout::Medium => (4, 2, 3, 1),
+        FanLayout::Wide => (4, 2, 4, 2),
+    };
+    let horizontal_margin = match layout {
+        FanLayout::Narrow => 16,
+        FanLayout::Medium => 20,
+        FanLayout::Wide => 24,
+    };
+    page.set_margin_start(horizontal_margin);
+    page.set_margin_end(horizontal_margin);
+    for (flow, columns) in [
+        (status_pills, status_columns),
+        (gauges, gauge_columns),
+        (rotors, rotor_columns),
+        (fan_cards, card_columns),
+    ] {
+        flow.set_max_children_per_line(columns);
+    }
+}
+
+fn fan_layout(width: i32) -> FanLayout {
+    match width {
+        ..720 => FanLayout::Narrow,
+        720..1120 => FanLayout::Medium,
+        _ => FanLayout::Wide,
+    }
 }
 
 fn dashboard_layout(width: i32) -> DashboardLayout {
@@ -15828,6 +15981,28 @@ fn text_or_unknown(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cooling_layout_breakpoints_keep_controls_readable() {
+        assert_eq!(fan_layout(719), FanLayout::Narrow);
+        assert_eq!(fan_layout(720), FanLayout::Medium);
+        assert_eq!(fan_layout(1119), FanLayout::Medium);
+        assert_eq!(fan_layout(1120), FanLayout::Wide);
+    }
+
+    #[test]
+    fn desktop_identity_uses_effective_uid_and_rejects_missing_identity() {
+        assert_eq!(
+            effective_uid_from_status("Uid:\t1000\t0\t0\t0\n").unwrap(),
+            0
+        );
+        assert_eq!(
+            effective_uid_from_status("Uid:\t0\t1000\t1000\t1000\n").unwrap(),
+            1000
+        );
+        assert!(effective_uid_from_status("Uid: broken").is_err());
+        assert!(effective_uid_from_status("").is_err());
+    }
 
     #[test]
     fn setup_access_labels_fan_telemetry_without_calling_it_a_failure() {
