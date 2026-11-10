@@ -1,5 +1,11 @@
 # Troubleshooting
 
+For Storage, run `rog-helper storage list`, `rog-helper storage status`, and
+`rog-helper storage health`. A missing temperature, usage, or SMART field is
+unavailable rather than zero. Compare with trusted host sources as described
+in [Storage Management](STORAGE_MANAGEMENT.md); do not grant broad device
+permissions to force a reading.
+
 This document covers common issues based on the current implementation.
 
 For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:

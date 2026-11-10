@@ -1,5 +1,10 @@
 # Roadmap
 
+Storage Management 1.0 adds read-only inventory, I/O, volume, temperature,
+and supported SMART views. Hardware-specific label/health coverage and more
+logical-volume attribution remain future work; see
+[Storage Management](STORAGE_MANAGEMENT.md).
+
 This roadmap reflects the current repository state as implemented today. It is intentionally organized around what already exists, what is actively evolving, and what is still missing.
 
 Older milestone-era roadmap text described several features as future work even after they had been implemented. This file is meant to correct that drift.
