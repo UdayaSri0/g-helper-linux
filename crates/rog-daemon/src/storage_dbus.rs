@@ -96,6 +96,9 @@ fn encode_volume(volume: &StorageVolume) -> Map {
     if let Some(value) = volume.available_bytes {
         map.insert("available_bytes".into(), ov(value));
     }
+    if let Some(value) = volume.filesystem_size_bytes {
+        map.insert("filesystem_size_bytes".into(), ov(value));
+    }
     map
 }
 
@@ -231,5 +234,22 @@ mod tests {
             ..StorageHealth::default()
         };
         assert_eq!(fresh_health(&health, 1_300_002).state, "stale");
+    }
+
+    #[test]
+    fn volume_wire_separates_partition_and_filesystem_capacity() {
+        let volume = StorageVolume {
+            size_bytes: 50,
+            filesystem_size_bytes: Some(40),
+            used_bytes: Some(10),
+            available_bytes: Some(25),
+            ..StorageVolume::default()
+        };
+        let encoded = encode_volume(&volume);
+        assert_eq!(u64::try_from(encoded["size_bytes"].clone()).unwrap(), 50);
+        assert_eq!(
+            u64::try_from(encoded["filesystem_size_bytes"].clone()).unwrap(),
+            40
+        );
     }
 }
