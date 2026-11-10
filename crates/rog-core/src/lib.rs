@@ -13,6 +13,7 @@ pub mod policy;
 pub mod power_freshness;
 pub mod privileged;
 pub mod setup;
+pub mod storage;
 
 pub use config::*;
 pub use cpu_control::*;
@@ -24,3 +25,4 @@ pub use policy::*;
 pub use power_freshness::*;
 pub use privileged::*;
 pub use setup::*;
+pub use storage::*;
