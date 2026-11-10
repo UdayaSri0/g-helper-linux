@@ -37,11 +37,13 @@ use rog_providers::display;
 mod fan_widgets;
 mod setup_assistant;
 mod shell;
+mod storage_ui;
 mod theme;
 mod widgets;
 
 use fan_widgets::{move_curve_point, CurvePreview, FanRotor, GaugeAccent, RotorStatus, TempGauge};
 use shell::NavigationItem;
+use storage_ui::{StoragePage, StorageSnapshot};
 use widgets::{
     page_container, page_header, page_header_group, HistoryGraph, MetricCard, Sparkline,
 };
@@ -88,6 +90,8 @@ trait Daemon1 {
     fn get_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_storage_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_storage_diagnostics(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
@@ -213,6 +217,9 @@ enum PendingSavedProfileAction {
 struct SharedUiState {
     render_revision: u64,
     telemetry: Option<TelemetrySnapshot>,
+    storage: Option<StorageSnapshot>,
+    storage_diagnostics: Option<StorageSnapshot>,
+    pending_storage_diagnostics: bool,
     cpu: Option<CpuTelemetry>,
     cpu_caps: CpuCaps,
     cpu_usage_history: Vec<f32>,
@@ -290,6 +297,9 @@ impl Default for SharedUiState {
         Self {
             render_revision: 1,
             telemetry: None,
+            storage: None,
+            storage_diagnostics: None,
+            pending_storage_diagnostics: false,
             cpu: None,
             cpu_caps: CpuCaps::unknown(),
             cpu_usage_history: Vec::new(),
@@ -1328,7 +1338,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     let power_card = MetricCard::new("Power");
     let fans_card = MetricCard::new("Cooling");
     let memory_card = MetricCard::new("Memory");
-    let nvme_card = MetricCard::new("NVMe");
+    let nvme_card = MetricCard::new("Storage");
     cpu_card.add_css_class("metric-card-primary");
     gpu_card.add_css_class("metric-card-primary");
     system_card.add_css_class("metric-card-primary");
@@ -1413,7 +1423,14 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         -1,
     );
     secondary_metrics_grid.insert(power_card.widget(), -1);
-    secondary_metrics_grid.insert(nvme_card.widget(), -1);
+    secondary_metrics_grid.insert(
+        &dashboard_nav_card(&nvme_card, &stack, "storage", "Open the Storage page"),
+        -1,
+    );
+    let storage_dashboard_item = secondary_metrics_grid
+        .child_at_index(4)
+        .expect("storage dashboard card was inserted");
+    storage_dashboard_item.set_visible(app_settings.dashboard.show_nvme);
 
     let current_mode_strip = gtk::Box::new(gtk::Orientation::Vertical, 8);
     current_mode_strip.add_css_class("surface-card");
@@ -1727,7 +1744,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     thermal_strip.set_homogeneous(true);
     let thermal_cpu = gtk::Label::new(Some("CPU  —"));
     let thermal_gpu = gtk::Label::new(Some("GPU  —"));
-    let thermal_nvme = gtk::Label::new(Some("NVMe  —"));
+    let thermal_nvme = gtk::Label::new(Some("Storage  —"));
     for label in [&thermal_cpu, &thermal_gpu, &thermal_nvme] {
         label.add_css_class("dashboard-thermal-value");
         thermal_strip.append(label);
@@ -3363,8 +3380,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     );
     let settings_nvme_switch = settings_switch_row(
         &dashboard_settings_group,
-        "NVMe Card",
-        "Show the NVMe temperature card when a sensor is available.",
+        "Storage Card",
+        "Show the physical drive summary and Storage shortcut.",
         app_settings.dashboard.show_nvme,
     );
     let settings_cooling_switch = settings_switch_row(
@@ -5876,6 +5893,20 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&gpu, Some("gpu"), "GPU", ICON_GPU);
     stack.add_titled_with_icon(&battery, Some("battery"), "Battery", ICON_BATTERY);
     stack.add_titled_with_icon(&ram, Some("ram"), "Memory", ICON_RAM);
+    let storage_page = StoragePage::new({
+        let shared = shared.clone();
+        move || {
+            if let Ok(mut state) = shared.lock() {
+                state.pending_storage_diagnostics = true;
+            }
+        }
+    });
+    stack.add_titled_with_icon(
+        storage_page.widget(),
+        Some("storage"),
+        "Storage",
+        ICON_STORAGE,
+    );
     stack.add_titled_with_icon(&lighting, Some("lighting"), "Lighting", ICON_LIGHTING);
     stack.add_titled_with_icon(&fans, Some("fans"), "Cooling", ICON_FANS);
     stack.add_titled_with_icon(&setup, Some("setup"), "Setup & Access", ICON_DIAGNOSTICS);
@@ -5908,6 +5939,11 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             name: "ram",
             label: "Memory",
             icon: ICON_RAM,
+        },
+        NavigationItem {
+            name: "storage",
+            label: "Storage",
+            icon: ICON_STORAGE,
         },
         NavigationItem {
             name: "lighting",
@@ -6076,6 +6112,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let (
             telemetry,
+            storage,
+            storage_diagnostics,
             cpu,
             cpu_caps,
             cpu_usage_history,
@@ -6143,6 +6181,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             let pending_toast = st.pending_toast.take();
             (
                 st.telemetry.clone(),
+                st.storage.clone(),
+                st.storage_diagnostics.clone(),
                 st.cpu.clone(),
                 st.cpu_caps.clone(),
                 st.cpu_usage_history.clone(),
@@ -6255,6 +6295,37 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             return glib::ControlFlow::Continue;
         }
         last_rendered_revision.set(Some(render_revision));
+        storage_page.update(storage.as_ref(), storage_diagnostics.as_ref(), now_ms());
+        let (storage_count, storage_subtitle) = storage_ui::dashboard_summary(storage.as_ref());
+        nvme_card.set_value(storage_count);
+        nvme_card.set_unit(None);
+        nvme_card.set_subtitle(Some(&storage_subtitle));
+        storage_dashboard_item.set_visible(settings.dashboard.show_nvme);
+        let storage_temp = storage
+            .as_ref()
+            .filter(|snapshot| {
+                snapshot
+                    .sampled_at_ms
+                    .is_some_and(|sampled| now_ms().saturating_sub(sampled) <= 10_000)
+            })
+            .and_then(|snapshot| {
+                snapshot
+                    .drives
+                    .iter()
+                    .filter_map(|drive| {
+                        drive.temperature_c.filter(|_| {
+                            drive
+                                .temperature_sampled_at_ms
+                                .is_some_and(|sampled| now_ms().saturating_sub(sampled) <= 10_000)
+                        })
+                    })
+                    .reduce(f64::max)
+            });
+        thermal_nvme.set_text(
+            &storage_temp
+                .map(|value| format!("Storage  {value:.0}°C"))
+                .unwrap_or_else(|| "Storage  —".into()),
+        );
 
         system_health_panel.set_visible(settings.dashboard.show_system_health);
         cooling_snapshot_panel.set_visible(settings.dashboard.show_cooling_snapshot);
@@ -7573,30 +7644,6 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
                 }
             }
 
-            let nvme_temp = t
-                .temps_c
-                .iter()
-                .filter_map(|(name, value)| {
-                    if name.to_ascii_lowercase().contains("nvme") {
-                        Some(*value)
-                    } else {
-                        None
-                    }
-                })
-                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            if let Some(v) = nvme_temp {
-                nvme_card.widget().set_visible(settings.dashboard.show_nvme);
-                nvme_card.set_value(format!("{v:.1}"));
-                nvme_card.set_unit(Some("°C"));
-                nvme_card.set_subtitle(Some("Temperature"));
-                thermal_nvme.set_text(&format!("NVMe  {v:.0}°C"));
-            } else {
-                nvme_card.widget().set_visible(false);
-                nvme_card.set_value("--");
-                nvme_card.set_unit(None);
-                thermal_nvme.set_text("NVMe  —");
-            }
-
             battery_health_card.set_value(
                 t.battery_health_percent
                     .map(|v| format!("{v:.0}"))
@@ -7763,14 +7810,12 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
             fans_card.set_value("—");
             fans_card.set_unit(None);
             fans_card.set_subtitle(Some("Waiting for telemetry"));
-            nvme_card.widget().set_visible(false);
             mode_power.set_text("—");
             mode_battery.set_text("—");
             system_card.set_value("Connecting");
             system_card.set_subtitle(Some("Waiting for system state"));
             thermal_cpu.set_text("CPU  —");
             thermal_gpu.set_text("GPU  —");
-            thermal_nvme.set_text("NVMe  —");
             cooling_empty_hint.set_visible(true);
             for (row, _, _, _) in &dashboard_fan_rows {
                 row.set_visible(false);
@@ -9504,6 +9549,34 @@ fn spawn_background(shared: Arc<Mutex<SharedUiState>>, app_metadata: AppMetadata
                     }
                 }
 
+                let storage = tokio::time::timeout(Duration::from_secs(2), fetch_storage_state()).await;
+                if let Ok(mut state) = shared.lock() {
+                    state.storage = Some(match storage {
+                        Ok(Ok(storage)) => storage,
+                        _ => StorageSnapshot {
+                            status: "Storage monitoring unavailable. Update or restart rog-helperd.".into(),
+                            ..StorageSnapshot::default()
+                        },
+                    });
+                    state.mark_render_dirty();
+                }
+                let diagnostics_requested = shared
+                    .lock()
+                    .ok()
+                    .map(|mut state| std::mem::take(&mut state.pending_storage_diagnostics))
+                    .unwrap_or(false);
+                if diagnostics_requested {
+                    let diagnostics = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        fetch_storage_diagnostics(),
+                    )
+                    .await;
+                    if let Ok(mut state) = shared.lock() {
+                        state.storage_diagnostics = diagnostics.ok().and_then(Result::ok);
+                        state.mark_render_dirty();
+                    }
+                }
+
                 let refresh_setup = shared
                     .lock()
                     .ok()
@@ -9947,6 +10020,34 @@ async fn fetch_state() -> Result<
         fan_state,
         automation_status,
     ))
+}
+
+async fn fetch_storage_state() -> Result<StorageSnapshot, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session D-Bus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("storage daemon proxy unavailable: {error}"))?;
+    proxy
+        .get_storage_state()
+        .await
+        .map(storage_ui::decode)
+        .map_err(|error| format!("daemon GetStorageState failed: {error}"))
+}
+
+async fn fetch_storage_diagnostics() -> Result<StorageSnapshot, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session D-Bus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("storage daemon proxy unavailable: {error}"))?;
+    proxy
+        .get_storage_diagnostics()
+        .await
+        .map(storage_ui::decode)
+        .map_err(|error| format!("daemon GetStorageDiagnostics failed: {error}"))
 }
 
 async fn apply_lighting(p: PendingLighting) -> Result<(), String> {
