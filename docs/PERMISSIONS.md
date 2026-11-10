@@ -1,5 +1,10 @@
 # Permissions
 
+Storage monitoring uses unprivileged read-only sysfs, mountinfo, UDisks2
+cached SMART, and optional smartctl. Missing SMART permission is reported;
+the privileged helper receives no storage action or arbitrary path. See
+[Storage Management](STORAGE_MANAGEMENT.md).
+
 ## Capability and per-operation access
 
 Detection is not authorization. Every control surface must keep these dimensions separate:

@@ -1,5 +1,10 @@
 # Hardware Support
 
+Storage discovery and SMART support vary by controller, bridge, permissions,
+and sandbox. Fixture coverage is not physical validation. Record model,
+capacity, I/O, temperature source, and SMART comparisons against host sources
+before claiming support; see [Storage Management](STORAGE_MANAGEMENT.md).
+
 This document tracks real hardware validation evidence for the repository.
 
 Important rule:

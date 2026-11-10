@@ -1,5 +1,11 @@
 # DBus API
 
+Storage adds read-only `GetStorageState() -> a{sv}` and
+`GetStorageDiagnostics() -> a{sv}`. Both return `status`, `sampled_at_ms`, and
+`drives`; the latter also includes detailed health attributes. Neither accepts
+a device path. Missing optional fields mean unavailable, and the additive
+methods retain API epoch 1. See [Storage Management](STORAGE_MANAGEMENT.md).
+
 This document describes the current session-DBus API exported by `rog-helperd`.
 
 The implementation lives in `crates/rog-daemon/src/main.rs`. The UI client proxy lives in `crates/rog-ui/src/main.rs`.

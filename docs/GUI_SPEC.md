@@ -1,5 +1,11 @@
 # GUI Spec
 
+The Storage page adds dynamic physical-drive cards, selected-drive details,
+live I/O and bounded histories, volume usage, attributed temperature, and
+optional SMART status. The Dashboard links to it with a compact summary.
+Unavailable data is labelled rather than inferred. See
+[Storage Management](STORAGE_MANAGEMENT.md).
+
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope
@@ -96,7 +102,7 @@ Current content:
 - GPU temperature, telemetry state, current mode when reported, and real core/memory clocks when available
 - a System State summary for power source, battery state, daemon connection, available control count, and missing-service setup count
 - a compact Current System Mode strip for known power, profile, GPU mode, cooling mode, and battery state values; unknown controls show an em dash rather than dependency errors
-- compact Battery, Cooling, Memory, Power, and conditional NVMe cards
+- compact Battery, Cooling, Memory, Power, and optional Storage cards; Storage opens the dedicated physical-drive page
 - a compact warning notification that reserves error emphasis for daemon/telemetry failure
 - a compact two-column Quick Performance tile grid for:
   - performance profile
@@ -104,7 +110,7 @@ Current content:
   - battery charge limit
   - keyboard backlight brightness
 - a single compact `N control areas need setup` notification whose Review action opens Setup & Access; Dashboard does not duplicate remediation prose
-- a content-driven Cooling Snapshot with CPU/GPU/NVMe thermal values and up to four detected fan RPM rows using static fan symbols; it ends after its last detected row
+- a content-driven Cooling Snapshot with CPU/GPU and attributed storage thermal values when fresh, plus up to four detected fan RPM rows using static fan symbols; it ends after its last detected row
 - a Live Performance panel with compact CPU usage, CPU temperature, GPU temperature, and memory usage trends
 - a System Health panel summarizing `rog-helperd`, `asusd`, `supergfxd`, CPU writes, Lighting writes, fan-control state, and warning count with semantic indicators
 - raw temperatures, fan endpoints, and other technical names under a collapsed Advanced Sensor Details section
@@ -121,7 +127,7 @@ Current behavior:
 - System Overview uses five cards across at wide widths, three at medium widths, and one at narrow widths, preventing accidental 4+1 packing
 - the remaining major `GtkFlowBox` groups transition together through wide, medium, and narrow modes without horizontal scrolling; Current System Mode uses 5-wide, 3+2, or a single stacked column
 - GPU-temperature and memory histories are UI-only 60-sample buffers populated from the existing one-second daemon snapshots; they add no polling or hardware access
-- Settings can hide Advanced System Health, the conditional NVMe card, or Cooling Snapshot and can enable a compact vertical layout
+- Settings can hide Advanced System Health, the Storage card, or Cooling Snapshot and can enable a compact vertical layout
 - Dashboard uses 16 px side gutters below its narrow breakpoint and 24 px otherwise
 
 ### Setup & Access
@@ -290,7 +296,7 @@ Purpose:
 Current content:
 
 - Startup & Tray: On Close, Launch on Login, Start Minimized to Tray, and Exit Completely
-- Dashboard: Advanced System Health, conditional NVMe card, Cooling Snapshot, and compact spacing
+- Dashboard: Advanced System Health, optional Storage card, Cooling Snapshot, and compact spacing
 - Control Preferences: preferred charge limit and last manual performance profile
 - Saved Profiles: create, duplicate, rename/save, and confirmed delete; the current editor stages a name, platform profile, and battery limit
 - Automation: opt-in AC/Battery presets, optional battery threshold, daemon state/result, and explicit Resume after manual override

@@ -1,5 +1,9 @@
 # Provider Matrix
 
+Storage uses sysfs and mountinfo for physical inventory, I/O, and volumes;
+NVMe hwmon for attributable temperature; cached UDisks2 SMART first, with an
+optional bounded smartctl JSON fallback. See [Storage Management](STORAGE_MANAGEMENT.md).
+
 ## Selection and access rules
 
 | Domain | Preferred provider | Safe fallback | Access boundary |

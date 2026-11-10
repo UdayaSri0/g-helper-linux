@@ -1,5 +1,10 @@
 # rog-helper
 
+Storage Management provides a read-only physical-drive inventory, live block
+I/O, mounted-volume usage, attributed NVMe temperature, and optional SMART
+health in the GTK Storage page and `rog-helper storage` diagnostics. See
+[Storage Management](docs/STORAGE_MANAGEMENT.md) for sources and limits.
+
 Linux-native control app for ASUS ROG laptops, built as a Rust workspace with a GTK/libadwaita UI, a user-session daemon, a provider layer for DBus/sysfs/procfs integration, and a diagnostics CLI.
 
 This repository was reviewed and its markdown docs were refreshed against the current source code. When documentation and source disagree in the future, prefer the implementation in `crates/` and update the docs.

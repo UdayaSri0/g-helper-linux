@@ -1,5 +1,10 @@
 # Architecture
 
+Storage snapshots use the existing UI → session D-Bus → daemon → provider
+path. The daemon caches fast block I/O separately from slow SMART results;
+the privileged helper has no storage operation. See
+[Storage Management](STORAGE_MANAGEMENT.md).
+
 This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 ## Layered Structure
