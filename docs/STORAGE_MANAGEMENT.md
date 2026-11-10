@@ -5,6 +5,23 @@ Storage Management is read-only. The GTK page receives storage snapshots from
 SMART commands. The CLI uses the same `rog-providers` implementation for local
 diagnostics. No storage action is exposed by the privileged helper.
 
+The GTK page uses a persistent master-detail layout. Drive rows are retained by
+opaque device ID and updated in place; the selected panel, four detail tabs,
+history graphs, outer scroll adjustment, and advanced-details expander are
+created once. Only confirmed inventory changes add or remove drive rows.
+Transient unavailable or stale snapshots leave the last valid inventory
+visible, while readings whose own timestamps expire are shown as unavailable.
+SMART diagnostics update the existing Health & SMART tab and do not change the
+selected drive or active tab. Wide content uses two columns; below 900 px the
+drive selector stacks above details. There is one vertical scroller.
+
+The overview summarizes physical-drive count, summed raw physical capacity,
+evidence-based aggregate health, and combined current read/write throughput.
+Unknown or unsupported health is never counted as healthy. Per-drive Overview,
+Performance, Health & SMART, and Partitions & Volumes tabs show available data;
+volume usage percentages are shown only when both used and available bytes are
+present. Opening the page performs no privileged request.
+
 ## Data flow and identity
 
 `rog-providers::storage::StorageProvider` enumerates whole physical block

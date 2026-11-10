@@ -5893,14 +5893,20 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     stack.add_titled_with_icon(&gpu, Some("gpu"), "GPU", ICON_GPU);
     stack.add_titled_with_icon(&battery, Some("battery"), "Battery", ICON_BATTERY);
     stack.add_titled_with_icon(&ram, Some("ram"), "Memory", ICON_RAM);
-    let storage_page = StoragePage::new({
-        let shared = shared.clone();
-        move || {
-            if let Ok(mut state) = shared.lock() {
-                state.pending_storage_diagnostics = true;
+    let storage_page = StoragePage::new(
+        {
+            let shared = shared.clone();
+            move || {
+                if let Ok(mut state) = shared.lock() {
+                    state.pending_storage_diagnostics = true;
+                }
             }
-        }
-    });
+        },
+        {
+            let shared = shared.clone();
+            move || mark_ui_render_dirty(&shared)
+        },
+    );
     stack.add_titled_with_icon(
         storage_page.widget(),
         Some("storage"),
