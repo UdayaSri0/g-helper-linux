@@ -6,6 +6,12 @@ optional SMART status. The Dashboard links to it with a compact summary.
 Unavailable data is labelled rather than inferred. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
+The Storage page uses persistent drive rows and a two-column master-detail
+layout, switching to a stacked layout below 900 px. Its Overview, Performance,
+Health & SMART, and Partitions & Volumes tabs, graph widgets, selection,
+expanded technical details, and scroll container survive telemetry updates.
+Device rows are changed only when the physical inventory changes.
+
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope

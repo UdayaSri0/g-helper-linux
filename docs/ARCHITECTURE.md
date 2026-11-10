@@ -5,6 +5,14 @@ path. The daemon caches fast block I/O separately from slow SMART results;
 the privileged helper has no storage operation. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
+The GTK StoragePage owns a persistent master-detail widget tree. Its drive
+buttons are keyed by opaque provider IDs and reconcile only on inventory
+changes; the selected detail widgets and bounded graph canvases update in
+place. The UI retains the last valid inventory during transient failures and
+applies per-field freshness limits before displaying readings. The global UI
+render revision can still call the page update, but ordinary refreshes do not
+replace its children or reconnect signals.
+
 This document describes the current runtime architecture as implemented in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 ## Layered Structure
