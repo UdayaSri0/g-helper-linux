@@ -5,33 +5,27 @@ Storage Management is read-only. The GTK page receives storage snapshots from
 SMART commands. The CLI uses the same `rog-providers` implementation for local
 diagnostics. No storage action is exposed by the privileged helper.
 
-The GTK page uses a persistent master-detail layout. Drive rows are retained by
-opaque device ID and updated in place; the selected panel, four detail tabs,
-history graphs, outer scroll adjustment, and advanced-details expander are
-created once. Only confirmed inventory changes add or remove drive rows.
+The GTK page stacks a full-width dashboard for every detected physical drive
+below a compact global summary. Each dashboard is retained by opaque device ID
+and owns its metrics, history graphs, health and volume rows, and technical
+details expander. Telemetry updates change these widgets in place. Only
+confirmed inventory changes add or remove dashboards, in stable device order.
 Transient unavailable or stale snapshots leave the last valid inventory
 visible, while readings whose own timestamps expire are shown as unavailable.
-SMART diagnostics update the existing Health & SMART tab and do not change the
-selected drive or active tab. Wide content uses two columns; below 900 px the
-drive selector stacks above details. There is one vertical scroller.
+There is one vertical scroller, and live refresh does not reset its position or
+collapse technical details. The global application navigation stays visible.
 
 The compact overview summarizes physical-drive count, summed raw physical
 capacity, evidence-based aggregate health, and combined current read/write
 throughput. Unknown or unsupported health is never counted as healthy. The
-selected-drive Overview uses persistent quick metrics, paired read/write
-history charts, a SMART summary, and mounted-filesystem usage. Performance
-shows IOPS and three bounded histories; Health & SMART presents supported
-attributes as individually labelled values; Partitions & Volumes keeps
-partition size separate from measured filesystem capacity. Usage bars appear
-only when both used and available bytes are present. Opening or refreshing the
-page performs no privileged request.
-
-The detail stack is vertically non-homogeneous so short tabs use their natural
-height instead of inheriting the height of Performance or a long SMART list.
-The outer page remains the only vertical scroller. Overview values, health rows,
-volume rows, graphs, selection, tabs, and expanded details update in place.
-Long device names are ellipsized in the selector and remain available in the
-tooltip and selected-drive heading.
+per-drive dashboards show identity, temperature, capacity, health, read and
+write throughput and IOPS, independent bounded histories, supported SMART
+attributes, and each drive's partitions and volumes. Technical information is
+expandable; essential health information stays visible. Partition size remains
+separate from measured filesystem capacity. Usage bars appear only when both
+used and available bytes are present. Long model names wrap or ellipsize within
+their dashboard and remain available in a tooltip or technical details. Opening
+or refreshing the page performs no privileged request.
 
 ## Data flow and identity
 

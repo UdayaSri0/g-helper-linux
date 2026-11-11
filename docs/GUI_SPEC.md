@@ -1,22 +1,20 @@
 # GUI Spec
 
-The Storage page adds dynamic physical-drive cards, selected-drive details,
+The Storage page shows every physical drive in a full-width dashboard, with
 live I/O and bounded histories, volume usage, attributed temperature, and
 optional SMART status. The Dashboard links to it with a compact summary.
 Unavailable data is labelled rather than inferred. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
-The Storage page uses persistent drive rows and a two-column master-detail
-layout, switching to a stacked layout below 900 px. Its Overview, Performance,
-Health & SMART, and Partitions & Volumes tabs, graph widgets, selection,
-expanded technical details, and scroll container survive telemetry updates.
-Device rows are changed only when the physical inventory changes.
-
-The detail stack is vertically non-homogeneous and each tab begins at its top,
-so Overview does not reserve the height of Performance or a long SMART list.
-Overview shows compact drive metrics, paired I/O history, a SMART summary, and
-mounted filesystem usage. Volume filesystem capacity remains distinct from
-physical partition size; unsupported SMART attributes remain unavailable.
+The page has one vertical scroller. A compact header and four global summary
+metrics precede one persistent section per drive. Every section shows identity,
+quick metrics, independent read and write histories, SMART health, partitions
+and filesystem usage, plus expandable technical details. Wide layouts place
+charts and metrics side by side; narrow layouts reflow them without horizontal
+scrolling. Telemetry changes values in place, keeping scroll position and
+expanded details stable. Sections are added or removed only when the physical
+inventory changes. Volume filesystem capacity remains distinct from physical
+partition size; unsupported SMART attributes remain unavailable.
 
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 

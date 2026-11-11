@@ -141,19 +141,22 @@ pub(crate) struct StoragePage {
     root: gtk::ScrolledWindow,
     summary: [MetricCard; 4],
     status: gtk::Label,
-    columns: gtk::Paned,
-    drive_list: gtk::Box,
-    drive_rows: RefCell<HashMap<String, DriveRow>>,
+    dashboards_box: gtk::Box,
+    dashboards: RefCell<HashMap<String, DriveDashboard>>,
+    order: RefCell<Vec<String>>,
+    latest: Rc<RefCell<Option<StorageSnapshot>>>,
+    copy_now: Rc<Cell<u64>>,
+    request_diagnostics: Rc<dyn Fn()>,
+    diagnostics_busy: Rc<Cell<bool>>,
+}
+
+struct DriveDashboard {
+    root: gtk::Box,
     details_title: gtk::Label,
     details_meta: gtk::Label,
     details_health: gtk::Label,
     details_temp: gtk::Label,
     overview_metrics: [MetricCard; 4],
-    overview_health: gtk::Label,
-    overview_health_meta: gtk::Label,
-    overview_volume_text: gtk::Label,
-    overview_read_graph: HistoryGraph,
-    overview_write_graph: HistoryGraph,
     health_assessment: gtk::Label,
     health_meta: gtk::Label,
     health_attributes: gtk::Box,
@@ -163,25 +166,12 @@ pub(crate) struct StoragePage {
     volumes: gtk::Box,
     volume_rows: RefCell<HashMap<String, VolumeWidgets>>,
     advanced: gtk::Label,
-    tabs: gtk::Stack,
-    active_tab: Rc<RefCell<String>>,
-    selected_id: Rc<RefCell<Option<String>>>,
-    latest: Rc<RefCell<Option<StorageSnapshot>>>,
-    copy_now: Rc<Cell<u64>>,
     read_graph: HistoryGraph,
     write_graph: HistoryGraph,
     temperature_graph: HistoryGraph,
     performance_read_iops: MetricCard,
     performance_write_iops: MetricCard,
     performance_freshness: gtk::Label,
-    request_render: Rc<dyn Fn()>,
-}
-
-struct DriveRow {
-    button: gtk::Button,
-    title: gtk::Label,
-    subtitle: gtk::Label,
-    health: gtk::Label,
 }
 
 struct VolumeWidgets {
@@ -198,32 +188,23 @@ struct HealthAttributeWidgets {
 }
 
 impl StoragePage {
-    pub(crate) fn new(
-        request_diagnostics: impl Fn() + 'static,
-        request_render: impl Fn() + 'static,
-    ) -> Self {
-        let request_diagnostics = Rc::new(request_diagnostics);
-        let request_render = Rc::new(request_render);
+    pub(crate) fn new(request_diagnostics: impl Fn() + 'static) -> Self {
+        let request_diagnostics = Rc::new(request_diagnostics) as Rc<dyn Fn()>;
         let body = page_container();
         body.append(&page_header(
             "Storage",
-            "Physical drives, live I/O, volumes, and available health data.",
+            "Physical drive monitoring, performance and health",
         ));
         let summary = [
             MetricCard::new("Physical drives"),
             MetricCard::new("Total capacity"),
-            MetricCard::new("Storage health"),
+            MetricCard::new("Overall health"),
             MetricCard::new("Live activity"),
         ];
-        for card in &summary {
-            card.add_css_class("metric-card-compact");
-            card.set_subtitle_width_chars(24);
-        }
         let summary_grid = gtk::FlowBox::new();
-        summary_grid.add_css_class("storage-summary-grid");
         summary_grid.set_selection_mode(gtk::SelectionMode::None);
-        summary_grid.set_max_children_per_line(4);
         summary_grid.set_min_children_per_line(1);
+        summary_grid.set_max_children_per_line(4);
         summary_grid.set_column_spacing(12);
         summary_grid.set_row_spacing(12);
         for (card, icon) in summary.iter().zip([
@@ -232,6 +213,8 @@ impl StoragePage {
             "emblem-ok-symbolic",
             "utilities-system-monitor-symbolic",
         ]) {
+            card.add_css_class("metric-card-compact");
+            card.set_subtitle_width_chars(24);
             card.set_icon_name(icon);
             summary_grid.insert(card.widget(), -1);
         }
@@ -240,18 +223,9 @@ impl StoragePage {
         status.set_xalign(0.0);
         status.add_css_class("storage-status-caption");
         body.append(&status);
-        let columns = gtk::Paned::new(gtk::Orientation::Horizontal);
-        columns.set_wide_handle(true);
-        columns.set_position(340);
-        let drive_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        drive_list.set_size_request(240, -1);
-        columns.set_start_child(Some(&drive_list));
-        let detail = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        detail.set_margin_start(16);
-        columns.set_end_child(Some(&detail));
-        columns.set_resize_start_child(false);
-        columns.set_shrink_start_child(true);
-        body.append(&columns);
+        let dashboards_box = gtk::Box::new(gtk::Orientation::Vertical, 20);
+        dashboards_box.set_hexpand(true);
+        body.append(&dashboards_box);
         let root = gtk::ScrolledWindow::new();
         root.set_vexpand(true);
         root.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
@@ -260,306 +234,19 @@ impl StoragePage {
         clamp.set_tightening_threshold(900);
         clamp.set_child(Some(&body));
         root.set_child(Some(&clamp));
-        let details_title = gtk::Label::new(Some("Select a drive"));
-        details_title.set_xalign(0.0);
-        details_title.add_css_class("page-title");
-        detail.append(&details_title);
-        let details_meta =
-            gtk::Label::new(Some("Drive performance, capacity, temperature and health"));
-        details_meta.set_xalign(0.0);
-        detail.append(&details_meta);
-        let metric_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let details_health = gtk::Label::new(Some("Health unavailable"));
-        let details_temp = gtk::Label::new(Some("Temperature unavailable"));
-        details_health.add_css_class("status-chip");
-        details_temp.add_css_class("status-chip");
-        metric_row.append(&details_health);
-        metric_row.append(&details_temp);
-        detail.append(&metric_row);
-        let tabs = gtk::Stack::new();
-        tabs.set_transition_type(gtk::StackTransitionType::None);
-        tabs.set_vhomogeneous(false);
-        tabs.set_valign(gtk::Align::Start);
-        let overview = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        overview.set_valign(gtk::Align::Start);
-        overview.set_hexpand(true);
-        let overview_metrics = [
-            MetricCard::new("Temperature"),
-            MetricCard::new("SMART health"),
-            MetricCard::new("Read throughput"),
-            MetricCard::new("Write throughput"),
-        ];
-        for (card, icon) in overview_metrics.iter().zip([
-            "weather-clear-symbolic",
-            "emblem-ok-symbolic",
-            "go-down-symbolic",
-            "go-up-symbolic",
-        ]) {
-            card.add_css_class("metric-card-compact");
-            card.set_icon_name(icon);
-        }
-        let overview_metric_grid = gtk::FlowBox::new();
-        overview_metric_grid.set_selection_mode(gtk::SelectionMode::None);
-        overview_metric_grid.set_max_children_per_line(4);
-        overview_metric_grid.set_min_children_per_line(2);
-        overview_metric_grid.set_column_spacing(10);
-        overview_metric_grid.set_row_spacing(10);
-        for card in &overview_metrics {
-            overview_metric_grid.insert(card.widget(), -1);
-        }
-        overview.append(&overview_metric_grid);
-        let overview_activity = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        overview_activity.add_css_class("surface-card");
-        let overview_activity_title = gtk::Label::new(Some("Recent activity"));
-        overview_activity_title.set_xalign(0.0);
-        overview_activity_title.add_css_class("dashboard-panel-title");
-        overview_activity.append(&overview_activity_title);
-        let overview_charts = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let overview_read_graph = HistoryGraph::new("Read", 0.0, 1.0, "MB/s", (0.30, 0.64, 1.0));
-        let overview_write_graph = HistoryGraph::new("Write", 0.0, 1.0, "MB/s", (0.49, 0.88, 0.70));
-        overview_read_graph.set_content_height(120);
-        overview_write_graph.set_content_height(120);
-        overview_charts.append(overview_read_graph.widget());
-        overview_charts.append(overview_write_graph.widget());
-        overview_activity.append(&overview_charts);
-        overview.append(&overview_activity);
-        let overview_lower = gtk::FlowBox::new();
-        overview_lower.set_selection_mode(gtk::SelectionMode::None);
-        overview_lower.set_min_children_per_line(1);
-        overview_lower.set_max_children_per_line(2);
-        overview_lower.set_column_spacing(10);
-        overview_lower.set_row_spacing(10);
-        let overview_health_panel = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        overview_health_panel.add_css_class("surface-card");
-        let overview_health_title = gtk::Label::new(Some("Health summary"));
-        overview_health_title.set_xalign(0.0);
-        overview_health_title.add_css_class("dashboard-panel-title");
-        let overview_health = gtk::Label::new(Some("SMART data unavailable"));
-        overview_health.set_xalign(0.0);
-        overview_health.add_css_class("status-chip");
-        let overview_health_meta = gtk::Label::new(Some("Waiting for a health sample"));
-        overview_health_meta.set_xalign(0.0);
-        overview_health_meta.set_wrap(true);
-        overview_health_panel.append(&overview_health_title);
-        overview_health_panel.append(&overview_health);
-        overview_health_panel.append(&overview_health_meta);
-        let overview_volume_panel = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        overview_volume_panel.add_css_class("surface-card");
-        let overview_volume_title = gtk::Label::new(Some("Mounted volumes"));
-        overview_volume_title.set_xalign(0.0);
-        overview_volume_title.add_css_class("dashboard-panel-title");
-        let overview_volume_summary = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let overview_volume_text = gtk::Label::new(Some("No attributable mounted filesystems."));
-        overview_volume_text.set_xalign(0.0);
-        overview_volume_text.set_wrap(true);
-        overview_volume_summary.append(&overview_volume_text);
-        overview_volume_panel.append(&overview_volume_title);
-        overview_volume_panel.append(&overview_volume_summary);
-        overview_lower.insert(&overview_health_panel, -1);
-        overview_lower.insert(&overview_volume_panel, -1);
-        overview.append(&overview_lower);
-        let performance = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        let performance_metrics = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let performance_read_iops = MetricCard::new("Read IOPS");
-        let performance_write_iops = MetricCard::new("Write IOPS");
-        for card in [&performance_read_iops, &performance_write_iops] {
-            card.add_css_class("metric-card-compact");
-            card.set_value("Unavailable");
-            performance_metrics.append(card.widget());
-        }
-        let performance_freshness = gtk::Label::new(Some("Waiting for telemetry"));
-        performance_freshness.set_xalign(0.0);
-        performance_freshness.add_css_class("storage-status-caption");
-        performance.append(&performance_metrics);
-        performance.append(&performance_freshness);
-        let read_graph = HistoryGraph::new("Read throughput", 0.0, 1.0, "MB/s", (0.30, 0.64, 1.0));
-        let write_graph =
-            HistoryGraph::new("Write throughput", 0.0, 1.0, "MB/s", (0.49, 0.88, 0.70));
-        let temperature_graph =
-            HistoryGraph::new("Drive temperature", 0.0, 50.0, "°C", (0.96, 0.68, 0.38));
-        read_graph.set_content_height(170);
-        write_graph.set_content_height(170);
-        temperature_graph.set_content_height(155);
-        let io_graphs = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        io_graphs.append(read_graph.widget());
-        io_graphs.append(write_graph.widget());
-        let responsive_columns = columns.clone();
-        let responsive_drive_list = drive_list.clone();
-        let responsive_overview_charts = overview_charts.clone();
-        let responsive_io_graphs = io_graphs.clone();
-        root.connect_notify_local(Some("width"), move |root, _| {
-            let narrow = root.width() < 900;
-            responsive_columns.set_orientation(if narrow {
-                gtk::Orientation::Vertical
-            } else {
-                gtk::Orientation::Horizontal
-            });
-            if narrow {
-                let (_, natural, _, _) =
-                    responsive_drive_list.measure(gtk::Orientation::Vertical, root.width());
-                responsive_columns.set_position(natural);
-            } else {
-                responsive_columns.set_position(340);
-            }
-            let orientation = if root.width() < 640 {
-                gtk::Orientation::Vertical
-            } else {
-                gtk::Orientation::Horizontal
-            };
-            responsive_overview_charts.set_orientation(orientation);
-            responsive_io_graphs.set_orientation(orientation);
-        });
-        performance.append(&io_graphs);
-        performance.append(temperature_graph.widget());
-        let health = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        health.set_valign(gtk::Align::Start);
-        let health_summary = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        health_summary.add_css_class("surface-card");
-        let health_assessment = gtk::Label::new(Some("SMART data unavailable"));
-        health_assessment.set_xalign(0.0);
-        health_assessment.add_css_class("status-chip");
-        let health_meta =
-            gtk::Label::new(Some("Refresh SMART details to request a read-only sample."));
-        health_meta.set_xalign(0.0);
-        health_meta.set_wrap(true);
-        health_summary.append(&health_assessment);
-        health_summary.append(&health_meta);
-        let health_attributes = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        let health_attribute_placeholder = gtk::Label::new(Some(
-            "Detailed SMART attributes are unavailable. Refresh to request a read-only sample.",
-        ));
-        health_attribute_placeholder.set_xalign(0.0);
-        health_attribute_placeholder.set_wrap(true);
-        health_attributes.append(&health_attribute_placeholder);
-        let smart_expander = gtk::Expander::new(Some("Advanced SMART attributes"));
-        let health_advanced_attributes = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        health_advanced_attributes.set_margin_top(8);
-        smart_expander.set_child(Some(&health_advanced_attributes));
-        health.append(&health_summary);
-        health.append(&health_attributes);
-        health.append(&smart_expander);
-        let volumes = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        volumes.set_valign(gtk::Align::Start);
-        let volume_placeholder = gtk::Label::new(Some("No attributable volumes reported."));
-        volume_placeholder.set_xalign(0.0);
-        volume_placeholder.add_css_class("volume-placeholder");
-        volumes.append(&volume_placeholder);
-        tabs.add_titled(&overview, Some("Overview"), "Overview");
-        tabs.add_titled(&performance, Some("Performance"), "Performance");
-        tabs.add_titled(&health, Some("Health & SMART"), "Health & SMART");
-        tabs.add_titled(
-            &volumes,
-            Some("Partitions & Volumes"),
-            "Partitions & Volumes",
-        );
-        let switcher = gtk::StackSwitcher::new();
-        switcher.set_stack(Some(&tabs));
-        performance.set_valign(gtk::Align::Start);
-        let active_tab = Rc::new(RefCell::new("Overview".to_string()));
-        let active_tab_changed = active_tab.clone();
-        tabs.connect_visible_child_notify(move |stack| {
-            if let Some(name) = stack.visible_child_name() {
-                *active_tab_changed.borrow_mut() = name.to_string();
-            }
-        });
-        detail.append(&switcher);
-        detail.append(&tabs);
-        let refresh = gtk::Button::with_label("Refresh SMART details");
-        refresh.set_halign(gtk::Align::Start);
-        let diagnostics_busy = Rc::new(Cell::new(false));
-        let refresh_weak = refresh.downgrade();
-        refresh.connect_clicked({
-            let request = request_diagnostics.clone();
-            let busy = diagnostics_busy.clone();
-            move |button| {
-                if busy.replace(true) {
-                    return;
-                }
-                button.set_label("Loading SMART details…");
-                button.set_sensitive(false);
-                request();
-                let busy = busy.clone();
-                let button = refresh_weak.clone();
-                gtk::glib::timeout_add_seconds_local_once(8, move || {
-                    busy.set(false);
-                    if let Some(button) = button.upgrade() {
-                        button.set_label("Refresh SMART details");
-                        button.set_sensitive(true);
-                    }
-                });
-            }
-        });
-        detail.append(&refresh);
-        let copy = gtk::Button::with_label("Copy redacted diagnostics");
-        copy.set_halign(gtk::Align::Start);
-        let selected_id = Rc::new(RefCell::new(None::<String>));
-        let latest = Rc::new(RefCell::new(None::<StorageSnapshot>));
+        let latest = Rc::new(RefCell::new(None));
         let copy_now = Rc::new(Cell::new(0));
-        copy.connect_clicked({
-            let selected = selected_id.clone();
-            let latest = latest.clone();
-            let now = copy_now.clone();
-            move |_| {
-                if let (Some(id), Some(snapshot)) =
-                    (selected.borrow().as_ref(), latest.borrow().as_ref())
-                {
-                    if let Some(drive) = snapshot.drives.iter().find(|drive| &drive.id == id) {
-                        if let Some(display) = gtk::gdk::Display::default() {
-                            display.clipboard().set_text(&redacted_diagnostics(
-                                drive,
-                                snapshot.sampled_at_ms,
-                                now.get(),
-                            ));
-                        }
-                    }
-                }
-            }
-        });
-        detail.append(&copy);
-        let advanced = gtk::Label::new(Some("Technical details unavailable."));
-        advanced.set_xalign(0.0);
-        advanced.set_wrap(true);
-        let expander = gtk::Expander::new(Some("Technical details"));
-        expander.set_child(Some(&advanced));
-        detail.append(&expander);
         Self {
             root,
             summary,
             status,
-            columns,
-            drive_list,
-            drive_rows: RefCell::new(HashMap::new()),
-            details_title,
-            details_meta,
-            details_health,
-            details_temp,
-            overview_metrics,
-            overview_health,
-            overview_health_meta,
-            overview_volume_text,
-            overview_read_graph,
-            overview_write_graph,
-            health_assessment,
-            health_meta,
-            health_attributes,
-            health_advanced_attributes,
-            health_attribute_placeholder,
-            health_attribute_rows: RefCell::new(HashMap::new()),
-            volumes,
-            volume_rows: RefCell::new(HashMap::new()),
-            advanced,
-            tabs,
-            active_tab,
-            selected_id,
+            dashboards_box,
+            dashboards: RefCell::new(HashMap::new()),
+            order: RefCell::new(Vec::new()),
             latest,
             copy_now,
-            read_graph,
-            write_graph,
-            temperature_graph,
-            performance_read_iops,
-            performance_write_iops,
-            performance_freshness,
-            request_render,
+            request_diagnostics,
+            diagnostics_busy: Rc::new(Cell::new(false)),
         }
     }
 
@@ -596,7 +283,7 @@ impl StoragePage {
                     &snapshot.status
                 },
             );
-            // Keep the last valid inventory and selection visible while the service recovers.
+            // Keep the last valid inventory visible while the service recovers.
             self.mark_live_metrics_unavailable();
             return;
         }
@@ -625,13 +312,13 @@ impl StoragePage {
             let total_read = snapshot
                 .drives
                 .iter()
-                .filter_map(|drive| drive.read_bytes_per_sec)
-                .reduce(u64::saturating_add);
+                .map(|drive| drive.read_bytes_per_sec)
+                .try_fold(0_u64, |total, rate| Some(total.saturating_add(rate?)));
             let total_write = snapshot
                 .drives
                 .iter()
-                .filter_map(|drive| drive.write_bytes_per_sec)
-                .reduce(u64::saturating_add);
+                .map(|drive| drive.write_bytes_per_sec)
+                .try_fold(0_u64, |total, rate| Some(total.saturating_add(rate?)));
             let critical = snapshot
                 .drives
                 .iter()
@@ -673,155 +360,263 @@ impl StoragePage {
             self.summary[3].set_value(format!("R {} · W {}", rate(total_read), rate(total_write)));
             self.summary[3].set_subtitle(Some("Current combined throughput"));
         }
-        let previous_selection = self.selected_id.borrow().clone();
-        let selection = reconcile_selection(previous_selection.as_deref(), &snapshot.drives);
-        *self.selected_id.borrow_mut() = selection;
-        let ids = snapshot
+        let incoming = snapshot
             .drives
             .iter()
-            .map(|drive| drive.id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let inventory_changed = {
-            let rows = self.drive_rows.borrow();
-            rows.len() != ids.len() || rows.keys().any(|id| !ids.contains(id))
-        };
-        let removed = self
-            .drive_rows
-            .borrow()
-            .keys()
-            .filter(|id| !ids.contains(*id))
-            .cloned()
+            .map(|d| d.id.clone())
             .collect::<Vec<_>>();
-        for id in removed {
-            if let Some(row) = self.drive_rows.borrow_mut().remove(&id) {
-                self.drive_list.remove(&row.button);
-            }
-        }
-        for drive in &snapshot.drives {
-            let temperature = drive.temperature_c.filter(|_| {
-                drive
-                    .temperature_sampled_at_ms
-                    .is_some_and(|sampled| now_ms.saturating_sub(sampled) <= 10_000)
-            });
-            let mut rows = self.drive_rows.borrow_mut();
-            if !rows.contains_key(&drive.id) {
-                let button = gtk::Button::new();
-                button.add_css_class("flat");
-                button.add_css_class("storage-drive-row");
-                button.set_hexpand(true);
-                button.set_halign(gtk::Align::Fill);
-                let box_ = gtk::Box::new(gtk::Orientation::Vertical, 4);
-                let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                let icon = gtk::Image::from_icon_name("drive-harddisk-symbolic");
-                icon.set_pixel_size(20);
-                icon.add_css_class("metric-card-icon");
-                let title = gtk::Label::new(None);
-                title.set_xalign(0.0);
-                title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                title.set_hexpand(true);
-                heading.append(&icon);
-                heading.append(&title);
-                let subtitle = gtk::Label::new(None);
-                subtitle.set_xalign(0.0);
-                subtitle.set_single_line_mode(true);
-                subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                let health = gtk::Label::new(None);
-                health.set_xalign(0.0);
-                health.add_css_class("status-chip");
-                box_.append(&heading);
-                box_.append(&subtitle);
-                box_.append(&health);
-                button.set_child(Some(&box_));
-                let id = drive.id.clone();
-                let selected = self.selected_id.clone();
-                let render = self.request_render.clone();
-                button.update_property(&[gtk::accessible::Property::Label("Select storage drive")]);
-                button.connect_clicked(move |_| {
-                    *selected.borrow_mut() = Some(id.clone());
-                    render();
-                });
-                self.drive_list.append(&button);
-                rows.insert(
-                    drive.id.clone(),
-                    DriveRow {
-                        button,
-                        title,
-                        subtitle,
-                        health,
-                    },
-                );
-            }
-            if let Some(row) = rows.get(&drive.id) {
-                let full_model = if drive.model.is_empty() {
-                    &drive.name
-                } else {
-                    &drive.model
-                };
-                row.title.set_text(&short_model(full_model));
-                row.title.set_tooltip_text(Some(full_model));
-                row.subtitle.set_text(&format!(
-                    "{} · {} · {} · {}",
-                    drive.kind,
-                    drive.transport,
-                    drive
-                        .capacity_bytes
-                        .map(byte_size)
-                        .unwrap_or_else(|| "Unavailable".into()),
-                    temperature
-                        .map(|v| format!("{v:.1} °C"))
-                        .unwrap_or_else(|| "Temp unavailable".into())
-                ));
-                row.health.set_text(&drive.health);
-                set_health_style(&row.health, &drive.health);
-                let accessible_name = format!(
-                    "Select {}",
-                    if drive.model.is_empty() {
-                        &drive.name
-                    } else {
-                        &drive.model
-                    }
-                );
-                row.button
-                    .update_property(&[gtk::accessible::Property::Label(&accessible_name)]);
-                if Some(&drive.id) == self.selected_id.borrow().as_ref() {
-                    row.button.add_css_class("storage-drive-selected");
-                } else {
-                    row.button.remove_css_class("storage-drive-selected");
-                }
-                row.button.set_tooltip_text(Some(&format!(
-                    "{full_model} · {} · {}",
-                    drive.kind, drive.transport
-                )));
-            }
-        }
-        if inventory_changed && self.root.width() < 900 {
-            let (_, natural, _, _) = self
-                .drive_list
-                .measure(gtk::Orientation::Vertical, self.root.width());
-            self.columns.set_position(natural);
-        }
-        if let Some(drive) = snapshot
-            .drives
+        let next_order = reconcile_order(&self.order.borrow(), &incoming);
+        let mut dashboards = self.dashboards.borrow_mut();
+        for id in self
+            .order
+            .borrow()
             .iter()
-            .find(|drive| Some(&drive.id) == self.selected_id.borrow().as_ref())
+            .filter(|id| !incoming.contains(id))
         {
-            let diagnostic_drive = diagnostics
-                .and_then(|snapshot| snapshot.drives.iter().find(|item| item.id == drive.id));
-            self.update_details(drive, diagnostic_drive, snapshot.sampled_at_ms, now_ms);
-        } else {
-            self.details_title.set_text("No physical drive selected");
-            self.details_meta
-                .set_text("Connect a supported drive to view its details.");
-            self.overview_health.set_text("SMART data unavailable");
-            self.overview_health_meta
-                .set_text("No physical drive is currently available.");
-            self.health_assessment.set_text("SMART data unavailable");
-            self.health_meta
-                .set_text("No physical drive is currently available.");
-            self.overview_volume_text
-                .set_text("No attributable mounted filesystems.");
-            self.update_health_attributes(&[]);
-            self.update_volumes(&[]);
+            if let Some(dashboard) = dashboards.remove(id) {
+                self.dashboards_box.remove(&dashboard.root);
+            }
+        }
+        for id in &next_order {
+            if !dashboards.contains_key(id) {
+                let dashboard = DriveDashboard::new(
+                    id.clone(),
+                    self.request_diagnostics.clone(),
+                    self.diagnostics_busy.clone(),
+                    self.latest.clone(),
+                    self.copy_now.clone(),
+                );
+                self.dashboards_box.append(&dashboard.root);
+                dashboards.insert(id.clone(), dashboard);
+            }
+            if let Some(drive) = snapshot.drives.iter().find(|d| &d.id == id) {
+                let diagnostic_drive = diagnostics.and_then(|state| diagnostic_drive(state, id));
+                dashboards[id].update_details(
+                    drive,
+                    diagnostic_drive,
+                    snapshot.sampled_at_ms,
+                    now_ms,
+                );
+            }
+        }
+        *self.order.borrow_mut() = next_order;
+    }
+
+    fn mark_live_metrics_unavailable(&self) {
+        self.summary[3].set_value("Unavailable");
+        self.summary[3].set_subtitle(Some("Telemetry is stale or disconnected"));
+        for dashboard in self.dashboards.borrow().values() {
+            dashboard.mark_live_metrics_unavailable();
+        }
+    }
+}
+
+fn reconcile_order(previous: &[String], current: &[String]) -> Vec<String> {
+    let mut result = previous
+        .iter()
+        .filter(|id| current.contains(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for id in current {
+        if !result.contains(id) {
+            result.push(id.clone());
+        }
+    }
+    result
+}
+
+fn diagnostic_drive<'a>(snapshot: &'a StorageSnapshot, id: &str) -> Option<&'a StorageDrive> {
+    snapshot.drives.iter().find(|drive| drive.id == id)
+}
+
+impl DriveDashboard {
+    fn new(
+        id: String,
+        request_diagnostics: Rc<dyn Fn()>,
+        busy: Rc<Cell<bool>>,
+        latest: Rc<RefCell<Option<StorageSnapshot>>>,
+        copy_now: Rc<Cell<u64>>,
+    ) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.add_css_class("surface-card");
+        root.set_hexpand(true);
+        let details_title = gtk::Label::new(Some("Drive"));
+        details_title.set_xalign(0.0);
+        details_title.set_wrap(true);
+        details_title.add_css_class("page-title");
+        root.append(&details_title);
+        let details_meta = gtk::Label::new(None);
+        details_meta.set_xalign(0.0);
+        details_meta.set_wrap(true);
+        root.append(&details_meta);
+        let header_chips = gtk::FlowBox::new();
+        header_chips.set_selection_mode(gtk::SelectionMode::None);
+        header_chips.set_column_spacing(8);
+        header_chips.set_row_spacing(8);
+        let details_health = gtk::Label::new(Some("Health unavailable"));
+        let details_temp = gtk::Label::new(Some("Temperature unavailable"));
+        for chip in [&details_health, &details_temp] {
+            chip.add_css_class("status-chip");
+            header_chips.insert(chip, -1);
+        }
+        root.append(&header_chips);
+        let overview_metrics = [
+            MetricCard::new("Temperature"),
+            MetricCard::new("SMART health"),
+            MetricCard::new("Read throughput"),
+            MetricCard::new("Write throughput"),
+        ];
+        let metrics = gtk::FlowBox::new();
+        metrics.set_selection_mode(gtk::SelectionMode::None);
+        metrics.set_min_children_per_line(1);
+        metrics.set_max_children_per_line(4);
+        metrics.set_column_spacing(10);
+        metrics.set_row_spacing(10);
+        for (card, icon) in overview_metrics.iter().zip([
+            "weather-clear-symbolic",
+            "emblem-ok-symbolic",
+            "go-down-symbolic",
+            "go-up-symbolic",
+        ]) {
+            card.add_css_class("metric-card-compact");
+            card.set_icon_name(icon);
+            metrics.insert(card.widget(), -1);
+        }
+        root.append(&metrics);
+        let performance = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        performance.append(&section_title("Performance"));
+        let performance_metrics = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let performance_read_iops = MetricCard::new("Read IOPS");
+        let performance_write_iops = MetricCard::new("Write IOPS");
+        for card in [&performance_read_iops, &performance_write_iops] {
+            card.add_css_class("metric-card-compact");
+            card.set_value("Unavailable");
+            performance_metrics.append(card.widget());
+        }
+        performance.append(&performance_metrics);
+        let performance_freshness = gtk::Label::new(Some("Waiting for telemetry"));
+        performance_freshness.set_xalign(0.0);
+        performance_freshness.add_css_class("storage-status-caption");
+        performance.append(&performance_freshness);
+        let read_graph = HistoryGraph::new("Read throughput", 0.0, 1.0, "MB/s", (0.30, 0.64, 1.0));
+        let write_graph =
+            HistoryGraph::new("Write throughput", 0.0, 1.0, "MB/s", (0.49, 0.88, 0.70));
+        let temperature_graph =
+            HistoryGraph::new("Drive temperature", 0.0, 50.0, "°C", (0.96, 0.68, 0.38));
+        read_graph.set_content_height(170);
+        write_graph.set_content_height(170);
+        temperature_graph.set_content_height(155);
+        let io_graphs = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        io_graphs.append(read_graph.widget());
+        io_graphs.append(write_graph.widget());
+        performance.append(&io_graphs);
+        performance.append(temperature_graph.widget());
+        root.append(&performance);
+        root.connect_notify_local(Some("width"), move |root, _| {
+            io_graphs.set_orientation(if root.width() < 640 {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            });
+        });
+        let health = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        health.append(&section_title("SMART health"));
+        let health_assessment = gtk::Label::new(Some("SMART data unavailable"));
+        health_assessment.set_xalign(0.0);
+        health_assessment.add_css_class("status-chip");
+        health.append(&health_assessment);
+        let health_meta =
+            gtk::Label::new(Some("Refresh SMART details to request a read-only sample."));
+        health_meta.set_xalign(0.0);
+        health_meta.set_wrap(true);
+        health.append(&health_meta);
+        let health_attributes = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let health_attribute_placeholder = gtk::Label::new(Some(
+            "Detailed SMART attributes are unavailable. Refresh to request a read-only sample.",
+        ));
+        health_attribute_placeholder.set_xalign(0.0);
+        health_attribute_placeholder.set_wrap(true);
+        health_attributes.append(&health_attribute_placeholder);
+        health.append(&health_attributes);
+        let smart_expander = gtk::Expander::new(Some("Advanced SMART attributes"));
+        let health_advanced_attributes = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        smart_expander.set_child(Some(&health_advanced_attributes));
+        health.append(&smart_expander);
+        root.append(&health);
+        let volumes = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        volumes.set_hexpand(true);
+        let volume_placeholder = gtk::Label::new(Some("No attributable volumes reported."));
+        volume_placeholder.set_xalign(0.0);
+        volume_placeholder.add_css_class("volume-placeholder");
+        volumes.append(&volume_placeholder);
+        root.append(&section_title("Partitions & Volumes"));
+        root.append(&volumes);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let refresh = gtk::Button::with_label("Refresh SMART details for all drives");
+        let refresh_weak = refresh.downgrade();
+        refresh.connect_clicked(move |button| {
+            if busy.replace(true) {
+                return;
+            }
+            button.set_label("Loading SMART details…");
+            button.set_sensitive(false);
+            request_diagnostics();
+            let button = refresh_weak.clone();
+            let busy = busy.clone();
+            gtk::glib::timeout_add_seconds_local_once(8, move || {
+                busy.set(false);
+                if let Some(button) = button.upgrade() {
+                    button.set_label("Refresh SMART details for all drives");
+                    button.set_sensitive(true);
+                }
+            });
+        });
+        actions.append(&refresh);
+        let copy = gtk::Button::with_label("Copy redacted diagnostics");
+        copy.connect_clicked(move |_| {
+            if let Some(snapshot) = latest.borrow().as_ref() {
+                if let Some(drive) = snapshot.drives.iter().find(|drive| drive.id == id) {
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        display.clipboard().set_text(&redacted_diagnostics(
+                            drive,
+                            snapshot.sampled_at_ms,
+                            copy_now.get(),
+                        ));
+                    }
+                }
+            }
+        });
+        actions.append(&copy);
+        root.append(&actions);
+        let advanced = gtk::Label::new(Some("Technical details unavailable."));
+        advanced.set_xalign(0.0);
+        advanced.set_wrap(true);
+        advanced.set_selectable(true);
+        let technical = gtk::Expander::new(Some("Technical details"));
+        technical.set_child(Some(&advanced));
+        root.append(&technical);
+        Self {
+            root,
+            details_title,
+            details_meta,
+            details_health,
+            details_temp,
+            overview_metrics,
+            health_assessment,
+            health_meta,
+            health_attributes,
+            health_advanced_attributes,
+            health_attribute_placeholder,
+            health_attribute_rows: RefCell::new(HashMap::new()),
+            volumes,
+            volume_rows: RefCell::new(HashMap::new()),
+            advanced,
+            read_graph,
+            write_graph,
+            temperature_graph,
+            performance_read_iops,
+            performance_write_iops,
+            performance_freshness,
         }
     }
 
@@ -896,10 +691,6 @@ impl StoragePage {
             .set_samples(&history_rates(&drive.history, "read_bytes_per_sec"));
         self.write_graph
             .set_samples(&history_rates(&drive.history, "write_bytes_per_sec"));
-        self.overview_read_graph
-            .set_samples(&history_rates(&drive.history, "read_bytes_per_sec"));
-        self.overview_write_graph
-            .set_samples(&history_rates(&drive.history, "write_bytes_per_sec"));
         self.temperature_graph.set_samples(
             &drive
                 .history
@@ -911,8 +702,6 @@ impl StoragePage {
                 })
                 .collect::<Vec<_>>(),
         );
-        self.overview_health.set_text(&drive.health);
-        set_health_style(&self.overview_health, &drive.health);
         let health_source = diagnostics
             .map(|d| d.health_source.as_str())
             .filter(|s| !s.is_empty())
@@ -939,8 +728,6 @@ impl StoragePage {
         } else {
             &drive.health_reason
         };
-        let health_meta = format!("Source: {health_source} · Sampled {} · {warning_count} warning attribute(s)\n{health_note}", age_label(health_sampled, now_ms));
-        self.overview_health_meta.set_text(&health_meta);
         self.health_assessment
             .set_text(&format!("SMART assessment: {}", drive.health));
         set_health_style(&self.health_assessment, &drive.health);
@@ -951,8 +738,6 @@ impl StoragePage {
                 .unwrap_or(&[]),
         );
         self.update_volumes(&drive.volumes);
-        self.overview_volume_text
-            .set_text(&overview_volume_summary(&drive.volumes));
         let temperatures = drive
             .temperatures
             .iter()
@@ -986,47 +771,24 @@ impl StoragePage {
             if temperatures.is_empty() { "" } else { "\n" },
             temperatures
         ));
-        self.tabs.set_visible_child_name(&self.active_tab.borrow());
     }
 
     fn mark_live_metrics_unavailable(&self) {
-        self.summary[3].set_value("Unavailable");
-        self.summary[3].set_subtitle(Some("Telemetry is stale or disconnected"));
-        if let Some(snapshot) = self.latest.borrow().as_ref() {
-            for drive in &snapshot.drives {
-                if let Some(row) = self.drive_rows.borrow().get(&drive.id) {
-                    row.subtitle.set_text(&format!(
-                        "{} · {} · Live telemetry unavailable",
-                        drive.kind,
-                        drive
-                            .capacity_bytes
-                            .map(byte_size)
-                            .unwrap_or_else(|| "Capacity unavailable".into())
-                    ));
-                }
-            }
-            if snapshot
-                .drives
-                .iter()
-                .find(|drive| Some(&drive.id) == self.selected_id.borrow().as_ref())
-                .is_some()
-            {
-                self.overview_metrics[0].set_value("Unavailable");
-                self.overview_metrics[2].set_value("Unavailable");
-                self.overview_metrics[3].set_value("Unavailable");
-                self.performance_read_iops.set_value("Unavailable");
-                self.performance_write_iops.set_value("Unavailable");
-                self.performance_freshness
-                    .set_text("Telemetry is stale or disconnected");
-            }
-        }
+        self.details_temp.set_text("Temperature unavailable");
+        self.overview_metrics[0].set_value("Unavailable");
+        self.overview_metrics[2].set_value("Unavailable");
+        self.overview_metrics[3].set_value("Unavailable");
+        self.performance_read_iops.set_value("Unavailable");
+        self.performance_write_iops.set_value("Unavailable");
+        self.performance_freshness
+            .set_text("Telemetry is stale or disconnected");
         self.read_graph.set_samples(&[]);
         self.write_graph.set_samples(&[]);
         self.temperature_graph.set_samples(&[]);
-        self.overview_read_graph.set_samples(&[]);
-        self.overview_write_graph.set_samples(&[]);
         for row in self.volume_rows.borrow().values() {
-            row.usage.set_text(Some("Usage unavailable"));
+            row.usage.set_visible(false);
+            row.metadata
+                .set_text("Storage telemetry is stale; volume usage unavailable.");
         }
     }
 
@@ -1217,11 +979,11 @@ impl StoragePage {
     }
 }
 
-fn reconcile_selection(selected: Option<&str>, drives: &[StorageDrive]) -> Option<String> {
-    selected
-        .filter(|id| drives.iter().any(|drive| drive.id == *id))
-        .map(str::to_string)
-        .or_else(|| drives.iter().map(|drive| drive.id.clone()).min())
+fn section_title(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.add_css_class("dashboard-panel-title");
+    label
 }
 
 fn set_health_style(label: &gtk::Label, health: &str) {
@@ -1274,15 +1036,6 @@ fn age_label(sampled_at_ms: Option<u64>, now_ms: u64) -> String {
         .unwrap_or_else(|| "time unavailable".into())
 }
 
-fn short_model(model: &str) -> String {
-    let chars = model.chars().collect::<Vec<_>>();
-    if chars.len() > 44 {
-        format!("{}…", chars[..43].iter().collect::<String>())
-    } else {
-        model.to_string()
-    }
-}
-
 fn smart_attribute_label(key: &str) -> String {
     match key {
         "critical_warning" => "Critical warning flags".into(),
@@ -1316,40 +1069,6 @@ fn is_advanced_smart_attribute(key: &str) -> bool {
             | "host_reads"
             | "host_writes"
     ) || key.starts_with("ata_attribute_")
-}
-
-fn overview_volume_summary(volumes: &[WireMap]) -> String {
-    let mounted = volumes
-        .iter()
-        .filter(|volume| {
-            !dbus_decode::strings(volume, "mount_points")
-                .unwrap_or_default()
-                .is_empty()
-        })
-        .map(|volume| {
-            let name = dbus_decode::string(volume, "label")
-                .or_else(|| dbus_decode::string(volume, "name"))
-                .unwrap_or_else(|| "Volume".into());
-            let used = dbus_decode::unsigned(volume, "used_bytes");
-            let available = dbus_decode::unsigned(volume, "available_bytes");
-            let total = dbus_decode::unsigned(volume, "filesystem_size_bytes");
-            let mounts = dbus_decode::strings(volume, "mount_points").unwrap_or_default();
-            format!(
-                "{name} · {} used · {} available of {} filesystem capacity · {}",
-                used.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
-                available
-                    .map(byte_size)
-                    .unwrap_or_else(|| "Unavailable".into()),
-                total.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
-                mounts.join(", ")
-            )
-        })
-        .collect::<Vec<_>>();
-    if mounted.is_empty() {
-        "No attributable mounted filesystems.".into()
-    } else {
-        mounted.join("\n")
-    }
 }
 
 fn rate(bytes_per_sec: Option<u64>) -> String {
@@ -1418,26 +1137,37 @@ mod tests {
     }
 
     #[test]
-    fn selection_survives_telemetry_and_reordering_and_falls_back_on_removal() {
-        let drives = vec![
-            StorageDrive {
-                id: "b".into(),
-                ..StorageDrive::default()
-            },
-            StorageDrive {
-                id: "a".into(),
-                ..StorageDrive::default()
-            },
-        ];
+    fn drive_order_survives_telemetry_and_reordering_and_removal() {
+        let initial = vec!["b".to_string(), "a".to_string()];
         assert_eq!(
-            reconcile_selection(Some("b"), &drives).as_deref(),
-            Some("b")
+            reconcile_order(&initial, &["a".into(), "b".into(), "c".into()]),
+            vec!["b", "a", "c"]
         );
+        assert_eq!(reconcile_order(&initial, &["a".into()]), vec!["a"]);
+    }
+
+    #[test]
+    fn diagnostics_are_attributed_by_stable_drive_id() {
+        let snapshot = StorageSnapshot {
+            drives: vec![
+                StorageDrive {
+                    id: "other".into(),
+                    health_source: "wrong".into(),
+                    ..StorageDrive::default()
+                },
+                StorageDrive {
+                    id: "target".into(),
+                    health_source: "correct".into(),
+                    ..StorageDrive::default()
+                },
+            ],
+            ..StorageSnapshot::default()
+        };
         assert_eq!(
-            reconcile_selection(Some("removed"), &drives).as_deref(),
-            Some("a")
+            diagnostic_drive(&snapshot, "target").map(|d| d.health_source.as_str()),
+            Some("correct")
         );
-        assert_eq!(reconcile_selection(Some("removed"), &[]), None);
+        assert!(diagnostic_drive(&snapshot, "missing").is_none());
     }
 
     #[test]
@@ -1515,16 +1245,6 @@ mod tests {
         assert!(!report.contains("SERIAL-SECRET"));
         assert!(!report.contains("/dev/nvme0n1"));
         assert!(!report.contains("private/path"));
-    }
-
-    #[test]
-    fn long_model_names_are_shortened_without_losing_the_full_source() {
-        let model =
-            "A supported storage model identifier that is longer than forty four characters";
-        let short = short_model(model);
-        assert!(short.ends_with('…'));
-        assert!(short.chars().count() <= 44);
-        assert!(model.chars().count() > short.chars().count());
     }
 
     #[test]

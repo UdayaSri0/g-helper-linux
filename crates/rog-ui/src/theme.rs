@@ -96,21 +96,6 @@ headerbar { background: #151920; border-bottom: 1px solid alpha(white, 0.06); }
 .storage-summary-grid .metric-value { font-size: 24px; }
 .storage-summary-grid .metric-subtitle { font-size: 11px; }
 .storage-status-caption { color: alpha(white, 0.52); font-size: 11px; }
-.storage-drive-row {
-  padding: 10px 12px;
-  border: 1px solid alpha(white, 0.07);
-  border-radius: 10px;
-  background: #1a1f27;
-  text-align: left;
-}
-.storage-drive-row:hover { background: #202733; }
-.storage-drive-row:focus-visible { outline: 2px solid alpha(#4da3ff, 0.82); outline-offset: 2px; }
-.storage-drive-row.storage-drive-selected {
-  background: alpha(#4da3ff, 0.13);
-  border-color: alpha(#4da3ff, 0.60);
-  box-shadow: inset 3px 0 #4da3ff;
-}
-.storage-drive-row .status-chip { padding: 3px 8px; }
 .smart-attribute-row {
   padding: 8px 10px;
   border-radius: 8px;
