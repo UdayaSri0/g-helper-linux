@@ -1,6 +1,7 @@
 # Guided setup and hardware integration
 
-The first-run assistant is available in Setup & Access. It guides the desktop
+Normal launches open Dashboard. The first-run assistant is available from
+Setup & Access, including when its review is incomplete. It guides the desktop
 user through system discovery, core integration, optional providers, hardware
 readiness, a review plan, progress, verification and finish. Completing the review
 is a per-user preference. Reopen Setup & Access to inspect current health.
@@ -57,7 +58,7 @@ trust boundary. Existing endpoint aliases and native battery fallback remain.
 | Area | Existing behavior | This implementation |
 | --- | --- | --- |
 | Setup status | Typed service/permission diagnostics | Reused, with guided eight-stage review |
-| First-run UI | Dashboard and Setup page | Per-user first-run setup review and persisted completion |
+| First-run UI | Dashboard and Setup page | Dashboard opens by default; setup review remains available with persisted completion |
 | System inventory | Individual provider probes | Distro/kernel/DMI/ASUS driver and observed manager inventory |
 | Installation plan | Text recommendations | Typed manual-review actions with reasons and stable revision |
 | Package mutation | Native package manager outside app | Explicit safe handoff; automatic execution unavailable |
