@@ -8,6 +8,17 @@ methods retain API epoch 1. Volume rows keep physical partition `size_bytes`
 separate from optional filesystem `filesystem_size_bytes`, `used_bytes`, and
 `available_bytes`. See [Storage Management](STORAGE_MANAGEMENT.md).
 
+Stage 2 adds an optional `topologies` array to each drive in both read-only
+responses. Each row describes one verified block namespace with `namespace`,
+`capacity_bytes`, `table_type`, `status`, `logical_block_size`,
+`physical_block_size`, `read_only`, `removable`, `protection`, `partitions`, and
+`unallocated_extents`. Partition rows carry opaque `id`, `name`, `number`,
+`start_bytes`, `length_bytes`, optional `partition_type`, `filesystem`, `label`,
+`mount_points`, `protection`, and `protection_reason`. Extent rows contain
+`start_bytes` and `length_bytes`. Missing optional fields and an `uncertain`
+status must not be interpreted as safe geometry. The array is additive; older
+clients can continue reading `volumes` and telemetry.
+
 This document describes the current session-DBus API exported by `rog-helperd`.
 
 The implementation lives in `crates/rog-daemon/src/main.rs`. The UI client proxy lives in `crates/rog-ui/src/main.rs`.

@@ -5,6 +5,26 @@ Storage Management is read-only. The GTK page receives storage snapshots from
 SMART commands. The CLI uses the same `rog-providers` implementation for local
 diagnostics. No storage action is exposed by the privileged helper.
 
+Stage 2 adds read-only topology per block namespace. Sysfs supplies parent-child
+relationships, sector geometry, mount attribution, and system-storage evidence.
+UDisks2 read-only ObjectManager metadata confirms partition tables and
+partition identity when available. A topology remains `uncertain` when those
+sources disagree or are incomplete, and is `unavailable` when UDisks2 cannot
+be reached. The existing
+drive metrics and volume monitoring continue in that state. `Protected`,
+`Uncertain`, and `PotentiallyManageable` are informational classifications;
+none authorizes a storage operation. The current provider reports Protected
+where it has positive evidence and otherwise remains Uncertain; it does not
+yet assert PotentiallyManageable. An unmounted partition is never assumed safe
+to modify.
+
+The partition map is grouped by namespace within each persistent drive
+dashboard. It uses byte offsets and lengths only after geometry validation.
+Only validated interior gaps are shown as unallocated; filesystem free bytes
+are never drawn as unallocated disk space. Selection and details remain
+read-only. The map does not claim that a partition can be mounted, formatted,
+resized, or deleted.
+
 The GTK page stacks a full-width dashboard for every detected physical drive
 below a compact global summary. Each dashboard is retained by opaque device ID
 and owns its metrics, history graphs, health and volume rows, and technical
@@ -82,6 +102,15 @@ at installation. None of the storage views mounts, repairs, formats, trims,
 benchmarks, or runs a SMART self-test.
 
 ## Verification
+
+Stage 2 synthetic tests exercise sector geometry, GPT/MBR tables, interior
+unallocated extents, overlap and overflow rejection, system mount and swap
+classification, namespace attribution, and absent or inconsistent UDisks2
+metadata. Run `cargo test --workspace --locked` with the locked format, build,
+and Clippy checks. The session smoke uses isolated D-Bus buses and does not
+perform storage writes. Manual acceptance should compare the map and
+classification against `lsblk`, sysfs, UDisks2, and mountinfo on disposable or
+known devices; it must not treat a fixture pass as physical validation.
 
 Provider fixtures cover discovery, namespace grouping, mount attribution,
 counter arithmetic and missing data. SMART JSON tests cover supported and

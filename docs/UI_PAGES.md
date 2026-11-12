@@ -6,6 +6,12 @@ All twelve pages live in one `adw::ViewStack` selected by the persistent left si
 
 Storage uses compact, selectable drive cards and a persistent detail panel with Overview, Performance, Health & SMART, and Partitions & Volumes tabs. The pane stacks below 900 px; telemetry updates change metric values, health attributes, volume rows, and graph samples in place. The Overview combines current metrics, paired I/O history, SMART status, and measured mounted-filesystem usage. The tab stack uses natural per-page height inside the single outer scroller.
 
+The Partitions & Volumes tab adds a read-only proportional map per verified
+namespace, with selectable partition details and separately identified
+unallocated extents. It retains selection during live telemetry updates.
+When geometry or partition-table evidence is insufficient, the map explains
+the uncertainty and keeps existing volume rows available.
+
 For each page, it lists:
 
 - what the page shows

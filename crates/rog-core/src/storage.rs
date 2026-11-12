@@ -25,11 +25,70 @@ pub struct StorageDevice {
     pub firmware: Option<String>,
     pub controller: Option<String>,
     pub namespaces: Vec<String>,
+    #[serde(default)]
+    pub topologies: Vec<StorageTopology>,
     pub volumes: Vec<StorageVolume>,
     pub io: Option<StorageIo>,
     pub temperatures: Vec<StorageTemperature>,
     pub health: StorageHealth,
     pub history: Vec<StorageHistoryPoint>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageTopology {
+    pub namespace: String,
+    pub capacity_bytes: u64,
+    pub table_type: Option<String>,
+    /// verified, uncertain, or unavailable; unallocated extents require verified geometry.
+    pub status: String,
+    pub logical_block_size: Option<u64>,
+    pub physical_block_size: Option<u64>,
+    pub read_only: Option<bool>,
+    pub removable: Option<bool>,
+    pub partitions: Vec<PartitionInfo>,
+    pub unallocated_extents: Vec<UnallocatedExtent>,
+    pub protection: StorageProtectionState,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PartitionInfo {
+    /// Opaque partition identifier; never a caller-selected device path.
+    pub id: String,
+    pub name: String,
+    pub number: u32,
+    pub start_bytes: u64,
+    pub length_bytes: u64,
+    pub partition_type: Option<String>,
+    pub filesystem: Option<String>,
+    pub label: Option<String>,
+    pub mount_points: Vec<String>,
+    pub protection: StorageProtectionState,
+    pub protection_reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnallocatedExtent {
+    pub start_bytes: u64,
+    pub length_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageProtectionState {
+    Protected,
+    #[default]
+    Uncertain,
+    PotentiallyManageable,
+}
+
+impl StorageProtectionState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Protected => "protected",
+            Self::Uncertain => "uncertain",
+            Self::PotentiallyManageable => "potentially_manageable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

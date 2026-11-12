@@ -3612,6 +3612,33 @@ impl RogHelperDaemon {
     }
 }
 
+fn same_raw_topology(
+    previous: &[rog_core::StorageTopology],
+    current: &[rog_core::StorageTopology],
+) -> bool {
+    previous.len() == current.len()
+        && previous.iter().zip(current).all(|(old, new)| {
+            old.namespace == new.namespace
+                && old.capacity_bytes == new.capacity_bytes
+                && old.logical_block_size == new.logical_block_size
+                && old.physical_block_size == new.physical_block_size
+                && old.read_only == new.read_only
+                && old.removable == new.removable
+                && old.protection == new.protection
+                && old.partitions.len() == new.partitions.len()
+                && old.partitions.iter().zip(&new.partitions).all(|(a, b)| {
+                    a.id == b.id
+                        && a.number == b.number
+                        && a.start_bytes == b.start_bytes
+                        && a.length_bytes == b.length_bytes
+                        && a.mount_points == b.mount_points
+                        && a.protection == b.protection
+                        && a.filesystem == b.filesystem
+                        && a.label == b.label
+                })
+        })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let status = std::fs::read_to_string("/proc/self/status")?;
@@ -4149,6 +4176,9 @@ async fn main() -> anyhow::Result<()> {
     let storage_state = shared.clone();
     tokio::spawn(async move {
         let mut provider = rog_providers::storage::StorageProvider::new();
+        let mut last_topology = HashMap::<String, Vec<rog_core::StorageTopology>>::new();
+        let mut last_raw_topology = HashMap::<String, Vec<rog_core::StorageTopology>>::new();
+        let mut last_topology_check = None::<Instant>;
         let mut ticker = interval(Duration::from_secs(1));
         loop {
             ticker.tick().await;
@@ -4165,6 +4195,46 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             provider = next_provider;
+            let live_ids = sample
+                .drives
+                .iter()
+                .map(|drive| drive.id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            let mut changed_geometry = last_topology.len() != live_ids.len();
+            last_topology.retain(|id, _| live_ids.contains(id.as_str()));
+            last_raw_topology.retain(|id, _| live_ids.contains(id.as_str()));
+            let raw_topology = sample
+                .drives
+                .iter()
+                .map(|drive| (drive.id.clone(), drive.topologies.clone()))
+                .collect::<HashMap<_, _>>();
+            for drive in &mut sample.drives {
+                if let (Some(previous), Some(previous_raw)) = (
+                    last_topology.get(&drive.id),
+                    last_raw_topology.get(&drive.id),
+                ) {
+                    let same_geometry = same_raw_topology(previous_raw, &drive.topologies);
+                    if same_geometry {
+                        drive.topologies.clone_from(previous);
+                    } else {
+                        changed_geometry = true;
+                    }
+                } else {
+                    changed_geometry = true;
+                }
+            }
+            if changed_geometry
+                || last_topology_check.is_none_or(|at| at.elapsed() >= Duration::from_secs(15))
+            {
+                rog_providers::storage::enrich_topology_from_udisks(&mut sample).await;
+                last_topology = sample
+                    .drives
+                    .iter()
+                    .map(|drive| (drive.id.clone(), drive.topologies.clone()))
+                    .collect();
+                last_raw_topology = raw_topology;
+                last_topology_check = Some(Instant::now());
+            }
             let mut current = storage_state
                 .storage
                 .write()
@@ -8368,6 +8438,39 @@ fn lighting_state_to_dbus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topology_cache_rejects_changed_mounts_geometry_and_disconnected_namespace() {
+        let original = rog_core::StorageTopology {
+            namespace: "nvme0n1".into(),
+            capacity_bytes: 8192,
+            partitions: vec![rog_core::PartitionInfo {
+                id: "partition".into(),
+                number: 1,
+                start_bytes: 4096,
+                length_bytes: 4096,
+                ..rog_core::PartitionInfo::default()
+            }],
+            ..rog_core::StorageTopology::default()
+        };
+        assert!(same_raw_topology(
+            std::slice::from_ref(&original),
+            std::slice::from_ref(&original)
+        ));
+        let mut changed = original.clone();
+        changed.partitions[0].mount_points.push("/boot".into());
+        assert!(!same_raw_topology(
+            std::slice::from_ref(&original),
+            &[changed]
+        ));
+        let mut changed = original.clone();
+        changed.partitions[0].start_bytes = 512;
+        assert!(!same_raw_topology(
+            std::slice::from_ref(&original),
+            &[changed]
+        ));
+        assert!(!same_raw_topology(std::slice::from_ref(&original), &[]));
+    }
 
     struct FakeAutomationBackend {
         profile: std::sync::Mutex<PerformanceProfile>,

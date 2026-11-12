@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rog_core::{
     dbus_keys::storage as key, StorageAttribute, StorageDevice, StorageHealth, StorageHistoryPoint,
-    StorageIo, StorageState, StorageTemperature, StorageVolume,
+    StorageIo, StorageState, StorageTemperature, StorageTopology, StorageVolume,
 };
 use zbus::zvariant::OwnedValue;
 
@@ -40,6 +40,14 @@ fn encode_drive(drive: &StorageDevice, detailed: bool) -> Map {
             ov(drive.volumes.iter().map(encode_volume).collect::<Vec<_>>()),
         ),
         (
+            key::TOPOLOGIES.into(),
+            ov(drive
+                .topologies
+                .iter()
+                .map(encode_topology)
+                .collect::<Vec<_>>()),
+        ),
+        (
             key::TEMPERATURES.into(),
             ov(drive
                 .temperatures
@@ -73,6 +81,82 @@ fn encode_drive(drive: &StorageDevice, detailed: bool) -> Map {
     }
     if let Some(io) = &drive.io {
         map.insert(key::IO.into(), ov(encode_io(io)));
+    }
+    map
+}
+
+fn encode_topology(topology: &StorageTopology) -> Map {
+    let mut map = HashMap::from([
+        ("namespace".into(), ov(topology.namespace.clone())),
+        ("capacity_bytes".into(), ov(topology.capacity_bytes)),
+        ("status".into(), ov(topology.status.clone())),
+        (
+            "protection".into(),
+            ov(topology.protection.as_str().to_string()),
+        ),
+        (
+            "partitions".into(),
+            ov(topology
+                .partitions
+                .iter()
+                .map(|partition| {
+                    let mut row: Map = HashMap::from([
+                        ("id".into(), ov(partition.id.clone())),
+                        ("name".into(), ov(partition.name.clone())),
+                        ("number".into(), ov(partition.number)),
+                        ("start_bytes".into(), ov(partition.start_bytes)),
+                        ("length_bytes".into(), ov(partition.length_bytes)),
+                        ("mount_points".into(), ov(partition.mount_points.clone())),
+                        (
+                            "protection".into(),
+                            ov(partition.protection.as_str().to_string()),
+                        ),
+                        (
+                            "protection_reason".into(),
+                            ov(partition.protection_reason.clone()),
+                        ),
+                    ]);
+                    if let Some(value) = &partition.partition_type {
+                        row.insert("partition_type".into(), ov(value.clone()));
+                    }
+                    if let Some(value) = &partition.filesystem {
+                        row.insert("filesystem".into(), ov(value.clone()));
+                    }
+                    if let Some(value) = &partition.label {
+                        row.insert("label".into(), ov(value.clone()));
+                    }
+                    row
+                })
+                .collect::<Vec<_>>()),
+        ),
+        (
+            "unallocated_extents".into(),
+            ov(topology
+                .unallocated_extents
+                .iter()
+                .map(|extent| {
+                    Map::from([
+                        ("start_bytes".into(), ov(extent.start_bytes)),
+                        ("length_bytes".into(), ov(extent.length_bytes)),
+                    ])
+                })
+                .collect::<Vec<_>>()),
+        ),
+    ]);
+    if let Some(value) = &topology.table_type {
+        map.insert("table_type".into(), ov(value.clone()));
+    }
+    if let Some(value) = topology.logical_block_size {
+        map.insert("logical_block_size".into(), ov(value));
+    }
+    if let Some(value) = topology.physical_block_size {
+        map.insert("physical_block_size".into(), ov(value));
+    }
+    if let Some(value) = topology.read_only {
+        map.insert("read_only".into(), ov(value));
+    }
+    if let Some(value) = topology.removable {
+        map.insert("removable".into(), ov(value));
     }
     map
 }
@@ -199,6 +283,52 @@ fn encode_history(point: &StorageHistoryPoint) -> Map {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rog_core::{PartitionInfo, StorageProtectionState, UnallocatedExtent};
+
+    #[test]
+    fn topology_is_additive_to_read_only_state() {
+        let device = StorageDevice {
+            id: "drive".into(),
+            topologies: vec![StorageTopology {
+                namespace: "sda".into(),
+                capacity_bytes: 100_000,
+                table_type: Some("gpt".into()),
+                status: "verified".into(),
+                partitions: vec![PartitionInfo {
+                    id: "opaque-partition".into(),
+                    number: 1,
+                    start_bytes: 4096,
+                    length_bytes: 4096,
+                    protection: StorageProtectionState::Protected,
+                    protection_reason: "System filesystem".into(),
+                    ..PartitionInfo::default()
+                }],
+                unallocated_extents: vec![UnallocatedExtent {
+                    start_bytes: 8192,
+                    length_bytes: 4096,
+                }],
+                ..StorageTopology::default()
+            }],
+            ..StorageDevice::default()
+        };
+        let encoded = encode_drive(&device, false);
+        let topologies: Vec<Map> = encoded[key::TOPOLOGIES].clone().try_into().unwrap();
+        assert_eq!(topologies.len(), 1);
+        let partitions: Vec<Map> = topologies[0]["partitions"].clone().try_into().unwrap();
+        assert_eq!(
+            String::try_from(partitions[0]["id"].clone()).unwrap(),
+            "opaque-partition"
+        );
+        assert_eq!(
+            String::try_from(partitions[0]["protection"].clone()).unwrap(),
+            "protected"
+        );
+        let gaps: Vec<Map> = topologies[0]["unallocated_extents"]
+            .clone()
+            .try_into()
+            .unwrap();
+        assert_eq!(u64::try_from(gaps[0]["start_bytes"].clone()).unwrap(), 8192);
+    }
 
     #[test]
     fn compact_state_omits_smart_attributes_and_unknown_io() {
