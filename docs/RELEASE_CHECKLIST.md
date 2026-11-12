@@ -1,5 +1,10 @@
 # Release Checklist
 
+Storage acceptance requires fixture tests and real hardware comparison of
+drive count, model/capacity, I/O, volume usage, temperature source, and SMART
+without a benchmark or write load. Record missing backend and Flatpak limits
+using [Storage Management](STORAGE_MANAGEMENT.md).
+
 Use this checklist before calling the repository release-ready.
 
 Current integration review: [FINAL_INTEGRATION_REVIEW.md](FINAL_INTEGRATION_REVIEW.md).

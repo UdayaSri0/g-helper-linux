@@ -1,5 +1,11 @@
 # Feature Matrix
 
+Storage Management is read-only: dynamic physical inventory, block I/O,
+mounted-volume usage, attributed NVMe temperature, and optional cached SMART.
+Coverage varies by hardware and access. See [Storage Management](STORAGE_MANAGEMENT.md).
+The current page has a persistent responsive master-detail UI with in-place
+telemetry updates; interactive hardware acceptance remains a separate release gate.
+
 This matrix reflects the current implementation in the repository today. It is based on the code in `crates/rog-core`, `crates/rog-providers`, `crates/rog-daemon`, `crates/rog-privileged`, `crates/rog-ui`, and `crates/rog-cli`.
 
 | Feature | Backend / provider | Read / Write | Current status | Notes / limitations |

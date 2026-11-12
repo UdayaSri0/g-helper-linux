@@ -48,6 +48,36 @@ use zbus::zvariant::{OwnedValue, Value};
 use zbus::{connection, interface};
 
 mod privileged_client;
+mod storage_dbus;
+
+fn choose_storage_health(
+    cached: Option<rog_core::StorageHealth>,
+    direct: Option<rog_core::StorageHealth>,
+) -> Option<rog_core::StorageHealth> {
+    direct
+        .as_ref()
+        .filter(|health| matches!(health.state.as_str(), "healthy" | "attention" | "critical"))
+        .cloned()
+        .or(cached)
+        .or(direct)
+}
+
+#[cfg(test)]
+mod storage_health_selection_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_direct_result_is_preserved_without_cache() {
+        let direct = rog_core::StorageHealth {
+            state: "permission_denied".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            choose_storage_health(None, Some(direct)).unwrap().state,
+            "permission_denied"
+        );
+    }
+}
 
 const DBUS_NAME: &str = "io.github.roghelper.Daemon";
 const DBUS_PATH: &str = "/io/github/roghelper/Daemon";
@@ -57,6 +87,7 @@ static PROFILE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 struct SharedState {
     inner: RwLock<AppState>,
+    storage: RwLock<rog_core::StorageState>,
     control: RwLock<ControlState>,
     config: RwLock<AppConfig>,
     config_path: Option<PathBuf>,
@@ -2463,6 +2494,20 @@ impl RogHelperDaemon {
         daemon_info_to_dbus()
     }
 
+    fn get_storage_state(&self) -> HashMap<String, OwnedValue> {
+        storage_dbus::encode(
+            &self.state.storage.read().expect("storage lock poisoned"),
+            false,
+        )
+    }
+
+    fn get_storage_diagnostics(&self) -> HashMap<String, OwnedValue> {
+        storage_dbus::encode(
+            &self.state.storage.read().expect("storage lock poisoned"),
+            true,
+        )
+    }
+
     fn get_configuration(&self) -> String {
         config_to_toml(&self.read_config()).unwrap_or_else(|error| {
             warn!("failed to serialize in-memory configuration: {error}");
@@ -4053,6 +4098,10 @@ async fn main() -> anyhow::Result<()> {
     };
     let shared = Arc::new(SharedState {
         inner: RwLock::new(init_state),
+        storage: RwLock::new(rog_core::StorageState {
+            status: "detecting".into(),
+            ..Default::default()
+        }),
         control: RwLock::new(control_state),
         config: RwLock::new(app_config),
         config_path: app_config_path,
@@ -4096,6 +4145,83 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     info!("DBus service online: {DBUS_NAME} {DBUS_PATH} ({DBUS_IFACE})");
+
+    let storage_state = shared.clone();
+    tokio::spawn(async move {
+        let mut provider = rog_providers::storage::StorageProvider::new();
+        let mut ticker = interval(Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            let result = tokio::task::spawn_blocking(move || {
+                let sample = provider.sample();
+                (provider, sample)
+            })
+            .await;
+            let (next_provider, mut sample) = match result {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!("storage sampling task failed: {error}");
+                    break;
+                }
+            };
+            provider = next_provider;
+            let mut current = storage_state
+                .storage
+                .write()
+                .expect("storage lock poisoned");
+            for drive in &mut sample.drives {
+                if let Some(previous) = current.drives.iter().find(|old| old.id == drive.id) {
+                    drive.health = previous.health.clone();
+                }
+            }
+            *current = sample;
+        }
+    });
+
+    let health_state = shared.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut ticker = interval(Duration::from_secs(600));
+        loop {
+            ticker.tick().await;
+            let drives = health_state
+                .storage
+                .read()
+                .expect("storage lock poisoned")
+                .drives
+                .clone();
+            for drive in drives {
+                let id = drive.id.clone();
+                let cached = rog_providers::storage_health::read_cached_udisks_health(&drive).await;
+                let retry = drive.kind == "ssd"
+                    && cached.as_ref().is_none_or(|health| {
+                        matches!(health.state.as_str(), "stale" | "unsupported" | "unknown")
+                    });
+                let result = if retry {
+                    let direct = tokio::task::spawn_blocking(move || {
+                        rog_providers::storage_health::read_health(&drive)
+                    })
+                    .await
+                    .ok();
+                    choose_storage_health(cached, direct)
+                } else {
+                    cached
+                };
+                if let Some(health) = result {
+                    if let Some(current) = health_state
+                        .storage
+                        .write()
+                        .expect("storage lock poisoned")
+                        .drives
+                        .iter_mut()
+                        .find(|current| current.id == id)
+                    {
+                        current.health = health;
+                    }
+                }
+            }
+        }
+    });
 
     // Telemetry loop.
     let mut ticker = interval(Duration::from_secs(1));

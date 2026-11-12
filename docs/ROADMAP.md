@@ -1,5 +1,20 @@
 # Roadmap
 
+Storage Management 1.0 adds read-only inventory, I/O, volume, temperature,
+and supported SMART views. Hardware-specific label/health coverage and more
+logical-volume attribution remain future work; see
+[Storage Management](STORAGE_MANAGEMENT.md).
+
+Storage UI 2.0 adds the persistent responsive master-detail view, in-place
+telemetry and graph updates, and separate Overview, Performance, Health & SMART,
+and volume tabs. Real-device hotplug, scroll-stability, and prompt-free GUI
+acceptance still require manual verification before production promotion.
+
+Storage UI 2.1 improves compact drive selection, structured health/volume
+presentation, tab-specific stack height, and paired I/O histories. Filesystem
+capacity is now reported separately from partition size. Screenshot and real
+device acceptance remain required before production promotion.
+
 This roadmap reflects the current repository state as implemented today. It is intentionally organized around what already exists, what is actively evolving, and what is still missing.
 
 Older milestone-era roadmap text described several features as future work even after they had been implemented. This file is meant to correct that drift.

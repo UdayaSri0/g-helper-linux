@@ -68,7 +68,24 @@ enum AutomationCmd {
 }
 
 #[derive(Debug, Subcommand)]
+enum StorageCmd {
+    /// List physical drives and mounted volume usage.
+    List,
+    /// Show current read/write activity.
+    Status,
+    /// Query available read-only SMART health data.
+    Health,
+    /// Show detailed read-only diagnostics.
+    Diagnostics,
+}
+
+#[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Inspect physical storage through the shared storage provider.
+    Storage {
+        #[command(subcommand)]
+        command: Option<StorageCmd>,
+    },
     /// Check service readiness, hardware access, and write permissions.
     SetupCheck,
     /// Print presence of key services (DBus + systemd).
@@ -156,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
+        Cmd::Storage { command } => cmd_storage(command).await,
         Cmd::SetupCheck => cmd_setup_check().await?,
         Cmd::Services => cmd_services().await?,
         Cmd::Dbus {
@@ -202,6 +220,91 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn cmd_storage(command: Option<StorageCmd>) {
+    let mut provider = rog_providers::storage::StorageProvider::new();
+    let mut state = provider.sample();
+    if matches!(&command, Some(StorageCmd::Status)) {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        state = provider.sample();
+    }
+    println!(
+        "Storage: {} ({} physical drives)",
+        state.status,
+        state.drives.len()
+    );
+    for drive in &state.drives {
+        println!(
+            "\n{} — {} ({}, {}, {} bytes)",
+            drive.name, drive.model, drive.kind, drive.transport, drive.capacity_bytes
+        );
+        match &command {
+            Some(StorageCmd::Status) => {
+                if let Some(io) = &drive.io {
+                    println!(
+                        "  read {} B/s, write {} B/s, {} read IOPS, {} write IOPS",
+                        io.read_bytes_per_sec, io.write_bytes_per_sec, io.read_iops, io.write_iops
+                    );
+                } else {
+                    println!("  live I/O: awaiting second sample");
+                }
+            }
+            Some(StorageCmd::Health | StorageCmd::Diagnostics) => {
+                let cached = rog_providers::storage_health::read_cached_udisks_health(drive).await;
+                let health = if drive.rotational {
+                    cached.unwrap_or_else(|| rog_core::StorageHealth {
+                        state: "unknown".into(),
+                        reason: "No cached SMART result; idle drive was not awakened".into(),
+                        ..Default::default()
+                    })
+                } else {
+                    let direct = rog_providers::storage_health::read_health(drive);
+                    if matches!(
+                        direct.state.as_str(),
+                        "unknown" | "unsupported" | "permission_denied"
+                    ) {
+                        cached.unwrap_or(direct)
+                    } else {
+                        direct
+                    }
+                };
+                println!(
+                    "  health: {} — {} [{}]",
+                    health.state, health.reason, health.source
+                );
+                if matches!(command, Some(StorageCmd::Diagnostics)) {
+                    for attribute in health.attributes {
+                        println!(
+                            "    {}: {} {}",
+                            attribute.key,
+                            attribute.value,
+                            attribute.unit.unwrap_or_default()
+                        );
+                    }
+                }
+            }
+            _ => {
+                for volume in &drive.volumes {
+                    println!(
+                        "  volume {}: {} bytes, {}",
+                        volume.name, volume.size_bytes, volume.status
+                    );
+                    if let (Some(used), Some(available)) =
+                        (volume.used_bytes, volume.available_bytes)
+                    {
+                        println!("    used {} bytes, available {} bytes", used, available);
+                    }
+                }
+                for temperature in &drive.temperatures {
+                    println!(
+                        "  {}: {:.1} °C [{}]",
+                        temperature.label, temperature.celsius, temperature.source
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn cmd_privileged_status() -> anyhow::Result<()> {

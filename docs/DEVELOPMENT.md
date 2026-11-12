@@ -1,5 +1,9 @@
 # Development
 
+Storage provider fixtures and the read-only daemon/UI contract are described
+in [Storage Management](STORAGE_MANAGEMENT.md). Run the locked workspace build,
+tests, Clippy, and formatting checks before integration.
+
 This document is for contributors working on the current repository state.
 
 For a shorter entry point with run commands, source-file map, and grouped docs links, start with [QUICK_START.md](QUICK_START.md).

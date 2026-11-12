@@ -309,11 +309,14 @@ impl HistoryGraph {
         &self.area
     }
 
+    pub fn set_content_height(&self, height: i32) {
+        self.area.set_content_height(height);
+    }
+
     pub fn set_samples(&self, samples: &[f32]) {
         let changed = {
             let current = self.state.borrow();
-            current.samples.len() != samples.len()
-                || current.samples.last().copied() != samples.last().copied()
+            !history_samples_equal(&current.samples, samples)
         };
         if changed {
             self.state.borrow_mut().samples = samples.to_vec();
@@ -322,6 +325,14 @@ impl HistoryGraph {
             }
         }
     }
+}
+
+fn history_samples_equal(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
 }
 
 fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGraphState) {
@@ -342,9 +353,23 @@ fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGra
     ctx.move_to(left, 21.0);
     ctx.show_text(&state.title).ok();
 
-    let current = state.samples.last().copied();
-    let minimum_sample = state.samples.iter().copied().reduce(f32::min);
-    let maximum_sample = state.samples.iter().copied().reduce(f32::max);
+    let current = state
+        .samples
+        .last()
+        .copied()
+        .filter(|value| value.is_finite());
+    let minimum_sample = state
+        .samples
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .reduce(f32::min);
+    let maximum_sample = state
+        .samples
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .reduce(f32::max);
     let summary = match (current, minimum_sample, maximum_sample) {
         (Some(current), Some(minimum), Some(maximum)) => format!(
             "Now {current:.0} {}   Min {minimum:.0}   Max {maximum:.0}",
@@ -372,37 +397,25 @@ fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGra
     ctx.stroke().ok();
 
     if state.samples.len() > 1 {
-        let observed_max = state
-            .samples
-            .iter()
-            .copied()
-            .reduce(f32::max)
-            .unwrap_or(state.maximum);
-        let maximum = if state.minimum > 0.0 {
-            state.maximum.max(observed_max + 5.0)
-        } else {
-            state.maximum
-        };
+        let observed_max = maximum_sample.unwrap_or(state.maximum);
+        let maximum = state.maximum.max(observed_max * 1.1);
         let range = (maximum - state.minimum).max(1.0) as f64;
-        let mut points = Vec::with_capacity(state.samples.len());
+        let (red, green, blue) = state.color;
+        let mut in_segment = false;
         for (index, sample) in state.samples.iter().enumerate() {
+            if !sample.is_finite() {
+                in_segment = false;
+                continue;
+            }
             let x = left + plot_width * index as f64 / (state.samples.len() - 1) as f64;
             let normalized = ((*sample - state.minimum) as f64 / range).clamp(0.0, 1.0);
-            points.push((x, top + plot_height * (1.0 - normalized)));
-        }
-        let (red, green, blue) = state.color;
-        ctx.move_to(points[0].0, top + plot_height);
-        for (x, y) in &points {
-            ctx.line_to(*x, *y);
-        }
-        ctx.line_to(points[points.len() - 1].0, top + plot_height);
-        ctx.close_path();
-        ctx.set_source_rgba(red, green, blue, 0.16);
-        ctx.fill().ok();
-
-        ctx.move_to(points[0].0, points[0].1);
-        for (x, y) in points.iter().skip(1) {
-            ctx.line_to(*x, *y);
+            let y = top + plot_height * (1.0 - normalized);
+            if in_segment {
+                ctx.line_to(x, y);
+            } else {
+                ctx.move_to(x, y);
+                in_segment = true;
+            }
         }
         ctx.set_source_rgba(red, green, blue, 0.92);
         ctx.set_line_width(2.5);
@@ -422,5 +435,17 @@ fn draw_history_graph(ctx: &Context, width: f64, height: f64, state: &HistoryGra
     if let Ok(extents) = ctx.text_extents(end_label) {
         ctx.move_to(left + plot_width - extents.width(), height - 9.0);
         ctx.show_text(end_label).ok();
+    }
+}
+
+#[cfg(test)]
+mod history_graph_tests {
+    use super::history_samples_equal;
+
+    #[test]
+    fn rolling_history_detects_interior_changes_and_equal_gaps() {
+        assert!(!history_samples_equal(&[1.0, 2.0], &[1.0, 3.0]));
+        assert!(history_samples_equal(&[1.0, f32::NAN], &[1.0, f32::NAN]));
+        assert!(!history_samples_equal(&[1.0], &[1.0, 2.0]));
     }
 }

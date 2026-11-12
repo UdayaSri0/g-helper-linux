@@ -16,6 +16,29 @@ pub const KBD_BACKLIGHT_ACCESS_PREFIX: &str = "kbd_backlight_access";
 /// package upgrade.
 pub const DAEMON_API_VERSION: u32 = 1;
 
+pub mod storage {
+    pub const STATUS: &str = "status";
+    pub const SAMPLED_AT_MS: &str = "sampled_at_ms";
+    pub const DRIVES: &str = "drives";
+    pub const ID: &str = "id";
+    pub const NAME: &str = "name";
+    pub const MODEL: &str = "model";
+    pub const MANUFACTURER: &str = "manufacturer";
+    pub const KIND: &str = "kind";
+    pub const TRANSPORT: &str = "transport";
+    pub const CAPACITY_BYTES: &str = "capacity_bytes";
+    pub const LOGICAL_BLOCK_SIZE: &str = "logical_block_size";
+    pub const PHYSICAL_BLOCK_SIZE: &str = "physical_block_size";
+    pub const ROTATIONAL: &str = "rotational";
+    pub const FIRMWARE: &str = "firmware";
+    pub const CONTROLLER: &str = "controller";
+    pub const VOLUMES: &str = "volumes";
+    pub const IO: &str = "io";
+    pub const TEMPERATURES: &str = "temperatures";
+    pub const HEALTH: &str = "health";
+    pub const HISTORY: &str = "history";
+}
+
 pub const FEATURE_ACCESS_STATUS_SUFFIX: &str = "_status";
 pub const FEATURE_ACCESS_REASON_SUFFIX: &str = "_reason";
 

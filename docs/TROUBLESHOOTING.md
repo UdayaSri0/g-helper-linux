@@ -1,5 +1,17 @@
 # Troubleshooting
 
+For Storage, run `rog-helper storage list`, `rog-helper storage status`, and
+`rog-helper storage health`. A missing temperature, usage, or SMART field is
+unavailable rather than zero. Compare with trusted host sources as described
+in [Storage Management](STORAGE_MANAGEMENT.md); do not grant broad device
+permissions to force a reading.
+
+If Storage temporarily reports a disconnected or stale service, its last valid
+drive list remains visible until a fresh inventory confirms changes. A value
+whose own timestamp has expired is labelled unavailable. Refresh SMART Details
+updates the Health & SMART tab using the existing read-only diagnostics API;
+opening Storage does not request authentication.
+
 This document covers common issues based on the current implementation.
 
 For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:
