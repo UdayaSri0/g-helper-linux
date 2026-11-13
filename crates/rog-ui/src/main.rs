@@ -5977,9 +5977,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         },
     ];
     let view = shell::build_shell(&stack, &connection_status, &navigation_items, APP_ICON_NAME);
-    if !app_settings.ui.setup_assistant_completed {
-        stack.set_visible_child_name("setup");
-    }
+    stack.set_visible_child_name("dashboard");
 
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view));
