@@ -16,6 +16,14 @@ expanded details stable. Sections are added or removed only when the physical
 inventory changes. Volume filesystem capacity remains distinct from physical
 partition size; unsupported SMART attributes remain unavailable.
 
+Verified namespaces also show a proportional, read-only partition map in
+Partitions & Volumes. Segments identify filesystem, size, mount state, and
+protection classification through text as well as visual styling. Selecting a
+segment updates its details without replacing the drive dashboard during
+telemetry refresh. Uncertain topology shows its limitation instead of drawing
+invented unallocated space. Narrow layouts retain the same selection and
+details without a second horizontal page scroller.
+
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope

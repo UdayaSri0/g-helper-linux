@@ -7,10 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rog_core::{
-    StorageDevice, StorageHealth, StorageHistoryPoint, StorageIo, StorageState, StorageTemperature,
-    StorageVolume,
+    PartitionInfo, StorageDevice, StorageHealth, StorageHistoryPoint, StorageIo,
+    StorageProtectionState, StorageState, StorageTemperature, StorageTopology, StorageVolume,
+    UnallocatedExtent,
 };
 use sha2::{Digest, Sha256};
+use zbus::fdo::{ManagedObjects, ObjectManagerProxy};
+use zvariant::{OwnedObjectPath, OwnedValue};
 
 const HISTORY_LIMIT: usize = 60;
 const VOLUME_REFRESH: Duration = Duration::from_secs(15);
@@ -47,6 +50,7 @@ pub struct StorageProvider {
     sys_block: PathBuf,
     nvme_class: PathBuf,
     mountinfo: PathBuf,
+    swaps: PathBuf,
     dev_root: PathBuf,
     by_label: PathBuf,
     previous: HashMap<String, Previous>,
@@ -68,6 +72,7 @@ impl StorageProvider {
             sys_block: PathBuf::from("/sys/block"),
             nvme_class: PathBuf::from("/sys/class/nvme"),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
+            swaps: PathBuf::from("/proc/swaps"),
             dev_root: PathBuf::from("/dev"),
             by_label: PathBuf::from("/dev/disk/by-label"),
             previous: HashMap::new(),
@@ -177,6 +182,7 @@ impl StorageProvider {
             .volume_refresh
             .is_none_or(|last| now.duration_since(last) >= VOLUME_REFRESH);
         let mounts = parse_mountinfo(&fs::read_to_string(&self.mountinfo).unwrap_or_default());
+        let swaps = parse_swaps(&fs::read_to_string(&self.swaps).unwrap_or_default());
         let labels = read_labels(&self.by_label, &self.dev_root);
         let mut live = Vec::new();
         for Candidate {
@@ -258,6 +264,20 @@ impl StorageProvider {
             } else {
                 device.volumes = self.volume_cache.get(&id).cloned().unwrap_or_default();
             }
+            device.topologies = names
+                .iter()
+                .map(|name| {
+                    topology_for_namespace(
+                        &self.sys_block,
+                        name,
+                        &id,
+                        &mounts,
+                        &swaps,
+                        &labels,
+                        &device.volumes,
+                    )
+                })
+                .collect();
             if nvme {
                 device.temperatures = nvme_temperatures(&controller_path, sampled_at_ms);
             }
@@ -314,6 +334,344 @@ impl StorageProvider {
         }
         state
     }
+}
+
+fn topology_for_namespace(
+    sys_block: &Path,
+    name: &str,
+    drive_id: &str,
+    mounts: &HashMap<String, Vec<Mount>>,
+    swaps: &HashSet<String>,
+    labels: &HashMap<String, String>,
+    volumes: &[StorageVolume],
+) -> StorageTopology {
+    let disk = sys_block.join(name);
+    let capacity_bytes = read_u64(disk.join("size")).and_then(|n| n.checked_mul(512));
+    let logical_block_size = read_u64(disk.join("queue/logical_block_size"));
+    let physical_block_size = read_u64(disk.join("queue/physical_block_size"));
+    let mut result = StorageTopology {
+        namespace: name.into(),
+        capacity_bytes: capacity_bytes.unwrap_or(0),
+        status: "uncertain".into(),
+        logical_block_size,
+        physical_block_size,
+        read_only: read_u64(disk.join("ro")).map(|v| v != 0),
+        removable: read_u64(disk.join("removable")).map(|v| v != 0),
+        ..StorageTopology::default()
+    };
+    let Ok(entries) = fs::read_dir(&disk) else {
+        result.status = "unavailable".into();
+        return result;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.join("partition").is_file() {
+            continue;
+        }
+        let Some(part_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let (Some(number), Some(start), Some(size)) = (
+            read_u64(path.join("partition")).and_then(|n| u32::try_from(n).ok()),
+            read_u64(path.join("start")).and_then(|n| n.checked_mul(512)),
+            read_u64(path.join("size")).and_then(|n| n.checked_mul(512)),
+        ) else {
+            result.status = "unavailable".into();
+            result.partitions.clear();
+            return result;
+        };
+        let dev = read_trimmed(path.join("dev"));
+        let mount_points: Vec<String> = dev
+            .as_deref()
+            .and_then(|id| mounts.get(id))
+            .map(|rows| rows.iter().map(|m| m.point.clone()).collect())
+            .unwrap_or_default();
+        let protected_reason = if mount_points.iter().any(|m| is_system_mount(m)) {
+            Some("Mounted system filesystem")
+        } else if swaps.contains(part_name) {
+            Some("Active swap")
+        } else if fs::read_dir(path.join("holders"))
+            .ok()
+            .is_some_and(|mut d| d.next().is_some())
+        {
+            Some("Dependent block device")
+        } else {
+            None
+        };
+        let protection = if protected_reason.is_some() {
+            StorageProtectionState::Protected
+        } else {
+            StorageProtectionState::Uncertain
+        };
+        let volume = volumes.iter().find(|v| v.name == part_name);
+        result.partitions.push(PartitionInfo {
+            id: opaque_id(
+                &format!("{drive_id}\0{name}\0{number}\0{start}\0{size}"),
+                "partition",
+            ),
+            name: part_name.into(),
+            number,
+            start_bytes: start,
+            length_bytes: size,
+            filesystem: volume.and_then(|v| v.filesystem.clone()),
+            label: labels.get(part_name).cloned(),
+            mount_points,
+            protection,
+            protection_reason: protected_reason
+                .unwrap_or("Storage relationships require verification")
+                .into(),
+            ..PartitionInfo::default()
+        });
+    }
+    result.partitions.sort_by_key(|p| p.start_bytes);
+    result.protection = if result
+        .partitions
+        .iter()
+        .any(|p| p.protection == StorageProtectionState::Protected)
+        || read_trimmed(disk.join("dev"))
+            .as_deref()
+            .and_then(|id| mounts.get(id))
+            .is_some_and(|rows| rows.iter().any(|m| is_system_mount(&m.point)))
+        || swaps.contains(name)
+        || fs::read_dir(disk.join("holders"))
+            .ok()
+            .is_some_and(|mut entries| entries.next().is_some())
+    {
+        StorageProtectionState::Protected
+    } else {
+        StorageProtectionState::Uncertain
+    };
+    // Sysfs supplies geometry but no authoritative partition-table type; UDisks2 completes verification.
+    result
+}
+
+fn is_system_mount(mount: &str) -> bool {
+    mount == "/"
+        || mount == "/boot"
+        || mount.starts_with("/boot/")
+        || mount == "/usr"
+        || mount.starts_with("/usr/")
+        || mount == "/var"
+        || mount.starts_with("/var/")
+}
+
+fn parse_swaps(text: &str) -> HashSet<String> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let path = line.split_whitespace().next()?;
+            Path::new(path).file_name()?.to_str().map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Cross-checks sysfs geometry against UDisks2's read-only ObjectManager snapshot.
+pub async fn enrich_topology_from_udisks(state: &mut StorageState) {
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        let connection = zbus::Connection::system().await.ok()?;
+        let manager = ObjectManagerProxy::builder(&connection)
+            .destination("org.freedesktop.UDisks2")
+            .ok()?
+            .path("/org/freedesktop/UDisks2")
+            .ok()?
+            .build()
+            .await
+            .ok()?;
+        manager.get_managed_objects().await.ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(objects) = result else {
+        for drive in &mut state.drives {
+            for topology in &mut drive.topologies {
+                topology.status = "unavailable".into();
+            }
+        }
+        return;
+    };
+    for drive in &mut state.drives {
+        for topology in &mut drive.topologies {
+            verify_udisks_topology(topology, &drive.id, &objects, Path::new("/sys/block"));
+        }
+    }
+}
+
+fn property<'a>(
+    objects: &'a ManagedObjects,
+    path: &OwnedObjectPath,
+    interface: &str,
+    key: &str,
+) -> Option<&'a OwnedValue> {
+    objects
+        .get(path)?
+        .iter()
+        .find(|(name, _)| name.as_str() == interface)?
+        .1
+        .get(key)
+}
+
+fn property_u64(
+    objects: &ManagedObjects,
+    path: &OwnedObjectPath,
+    interface: &str,
+    key: &str,
+) -> Option<u64> {
+    let value = property(objects, path, interface, key)?.clone();
+    u64::try_from(value.clone())
+        .ok()
+        .or_else(|| u32::try_from(value).ok().map(u64::from))
+}
+
+fn property_string(
+    objects: &ManagedObjects,
+    path: &OwnedObjectPath,
+    interface: &str,
+    key: &str,
+) -> Option<String> {
+    String::try_from(property(objects, path, interface, key)?.clone()).ok()
+}
+
+fn property_path(
+    objects: &ManagedObjects,
+    path: &OwnedObjectPath,
+    interface: &str,
+    key: &str,
+) -> Option<OwnedObjectPath> {
+    OwnedObjectPath::try_from(property(objects, path, interface, key)?.clone()).ok()
+}
+
+fn sys_device_number(path: &Path) -> Option<u64> {
+    let dev = read_trimmed(path.join("dev"))?;
+    let (major, minor) = dev.split_once(':')?;
+    Some(libc::makedev(major.parse().ok()?, minor.parse().ok()?))
+}
+
+fn verify_udisks_topology(
+    topology: &mut StorageTopology,
+    drive_id: &str,
+    objects: &ManagedObjects,
+    sys_block: &Path,
+) {
+    const BLOCK: &str = "org.freedesktop.UDisks2.Block";
+    const TABLE: &str = "org.freedesktop.UDisks2.PartitionTable";
+    const PART: &str = "org.freedesktop.UDisks2.Partition";
+    let path = format!(
+        "/org/freedesktop/UDisks2/block_devices/{}",
+        topology.namespace
+    );
+    let Ok(disk_path) = OwnedObjectPath::try_from(path) else {
+        return;
+    };
+    let Some(table_type) = property_string(objects, &disk_path, TABLE, "Type") else {
+        return;
+    };
+    let Some(capacity) = property_u64(objects, &disk_path, BLOCK, "Size") else {
+        return;
+    };
+    if capacity != topology.capacity_bytes
+        || !matches!(table_type.as_str(), "gpt" | "dos")
+        || property_u64(objects, &disk_path, BLOCK, "DeviceNumber")
+            != sys_device_number(&sys_block.join(&topology.namespace))
+    {
+        return;
+    }
+    let mut partitions = topology.partitions.clone();
+    for partition in &mut partitions {
+        let mut matching = objects.iter().filter(|(path, _)| {
+            property_path(objects, path, PART, "Table").as_ref() == Some(&disk_path)
+                && property_u64(objects, path, PART, "Number") == Some(u64::from(partition.number))
+        });
+        let Some((part_path, _)) = matching.next() else {
+            return;
+        };
+        if matching.next().is_some()
+            || property_u64(objects, part_path, PART, "Offset") != Some(partition.start_bytes)
+            || property_u64(objects, part_path, PART, "Size") != Some(partition.length_bytes)
+            || property_u64(objects, part_path, BLOCK, "DeviceNumber")
+                != sys_device_number(&sys_block.join(&topology.namespace).join(&partition.name))
+        {
+            return;
+        }
+        partition.partition_type = property_string(objects, part_path, PART, "Type");
+        if let Some(uuid) =
+            property_string(objects, part_path, PART, "UUID").filter(|s| !s.is_empty())
+        {
+            partition.id = opaque_id(
+                &format!(
+                    "{drive_id}\0{uuid}\0{}\0{}",
+                    partition.start_bytes, partition.length_bytes
+                ),
+                "partition",
+            );
+        }
+        if partition.partition_type.as_deref().is_some_and(|kind| {
+            ["0xef", "0xef00", "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"]
+                .iter()
+                .any(|efi| kind.eq_ignore_ascii_case(efi))
+        }) {
+            partition.protection = StorageProtectionState::Protected;
+            partition.protection_reason = "EFI system partition".into();
+        }
+        if partition.filesystem.is_none() {
+            partition.filesystem = property_string(objects, part_path, BLOCK, "IdType");
+        }
+    }
+    // Reject extra UDisks partitions absent from sysfs, including a mid-enumeration change.
+    let reported = objects
+        .keys()
+        .filter(|path| property_path(objects, path, PART, "Table").as_ref() == Some(&disk_path))
+        .count();
+    if reported != partitions.len() {
+        return;
+    }
+    topology.partitions = partitions;
+    topology.table_type = Some(table_type);
+    topology.protection = if topology
+        .partitions
+        .iter()
+        .any(|p| p.protection == StorageProtectionState::Protected)
+    {
+        StorageProtectionState::Protected
+    } else {
+        StorageProtectionState::Uncertain
+    };
+    if let Some(gaps) = verified_gaps(topology) {
+        topology.unallocated_extents = gaps;
+        topology.status = "verified".into();
+    }
+}
+
+fn verified_gaps(topology: &StorageTopology) -> Option<Vec<UnallocatedExtent>> {
+    let logical = topology.logical_block_size?;
+    if !matches!(logical, 512 | 1024 | 2048 | 4096)
+        || topology.capacity_bytes == 0
+        || !matches!(topology.table_type.as_deref(), Some("gpt" | "dos"))
+    {
+        return None;
+    }
+    let mut end = 0_u64;
+    let mut gaps = Vec::new();
+    for partition in &topology.partitions {
+        let next = partition.start_bytes.checked_add(partition.length_bytes)?;
+        if partition.length_bytes == 0
+            || partition.start_bytes < end
+            || next > topology.capacity_bytes
+            || partition.start_bytes % logical != 0
+            || partition.length_bytes % logical != 0
+        {
+            return None;
+        }
+        if end != 0 && partition.start_bytes > end {
+            gaps.push(UnallocatedExtent {
+                start_bytes: end,
+                length_bytes: partition.start_bytes - end,
+            });
+        }
+        end = next;
+    }
+    // shortcut: table metadata makes edge gaps ambiguous; expose them after usable-LBA verification.
+    Some(gaps)
 }
 
 fn base_id(candidate: &Candidate) -> String {
@@ -685,9 +1043,11 @@ mod tests {
         provider.sys_block = sys_block;
         provider.nvme_class = nvme_class;
         provider.mountinfo = root.join("mountinfo");
+        provider.swaps = root.join("swaps");
         provider.dev_root = dev_root;
         provider.by_label = by_label;
         fs::write(&provider.mountinfo, "").unwrap();
+        fs::write(&provider.swaps, "Filename Type Size Used Priority\n").unwrap();
         (root, provider)
     }
 
@@ -890,6 +1250,246 @@ mod tests {
             .is_some_and(|io| io.read_bytes_per_sec > 0));
         fs::write(provider.sys_block.join("sdb/stat"), "1 0 1 0 1 0 1 0 0 1 0").unwrap();
         assert!(provider.sample().drives.remove(0).io.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_geometry_reports_only_interior_unallocated_extents() {
+        let topology = StorageTopology {
+            capacity_bytes: 100 * 512,
+            logical_block_size: Some(512),
+            table_type: Some("gpt".into()),
+            partitions: vec![
+                PartitionInfo {
+                    start_bytes: 10 * 512,
+                    length_bytes: 20 * 512,
+                    ..PartitionInfo::default()
+                },
+                PartitionInfo {
+                    start_bytes: 40 * 512,
+                    length_bytes: 20 * 512,
+                    ..PartitionInfo::default()
+                },
+            ],
+            ..StorageTopology::default()
+        };
+        let gaps = verified_gaps(&topology).unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start_bytes, 30 * 512);
+        assert_eq!(gaps[0].length_bytes, 10 * 512);
+        assert!(verified_gaps(&StorageTopology {
+            table_type: None,
+            ..topology.clone()
+        })
+        .is_none());
+        assert_eq!(
+            verified_gaps(&StorageTopology {
+                table_type: Some("dos".into()),
+                ..topology
+            })
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn overlapping_unaligned_and_overflowing_partitions_are_not_verified() {
+        let base = StorageTopology {
+            capacity_bytes: 100 * 512,
+            logical_block_size: Some(4096),
+            table_type: Some("gpt".into()),
+            partitions: vec![PartitionInfo {
+                start_bytes: 8 * 512,
+                length_bytes: 16 * 512,
+                ..PartitionInfo::default()
+            }],
+            ..StorageTopology::default()
+        };
+        assert!(verified_gaps(&base).is_some());
+        let mut invalid = base.clone();
+        invalid.partitions.push(PartitionInfo {
+            start_bytes: 16 * 512,
+            length_bytes: 16 * 512,
+            ..PartitionInfo::default()
+        });
+        assert!(verified_gaps(&invalid).is_none());
+        invalid.partitions[1].start_bytes = 25 * 512;
+        assert!(verified_gaps(&invalid).is_none());
+        invalid.partitions[1].start_bytes = u64::MAX - 7;
+        assert!(verified_gaps(&invalid).is_none());
+    }
+
+    #[test]
+    fn sysfs_child_relationship_and_system_protection_are_conservative() {
+        let (root, mut provider) = fixture();
+        disk(&provider, "sda", 100);
+        let partition = provider.sys_block.join("sda/sda1");
+        fs::create_dir_all(partition.join("holders")).unwrap();
+        fs::write(partition.join("partition"), "1").unwrap();
+        fs::write(partition.join("start"), "8").unwrap();
+        fs::write(partition.join("size"), "80").unwrap();
+        fs::write(partition.join("dev"), "8:1").unwrap();
+        fs::write(&provider.mountinfo, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n").unwrap();
+        let drive = provider.sample().drives.remove(0);
+        assert_eq!(drive.topologies.len(), 1);
+        assert_eq!(drive.topologies[0].status, "uncertain");
+        assert!(drive.topologies[0].unallocated_extents.is_empty());
+        assert_eq!(
+            drive.topologies[0].partitions[0].protection,
+            StorageProtectionState::Protected
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn swap_and_holder_dependencies_are_protected() {
+        let (root, mut provider) = fixture();
+        disk(&provider, "sda", 100);
+        for (number, name) in [(1, "sda1"), (2, "sda2")] {
+            let partition = provider.sys_block.join("sda").join(name);
+            fs::create_dir_all(partition.join("holders")).unwrap();
+            fs::write(partition.join("partition"), number.to_string()).unwrap();
+            fs::write(partition.join("start"), (number * 16).to_string()).unwrap();
+            fs::write(partition.join("size"), "8").unwrap();
+        }
+        fs::write(provider.sys_block.join("sda/sda2/holders/dm-0"), "").unwrap();
+        fs::write(
+            &provider.swaps,
+            "Filename Type Size Used Priority\n/dev/sda1 partition 100 0 -2\n",
+        )
+        .unwrap();
+        let drive = provider.sample().drives.remove(0);
+        assert_eq!(drive.topologies[0].partitions.len(), 2);
+        assert!(drive.topologies[0]
+            .partitions
+            .iter()
+            .all(|p| p.protection == StorageProtectionState::Protected));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_udisks_objects_never_verify_geometry() {
+        let (root, mut provider) = fixture();
+        disk(&provider, "sda", 100);
+        let mut topology = provider.sample().drives.remove(0).topologies.remove(0);
+        verify_udisks_topology(
+            &mut topology,
+            "drive-test",
+            &ManagedObjects::new(),
+            &provider.sys_block,
+        );
+        assert_eq!(topology.status, "uncertain");
+        assert!(topology.table_type.is_none());
+        assert!(topology.unallocated_extents.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn udisks_snapshot_must_match_device_number_and_partition_geometry() {
+        use zbus::names::OwnedInterfaceName;
+
+        fn text_value(value: &str) -> OwnedValue {
+            OwnedValue::try_from(zvariant::Value::from(value)).unwrap()
+        }
+        fn interface(name: &str) -> OwnedInterfaceName {
+            OwnedInterfaceName::try_from(name).unwrap()
+        }
+
+        let (root, mut provider) = fixture();
+        disk(&provider, "sda", 100);
+        fs::write(provider.sys_block.join("sda/dev"), "8:0").unwrap();
+        fs::write(
+            provider.sys_block.join("sda/queue/logical_block_size"),
+            "512",
+        )
+        .unwrap();
+        let part = provider.sys_block.join("sda/sda1");
+        fs::create_dir_all(&part).unwrap();
+        fs::write(part.join("partition"), "1").unwrap();
+        fs::write(part.join("start"), "8").unwrap();
+        fs::write(part.join("size"), "40").unwrap();
+        fs::write(part.join("dev"), "8:1").unwrap();
+        let original = provider.sample().drives.remove(0).topologies.remove(0);
+        let disk_path =
+            OwnedObjectPath::try_from("/org/freedesktop/UDisks2/block_devices/sda").unwrap();
+        let part_path =
+            OwnedObjectPath::try_from("/org/freedesktop/UDisks2/block_devices/sda1").unwrap();
+        let mut objects = ManagedObjects::new();
+        for table_type in ["gpt", "dos"] {
+            objects.insert(
+                disk_path.clone(),
+                HashMap::from([
+                    (
+                        interface("org.freedesktop.UDisks2.Block"),
+                        HashMap::from([
+                            ("Size".into(), OwnedValue::from(100_u64 * 512)),
+                            ("DeviceNumber".into(), OwnedValue::from(libc::makedev(8, 0))),
+                        ]),
+                    ),
+                    (
+                        interface("org.freedesktop.UDisks2.PartitionTable"),
+                        HashMap::from([("Type".into(), text_value(table_type))]),
+                    ),
+                ]),
+            );
+            objects.insert(
+                part_path.clone(),
+                HashMap::from([
+                    (
+                        interface("org.freedesktop.UDisks2.Block"),
+                        HashMap::from([(
+                            "DeviceNumber".into(),
+                            OwnedValue::from(libc::makedev(8, 1)),
+                        )]),
+                    ),
+                    (
+                        interface("org.freedesktop.UDisks2.Partition"),
+                        HashMap::from([
+                            (
+                                "Table".into(),
+                                OwnedValue::try_from(zvariant::Value::from(disk_path.clone()))
+                                    .unwrap(),
+                            ),
+                            ("Number".into(), OwnedValue::from(1_u32)),
+                            ("Offset".into(), OwnedValue::from(8_u64 * 512)),
+                            ("Size".into(), OwnedValue::from(40_u64 * 512)),
+                            ("Type".into(), text_value("0x83")),
+                        ]),
+                    ),
+                ]),
+            );
+            let mut verified = original.clone();
+            verify_udisks_topology(&mut verified, "drive-test", &objects, &provider.sys_block);
+            assert_eq!(verified.status, "verified");
+            assert_eq!(verified.table_type.as_deref(), Some(table_type));
+            assert_eq!(
+                verified.partitions[0].partition_type.as_deref(),
+                Some("0x83")
+            );
+            let partition_interface = objects
+                .get_mut(&part_path)
+                .unwrap()
+                .get_mut(&interface("org.freedesktop.UDisks2.Partition"))
+                .unwrap();
+            partition_interface.insert("Offset".into(), OwnedValue::from(9_u64 * 512));
+            let mut mismatch = original.clone();
+            verify_udisks_topology(&mut mismatch, "drive-test", &objects, &provider.sys_block);
+            assert_eq!(mismatch.status, "uncertain");
+            assert!(mismatch.table_type.is_none());
+            assert!(mismatch.partitions[0].partition_type.is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mounted_whole_disk_root_is_protected() {
+        let (root, mut provider) = fixture();
+        disk(&provider, "sda", 100);
+        fs::write(provider.sys_block.join("sda/dev"), "8:0").unwrap();
+        fs::write(&provider.mountinfo, "1 0 8:0 / / rw - ext4 /dev/sda rw\n").unwrap();
+        let topology = provider.sample().drives.remove(0).topologies.remove(0);
+        assert_eq!(topology.protection, StorageProtectionState::Protected);
         fs::remove_dir_all(root).unwrap();
     }
 }

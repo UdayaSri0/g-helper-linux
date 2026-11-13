@@ -1,7 +1,9 @@
 # Build
 
 Storage inventory requires no extra build dependency or installed SMART tool.
-Optional UDisks2 and smartctl access affect health detail at runtime. See
+Optional UDisks2 access affects topology verification and health detail at
+runtime; smartctl remains an optional health fallback. Existing drive
+monitoring continues without either service. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
 This document covers the current build, run, and validation workflow for the repository as implemented today.

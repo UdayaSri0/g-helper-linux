@@ -32,6 +32,7 @@ pub(crate) struct StorageDrive {
     pub read_iops: Option<u64>,
     pub write_iops: Option<u64>,
     pub volumes: Vec<WireMap>,
+    pub topologies: Vec<WireMap>,
     pub temperatures: Vec<WireMap>,
     pub health_reason: String,
     pub health_source: String,
@@ -77,6 +78,7 @@ pub(crate) fn decode(map: WireMap) -> StorageSnapshot {
                 read_iops: dbus_decode::unsigned(&io, "read_iops"),
                 write_iops: dbus_decode::unsigned(&io, "write_iops"),
                 volumes: dbus_decode::rows(&drive, key::VOLUMES).unwrap_or_default(),
+                topologies: dbus_decode::rows(&drive, key::TOPOLOGIES).unwrap_or_default(),
                 temperatures,
                 health_reason: dbus_decode::string(&health, "reason").unwrap_or_default(),
                 health_source: dbus_decode::string(&health, "source").unwrap_or_default(),
@@ -165,6 +167,9 @@ struct DriveDashboard {
     health_attribute_rows: RefCell<HashMap<String, HealthAttributeWidgets>>,
     volumes: gtk::Box,
     volume_rows: RefCell<HashMap<String, VolumeWidgets>>,
+    topology_box: gtk::Box,
+    topology_signature: RefCell<Vec<TopologyView>>,
+    selected_partition: Rc<RefCell<Option<String>>>,
     advanced: gtk::Label,
     read_graph: HistoryGraph,
     write_graph: HistoryGraph,
@@ -185,6 +190,26 @@ struct HealthAttributeWidgets {
     parent: gtk::Box,
     row: gtk::Box,
     label: gtk::Label,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyView {
+    namespace: String,
+    capacity_bytes: u64,
+    table_type: String,
+    status: String,
+    segments: Vec<MapSegment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MapSegment {
+    id: String,
+    start_bytes: u64,
+    length_bytes: u64,
+    label: String,
+    details: String,
+    protection: String,
+    gap: bool,
 }
 
 impl StoragePage {
@@ -550,6 +575,9 @@ impl DriveDashboard {
         volume_placeholder.add_css_class("volume-placeholder");
         volumes.append(&volume_placeholder);
         root.append(&section_title("Partitions & Volumes"));
+        let topology_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        topology_box.set_hexpand(true);
+        root.append(&topology_box);
         root.append(&volumes);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let refresh = gtk::Button::with_label("Refresh SMART details for all drives");
@@ -610,6 +638,9 @@ impl DriveDashboard {
             health_attribute_rows: RefCell::new(HashMap::new()),
             volumes,
             volume_rows: RefCell::new(HashMap::new()),
+            topology_box,
+            topology_signature: RefCell::new(Vec::new()),
+            selected_partition: Rc::new(RefCell::new(None)),
             advanced,
             read_graph,
             write_graph,
@@ -738,6 +769,7 @@ impl DriveDashboard {
                 .unwrap_or(&[]),
         );
         self.update_volumes(&drive.volumes);
+        self.update_topology(&drive.topologies);
         let temperatures = drive
             .temperatures
             .iter()
@@ -866,6 +898,38 @@ impl DriveDashboard {
         }
     }
 
+    fn update_topology(&self, topologies: &[WireMap]) {
+        let next = topologies
+            .iter()
+            .filter_map(parse_topology)
+            .collect::<Vec<_>>();
+        if *self.topology_signature.borrow() == next && self.topology_box.first_child().is_some() {
+            return;
+        }
+        let selected = if next.iter().any(|topology| topology.status == "verified") {
+            retained_selection(self.selected_partition.borrow().as_deref(), &next)
+        } else {
+            self.selected_partition.borrow().clone()
+        };
+        *self.selected_partition.borrow_mut() = selected;
+        while let Some(child) = self.topology_box.first_child() {
+            self.topology_box.remove(&child);
+        }
+        if next.is_empty() {
+            let note = gtk::Label::new(Some(
+                "Verified partition geometry is unavailable. Drive monitoring remains available.",
+            ));
+            note.set_xalign(0.0);
+            note.set_wrap(true);
+            self.topology_box.append(&note);
+        }
+        for topology in &next {
+            self.topology_box
+                .append(&partition_map(topology, self.selected_partition.clone()));
+        }
+        *self.topology_signature.borrow_mut() = next;
+    }
+
     fn update_volumes(&self, volumes: &[WireMap]) {
         if volumes.is_empty() && self.volumes.first_child().is_none() {
             let empty = gtk::Label::new(Some("No attributable volumes reported."));
@@ -977,6 +1041,235 @@ impl DriveDashboard {
             }
         }
     }
+}
+
+fn parse_topology(row: &WireMap) -> Option<TopologyView> {
+    let namespace = dbus_decode::string(row, "namespace")?;
+    let capacity_bytes = dbus_decode::unsigned(row, "capacity_bytes")?;
+    let status = dbus_decode::string(row, "status").unwrap_or_else(|| "uncertain".into());
+    let table_type =
+        dbus_decode::string(row, "table_type").unwrap_or_else(|| "Unknown table".into());
+    let mut segments = Vec::new();
+    if status == "verified" && capacity_bytes > 0 {
+        for partition in dbus_decode::rows(row, "partitions").unwrap_or_default() {
+            let id = dbus_decode::string(&partition, "id")?;
+            let start_bytes = dbus_decode::unsigned(&partition, "start_bytes")?;
+            let length_bytes = dbus_decode::unsigned(&partition, "length_bytes")?;
+            let number = dbus_decode::unsigned(&partition, "number").unwrap_or_default();
+            let name = dbus_decode::string(&partition, "label")
+                .or_else(|| dbus_decode::string(&partition, "name"))
+                .unwrap_or_else(|| format!("Partition {number}"));
+            let filesystem = dbus_decode::string(&partition, "filesystem")
+                .unwrap_or_else(|| "Filesystem unknown".into());
+            let partition_type = dbus_decode::string(&partition, "partition_type")
+                .unwrap_or_else(|| "Type unknown".into());
+            let protection =
+                dbus_decode::string(&partition, "protection").unwrap_or_else(|| "uncertain".into());
+            let protection_reason = dbus_decode::string(&partition, "protection_reason")
+                .unwrap_or_else(|| "No further classification details".into());
+            let mounts = dbus_decode::strings(&partition, "mount_points").unwrap_or_default();
+            let details = format!(
+                "Partition {number}: {name} · {filesystem} · {partition_type} · {} · {} · {}: {protection_reason}",
+                byte_size(length_bytes),
+                if mounts.is_empty() { "Not mounted".into() } else { format!("Mounted at {}", mounts.join(", ")) },
+                protection.replace('_', " ")
+            );
+            segments.push(MapSegment {
+                id,
+                start_bytes,
+                length_bytes,
+                label: name,
+                details,
+                protection,
+                gap: false,
+            });
+        }
+        for gap in dbus_decode::rows(row, "unallocated_extents").unwrap_or_default() {
+            let start_bytes = dbus_decode::unsigned(&gap, "start_bytes")?;
+            let length_bytes = dbus_decode::unsigned(&gap, "length_bytes")?;
+            segments.push(MapSegment {
+                id: format!("{namespace}:gap:{start_bytes}"),
+                start_bytes,
+                length_bytes,
+                label: "Unallocated".into(),
+                details: format!("Unallocated disk space · {}", byte_size(length_bytes)),
+                protection: "uncertain".into(),
+                gap: true,
+            });
+        }
+        segments.sort_by_key(|segment| segment.start_bytes);
+        let valid = segments.iter().try_fold(0_u64, |end, segment| {
+            let next = segment.start_bytes.checked_add(segment.length_bytes)?;
+            (segment.length_bytes > 0 && segment.start_bytes >= end && next <= capacity_bytes)
+                .then_some(next)
+        });
+        if valid.is_none() {
+            return Some(TopologyView {
+                namespace,
+                capacity_bytes,
+                table_type,
+                status: "uncertain".into(),
+                segments: Vec::new(),
+            });
+        }
+    }
+    Some(TopologyView {
+        namespace,
+        capacity_bytes,
+        table_type,
+        status,
+        segments,
+    })
+}
+
+fn retained_selection(current: Option<&str>, topologies: &[TopologyView]) -> Option<String> {
+    current
+        .filter(|id| {
+            topologies.iter().any(|topology| {
+                topology
+                    .segments
+                    .iter()
+                    .any(|segment| !segment.gap && segment.id == *id)
+            })
+        })
+        .map(str::to_owned)
+}
+
+fn partition_map(topology: &TopologyView, selected: Rc<RefCell<Option<String>>>) -> gtk::Box {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.add_css_class("metric-card");
+    root.set_hexpand(true);
+    let title = gtk::Label::new(Some(&format!(
+        "{} · {} · {}",
+        topology.namespace,
+        topology.table_type,
+        byte_size(topology.capacity_bytes)
+    )));
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+    root.append(&title);
+    if topology.status != "verified" || topology.segments.is_empty() {
+        let note = gtk::Label::new(Some(
+            "Partition layout requires further verification. No unallocated space is inferred.",
+        ));
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        root.append(&note);
+        return root;
+    }
+    let segments = Rc::new(topology.segments.clone());
+    let details = gtk::Label::new(Some(
+        "Select a partition or unallocated extent for details.",
+    ));
+    details.set_xalign(0.0);
+    details.set_wrap(true);
+    details.set_selectable(true);
+    if let Some(segment) = segments
+        .iter()
+        .find(|segment| selected.borrow().as_deref() == Some(segment.id.as_str()))
+    {
+        details.set_text(&format!("Selected: {}", segment.details));
+    }
+    let area = gtk::DrawingArea::new();
+    area.set_content_height(38);
+    area.set_hexpand(true);
+    area.update_property(&[gtk::accessible::Property::Label(
+        "Proportional partition layout; use the labeled selections below",
+    )]);
+    let capacity = topology.capacity_bytes as f64;
+    let draw_segments = segments.clone();
+    area.set_draw_func(move |_, ctx, width, height| {
+        for segment in draw_segments.iter() {
+            let x = segment.start_bytes as f64 / capacity * width as f64;
+            let w = segment.length_bytes as f64 / capacity * width as f64;
+            if segment.gap {
+                ctx.set_source_rgb(0.45, 0.47, 0.50);
+            } else if segment.protection == "protected" {
+                ctx.set_source_rgb(0.75, 0.40, 0.30);
+            } else if segment.protection == "uncertain" {
+                ctx.set_source_rgb(0.70, 0.56, 0.29);
+            } else {
+                ctx.set_source_rgb(0.27, 0.57, 0.78);
+            }
+            ctx.rectangle(x, 0.0, w.max(1.0), height as f64);
+            let _ = ctx.fill();
+            ctx.set_source_rgb(0.12, 0.13, 0.15);
+            ctx.rectangle(x, 0.0, w.max(1.0), height as f64);
+            let _ = ctx.stroke();
+        }
+    });
+    let gesture = gtk::GestureClick::new();
+    let buttons = Rc::new(RefCell::new(Vec::<(String, gtk::Button)>::new()));
+    let click_segments = segments.clone();
+    let click_details = details.clone();
+    let click_selected = selected.clone();
+    let click_area = area.clone();
+    let click_buttons = buttons.clone();
+    gesture.connect_released(move |_, _, x, _| {
+        let offset = x / click_area.width().max(1) as f64 * capacity;
+        if let Some(segment) = click_segments.iter().find(|segment| {
+            offset >= segment.start_bytes as f64
+                && offset < (segment.start_bytes + segment.length_bytes) as f64
+        }) {
+            *click_selected.borrow_mut() = (!segment.gap).then(|| segment.id.clone());
+            for (id, button) in click_buttons.borrow().iter() {
+                if !segment.gap && id == &segment.id {
+                    button.add_css_class("suggested-action");
+                } else {
+                    button.remove_css_class("suggested-action");
+                }
+            }
+            click_details.set_text(&format!("Selected: {}", segment.details));
+        }
+    });
+    area.add_controller(gesture);
+    root.append(&area);
+    let choices = gtk::FlowBox::new();
+    choices.set_selection_mode(gtk::SelectionMode::None);
+    choices.set_min_children_per_line(1);
+    choices.set_max_children_per_line(4);
+    choices.set_column_spacing(6);
+    choices.set_row_spacing(6);
+    for segment in segments.iter() {
+        let button = gtk::Button::with_label(&format!(
+            "{} · {}",
+            segment.label,
+            byte_size(segment.length_bytes)
+        ));
+        button.set_tooltip_text(Some(&segment.details));
+        button.update_property(&[gtk::accessible::Property::Label(&segment.details)]);
+        if selected.borrow().as_deref() == Some(segment.id.as_str()) {
+            button.add_css_class("suggested-action");
+        }
+        buttons
+            .borrow_mut()
+            .push((segment.id.clone(), button.clone()));
+        let segment = segment.clone();
+        let details = details.clone();
+        let selected = selected.clone();
+        let buttons_for_click = buttons.clone();
+        button.connect_clicked(move |button| {
+            *selected.borrow_mut() = (!segment.gap).then(|| segment.id.clone());
+            for (_, button) in buttons_for_click.borrow().iter() {
+                button.remove_css_class("suggested-action");
+            }
+            if !segment.gap {
+                button.add_css_class("suggested-action");
+            }
+            details.set_text(&format!("Selected: {}", segment.details));
+        });
+        choices.insert(&button, -1);
+    }
+    root.append(&choices);
+    root.append(&details);
+    let edge_note = gtk::Label::new(Some(
+        "Only verified interior gaps are labeled unallocated; blank edge regions may contain partition-table metadata.",
+    ));
+    edge_note.set_xalign(0.0);
+    edge_note.set_wrap(true);
+    edge_note.add_css_class("storage-status-caption");
+    root.append(&edge_note);
+    root
 }
 
 fn section_title(text: &str) -> gtk::Label {
@@ -1144,6 +1437,31 @@ mod tests {
             vec!["b", "a", "c"]
         );
         assert_eq!(reconcile_order(&initial, &["a".into()]), vec!["a"]);
+    }
+
+    #[test]
+    fn partition_selection_survives_telemetry_but_clears_on_topology_change() {
+        let topology = TopologyView {
+            namespace: "nvme0n1".into(),
+            capacity_bytes: 100,
+            table_type: "gpt".into(),
+            status: "verified".into(),
+            segments: vec![MapSegment {
+                id: "partition-1".into(),
+                start_bytes: 0,
+                length_bytes: 50,
+                label: "Linux".into(),
+                details: "Linux".into(),
+                protection: "protected".into(),
+                gap: false,
+            }],
+        };
+        assert_eq!(
+            retained_selection(Some("partition-1"), std::slice::from_ref(&topology)),
+            Some("partition-1".into())
+        );
+        assert_eq!(retained_selection(Some("partition-1"), &[]), None);
+        assert_eq!(retained_selection(Some("other"), &[topology]), None);
     }
 
     #[test]

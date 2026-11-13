@@ -5,6 +5,13 @@ path. The daemon caches fast block I/O separately from slow SMART results;
 the privileged helper has no storage operation. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
+Read-only topology is an additive part of each storage snapshot. The provider
+enumerates namespaces and partition children through sysfs and checks UDisks2
+ObjectManager metadata before marking geometry verified. The daemon keeps
+recently verified metadata only while namespace and partition geometry match
+fresh sysfs observations. Unknown or changed relationships remain uncertain;
+no topology data flows to the privileged helper.
+
 The GTK StoragePage owns a persistent master-detail widget tree. Its drive
 buttons are keyed by opaque provider IDs and reconcile only on inventory
 changes; the selected detail widgets and bounded graph canvases update in

@@ -33,6 +33,7 @@ pub mod storage {
     pub const FIRMWARE: &str = "firmware";
     pub const CONTROLLER: &str = "controller";
     pub const VOLUMES: &str = "volumes";
+    pub const TOPOLOGIES: &str = "topologies";
     pub const IO: &str = "io";
     pub const TEMPERATURES: &str = "temperatures";
     pub const HEALTH: &str = "health";
