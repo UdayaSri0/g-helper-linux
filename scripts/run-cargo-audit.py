@@ -13,6 +13,22 @@ from pathlib import Path
 
 
 FIELDS = {"id", "package", "version", "issue", "owner", "reason", "remediation", "expires"}
+INCOMPLETE_AUDIT = "couldn't check if the package is yanked"
+
+
+def incomplete_audit_errors(stderr: str) -> list[str]:
+    return [line for line in stderr.splitlines() if INCOMPLETE_AUDIT in line.lower()]
+
+
+def audit_command(lockfile: Path, db: Path) -> list[str]:
+    return ["cargo", "audit", "--json", "--deny", "unsound", "--deny", "yanked",
+            "--file", str(lockfile), "--db", str(db), "--no-fetch"]
+
+
+def audit_failed(unexpected: set, stale: set, findings: set, warnings: dict, returncode: int, stderr: str) -> bool:
+    incomplete = incomplete_audit_errors(stderr)
+    denied = warnings.get("unsound", []) + warnings.get("yanked", [])
+    return bool(unexpected or stale or incomplete or denied or (returncode and not findings))
 
 
 def load_exceptions(path: Path, lockfile: Path) -> dict[tuple[str, str, str], dict]:
@@ -57,7 +73,7 @@ def main() -> int:
         db_revision = subprocess.check_output(["git", "-C", str(args.db), "rev-parse", "HEAD"], text=True).strip()
         scanner_version = subprocess.check_output(["cargo", "audit", "--version"], text=True).strip()
         result = subprocess.run(
-            ["cargo", "audit", "--json", "--deny", "unsound", "--deny", "yanked", "--file", str(args.file), "--db", str(args.db), "--no-fetch"],
+            audit_command(args.file, args.db),
             capture_output=True,
             text=True,
         )
@@ -67,6 +83,11 @@ def main() -> int:
             for item in report["vulnerabilities"]["list"]
         }
         unexpected, stale = compare_findings(findings, exceptions)
+        incomplete = incomplete_audit_errors(result.stderr)
+        if incomplete:
+            print("RustSec audit could not verify yanked status:", file=sys.stderr)
+            for line in incomplete:
+                print(f"  {line}", file=sys.stderr)
         if unexpected:
             print("RustSec vulnerabilities without an exact exception:", file=sys.stderr)
             for advisory, package, version in sorted(unexpected):
@@ -91,10 +112,7 @@ def main() -> int:
                     for item in items:
                         a, p = item["advisory"], item["package"]
                         output.write(f"  - `{a['id']}` {p['name']} {p['version']}: {a['title']}\n")
-        if unexpected or stale:
-            return 1
-        denied_warnings = report["warnings"].get("unsound", []) + report["warnings"].get("yanked", [])
-        if denied_warnings or (result.returncode and not findings):
+        if audit_failed(unexpected, stale, findings, report["warnings"], result.returncode, result.stderr):
             print(result.stderr or "cargo audit failed", file=sys.stderr)
             return 1
         return 0

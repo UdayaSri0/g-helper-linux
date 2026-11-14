@@ -26,6 +26,8 @@ jobs:
           git clone --quiet --depth 1 https://github.com/RustSec/advisory-db "$RUNNER_TEMP/advisory-db"
           git -C "$RUNNER_TEMP/advisory-db" rev-parse HEAD | tee "$RUNNER_TEMP/advisory-db-revision"
           echo "RustSec advisory database revision: $(cat "$RUNNER_TEMP/advisory-db-revision")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Populate Cargo registry index from the workspace lockfile
+        run: cargo fetch --locked
       - name: Test vulnerable fixture and audit locked dependencies
         run: scripts/test-cargo-audit.sh
         env:
