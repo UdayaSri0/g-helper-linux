@@ -1,7 +1,8 @@
 # Storage Management
 
-Storage Management is read-only. The GTK page receives storage snapshots from
-`rog-helperd` over the session D-Bus API; it does not open block devices or run
+Storage Management is read-only, including Stage 3 operation previews. The GTK
+page receives storage snapshots from `rog-helperd` over the session D-Bus API;
+it does not open block devices or run
 SMART commands. The CLI uses the same `rog-providers` implementation for local
 diagnostics. No storage action is exposed by the privileged helper.
 
@@ -17,6 +18,33 @@ none authorizes a storage operation. The current provider reports Protected
 where it has positive evidence and otherwise remains Uncertain; it does not
 yet assert PotentiallyManageable. An unmounted partition is never assumed safe
 to modify.
+
+## Stage 3 operation preview
+
+`PlanStorageOperation` accepts a typed intention encoded as JSON and returns a
+JSON plan. The intentions are `create_partition`, `delete_partition`,
+`format_filesystem`, `resize_partition`, `repair_filesystem`, `mount`, and
+`unmount`. A request identifies an opaque drive ID and namespace, optionally a
+partition ID, and supplies the expected capacity and optional partition start
+and length in bytes. The daemon rejects malformed or oversized requests before
+asking the provider for a fresh assessment.
+
+The provider re-reads sysfs and UDisks2 to check device identity, partition
+geometry, mount and swap use, holders, and protection evidence. A plan reports
+`blocked` or `preview_only`, its blockers, a summary, and whether a future
+execution route would require authorization. `preview_only` describes the
+assessment only: it grants no right to operate on a device. Disagreement,
+missing evidence, changed identity or geometry, and protected system storage
+must fail closed. A plan is a point-in-time explanation and cannot be reused as
+an execution token; a future execution feature would need its own fresh checks.
+
+Planning uses the unprivileged session D-Bus service. It does not contact
+PolicyKit, request a privilege prompt, or call a mutating UDisks2 method. The
+authorization field is an architecture marker for a possible future, separately
+reviewed operation. No storage action or authorization method exists in the
+privileged helper. The GTK preview presents the capability and blockers without
+an Apply or Execute control. Existing monitoring and the Stage 2 partition map
+remain read-only.
 
 The partition map is grouped by namespace within each persistent drive
 dashboard. It uses byte offsets and lengths only after geometry validation.
@@ -111,6 +139,11 @@ and Clippy checks. The session smoke uses isolated D-Bus buses and does not
 perform storage writes. Manual acceptance should compare the map and
 classification against `lsblk`, sysfs, UDisks2, and mountinfo on disposable or
 known devices; it must not treat a fixture pass as physical validation.
+
+Stage 3 synthetic tests should cover stale identity and geometry, protected
+mounts and swap, holder relationships, absent UDisks2, malformed requests, and
+the absence of an execution interface. Preview results must be compared with
+fresh host evidence before any future storage execution design is considered.
 
 Provider fixtures cover discovery, namespace grouping, mount attribution,
 counter arithmetic and missing data. SMART JSON tests cover supported and

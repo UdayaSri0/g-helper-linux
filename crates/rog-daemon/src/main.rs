@@ -2508,6 +2508,22 @@ impl RogHelperDaemon {
         )
     }
 
+    /// Returns a fresh, read-only assessment; no storage action is authorized here.
+    async fn plan_storage_operation(&self, request_json: &str) -> fdo::Result<String> {
+        if request_json.len() > 4096 {
+            return Err(fdo::Error::InvalidArgs(
+                "storage request is too large".into(),
+            ));
+        }
+        let request: rog_core::StorageOperationRequest = serde_json::from_str(request_json)
+            .map_err(|error| {
+                fdo::Error::InvalidArgs(format!("invalid storage request: {error}"))
+            })?;
+        let plan = rog_providers::storage::preview_storage_operation(&request).await;
+        serde_json::to_string(&plan)
+            .map_err(|error| fdo::Error::Failed(format!("cannot encode storage plan: {error}")))
+    }
+
     fn get_configuration(&self) -> String {
         config_to_toml(&self.read_config()).unwrap_or_else(|error| {
             warn!("failed to serialize in-memory configuration: {error}");

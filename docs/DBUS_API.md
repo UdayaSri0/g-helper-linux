@@ -19,6 +19,20 @@ responses. Each row describes one verified block namespace with `namespace`,
 status must not be interpreted as safe geometry. The array is additive; older
 clients can continue reading `volumes` and telemetry.
 
+Stage 3 adds `PlanStorageOperation(request_json: s) -> plan_json: s` on the
+session daemon. The JSON request is `StorageOperationRequest` with `intent`,
+`drive_id`, `namespace`, optional `partition_id`, `expected_capacity_bytes`,
+and optional `expected_start_bytes` and `expected_length_bytes`. The intent is
+one of `create_partition`, `delete_partition`, `format_filesystem`,
+`resize_partition`, `repair_filesystem`, `mount`, or `unmount`. The JSON response
+is `StorageOperationPlan` with `intent`, `drive_id`, `namespace`, optional
+`partition_id`, `capability` (`blocked` or `preview_only`), `blockers`,
+`authorization` (`not_applicable` or `required_for_execution`), and `summary`.
+The daemon rejects malformed requests and requests longer than 4096 bytes.
+Planning refreshes target evidence and never authorizes or executes an action.
+`preview_only` is not permission to mutate storage. See
+[Storage Management](STORAGE_MANAGEMENT.md) for the safety boundary.
+
 This document describes the current session-DBus API exported by `rog-helperd`.
 
 The implementation lives in `crates/rog-daemon/src/main.rs`. The UI client proxy lives in `crates/rog-ui/src/main.rs`.

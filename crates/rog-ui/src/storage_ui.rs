@@ -1,6 +1,10 @@
 use adw::prelude::*;
 use gtk4 as gtk;
 use rog_core::dbus_keys::storage as key;
+use rog_core::{
+    StorageAuthorization, StorageOperationCapability, StorageOperationIntent, StorageOperationPlan,
+    StorageOperationRequest,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -154,6 +158,7 @@ pub(crate) struct StoragePage {
 
 struct DriveDashboard {
     root: gtk::Box,
+    id: String,
     details_title: gtk::Label,
     details_meta: gtk::Label,
     details_health: gtk::Label,
@@ -601,9 +606,14 @@ impl DriveDashboard {
         });
         actions.append(&refresh);
         let copy = gtk::Button::with_label("Copy redacted diagnostics");
+        let dashboard_id = id.clone();
         copy.connect_clicked(move |_| {
             if let Some(snapshot) = latest.borrow().as_ref() {
-                if let Some(drive) = snapshot.drives.iter().find(|drive| drive.id == id) {
+                if let Some(drive) = snapshot
+                    .drives
+                    .iter()
+                    .find(|drive| drive.id == dashboard_id)
+                {
                     if let Some(display) = gtk::gdk::Display::default() {
                         display.clipboard().set_text(&redacted_diagnostics(
                             drive,
@@ -625,6 +635,7 @@ impl DriveDashboard {
         root.append(&technical);
         Self {
             root,
+            id,
             details_title,
             details_meta,
             details_health,
@@ -924,8 +935,11 @@ impl DriveDashboard {
             self.topology_box.append(&note);
         }
         for topology in &next {
-            self.topology_box
-                .append(&partition_map(topology, self.selected_partition.clone()));
+            self.topology_box.append(&partition_map(
+                topology,
+                &self.id,
+                self.selected_partition.clone(),
+            ));
         }
         *self.topology_signature.borrow_mut() = next;
     }
@@ -1125,17 +1139,18 @@ fn parse_topology(row: &WireMap) -> Option<TopologyView> {
 fn retained_selection(current: Option<&str>, topologies: &[TopologyView]) -> Option<String> {
     current
         .filter(|id| {
-            topologies.iter().any(|topology| {
-                topology
-                    .segments
-                    .iter()
-                    .any(|segment| !segment.gap && segment.id == *id)
-            })
+            topologies
+                .iter()
+                .any(|topology| topology.segments.iter().any(|segment| segment.id == *id))
         })
         .map(str::to_owned)
 }
 
-fn partition_map(topology: &TopologyView, selected: Rc<RefCell<Option<String>>>) -> gtk::Box {
+fn partition_map(
+    topology: &TopologyView,
+    drive_id: &str,
+    selected: Rc<RefCell<Option<String>>>,
+) -> gtk::Box {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     root.add_css_class("metric-card");
     root.set_hexpand(true);
@@ -1211,9 +1226,9 @@ fn partition_map(topology: &TopologyView, selected: Rc<RefCell<Option<String>>>)
             offset >= segment.start_bytes as f64
                 && offset < (segment.start_bytes + segment.length_bytes) as f64
         }) {
-            *click_selected.borrow_mut() = (!segment.gap).then(|| segment.id.clone());
+            *click_selected.borrow_mut() = Some(segment.id.clone());
             for (id, button) in click_buttons.borrow().iter() {
-                if !segment.gap && id == &segment.id {
+                if id == &segment.id {
                     button.add_css_class("suggested-action");
                 } else {
                     button.remove_css_class("suggested-action");
@@ -1249,13 +1264,11 @@ fn partition_map(topology: &TopologyView, selected: Rc<RefCell<Option<String>>>)
         let selected = selected.clone();
         let buttons_for_click = buttons.clone();
         button.connect_clicked(move |button| {
-            *selected.borrow_mut() = (!segment.gap).then(|| segment.id.clone());
+            *selected.borrow_mut() = Some(segment.id.clone());
             for (_, button) in buttons_for_click.borrow().iter() {
                 button.remove_css_class("suggested-action");
             }
-            if !segment.gap {
-                button.add_css_class("suggested-action");
-            }
+            button.add_css_class("suggested-action");
             details.set_text(&format!("Selected: {}", segment.details));
         });
         choices.insert(&button, -1);
@@ -1269,7 +1282,115 @@ fn partition_map(topology: &TopologyView, selected: Rc<RefCell<Option<String>>>)
     edge_note.set_wrap(true);
     edge_note.add_css_class("storage-status-caption");
     root.append(&edge_note);
+    let preview = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    preview.append(&section_title("Operation preview"));
+    let warning = gtk::Label::new(Some(
+        "Read-only assessment. No storage action can be run here.",
+    ));
+    warning.set_xalign(0.0);
+    warning.set_wrap(true);
+    preview.append(&warning);
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let operation = gtk::DropDown::from_strings(&[
+        "Create partition",
+        "Delete partition",
+        "Format filesystem",
+        "Resize partition",
+        "Repair filesystem",
+        "Mount",
+        "Unmount",
+    ]);
+    operation.update_property(&[gtk::accessible::Property::Label("Operation to preview")]);
+    controls.append(&operation);
+    let button = gtk::Button::with_label("Preview safety assessment");
+    controls.append(&button);
+    preview.append(&controls);
+    let result = gtk::Label::new(Some("Choose an operation and request a fresh assessment."));
+    result.set_xalign(0.0);
+    result.set_wrap(true);
+    result.set_selectable(true);
+    preview.append(&result);
+    let topology = topology.clone();
+    let drive_id = drive_id.to_owned();
+    button.connect_clicked(move |_| {
+        let intent = match operation.selected() {
+            0 => StorageOperationIntent::CreatePartition,
+            1 => StorageOperationIntent::DeletePartition,
+            2 => StorageOperationIntent::FormatFilesystem,
+            3 => StorageOperationIntent::ResizePartition,
+            4 => StorageOperationIntent::RepairFilesystem,
+            5 => StorageOperationIntent::Mount,
+            _ => StorageOperationIntent::Unmount,
+        };
+        let request =
+            match preview_request(&topology, &drive_id, selected.borrow().as_deref(), intent) {
+                Ok(request) => request,
+                Err(message) => {
+                    result.set_text(message);
+                    return;
+                }
+            };
+        result.set_text("Checking current device identity and safety evidence…");
+        let result = result.clone();
+        gtk::glib::MainContext::default().spawn_local(async move {
+            match crate::fetch_storage_plan(&request).await {
+                Ok(plan) => result.set_text(&storage_plan_text(&plan)),
+                Err(error) => result.set_text(&format!("Preview unavailable: {error}")),
+            }
+        });
+    });
+    root.append(&preview);
     root
+}
+
+fn preview_request(
+    topology: &TopologyView,
+    drive_id: &str,
+    selected: Option<&str>,
+    intent: StorageOperationIntent,
+) -> Result<StorageOperationRequest, &'static str> {
+    let segment = topology
+        .segments
+        .iter()
+        .find(|segment| Some(segment.id.as_str()) == selected);
+    let Some(segment) = segment else {
+        return Err("Select a partition or verified unallocated extent in this namespace.");
+    };
+    if segment.gap != (intent == StorageOperationIntent::CreatePartition) {
+        return Err(
+            "Create partition requires an unallocated extent; other previews require a partition.",
+        );
+    }
+    Ok(StorageOperationRequest {
+        intent,
+        drive_id: drive_id.into(),
+        namespace: topology.namespace.clone(),
+        partition_id: (!segment.gap).then(|| segment.id.clone()),
+        expected_capacity_bytes: topology.capacity_bytes,
+        expected_start_bytes: Some(segment.start_bytes),
+        expected_length_bytes: Some(segment.length_bytes),
+    })
+}
+
+fn storage_plan_text(plan: &StorageOperationPlan) -> String {
+    let status = match plan.capability {
+        StorageOperationCapability::Blocked => "Blocked",
+        StorageOperationCapability::PreviewOnly => "Preview only",
+    };
+    let authorization = match plan.authorization {
+        StorageAuthorization::NotApplicable => "No authorization request is made.",
+        StorageAuthorization::RequiredForExecution =>
+            "A future execution API would require PolicyKit authorization; this preview requests none.",
+    };
+    if plan.blockers.is_empty() {
+        format!("{status}: {}\n{authorization}", plan.summary)
+    } else {
+        format!(
+            "{status}: {}\n{authorization}\n{}",
+            plan.summary,
+            plan.blockers.join("\n")
+        )
+    }
 }
 
 fn section_title(text: &str) -> gtk::Label {
@@ -1412,6 +1533,24 @@ mod tests {
     use zbus::zvariant::OwnedValue;
 
     #[test]
+    fn preview_lists_every_blocker_without_an_action() {
+        let plan = StorageOperationPlan {
+            intent: StorageOperationIntent::Unmount,
+            drive_id: "drive".into(),
+            namespace: "nvme0n1".into(),
+            partition_id: Some("part".into()),
+            capability: StorageOperationCapability::Blocked,
+            blockers: vec!["System mount".into(), "Active swap".into()],
+            authorization: rog_core::StorageAuthorization::NotApplicable,
+            summary: "Cannot assess safely".into(),
+        };
+        assert_eq!(
+            storage_plan_text(&plan),
+            "Blocked: Cannot assess safely\nNo authorization request is made.\nSystem mount\nActive swap"
+        );
+    }
+
+    #[test]
     fn wrong_wire_types_do_not_create_drives() {
         let mut map = WireMap::new();
         map.insert("drives".into(), OwnedValue::from(1_u64));
@@ -1462,6 +1601,48 @@ mod tests {
         );
         assert_eq!(retained_selection(Some("partition-1"), &[]), None);
         assert_eq!(retained_selection(Some("other"), &[topology]), None);
+    }
+
+    #[test]
+    fn verified_gap_preview_uses_geometry_and_no_partition_identity() {
+        let topology = TopologyView {
+            namespace: "nvme0n1".into(),
+            capacity_bytes: 100,
+            table_type: "gpt".into(),
+            status: "verified".into(),
+            segments: vec![MapSegment {
+                id: "nvme0n1:gap:50".into(),
+                start_bytes: 50,
+                length_bytes: 25,
+                label: "Unallocated".into(),
+                details: "Unallocated".into(),
+                protection: "uncertain".into(),
+                gap: true,
+            }],
+        };
+        let selected = "nvme0n1:gap:50";
+        assert_eq!(
+            retained_selection(Some(selected), std::slice::from_ref(&topology)),
+            Some(selected.into())
+        );
+        let request = preview_request(
+            &topology,
+            "drive",
+            Some(selected),
+            StorageOperationIntent::CreatePartition,
+        )
+        .unwrap();
+        assert_eq!(request.partition_id, None);
+        assert_eq!(request.expected_start_bytes, Some(50));
+        assert_eq!(request.expected_length_bytes, Some(25));
+        assert!(preview_request(
+            &topology,
+            "drive",
+            Some(selected),
+            StorageOperationIntent::DeletePartition
+        )
+        .is_err());
+        assert_eq!(retained_selection(Some(selected), &[]), None);
     }
 
     #[test]
