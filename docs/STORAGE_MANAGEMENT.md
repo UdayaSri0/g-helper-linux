@@ -37,6 +37,9 @@ assessment only: it grants no right to operate on a device. Disagreement,
 missing evidence, changed identity or geometry, and protected system storage
 must fail closed. A plan is a point-in-time explanation and cannot be reused as
 an execution token; a future execution feature would need its own fresh checks.
+Swap block devices are matched by device number, including `/dev/disk` aliases.
+If swap backing cannot be attributed (including swap files), previews remain
+blocked until the relationship can be verified.
 
 Planning uses the unprivileged session D-Bus service. It does not contact
 PolicyKit, request a privilege prompt, or call a mutating UDisks2 method. The

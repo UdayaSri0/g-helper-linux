@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::fs;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -505,10 +506,19 @@ pub async fn preview_storage_operation(request: &StorageOperationRequest) -> Sto
     enrich_topology_from_udisks(&mut state).await;
     let evidence = fs::read_to_string("/proc/self/mountinfo")
         .ok()
-        .zip(fs::read_to_string("/proc/swaps").ok());
-    if let Some((mountinfo, swaps)) = &evidence {
+        .zip(fs::read_to_string("/proc/swaps").ok())
+        .and_then(|(mountinfo, swaps)| {
+            active_swap_devices(&swaps, |path| {
+                let metadata = fs::metadata(path).ok()?;
+                metadata
+                    .file_type()
+                    .is_block_device()
+                    .then_some(metadata.rdev())
+            })
+            .map(|swap_devices| (mountinfo, swap_devices))
+        });
+    if let Some((mountinfo, swap_devices)) = &evidence {
         let mounts = parse_mountinfo(mountinfo);
-        let swaps = parse_swaps(swaps);
         for drive in &mut state.drives {
             for topology in &mut drive.topologies {
                 if topology.status != "verified"
@@ -520,7 +530,9 @@ pub async fn preview_storage_operation(request: &StorageOperationRequest) -> Sto
                 let disk_dev = read_trimmed(disk.join("dev"));
                 let disk_clear = disk_dev
                     .as_deref()
-                    .is_some_and(|dev| !mounts.contains_key(dev) && holders_empty(&disk));
+                    .is_some_and(|dev| !mounts.contains_key(dev) && holders_empty(&disk))
+                    && sys_device_number(&disk)
+                        .is_some_and(|number| !swap_devices.contains(&number));
                 for partition in &mut topology.partitions {
                     let part = disk.join(&partition.name);
                     let part_dev = read_trimmed(part.join("dev"));
@@ -532,7 +544,8 @@ pub async fn preview_storage_operation(request: &StorageOperationRequest) -> Sto
                     if partition.protection == StorageProtectionState::Uncertain
                         && fresh_mounts.as_ref() == Some(&partition.mount_points)
                         && holders_empty(&part)
-                        && !swaps.contains(&partition.name)
+                        && sys_device_number(&part)
+                            .is_some_and(|number| !swap_devices.contains(&number))
                     {
                         partition.protection = StorageProtectionState::PotentiallyManageable;
                         partition.protection_reason =
@@ -540,7 +553,6 @@ pub async fn preview_storage_operation(request: &StorageOperationRequest) -> Sto
                     }
                 }
                 if disk_clear
-                    && !swaps.contains(&topology.namespace)
                     && topology
                         .partitions
                         .iter()
@@ -554,10 +566,23 @@ pub async fn preview_storage_operation(request: &StorageOperationRequest) -> Sto
     let mut plan = assess_storage_operation(request, &state);
     if evidence.is_none() {
         plan.blockers
-            .push("Mount or swap evidence is unavailable".into());
+            .push("Mount or swap evidence is unavailable or ambiguous".into());
         plan.capability = StorageOperationCapability::Blocked;
     }
     plan
+}
+
+fn active_swap_devices(
+    text: &str,
+    device_number: impl Fn(&Path) -> Option<u64>,
+) -> Option<HashSet<u64>> {
+    let mut devices = HashSet::new();
+    for line in text.lines().skip(1) {
+        let path = line.split_whitespace().next()?;
+        // shortcut: swap files lack a reliable physical parent here; block previews until attribution exists.
+        devices.insert(device_number(Path::new(path))?);
+    }
+    Some(devices)
 }
 
 fn holders_empty(path: &Path) -> bool {
@@ -1701,6 +1726,18 @@ mod tests {
 #[cfg(test)]
 mod storage_preview_tests {
     use super::*;
+
+    #[test]
+    fn swap_alias_uses_device_identity_and_unknown_backing_fails_closed() {
+        let swap =
+            "Filename Type Size Used Priority\n/dev/disk/by-uuid/alias partition 1024 0 -2\n";
+        let devices = active_swap_devices(swap, |path| {
+            (path == Path::new("/dev/disk/by-uuid/alias")).then_some(libc::makedev(8, 1))
+        })
+        .unwrap();
+        assert!(devices.contains(&libc::makedev(8, 1)));
+        assert!(active_swap_devices(swap, |_| None).is_none());
+    }
 
     fn request() -> StorageOperationRequest {
         StorageOperationRequest {
