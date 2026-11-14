@@ -81,6 +81,56 @@ pub enum StorageProtectionState {
     PotentiallyManageable,
 }
 
+/// A request to inspect a possible storage operation. This is never an execution request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageOperationIntent {
+    CreatePartition,
+    DeletePartition,
+    FormatFilesystem,
+    ResizePartition,
+    RepairFilesystem,
+    Mount,
+    Unmount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageOperationRequest {
+    pub intent: StorageOperationIntent,
+    pub drive_id: String,
+    pub namespace: String,
+    pub partition_id: Option<String>,
+    pub expected_capacity_bytes: u64,
+    pub expected_start_bytes: Option<u64>,
+    pub expected_length_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageOperationCapability {
+    Blocked,
+    PreviewOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageAuthorization {
+    NotApplicable,
+    RequiredForExecution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageOperationPlan {
+    pub intent: StorageOperationIntent,
+    pub drive_id: String,
+    pub namespace: String,
+    pub partition_id: Option<String>,
+    pub capability: StorageOperationCapability,
+    pub blockers: Vec<String>,
+    pub authorization: StorageAuthorization,
+    pub summary: String,
+}
+
 impl StorageProtectionState {
     pub const fn as_str(self) -> &'static str {
         match self {

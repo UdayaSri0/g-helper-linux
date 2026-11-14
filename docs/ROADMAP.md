@@ -15,6 +15,11 @@ presentation, tab-specific stack height, and paired I/O histories. Filesystem
 capacity is now reported separately from partition size. Screenshot and real
 device acceptance remain required before production promotion.
 
+Storage Management Stage 3 adds read-only operation previews with fresh target
+checks, explicit blockers, and an authorization classification. It does not
+execute storage operations or request PolicyKit authorization. Real-device
+comparisons and any future execution design require separate review.
+
 This roadmap reflects the current repository state as implemented today. It is intentionally organized around what already exists, what is actively evolving, and what is still missing.
 
 Older milestone-era roadmap text described several features as future work even after they had been implemented. This file is meant to correct that drift.

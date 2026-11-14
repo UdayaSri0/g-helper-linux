@@ -3,13 +3,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::fs;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rog_core::{
-    PartitionInfo, StorageDevice, StorageHealth, StorageHistoryPoint, StorageIo,
-    StorageProtectionState, StorageState, StorageTemperature, StorageTopology, StorageVolume,
-    UnallocatedExtent,
+    PartitionInfo, StorageAuthorization, StorageDevice, StorageHealth, StorageHistoryPoint,
+    StorageIo, StorageOperationCapability, StorageOperationIntent, StorageOperationPlan,
+    StorageOperationRequest, StorageProtectionState, StorageState, StorageTemperature,
+    StorageTopology, StorageVolume, UnallocatedExtent,
 };
 use sha2::{Digest, Sha256};
 use zbus::fdo::{ManagedObjects, ObjectManagerProxy};
@@ -495,6 +497,233 @@ pub async fn enrich_topology_from_udisks(state: &mut StorageState) {
             verify_udisks_topology(topology, &drive.id, &objects, Path::new("/sys/block"));
         }
     }
+}
+
+/// Re-samples kernel and UDisks2 state for each preview; no result is an execution permit.
+pub async fn preview_storage_operation(request: &StorageOperationRequest) -> StorageOperationPlan {
+    let mut provider = StorageProvider::new();
+    let mut state = provider.sample();
+    enrich_topology_from_udisks(&mut state).await;
+    let evidence = fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .zip(fs::read_to_string("/proc/swaps").ok())
+        .and_then(|(mountinfo, swaps)| {
+            active_swap_devices(&swaps, |path| {
+                let metadata = fs::metadata(path).ok()?;
+                metadata
+                    .file_type()
+                    .is_block_device()
+                    .then_some(metadata.rdev())
+            })
+            .map(|swap_devices| (mountinfo, swap_devices))
+        });
+    if let Some((mountinfo, swap_devices)) = &evidence {
+        let mounts = parse_mountinfo(mountinfo);
+        for drive in &mut state.drives {
+            for topology in &mut drive.topologies {
+                if topology.status != "verified"
+                    || topology.protection == StorageProtectionState::Protected
+                {
+                    continue;
+                }
+                let disk = Path::new("/sys/block").join(&topology.namespace);
+                let disk_dev = read_trimmed(disk.join("dev"));
+                let disk_clear = disk_dev
+                    .as_deref()
+                    .is_some_and(|dev| !mounts.contains_key(dev) && holders_empty(&disk))
+                    && sys_device_number(&disk)
+                        .is_some_and(|number| !swap_devices.contains(&number));
+                for partition in &mut topology.partitions {
+                    let part = disk.join(&partition.name);
+                    let part_dev = read_trimmed(part.join("dev"));
+                    let fresh_mounts = part_dev.as_deref().map(|dev| {
+                        mounts.get(dev).map_or_else(Vec::new, |rows| {
+                            rows.iter().map(|row| row.point.clone()).collect::<Vec<_>>()
+                        })
+                    });
+                    if partition.protection == StorageProtectionState::Uncertain
+                        && fresh_mounts.as_ref() == Some(&partition.mount_points)
+                        && holders_empty(&part)
+                        && sys_device_number(&part)
+                            .is_some_and(|number| !swap_devices.contains(&number))
+                    {
+                        partition.protection = StorageProtectionState::PotentiallyManageable;
+                        partition.protection_reason =
+                            "Fresh sysfs and UDisks2 evidence found no protection".into();
+                    }
+                }
+                if disk_clear
+                    && topology
+                        .partitions
+                        .iter()
+                        .all(|p| p.protection == StorageProtectionState::PotentiallyManageable)
+                {
+                    topology.protection = StorageProtectionState::PotentiallyManageable;
+                }
+            }
+        }
+    }
+    let mut plan = assess_storage_operation(request, &state);
+    if evidence.is_none() {
+        plan.blockers
+            .push("Mount or swap evidence is unavailable or ambiguous".into());
+        plan.capability = StorageOperationCapability::Blocked;
+    }
+    plan
+}
+
+fn active_swap_devices(
+    text: &str,
+    device_number: impl Fn(&Path) -> Option<u64>,
+) -> Option<HashSet<u64>> {
+    let mut devices = HashSet::new();
+    for line in text.lines().skip(1) {
+        let path = line.split_whitespace().next()?;
+        // shortcut: swap files lack a reliable physical parent here; block previews until attribution exists.
+        devices.insert(device_number(Path::new(path))?);
+    }
+    Some(devices)
+}
+
+fn holders_empty(path: &Path) -> bool {
+    fs::read_dir(path.join("holders"))
+        .ok()
+        .is_some_and(|mut entries| entries.next().is_none())
+}
+
+fn assess_storage_operation(
+    request: &StorageOperationRequest,
+    state: &StorageState,
+) -> StorageOperationPlan {
+    let mut plan = StorageOperationPlan {
+        intent: request.intent,
+        drive_id: request.drive_id.clone(),
+        namespace: request.namespace.clone(),
+        partition_id: request.partition_id.clone(),
+        capability: StorageOperationCapability::Blocked,
+        blockers: Vec::new(),
+        authorization: StorageAuthorization::NotApplicable,
+        summary: format!(
+            "Preview of {:?}; no operation can be executed",
+            request.intent
+        ),
+    };
+    if state.status != "available" {
+        plan.blockers
+            .push("Fresh storage inventory is unavailable".into());
+        return plan;
+    }
+    let mut drives = state.drives.iter().filter(|d| d.id == request.drive_id);
+    let Some(drive) = drives.next() else {
+        plan.blockers
+            .push("Drive identity changed or disappeared".into());
+        return plan;
+    };
+    if drives.next().is_some() {
+        plan.blockers.push("Drive identity is ambiguous".into());
+        return plan;
+    }
+    let mut topologies = drive
+        .topologies
+        .iter()
+        .filter(|t| t.namespace == request.namespace);
+    let Some(topology) = topologies.next() else {
+        plan.blockers
+            .push("Namespace changed or disappeared".into());
+        return plan;
+    };
+    if topologies.next().is_some() {
+        plan.blockers.push("Namespace is ambiguous".into());
+        return plan;
+    }
+    if topology.capacity_bytes != request.expected_capacity_bytes || topology.capacity_bytes == 0 {
+        plan.blockers.push("Device geometry changed".into());
+    }
+    if topology.status != "verified" {
+        plan.blockers
+            .push("Sysfs and UDisks2 topology is not verified".into());
+    }
+    if topology.read_only != Some(false) || topology.removable != Some(false) {
+        plan.blockers
+            .push("Device access or removability is uncertain".into());
+    }
+    if topology.protection != StorageProtectionState::PotentiallyManageable {
+        plan.blockers
+            .push("Device protection is not cleared".into());
+    }
+    match request.intent {
+        StorageOperationIntent::CreatePartition => {
+            if request.partition_id.is_some() {
+                plan.blockers
+                    .push("Creation target must be unallocated space".into());
+            }
+            let extent = request
+                .expected_start_bytes
+                .zip(request.expected_length_bytes);
+            if !extent.is_some_and(|(start, length)| {
+                length > 0
+                    && topology.unallocated_extents.iter().any(|gap| {
+                        start >= gap.start_bytes
+                            && start.checked_add(length).is_some_and(|end| {
+                                gap.start_bytes
+                                    .checked_add(gap.length_bytes)
+                                    .is_some_and(|gap_end| end <= gap_end)
+                            })
+                    })
+            }) {
+                plan.blockers
+                    .push("Requested extent is not verified unallocated space".into());
+            }
+        }
+        _ => {
+            let mut matches = topology
+                .partitions
+                .iter()
+                .filter(|p| Some(&p.id) == request.partition_id.as_ref());
+            let Some(partition) = matches.next() else {
+                plan.blockers
+                    .push("Partition identity changed or disappeared".into());
+                return plan;
+            };
+            if matches.next().is_some() {
+                plan.blockers.push("Partition identity is ambiguous".into());
+                return plan;
+            }
+            if Some(partition.start_bytes) != request.expected_start_bytes
+                || Some(partition.length_bytes) != request.expected_length_bytes
+            {
+                plan.blockers.push("Partition geometry changed".into());
+            }
+            if partition.protection != StorageProtectionState::PotentiallyManageable {
+                plan.blockers.push(format!(
+                    "Partition protection is not cleared: {}",
+                    partition.protection_reason
+                ));
+            }
+            if matches!(request.intent, StorageOperationIntent::Unmount)
+                && partition.mount_points.is_empty()
+            {
+                plan.blockers.push("Partition is not mounted".into());
+            }
+            if matches!(
+                request.intent,
+                StorageOperationIntent::Mount | StorageOperationIntent::RepairFilesystem
+            ) && partition.filesystem.is_none()
+            {
+                plan.blockers.push("Filesystem type is unknown".into());
+            }
+            if !matches!(request.intent, StorageOperationIntent::Unmount)
+                && !partition.mount_points.is_empty()
+            {
+                plan.blockers.push("Partition is mounted".into());
+            }
+        }
+    }
+    if plan.blockers.is_empty() {
+        plan.capability = StorageOperationCapability::PreviewOnly;
+        plan.authorization = StorageAuthorization::RequiredForExecution;
+    }
+    plan
 }
 
 fn property<'a>(
@@ -1491,5 +1720,122 @@ mod tests {
         let topology = provider.sample().drives.remove(0).topologies.remove(0);
         assert_eq!(topology.protection, StorageProtectionState::Protected);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod storage_preview_tests {
+    use super::*;
+
+    #[test]
+    fn swap_alias_uses_device_identity_and_unknown_backing_fails_closed() {
+        let swap =
+            "Filename Type Size Used Priority\n/dev/disk/by-uuid/alias partition 1024 0 -2\n";
+        let devices = active_swap_devices(swap, |path| {
+            (path == Path::new("/dev/disk/by-uuid/alias")).then_some(libc::makedev(8, 1))
+        })
+        .unwrap();
+        assert!(devices.contains(&libc::makedev(8, 1)));
+        assert!(active_swap_devices(swap, |_| None).is_none());
+    }
+
+    fn request() -> StorageOperationRequest {
+        StorageOperationRequest {
+            intent: StorageOperationIntent::DeletePartition,
+            drive_id: "drive-1".into(),
+            namespace: "sda".into(),
+            partition_id: Some("part-1".into()),
+            expected_capacity_bytes: 100_000,
+            expected_start_bytes: Some(4096),
+            expected_length_bytes: Some(8192),
+        }
+    }
+
+    fn snapshot() -> StorageState {
+        StorageState {
+            status: "available".into(),
+            drives: vec![StorageDevice {
+                id: "drive-1".into(),
+                topologies: vec![StorageTopology {
+                    namespace: "sda".into(),
+                    capacity_bytes: 100_000,
+                    status: "verified".into(),
+                    read_only: Some(false),
+                    removable: Some(false),
+                    protection: StorageProtectionState::PotentiallyManageable,
+                    partitions: vec![PartitionInfo {
+                        id: "part-1".into(),
+                        start_bytes: 4096,
+                        length_bytes: 8192,
+                        protection: StorageProtectionState::PotentiallyManageable,
+                        ..PartitionInfo::default()
+                    }],
+                    ..StorageTopology::default()
+                }],
+                ..StorageDevice::default()
+            }],
+            ..StorageState::default()
+        }
+    }
+
+    #[test]
+    fn preview_rejects_changed_identity_geometry_and_protection() {
+        let state = snapshot();
+        assert_eq!(
+            assess_storage_operation(&request(), &state).capability,
+            StorageOperationCapability::PreviewOnly
+        );
+        let mut changed = request();
+        changed.expected_start_bytes = Some(8192);
+        assert_eq!(
+            assess_storage_operation(&changed, &state).capability,
+            StorageOperationCapability::Blocked
+        );
+        changed = request();
+        changed.drive_id = "other".into();
+        assert_eq!(
+            assess_storage_operation(&changed, &state).capability,
+            StorageOperationCapability::Blocked
+        );
+        let mut protected = state.clone();
+        protected.drives[0].topologies[0].partitions[0].protection =
+            StorageProtectionState::Protected;
+        assert_eq!(
+            assess_storage_operation(&request(), &protected).capability,
+            StorageOperationCapability::Blocked
+        );
+        protected.drives[0].topologies[0].status = "uncertain".into();
+        assert_eq!(
+            assess_storage_operation(&request(), &protected).capability,
+            StorageOperationCapability::Blocked
+        );
+    }
+
+    #[test]
+    fn preview_checks_mount_intention_against_mount_state() {
+        let mut state = snapshot();
+        let mut mount = request();
+        mount.intent = StorageOperationIntent::Mount;
+        assert_eq!(
+            assess_storage_operation(&mount, &state).capability,
+            StorageOperationCapability::Blocked
+        );
+        state.drives[0].topologies[0].partitions[0].filesystem = Some("ext4".into());
+        assert_eq!(
+            assess_storage_operation(&mount, &state).capability,
+            StorageOperationCapability::PreviewOnly
+        );
+        state.drives[0].topologies[0].partitions[0]
+            .mount_points
+            .push("/media/test".into());
+        assert_eq!(
+            assess_storage_operation(&mount, &state).capability,
+            StorageOperationCapability::Blocked
+        );
+        mount.intent = StorageOperationIntent::Unmount;
+        assert_eq!(
+            assess_storage_operation(&mount, &state).capability,
+            StorageOperationCapability::PreviewOnly
+        );
     }
 }
