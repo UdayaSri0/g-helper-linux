@@ -2,10 +2,11 @@
 
 Storage snapshots use the existing UI → session D-Bus → daemon → provider
 path. The daemon caches fast block I/O separately from slow SMART results;
-the root privileged helper has no storage operation. Stage 4A's separate
-session-daemon execution path uses caller-bound PolicyKit and UDisks2 for
-verified mount and unmount, with fresh validation before and after
-authorization and authoritative mount-state readback. See
+the root privileged helper has no storage operation. Stage 4A contains a
+session-daemon execution path with caller-bound PolicyKit, UDisks2, fresh
+validation, and authoritative mount-state readback. Its D-Bus execution gate
+and GTK controls remain disabled because UDisks2 does not accept an atomic
+expected target identity with Mount/Unmount. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
 Read-only topology is an additive part of each storage snapshot. The provider

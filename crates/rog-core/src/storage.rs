@@ -112,6 +112,9 @@ pub struct StorageExecutionRequest {
     pub target: StorageOperationRequest,
 }
 
+/// UDisks2 cannot atomically bind Mount/Unmount to the identity checked by the daemon.
+pub const STORAGE_EXECUTION_ENABLED: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageOperationCapability {

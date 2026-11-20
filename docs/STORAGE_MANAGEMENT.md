@@ -1,7 +1,8 @@
 # Storage Management
 
-Storage monitoring and Stage 3 operation previews are read-only. Stage 4A adds
-separate, explicitly confirmed mount and unmount requests. The GTK
+Storage monitoring and Stage 3 operation previews are read-only. Stage 4A
+contains separate mount and unmount requests, currently disabled in the daemon
+and GTK pending an atomic backend target identity guarantee. The GTK
 page receives storage snapshots from `rog-helperd` over the session D-Bus API;
 it does not open block devices or run
 SMART commands. The CLI uses the same `rog-providers` implementation for local
@@ -49,38 +50,58 @@ authorization method exists in the root privileged helper. The GTK preview
 presents capability and blockers without executing. Existing monitoring and
 the Stage 2 partition map remain read-only.
 
-## Stage 4A mount and unmount
+## Stage 4A mount and unmount (execution disabled)
 
-The separate GTK controls check a fresh plan, show a cancel-default confirmation,
-and send a typed execution request only after the user confirms. A plan never
-authorizes that request. The unprivileged session daemon resolves the opaque
+The separate GTK controls are insensitive and explain why execution is
+disabled. The daemon's `ExecuteStorageOperation` endpoint validates request
+syntax but returns a structured disabled result before authorization or any
+backend call. Read-only Stage 3 previews remain usable. A plan never authorizes
+an execution request. The dormant unprivileged session-daemon path resolves opaque
 drive and partition IDs independently; clients cannot supply a raw device path,
 UDisks2 object path, shell command, or PolicyKit subject. The daemon checks
 fresh sysfs geometry and parentage, UDisks2 identity and filesystem data,
 kernel mount state, swap aliases, holders, and protection classification. Any
 uncertain, protected, stale, removable, stacked, unsupported, or ambiguous
-target is blocked. It serializes storage requests and repeats validation after
-authorization and immediately before backend use.
+target is blocked. Its design serializes storage requests and repeats validation
+after authorization and immediately before backend use.
 
-The daemon derives the requesting process from the session D-Bus sender and
-checks the operation-specific PolicyKit action for that actor. Mount and
-unmount actions are separate. The daemon itself remains unprivileged; UDisks2
-is the restricted backend. An unavailable or denied authority, changed caller,
+The dormant path derives the requesting process from the session D-Bus sender
+and checks the operation-specific PolicyKit action for that actor. It uses the
+bus-reported PID and UID plus `/proc` start time, without a PID file descriptor;
+PolicyKit documents a residual PID reuse race for this form of subject.
+Mount and unmount actions are separate. UDisks2 sees the unprivileged session
+daemon as its own D-Bus caller, so its authorization context cannot replace
+the custom initiating-caller check. The backend requests no second interactive
+UDisks2 prompt (`auth.no_user_interaction=true`); a backend authorization
+failure blocks the operation. An unavailable or denied authority, changed caller,
 changed target, missing UDisks2 service, or failed readback cannot produce a
 success result. Success requires a fresh readback of the requested mount state;
 an unresolved backend or readback outcome is reported as uncertain. The GTK
-page shows checking, confirmation, progress, denial, cancellation, failure,
-uncertainty, and confirmed results in text. A preview is a point-in-time
-assessment, not a promise that execution will succeed.
-An uncertain or interrupted request blocks further storage actions for that
-daemon process. Restart clears this in-memory gate, so the user must first
-verify the device's final state and that no UDisks2 request remains in flight.
-There is still a narrow race between final validation and the UDisks2 method
-call; live acceptance must verify hotplug behavior before this feature is merged.
+page has status text for checking, confirmation, progress, denial, cancellation,
+failure, uncertainty, and confirmed results, but the controls remain disabled.
+A preview is a point-in-time assessment, not a promise of execution success.
+
+The dormant path durably creates
+`~/.local/state/rog-helper/storage-operation.pending` before a mutating
+UDisks2 request and clears it only after conclusive readback. If the daemon
+crashes or readback remains uncertain, the marker blocks further requests after
+restart when the daemon uses the same home directory. The marker is user-owned
+state and can be removed by another process running as that user, so it is not
+a sufficient authorization or concurrency boundary on its own. An operator
+must inspect the final device and mount state using
+trusted read-only host tools, verify that no UDisks2 request remains in flight,
+then manually remove that marker before retrying. Never remove it solely to
+silence the error.
+
+UDisks2 Mount/Unmount does not accept an expected device number or geometry
+as an atomic precondition. A target can change between the daemon's final
+validation and the backend call; therefore this execution pathway remains
+disabled. The race has not been eliminated by repeated sampling. The caller
+PID reuse limitation is a separate reason not to enable this path yet.
 
 Stage 4A never creates or deletes partitions, formats, resizes, repairs, wipes,
-or changes the root helper's raw device access. Mount and unmount are limited
-to verified supported partitions. Full Flatpak integration, interactive
+or changes the root helper's raw device access. The dormant mount and unmount
+path is limited to verified supported partitions. Full Flatpak integration, interactive
 PolicyKit behavior, live UDisks2 execution, and physical hardware acceptance
 remain separate gates; no automated test writes to existing drives. The local
 Flatpak manifest check could not run because `flatpak-builder` is unavailable.
@@ -161,8 +182,9 @@ disclosing serials; local mount paths are shown only where useful to the user.
 
 ## Availability and packaging
 
-Basic inventory and I/O work without UDisks2 or smartmontools. Stage 4A mount
-and unmount require UDisks2 and a working PolicyKit authority. SMART detail is
+Basic inventory and I/O work without UDisks2 or smartmontools. Enabling Stage
+4A mount and unmount would require UDisks2 and a working PolicyKit authority.
+SMART detail is
 optional and may be limited by host permissions, hardware support, USB bridge
 behavior, or Flatpak sandbox access. The Flatpak manifest does not gain broad
 device or filesystem access for this feature. No package requires a SMART tool

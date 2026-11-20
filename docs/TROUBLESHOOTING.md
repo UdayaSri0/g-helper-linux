@@ -12,13 +12,18 @@ whose own timestamp has expired is labelled unavailable. Refresh SMART Details
 updates the Health & SMART tab using the existing read-only diagnostics API;
 opening Storage does not request authentication.
 
-For Stage 4A mount/unmount, check the displayed target and confirm explicitly.
-`blocked` or `failed` means the daemon could not verify current target or
-backend state; refresh Storage and inspect the reason before retrying. A denied
-or cancelled PolicyKit prompt makes no backend request. An `uncertain` result
-means readback did not establish the requested state: inspect the current
-kernel mount state through trusted host tools before another action. Do not
-run the GUI as root or widen `/dev` permissions to make an operation work.
+Stage 4A mount/unmount controls are disabled pending atomic target identity
+verification. `ExecuteStorageOperation` returns a structured disabled result
+without contacting PolicyKit or UDisks2. Use the read-only preview to inspect
+current safety evidence; do not run the GUI as root or widen `/dev` permissions.
+
+If an experimental execution path previously left
+`~/.local/state/rog-helper/storage-operation.pending`, restarting the daemon
+does not clear it when the daemon uses the same home directory. First inspect the device and mount state through trusted
+read-only host tools, and ensure no UDisks2 operation remains in flight. Only
+then remove that marker manually. Do not delete it merely to make the status
+message disappear. A missing or cancelled authorization must make no backend
+request; an uncertain readback cannot be treated as success.
 
 This document covers common issues based on the current implementation.
 

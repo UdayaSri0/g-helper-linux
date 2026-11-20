@@ -25,8 +25,9 @@ invented unallocated space. Narrow layouts retain the same selection and
 details without a second horizontal page scroller.
 
 Stage 4A places mount and unmount controls separately from the read-only
-preview. A fresh assessment precedes a cancel-default confirmation. Controls
-are unavailable while a request is pending; status text distinguishes blocked,
+preview, but they are currently insensitive and explain that execution is
+disabled pending atomic target identity verification. The dormant flow has a
+fresh assessment, cancel-default confirmation, and status text for blocked,
 in-progress, denied, cancelled, failed, uncertain, and readback-confirmed
 outcomes. The preview never promises execution success. Formatting, resizing,
 partition deletion, and repair have no execution control.

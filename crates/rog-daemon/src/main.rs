@@ -2551,6 +2551,14 @@ impl RogHelperDaemon {
                 "only mount and unmount can execute".into(),
             ));
         }
+        if !rog_core::STORAGE_EXECUTION_ENABLED {
+            return serde_json::to_string(&rog_core::StorageExecutionResult {
+                outcome: rog_core::StorageExecutionOutcome::Failed,
+                message: "Mount and unmount execution is disabled until target identity can be guaranteed at backend use".into(),
+                mount_points: Vec::new(),
+            })
+            .map_err(|error| fdo::Error::Failed(format!("cannot encode storage result: {error}")));
+        }
         let result = if let Ok(_guard) = self.state.storage_operation_lock.try_lock() {
             if self
                 .state

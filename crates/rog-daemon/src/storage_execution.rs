@@ -1,9 +1,12 @@
 //! Mount and unmount through UDisks2 after independent, fresh validation.
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::future::Future;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rog_core::{
@@ -22,6 +25,106 @@ const FILESYSTEM_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
 const POLKIT_NAME: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
+
+const PENDING_MARKER: &str = "storage-operation.pending";
+
+fn pending_marker_path() -> std::result::Result<PathBuf, Result> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| {
+            result(
+                Outcome::Failed,
+                "Home directory is unavailable for safe storage operation tracking",
+                vec![],
+            )
+        })?;
+    Ok(home.join(".local/state/rog-helper").join(PENDING_MARKER))
+}
+
+fn pending_marker_exists() -> std::result::Result<bool, Result> {
+    let path = pending_marker_path()?;
+    pending_marker_exists_at(&path)
+}
+
+fn pending_marker_exists_at(path: &Path) -> std::result::Result<bool, Result> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(result(
+            Outcome::Uncertain,
+            "Pending storage operation state is unreadable",
+            vec![],
+        )),
+    }
+}
+
+struct PendingOperation {
+    path: PathBuf,
+}
+
+impl PendingOperation {
+    fn begin() -> std::result::Result<Self, Result> {
+        let path = pending_marker_path()?;
+        Self::begin_at(path)
+    }
+
+    fn begin_at(path: PathBuf) -> std::result::Result<Self, Result> {
+        let directory = path.parent().expect("pending marker has a parent");
+        fs::create_dir_all(directory).map_err(|_| {
+            result(
+                Outcome::Failed,
+                "Cannot create storage operation state directory",
+                vec![],
+            )
+        })?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| {
+                if error.kind() == ErrorKind::AlreadyExists {
+                    result(
+                        Outcome::Uncertain,
+                        "A prior storage operation is unresolved",
+                        vec![],
+                    )
+                } else {
+                    result(
+                        Outcome::Failed,
+                        "Cannot persist pending storage operation",
+                        vec![],
+                    )
+                }
+            })?;
+        file.write_all(b"pending\n")
+            .and_then(|_| file.sync_all())
+            .and_then(|_| File::open(directory)?.sync_all())
+            .map_err(|_| {
+                result(
+                    Outcome::Uncertain,
+                    "Pending storage operation could not be durably recorded",
+                    vec![],
+                )
+            })?;
+        Ok(Self { path })
+    }
+
+    fn clear(self) -> std::result::Result<(), Result> {
+        fs::remove_file(&self.path)
+            .and_then(|_| {
+                File::open(self.path.parent().expect("pending marker has a parent"))?.sync_all()
+            })
+            .map_err(|_| {
+                result(
+                    Outcome::Uncertain,
+                    "Storage state was confirmed but pending marker could not be cleared",
+                    vec![],
+                )
+            })
+    }
+}
 
 fn result(outcome: Outcome, message: &str, mount_points: Vec<String>) -> Result {
     Result {
@@ -210,6 +313,17 @@ pub async fn execute(
     header: &Header<'_>,
     session: &Connection,
 ) -> Result {
+    match pending_marker_exists() {
+        Ok(false) => {}
+        Ok(true) => {
+            return result(
+                Outcome::Uncertain,
+                "A prior storage operation is unresolved",
+                vec![],
+            )
+        }
+        Err(outcome) => return outcome,
+    }
     if action(request.intent).is_none() {
         return result(
             Outcome::Failed,
@@ -270,16 +384,22 @@ pub async fn execute(
         Ok(proxy) => proxy,
         Err(_) => return result(Outcome::Failed, "UDisks2 filesystem is unavailable", vec![]),
     };
+    let pending = match PendingOperation::begin() {
+        Ok(pending) => pending,
+        Err(outcome) => return outcome,
+    };
     if !matches!(caller_identity(session, &caller.sender).await, Ok(identity) if identity == caller)
         || !matches!(resolve_storage_execution_target(request).await, Ok(target) if same_target(&current, &target) && target.mount_points == current.mount_points)
     {
-        return result(
+        let outcome = result(
             Outcome::Failed,
             "Caller or target changed before execution",
             vec![],
         );
+        return pending.clear().map_or_else(|error| error, |()| outcome);
     }
-    let options = HashMap::<String, OwnedValue>::new();
+    // UDisks2 sees this daemon as its caller; it must not open a second prompt for that identity.
+    let options = HashMap::from([("auth.no_user_interaction".to_string(), OwnedValue::from(true))]);
     let backend = timeout(Duration::from_secs(30), async {
         match request.intent {
             StorageOperationIntent::Mount => proxy
@@ -313,7 +433,12 @@ pub async fn execute(
         Ok(Err(_)) => BackendOutcome::Rejected,
         Err(_) => BackendOutcome::TimedOut,
     };
-    confirmed_result(backend, readback)
+    let outcome = confirmed_result(backend, readback);
+    if outcome.outcome == Outcome::Uncertain {
+        outcome
+    } else {
+        pending.clear().map_or_else(|error| error, |()| outcome)
+    }
     }).await
 }
 
@@ -321,6 +446,7 @@ pub async fn execute(
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn only_mount_and_unmount_have_authorization_actions() {
@@ -411,5 +537,33 @@ mod tests {
         assert!(serde_json::from_str::<rog_core::StorageExecutionRequest>(&wrapped).is_ok());
         let forged = format!(r#"{{"target":{preview},"device_path":"/dev/sda1"}}"#);
         assert!(serde_json::from_str::<rog_core::StorageExecutionRequest>(&forged).is_err());
+    }
+
+    #[test]
+    fn pending_marker_survives_interruption_and_blocks_reentry() {
+        let directory = std::env::temp_dir().join(format!(
+            "rog-storage-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join(PENDING_MARKER);
+        assert!(!pending_marker_exists_at(&path).unwrap());
+        let pending = PendingOperation::begin_at(path.clone()).unwrap();
+        assert!(pending_marker_exists_at(&path).unwrap());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(PendingOperation::begin_at(path.clone()).is_err());
+        drop(pending);
+        assert!(pending_marker_exists_at(&path).unwrap());
+        fs::remove_file(&path).unwrap();
+        let pending = PendingOperation::begin_at(path.clone()).unwrap();
+        pending.clear().unwrap();
+        assert!(!pending_marker_exists_at(&path).unwrap());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

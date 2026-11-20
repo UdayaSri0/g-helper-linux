@@ -1351,9 +1351,14 @@ fn partition_map(
     mount_action.update_property(&[gtk::accessible::Property::Label("Mount action")]);
     mount_controls.append(&mount_action);
     let mount_button = gtk::Button::with_label("Check and continue");
+    mount_button.set_sensitive(rog_core::STORAGE_EXECUTION_ENABLED);
     mount_controls.append(&mount_button);
     root.append(&mount_controls);
-    let mount_result = gtk::Label::new(Some("Select a partition to mount or unmount."));
+    let mount_result = gtk::Label::new(Some(if rog_core::STORAGE_EXECUTION_ENABLED {
+        "Select a partition to mount or unmount."
+    } else {
+        "Mount and unmount execution is disabled pending atomic target identity verification. Previews remain available above."
+    }));
     mount_result.set_xalign(0.0);
     mount_result.set_wrap(true);
     mount_result.set_selectable(true);
