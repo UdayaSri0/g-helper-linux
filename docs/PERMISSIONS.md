@@ -2,7 +2,12 @@
 
 Storage monitoring uses unprivileged read-only sysfs, mountinfo, UDisks2
 cached SMART, and optional smartctl. Missing SMART permission is reported;
-the privileged helper receives no storage action or arbitrary path. See
+the root privileged helper receives no storage action or arbitrary path.
+Stage 4A mount and unmount are separate session-daemon requests. The daemon
+derives the caller from session D-Bus, checks the matching PolicyKit action,
+then uses UDisks2 only after fresh target validation. Both GUI and daemon
+remain unprivileged; a missing authority or uncertain identity blocks the
+operation. Opening Storage and requesting a preview do not authenticate. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
 ## Capability and per-operation access

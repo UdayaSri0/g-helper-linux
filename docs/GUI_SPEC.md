@@ -24,6 +24,13 @@ telemetry refresh. Uncertain topology shows its limitation instead of drawing
 invented unallocated space. Narrow layouts retain the same selection and
 details without a second horizontal page scroller.
 
+Stage 4A places mount and unmount controls separately from the read-only
+preview. A fresh assessment precedes a cancel-default confirmation. Controls
+are unavailable while a request is pending; status text distinguishes blocked,
+in-progress, denied, cancelled, failed, uncertain, and readback-confirmed
+outcomes. The preview never promises execution success. Formatting, resizing,
+partition deletion, and repair have no execution control.
+
 This document describes the current GUI implemented by `crates/rog-ui/src/main.rs` and its `shell`, `theme`, `widgets`, and `fan_widgets` modules. Planned features that are not yet in the UI are called out separately.
 
 ## Scope

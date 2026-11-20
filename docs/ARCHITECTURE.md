@@ -2,7 +2,10 @@
 
 Storage snapshots use the existing UI → session D-Bus → daemon → provider
 path. The daemon caches fast block I/O separately from slow SMART results;
-the privileged helper has no storage operation. See
+the root privileged helper has no storage operation. Stage 4A's separate
+session-daemon execution path uses caller-bound PolicyKit and UDisks2 for
+verified mount and unmount, with fresh validation before and after
+authorization and authoritative mount-state readback. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
 Read-only topology is an additive part of each storage snapshot. The provider

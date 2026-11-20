@@ -1,6 +1,7 @@
 # Storage Management
 
-Storage Management is read-only, including Stage 3 operation previews. The GTK
+Storage monitoring and Stage 3 operation previews are read-only. Stage 4A adds
+separate, explicitly confirmed mount and unmount requests. The GTK
 page receives storage snapshots from `rog-helperd` over the session D-Bus API;
 it does not open block devices or run
 SMART commands. The CLI uses the same `rog-providers` implementation for local
@@ -14,10 +15,10 @@ sources disagree or are incomplete, and is `unavailable` when UDisks2 cannot
 be reached. The existing
 drive metrics and volume monitoring continue in that state. `Protected`,
 `Uncertain`, and `PotentiallyManageable` are informational classifications;
-none authorizes a storage operation. The current provider reports Protected
-where it has positive evidence and otherwise remains Uncertain; it does not
-yet assert PotentiallyManageable. An unmounted partition is never assumed safe
-to modify.
+none authorizes a storage operation. The provider reports Protected where it
+has positive evidence and PotentiallyManageable only when its conservative
+checks find complete, consistent evidence; other targets remain Uncertain. An
+unmounted partition is never assumed safe to modify.
 
 ## Stage 3 operation preview
 
@@ -36,18 +37,53 @@ execution route would require authorization. `preview_only` describes the
 assessment only: it grants no right to operate on a device. Disagreement,
 missing evidence, changed identity or geometry, and protected system storage
 must fail closed. A plan is a point-in-time explanation and cannot be reused as
-an execution token; a future execution feature would need its own fresh checks.
+an execution token; Stage 4A starts its own fresh checks.
 Swap block devices are matched by device number, including `/dev/disk` aliases.
 If swap backing cannot be attributed (including swap files), previews remain
 blocked until the relationship can be verified.
 
 Planning uses the unprivileged session D-Bus service. It does not contact
 PolicyKit, request a privilege prompt, or call a mutating UDisks2 method. The
-authorization field is an architecture marker for a possible future, separately
-reviewed operation. No storage action or authorization method exists in the
-privileged helper. The GTK preview presents the capability and blockers without
-an Apply or Execute control. Existing monitoring and the Stage 2 partition map
-remain read-only.
+authorization field describes a separate execution route. No storage action or
+authorization method exists in the root privileged helper. The GTK preview
+presents capability and blockers without executing. Existing monitoring and
+the Stage 2 partition map remain read-only.
+
+## Stage 4A mount and unmount
+
+The separate GTK controls check a fresh plan, show a cancel-default confirmation,
+and send a typed execution request only after the user confirms. A plan never
+authorizes that request. The unprivileged session daemon resolves the opaque
+drive and partition IDs independently; clients cannot supply a raw device path,
+UDisks2 object path, shell command, or PolicyKit subject. The daemon checks
+fresh sysfs geometry and parentage, UDisks2 identity and filesystem data,
+kernel mount state, swap aliases, holders, and protection classification. Any
+uncertain, protected, stale, removable, stacked, unsupported, or ambiguous
+target is blocked. It serializes storage requests and repeats validation after
+authorization and immediately before backend use.
+
+The daemon derives the requesting process from the session D-Bus sender and
+checks the operation-specific PolicyKit action for that actor. Mount and
+unmount actions are separate. The daemon itself remains unprivileged; UDisks2
+is the restricted backend. An unavailable or denied authority, changed caller,
+changed target, missing UDisks2 service, or failed readback cannot produce a
+success result. Success requires a fresh readback of the requested mount state;
+an unresolved backend or readback outcome is reported as uncertain. The GTK
+page shows checking, confirmation, progress, denial, cancellation, failure,
+uncertainty, and confirmed results in text. A preview is a point-in-time
+assessment, not a promise that execution will succeed.
+An uncertain or interrupted request blocks further storage actions for that
+daemon process. Restart clears this in-memory gate, so the user must first
+verify the device's final state and that no UDisks2 request remains in flight.
+There is still a narrow race between final validation and the UDisks2 method
+call; live acceptance must verify hotplug behavior before this feature is merged.
+
+Stage 4A never creates or deletes partitions, formats, resizes, repairs, wipes,
+or changes the root helper's raw device access. Mount and unmount are limited
+to verified supported partitions. Full Flatpak integration, interactive
+PolicyKit behavior, live UDisks2 execution, and physical hardware acceptance
+remain separate gates; no automated test writes to existing drives. The local
+Flatpak manifest check could not run because `flatpak-builder` is unavailable.
 
 The partition map is grouped by namespace within each persistent drive
 dashboard. It uses byte offsets and lengths only after geometry validation.
@@ -125,12 +161,13 @@ disclosing serials; local mount paths are shown only where useful to the user.
 
 ## Availability and packaging
 
-Basic inventory and I/O work without UDisks2 or smartmontools. SMART detail is
+Basic inventory and I/O work without UDisks2 or smartmontools. Stage 4A mount
+and unmount require UDisks2 and a working PolicyKit authority. SMART detail is
 optional and may be limited by host permissions, hardware support, USB bridge
 behavior, or Flatpak sandbox access. The Flatpak manifest does not gain broad
 device or filesystem access for this feature. No package requires a SMART tool
-at installation. None of the storage views mounts, repairs, formats, trims,
-benchmarks, or runs a SMART self-test.
+at installation. Monitoring and preview never mount, repair, format, trim,
+benchmark, or run a SMART self-test.
 
 ## Verification
 
@@ -143,10 +180,12 @@ perform storage writes. Manual acceptance should compare the map and
 classification against `lsblk`, sysfs, UDisks2, and mountinfo on disposable or
 known devices; it must not treat a fixture pass as physical validation.
 
-Stage 3 synthetic tests should cover stale identity and geometry, protected
+Stage 3 synthetic tests cover stale identity and geometry, protected
 mounts and swap, holder relationships, absent UDisks2, malformed requests, and
-the absence of an execution interface. Preview results must be compared with
-fresh host evidence before any future storage execution design is considered.
+the absence of execution in the preview interface. Stage 4A must test caller
+identity, authorization denial and cancellation, concurrent requests, target
+changes, backend failures, and readback using mocks and synthetic fixtures.
+These tests do not establish physical-device acceptance.
 
 Provider fixtures cover discovery, namespace grouping, mount attribution,
 counter arithmetic and missing data. SMART JSON tests cover supported and

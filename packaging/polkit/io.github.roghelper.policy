@@ -56,4 +56,24 @@
     </defaults>
   </action>
 
+  <action id="io.github.roghelper.storage.mount">
+    <description>Mount a verified filesystem with ROG Helper</description>
+    <message>Authentication is required to mount a filesystem</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.roghelper.storage.unmount">
+    <description>Unmount a verified filesystem with ROG Helper</description>
+    <message>Authentication is required to unmount a filesystem</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
 </policyconfig>

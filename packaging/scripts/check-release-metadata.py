@@ -191,6 +191,8 @@ def main() -> int:
         "io.github.roghelper.fans.control",
         "io.github.roghelper.fans.recover",
         "io.github.roghelper.lighting.control",
+        "io.github.roghelper.storage.mount",
+        "io.github.roghelper.storage.unmount",
     }
     require(action_ids == expected_actions, "privileged PolicyKit action set drift")
     require("io.github.roghelper.root" not in action_ids, "generic root PolicyKit action is forbidden")

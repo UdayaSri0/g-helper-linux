@@ -6,6 +6,15 @@ runtime; smartctl remains an optional health fallback. Existing drive
 monitoring continues without either service. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
+Stage 4A mount/unmount needs UDisks2 and PolicyKit at runtime. Packaging must
+install the separate `io.github.roghelper.storage.mount` and
+`io.github.roghelper.storage.unmount` actions; these do not grant the root helper
+raw device access. The Flatpak sandbox and real-device behavior need separate
+acceptance, beyond a successful package manifest check.
+The Stage 4A branch could not run the full Flatpak manifest check locally:
+`flatpak-builder` is missing. Locked Rust checks and synthetic tests do not
+verify live UDisks2 execution or an interactive PolicyKit agent.
+
 This document covers the current build, run, and validation workflow for the repository as implemented today.
 
 ## Prerequisites

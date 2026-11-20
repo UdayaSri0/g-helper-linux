@@ -3,8 +3,9 @@
 Storage Management provides a read-only physical-drive inventory, live block
 I/O, mounted-volume usage, attributed NVMe temperature, and optional SMART
 health in the GTK Storage page and `rog-helper storage` diagnostics. Stage 3
-adds read-only operation previews with fresh target checks and blockers; no
-storage operation can be executed. See
+adds read-only operation previews with fresh target checks and blockers.
+Stage 4A adds separately confirmed mount/unmount requests for verified supported
+partitions; physical hardware acceptance remains pending. See
 [Storage Management](docs/STORAGE_MANAGEMENT.md) for sources and limits.
 
 Linux-native control app for ASUS ROG laptops, built as a Rust workspace with a GTK/libadwaita UI, a user-session daemon, a provider layer for DBus/sysfs/procfs integration, and a diagnostics CLI.

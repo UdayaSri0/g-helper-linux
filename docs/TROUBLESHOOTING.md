@@ -12,6 +12,14 @@ whose own timestamp has expired is labelled unavailable. Refresh SMART Details
 updates the Health & SMART tab using the existing read-only diagnostics API;
 opening Storage does not request authentication.
 
+For Stage 4A mount/unmount, check the displayed target and confirm explicitly.
+`blocked` or `failed` means the daemon could not verify current target or
+backend state; refresh Storage and inspect the reason before retrying. A denied
+or cancelled PolicyKit prompt makes no backend request. An `uncertain` result
+means readback did not establish the requested state: inspect the current
+kernel mount state through trusted host tools before another action. Do not
+run the GUI as root or widen `/dev` permissions to make an operation work.
+
 This document covers common issues based on the current implementation.
 
 For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:

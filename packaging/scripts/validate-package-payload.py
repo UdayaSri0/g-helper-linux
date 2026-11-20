@@ -383,6 +383,8 @@ def validate(root: Path, privileged_only: bool) -> None:
         "io.github.roghelper.fans.control",
         "io.github.roghelper.fans.recover",
         "io.github.roghelper.lighting.control",
+        "io.github.roghelper.storage.mount",
+        "io.github.roghelper.storage.unmount",
     }
     actions = policy.findall("./action")
     if {action.get("id") for action in actions} != expected_actions:

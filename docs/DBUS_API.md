@@ -33,6 +33,19 @@ Planning refreshes target evidence and never authorizes or executes an action.
 `preview_only` is not permission to mutate storage. See
 [Storage Management](STORAGE_MANAGEMENT.md) for the safety boundary.
 
+Stage 4A adds `ExecuteStorageOperation(request_json: s) -> result_json: s`.
+The request is a separate `StorageExecutionRequest` object containing `target`
+with the Stage 3 identity and expected geometry fields. Only `mount` and
+`unmount` are accepted. A client cannot submit a device path, UDisks2 object
+path, PolicyKit actor, or preview plan. The daemon obtains the caller from the
+session D-Bus message, independently validates the target, requests the
+operation-specific PolicyKit action, then validates again before UDisks2 use.
+The response is `StorageExecutionResult`: `outcome` (`succeeded`, `failed`,
+`denied`, `cancelled`, or `uncertain`), `message`, and `mount_points`.
+`succeeded` requires fresh mount-state readback. Malformed, oversized, and
+unsupported requests fail before any backend call; concurrent requests are
+rejected. See [Storage Management](STORAGE_MANAGEMENT.md) for restrictions.
+
 This document describes the current session-DBus API exported by `rog-helperd`.
 
 The implementation lives in `crates/rog-daemon/src/main.rs`. The UI client proxy lives in `crates/rog-ui/src/main.rs`.
