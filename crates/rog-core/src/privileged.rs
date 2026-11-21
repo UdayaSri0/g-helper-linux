@@ -13,6 +13,8 @@ pub const POLKIT_ACTION_BATTERY_CONTROL: &str = "io.github.roghelper.battery.con
 pub const POLKIT_ACTION_FANS_CONTROL: &str = "io.github.roghelper.fans.control";
 pub const POLKIT_ACTION_FANS_RECOVER: &str = "io.github.roghelper.fans.recover";
 pub const POLKIT_ACTION_LIGHTING_CONTROL: &str = "io.github.roghelper.lighting.control";
+pub const POLKIT_ACTION_STORAGE_MOUNT: &str = "io.github.roghelper.storage.mount";
+pub const POLKIT_ACTION_STORAGE_UNMOUNT: &str = "io.github.roghelper.storage.unmount";
 
 pub const POLKIT_ACTIONS: [&str; 5] = [
     POLKIT_ACTION_CPU_CONTROL,

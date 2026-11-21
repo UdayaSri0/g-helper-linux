@@ -57,6 +57,7 @@ jobs:
           python3 packaging/scripts/test_release_environment.py
           python3 packaging/scripts/test-package-integration.py
           bash packaging/scripts/test-session-smoke.sh
+          bash packaging/scripts/test-storage-dbus-mock.sh
 
       - name: Package Foundations
         run: |

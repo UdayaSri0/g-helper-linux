@@ -2,7 +2,20 @@
 
 Storage monitoring uses unprivileged read-only sysfs, mountinfo, UDisks2
 cached SMART, and optional smartctl. Missing SMART permission is reported;
-the privileged helper receives no storage action or arbitrary path. See
+the root privileged helper receives no storage action or arbitrary path.
+Stage 4A mount and unmount are separate session-daemon requests, currently
+disabled before PolicyKit or UDisks2 use. The dormant path derives the caller
+from session D-Bus, checks the matching PolicyKit action, then validates again
+before UDisks2. UDisks2 sees the session daemon as its own D-Bus caller, so its
+authorization is a separate check and cannot replace the caller-bound action.
+The dormant backend sets `auth.no_user_interaction=true`, so it cannot trigger
+a second UDisks2 authentication prompt. The custom PolicyKit subject currently
+uses PID, UID, and start time rather than a PID file descriptor; that leaves a
+documented PID reuse risk. The Flatpak manifest grants no system-bus talk
+permission for UDisks2 or PolicyKit, so Flatpak execution also needs a separate
+permission design and acceptance check.
+Both GUI and daemon remain unprivileged. Opening Storage and requesting a
+preview do not authenticate. See
 [Storage Management](STORAGE_MANAGEMENT.md).
 
 ## Capability and per-operation access

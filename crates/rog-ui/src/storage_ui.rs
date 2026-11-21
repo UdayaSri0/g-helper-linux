@@ -2,7 +2,8 @@ use adw::prelude::*;
 use gtk4 as gtk;
 use rog_core::dbus_keys::storage as key;
 use rog_core::{
-    StorageAuthorization, StorageOperationCapability, StorageOperationIntent, StorageOperationPlan,
+    StorageAuthorization, StorageExecutionOutcome, StorageExecutionResult,
+    StorageOperationCapability, StorageOperationIntent, StorageOperationPlan,
     StorageOperationRequest,
 };
 use std::cell::{Cell, RefCell};
@@ -1285,7 +1286,7 @@ fn partition_map(
     let preview = gtk::Box::new(gtk::Orientation::Vertical, 8);
     preview.append(&section_title("Operation preview"));
     let warning = gtk::Label::new(Some(
-        "Read-only assessment. No storage action can be run here.",
+        "Read-only assessment. Mount and unmount use the separate controls below.",
     ));
     warning.set_xalign(0.0);
     warning.set_wrap(true);
@@ -1310,8 +1311,9 @@ fn partition_map(
     result.set_wrap(true);
     result.set_selectable(true);
     preview.append(&result);
-    let topology = topology.clone();
-    let drive_id = drive_id.to_owned();
+    let preview_topology = topology.clone();
+    let preview_drive_id = drive_id.to_owned();
+    let preview_selected = selected.clone();
     button.connect_clicked(move |_| {
         let intent = match operation.selected() {
             0 => StorageOperationIntent::CreatePartition,
@@ -1322,14 +1324,18 @@ fn partition_map(
             5 => StorageOperationIntent::Mount,
             _ => StorageOperationIntent::Unmount,
         };
-        let request =
-            match preview_request(&topology, &drive_id, selected.borrow().as_deref(), intent) {
-                Ok(request) => request,
-                Err(message) => {
-                    result.set_text(message);
-                    return;
-                }
-            };
+        let request = match preview_request(
+            &preview_topology,
+            &preview_drive_id,
+            preview_selected.borrow().as_deref(),
+            intent,
+        ) {
+            Ok(request) => request,
+            Err(message) => {
+                result.set_text(message);
+                return;
+            }
+        };
         result.set_text("Checking current device identity and safety evidence…");
         let result = result.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
@@ -1340,7 +1346,127 @@ fn partition_map(
         });
     });
     root.append(&preview);
+    let mount_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let mount_action = gtk::DropDown::from_strings(&["Mount", "Unmount"]);
+    mount_action.update_property(&[gtk::accessible::Property::Label("Mount action")]);
+    mount_controls.append(&mount_action);
+    let mount_button = gtk::Button::with_label("Check and continue");
+    mount_button.set_sensitive(rog_core::STORAGE_EXECUTION_ENABLED);
+    mount_controls.append(&mount_button);
+    root.append(&mount_controls);
+    let mount_result = gtk::Label::new(Some(if rog_core::STORAGE_EXECUTION_ENABLED {
+        "Select a partition to mount or unmount."
+    } else {
+        "Mount and unmount execution is disabled pending atomic target identity verification. Previews remain available above."
+    }));
+    mount_result.set_xalign(0.0);
+    mount_result.set_wrap(true);
+    mount_result.set_selectable(true);
+    root.append(&mount_result);
+    let topology = topology.clone();
+    let drive_id = drive_id.to_owned();
+    mount_button.connect_clicked(move |button| {
+        let intent = if mount_action.selected() == 0 {
+            StorageOperationIntent::Mount
+        } else {
+            StorageOperationIntent::Unmount
+        };
+        let request =
+            match preview_request(&topology, &drive_id, selected.borrow().as_deref(), intent) {
+                Ok(request) => request,
+                Err(message) => {
+                    mount_result.set_text(message);
+                    return;
+                }
+            };
+        button.set_sensitive(false);
+        mount_action.set_sensitive(false);
+        mount_result.set_text("Checking current device identity and safety evidence…");
+        let button = button.clone();
+        let action = mount_action.clone();
+        let result = mount_result.clone();
+        gtk::glib::MainContext::default().spawn_local(async move {
+            match crate::fetch_storage_plan(&request).await {
+                Ok(plan) if plan.capability == StorageOperationCapability::PreviewOnly => {
+                    let verb = if request.intent == StorageOperationIntent::Mount {
+                        "Mount"
+                    } else {
+                        "Unmount"
+                    };
+                    let dialog = adw::MessageDialog::new(
+                        None::<&gtk::Window>,
+                        Some(&format!("{verb} selected partition?")),
+                        Some(&format!(
+                            "{}\n\nThe device will be checked again before the action runs.",
+                            plan.summary
+                        )),
+                    );
+                    dialog.add_responses(&[("cancel", "Cancel"), ("execute", verb)]);
+                    dialog.set_close_response("cancel");
+                    dialog.set_default_response(Some("cancel"));
+                    dialog.set_response_appearance("execute", adw::ResponseAppearance::Destructive);
+                    let execute_button = button.clone();
+                    let execute_action = action.clone();
+                    let execute_result = result.clone();
+                    dialog.connect_response(Some("execute"), move |dialog, _| {
+                        dialog.close();
+                        execute_result.set_text("Action in progress…");
+                        let request = request.clone();
+                        let button = execute_button.clone();
+                        let action = execute_action.clone();
+                        let result = execute_result.clone();
+                        gtk::glib::MainContext::default().spawn_local(async move {
+                            match crate::execute_storage_operation(&request).await {
+                                Ok(outcome) => result.set_text(&storage_execution_text(&outcome)),
+                                Err(error) => {
+                                    result.set_text(&format!("Action result unavailable: {error}"))
+                                }
+                            }
+                            button.set_sensitive(true);
+                            action.set_sensitive(true);
+                        });
+                    });
+                    dialog.connect_response(Some("cancel"), move |dialog, _| {
+                        result.set_text("Action cancelled before execution.");
+                        button.set_sensitive(true);
+                        action.set_sensitive(true);
+                        dialog.close();
+                    });
+                    dialog.present();
+                }
+                Ok(plan) => {
+                    result.set_text(&storage_plan_text(&plan));
+                    button.set_sensitive(true);
+                    action.set_sensitive(true);
+                }
+                Err(error) => {
+                    result.set_text(&format!("Safety assessment unavailable: {error}"));
+                    button.set_sensitive(true);
+                    action.set_sensitive(true);
+                }
+            }
+        });
+    });
     root
+}
+
+fn storage_execution_text(result: &StorageExecutionResult) -> String {
+    let status = match result.outcome {
+        StorageExecutionOutcome::Succeeded => "Succeeded",
+        StorageExecutionOutcome::Failed => "Failed",
+        StorageExecutionOutcome::Denied => "Authorization denied",
+        StorageExecutionOutcome::Cancelled => "Cancelled",
+        StorageExecutionOutcome::Uncertain => "Outcome uncertain",
+    };
+    if result.mount_points.is_empty() {
+        format!("{status}: {}", result.message)
+    } else {
+        format!(
+            "{status}: {}\nMount points: {}",
+            result.message,
+            result.mount_points.join(", ")
+        )
+    }
 }
 
 fn preview_request(
@@ -1379,8 +1505,9 @@ fn storage_plan_text(plan: &StorageOperationPlan) -> String {
     };
     let authorization = match plan.authorization {
         StorageAuthorization::NotApplicable => "No authorization request is made.",
-        StorageAuthorization::RequiredForExecution =>
-            "A future execution API would require PolicyKit authorization; this preview requests none.",
+        StorageAuthorization::RequiredForExecution => {
+            "Execution requires PolicyKit authorization; this preview requests none."
+        }
     };
     if plan.blockers.is_empty() {
         format!("{status}: {}\n{authorization}", plan.summary)
@@ -1547,6 +1674,27 @@ mod tests {
         assert_eq!(
             storage_plan_text(&plan),
             "Blocked: Cannot assess safely\nNo authorization request is made.\nSystem mount\nActive swap"
+        );
+    }
+
+    #[test]
+    fn execution_result_preserves_authoritative_outcome_and_mount_points() {
+        let result = StorageExecutionResult {
+            outcome: StorageExecutionOutcome::Succeeded,
+            message: "Mounted after readback".into(),
+            mount_points: vec!["/run/media/test".into()],
+        };
+        assert_eq!(
+            storage_execution_text(&result),
+            "Succeeded: Mounted after readback\nMount points: /run/media/test"
+        );
+        assert_eq!(
+            storage_execution_text(&StorageExecutionResult {
+                outcome: StorageExecutionOutcome::Uncertain,
+                message: "Readback unavailable".into(),
+                mount_points: vec![],
+            }),
+            "Outcome uncertain: Readback unavailable"
         );
     }
 

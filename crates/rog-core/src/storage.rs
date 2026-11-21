@@ -105,6 +105,16 @@ pub struct StorageOperationRequest {
     pub expected_length_bytes: Option<u64>,
 }
 
+/// An independent execution request. A preview plan is never an authorization token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageExecutionRequest {
+    pub target: StorageOperationRequest,
+}
+
+/// UDisks2 cannot atomically bind Mount/Unmount to the identity checked by the daemon.
+pub const STORAGE_EXECUTION_ENABLED: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageOperationCapability {
@@ -129,6 +139,23 @@ pub struct StorageOperationPlan {
     pub blockers: Vec<String>,
     pub authorization: StorageAuthorization,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageExecutionOutcome {
+    Succeeded,
+    Failed,
+    Denied,
+    Cancelled,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageExecutionResult {
+    pub outcome: StorageExecutionOutcome,
+    pub message: String,
+    pub mount_points: Vec<String>,
 }
 
 impl StorageProtectionState {

@@ -93,6 +93,7 @@ trait Daemon1 {
     fn get_storage_state(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_storage_diagnostics(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn plan_storage_operation(&self, intention_json: &str) -> zbus::Result<String>;
+    fn execute_storage_operation(&self, intention_json: &str) -> zbus::Result<String>;
     fn get_cpu_caps(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_telemetry(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_cpu_diagnostics(&self) -> zbus::Result<String>;
@@ -10064,6 +10065,27 @@ async fn fetch_storage_plan(
         .await
         .map_err(|error| format!("daemon PlanStorageOperation failed: {error}"))?;
     serde_json::from_str(&response).map_err(|error| format!("invalid storage plan: {error}"))
+}
+
+async fn execute_storage_operation(
+    request: &rog_core::StorageOperationRequest,
+) -> Result<rog_core::StorageExecutionResult, String> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|error| format!("session D-Bus unavailable: {error}"))?;
+    let proxy = Daemon1Proxy::new(&conn)
+        .await
+        .map_err(|error| format!("storage daemon proxy unavailable: {error}"))?;
+    let json = serde_json::to_string(&rog_core::StorageExecutionRequest {
+        target: request.clone(),
+    })
+    .map_err(|error| error.to_string())?;
+    let response = proxy
+        .execute_storage_operation(&json)
+        .await
+        .map_err(|error| format!("daemon ExecuteStorageOperation failed: {error}"))?;
+    serde_json::from_str(&response)
+        .map_err(|error| format!("invalid storage execution result: {error}"))
 }
 
 async fn apply_lighting(p: PendingLighting) -> Result<(), String> {

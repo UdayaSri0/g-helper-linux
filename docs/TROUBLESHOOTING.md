@@ -12,6 +12,19 @@ whose own timestamp has expired is labelled unavailable. Refresh SMART Details
 updates the Health & SMART tab using the existing read-only diagnostics API;
 opening Storage does not request authentication.
 
+Stage 4A mount/unmount controls are disabled pending atomic target identity
+verification. `ExecuteStorageOperation` returns a structured disabled result
+without contacting PolicyKit or UDisks2. Use the read-only preview to inspect
+current safety evidence; do not run the GUI as root or widen `/dev` permissions.
+
+If an experimental execution path previously left
+`~/.local/state/rog-helper/storage-operation.pending`, restarting the daemon
+does not clear it when the daemon uses the same home directory. First inspect the device and mount state through trusted
+read-only host tools, and ensure no UDisks2 operation remains in flight. Only
+then remove that marker manually. Do not delete it merely to make the status
+message disappear. A missing or cancelled authorization must make no backend
+request; an uncertain readback cannot be treated as success.
+
 This document covers common issues based on the current implementation.
 
 For one consolidated, read-only readiness report, open **Setup & Access** in the UI or run:

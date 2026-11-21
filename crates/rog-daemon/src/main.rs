@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,10 +45,11 @@ use tokio::time::interval;
 use tracing::{info, warn};
 use zbus::fdo;
 use zbus::zvariant::{OwnedValue, Value};
-use zbus::{connection, interface};
+use zbus::{connection, interface, message::Header, Connection};
 
 mod privileged_client;
 mod storage_dbus;
+mod storage_execution;
 
 fn choose_storage_health(
     cached: Option<rog_core::StorageHealth>,
@@ -101,6 +102,8 @@ struct SharedState {
     automation_retry: Mutex<AutomationRetryRuntime>,
     automation_write_gate: Mutex<()>,
     hardware_control_lock: tokio::sync::Mutex<()>,
+    storage_operation_lock: tokio::sync::Mutex<()>,
+    storage_operation_uncertain: AtomicBool,
     automation_generation: AtomicU64,
 }
 
@@ -2524,6 +2527,70 @@ impl RogHelperDaemon {
             .map_err(|error| fdo::Error::Failed(format!("cannot encode storage plan: {error}")))
     }
 
+    /// Executes only a freshly validated mount or unmount, independent of any preview.
+    async fn execute_storage_operation(
+        &self,
+        request_json: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] session_connection: &Connection,
+    ) -> fdo::Result<String> {
+        if request_json.len() > 4096 {
+            return Err(fdo::Error::InvalidArgs(
+                "storage request is too large".into(),
+            ));
+        }
+        let request: rog_core::StorageExecutionRequest = serde_json::from_str(request_json)
+            .map_err(|error| {
+                fdo::Error::InvalidArgs(format!("invalid storage request: {error}"))
+            })?;
+        if !matches!(
+            request.target.intent,
+            rog_core::StorageOperationIntent::Mount | rog_core::StorageOperationIntent::Unmount
+        ) {
+            return Err(fdo::Error::InvalidArgs(
+                "only mount and unmount can execute".into(),
+            ));
+        }
+        if !rog_core::STORAGE_EXECUTION_ENABLED {
+            return serde_json::to_string(&rog_core::StorageExecutionResult {
+                outcome: rog_core::StorageExecutionOutcome::Failed,
+                message: "Mount and unmount execution is disabled until target identity can be guaranteed at backend use".into(),
+                mount_points: Vec::new(),
+            })
+            .map_err(|error| fdo::Error::Failed(format!("cannot encode storage result: {error}")));
+        }
+        let result = if let Ok(_guard) = self.state.storage_operation_lock.try_lock() {
+            if self
+                .state
+                .storage_operation_uncertain
+                .swap(true, Ordering::SeqCst)
+            {
+                rog_core::StorageExecutionResult {
+                    outcome: rog_core::StorageExecutionOutcome::Uncertain,
+                    message: "A prior storage operation is unresolved; verify final device state and ensure the backend has stopped before restarting the daemon".into(),
+                    mount_points: Vec::new(),
+                }
+            } else {
+                let result =
+                    storage_execution::execute(&request.target, &header, session_connection).await;
+                if result.outcome != rog_core::StorageExecutionOutcome::Uncertain {
+                    self.state
+                        .storage_operation_uncertain
+                        .store(false, Ordering::SeqCst);
+                }
+                result
+            }
+        } else {
+            rog_core::StorageExecutionResult {
+                outcome: rog_core::StorageExecutionOutcome::Failed,
+                message: "Another storage operation is in progress".into(),
+                mount_points: Vec::new(),
+            }
+        };
+        serde_json::to_string(&result)
+            .map_err(|error| fdo::Error::Failed(format!("cannot encode storage result: {error}")))
+    }
+
     fn get_configuration(&self) -> String {
         config_to_toml(&self.read_config()).unwrap_or_else(|error| {
             warn!("failed to serialize in-memory configuration: {error}");
@@ -4161,6 +4228,8 @@ async fn main() -> anyhow::Result<()> {
         automation_retry: Mutex::new(AutomationRetryRuntime::default()),
         automation_write_gate: Mutex::new(()),
         hardware_control_lock: tokio::sync::Mutex::new(()),
+        storage_operation_lock: tokio::sync::Mutex::new(()),
+        storage_operation_uncertain: AtomicBool::new(false),
         automation_generation: AtomicU64::new(0),
     });
 
