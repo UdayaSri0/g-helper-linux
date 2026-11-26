@@ -4229,7 +4229,7 @@ async fn main() -> anyhow::Result<()> {
         automation_write_gate: Mutex::new(()),
         hardware_control_lock: tokio::sync::Mutex::new(()),
         storage_operation_lock: tokio::sync::Mutex::new(()),
-        storage_operation_uncertain: AtomicBool::new(false),
+        storage_operation_uncertain: AtomicBool::new(storage_execution::pending_marker_unresolved()),
         automation_generation: AtomicU64::new(0),
     });
 

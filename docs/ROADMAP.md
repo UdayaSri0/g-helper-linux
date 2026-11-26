@@ -20,12 +20,13 @@ checks, explicit blockers, and an authorization classification. It does not
 execute storage operations or request PolicyKit authorization. Real-device
 comparisons and any future execution design require separate review.
 
-Stage 4A is the isolated issue #155 branch for verified mount and unmount via
+Stage 4A's disabled execution foundation is merged into `Dev`; issue #155
+continues in an isolated acceptance branch for verified mount and unmount via
 caller-bound PolicyKit and UDisks2, with confirmation and authoritative
 readback. Execution remains disabled because UDisks2 cannot atomically bind
 the expected target identity at the method call. Full mocked integration,
-Flatpak, and physical hardware acceptance remain pending; this branch is not
-a production release. Stage 4B is separate higher-risk work:
+Flatpak, and physical hardware acceptance remain pending; the acceptance
+branch is not a production release. Stage 4B is separate higher-risk work:
 partition creation/deletion, formatting, resizing, and filesystem verification
 or repair each require their own risk assessment, authorization, recovery, and
 acceptance tests.

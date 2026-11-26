@@ -66,9 +66,14 @@ target is blocked. Its design serializes storage requests and repeats validation
 after authorization and immediately before backend use.
 
 The dormant path derives the requesting process from the session D-Bus sender
-and checks the operation-specific PolicyKit action for that actor. It uses the
-bus-reported PID and UID plus `/proc` start time, without a PID file descriptor;
-PolicyKit documents a residual PID reuse race for this form of subject.
+and checks the operation-specific PolicyKit action for that actor. It obtains
+the PID, UID, and process file descriptor together from the bus's
+`GetConnectionCredentials` response, requires the descriptor, and checks the
+PID, UID, and `/proc` start time for consistency. The
+[PolicyKit `unix-process` subject](https://polkit.pages.freedesktop.org/polkit/eggdbus-interface-org.freedesktop.PolicyKit1.Authority.html)
+carries the process file descriptor and UID. If the bus or PolicyKit
+cannot support this subject, authorization fails closed; there is no fallback
+to a PID-only subject. Caller identity is checked again after authorization.
 Mount and unmount actions are separate. UDisks2 sees the unprivileged session
 daemon as its own D-Bus caller, so its authorization context cannot replace
 the custom initiating-caller check. The backend requests no second interactive
@@ -85,19 +90,32 @@ The dormant path durably creates
 `~/.local/state/rog-helper/storage-operation.pending` before a mutating
 UDisks2 request and clears it only after conclusive readback. If the daemon
 crashes or readback remains uncertain, the marker blocks further requests after
-restart when the daemon uses the same home directory. The marker is user-owned
+restart when the daemon uses the same home directory. At startup the daemon
+samples the marker and latches the operation gate closed if it exists or the
+state cannot be read; this is fail-closed startup detection, not automatic
+reconciliation. The marker is user-owned
 state and can be removed by another process running as that user, so it is not
 a sufficient authorization or concurrency boundary on its own. An operator
 must inspect the final device and mount state using
 trusted read-only host tools, verify that no UDisks2 request remains in flight,
 then manually remove that marker before retrying. Never remove it solely to
-silence the error.
+silence the error. A missing home directory also leaves the startup gate
+closed; use a stable, normal user-session home directory before considering
+any future execution rollout.
 
-UDisks2 Mount/Unmount does not accept an expected device number or geometry
-as an atomic precondition. A target can change between the daemon's final
-validation and the backend call; therefore this execution pathway remains
-disabled. The race has not been eliminated by repeated sampling. The caller
-PID reuse limitation is a separate reason not to enable this path yet.
+The [UDisks2 Filesystem API](https://storaged.org/doc/udisks2-api/latest/gdbus-org.freedesktop.UDisks2.Filesystem.html)
+accepts an object path and an options dictionary for Mount/Unmount, with no
+expected device number or geometry precondition. [Its implementation](https://github.com/storaged-project/udisks/blob/master/src/udiskslinuxfilesystem.c)
+locks the current UDisks2 filesystem object, but that lock does not cover the
+earlier ROG Helper validation. It subsequently uses the block device path.
+A target can change between the daemon's final validation and backend use, so
+this execution pathway remains disabled. Repeated sampling, a pinned UDisks2
+bus owner, and post-operation readback can narrow or detect the race but cannot
+prove atomic target identity. An upstream conditional UDisks2 API or a
+separately reviewed backend that pins the kernel device would need its own
+security and compatibility assessment. The new process-descriptor subject
+still needs isolated integration acceptance against supported PolicyKit and
+D-Bus implementations before execution can be enabled.
 
 Stage 4A never creates or deletes partitions, formats, resizes, repairs, wipes,
 or changes the root helper's raw device access. The dormant mount and unmount
@@ -202,12 +220,18 @@ perform storage writes. Manual acceptance should compare the map and
 classification against `lsblk`, sysfs, UDisks2, and mountinfo on disposable or
 known devices; it must not treat a fixture pass as physical validation.
 
-Stage 3 synthetic tests cover stale identity and geometry, protected
-mounts and swap, holder relationships, absent UDisks2, malformed requests, and
-the absence of execution in the preview interface. Stage 4A must test caller
-identity, authorization denial and cancellation, concurrent requests, target
-changes, backend failures, and readback using mocks and synthetic fixtures.
-These tests do not establish physical-device acceptance.
+Stage 3 synthetic tests cover stale identity and geometry, protected mounts
+and swap, holder relationships, absent UDisks2, malformed requests, and the
+absence of execution in the preview interface. The isolated Stage 4A D-Bus
+test starts a daemon with mock PolicyKit and UDisks2 services and verifies
+that malformed, forged, unsupported, and valid typed execution requests reach
+neither service while execution is disabled. Injected operation mocks exercise
+successful mount/unmount orchestration, authorization denial and cancellation,
+target and caller changes, backend failure, unresolved markers, and readback
+disagreement. These positive tests do not exercise the actual D-Bus,
+PolicyKit, or UDisks2 wire contracts. In particular, process-descriptor
+authorization and cancellation still need isolated service integration tests.
+Synthetic checks do not establish physical-device acceptance.
 
 Provider fixtures cover discovery, namespace grouping, mount attribution,
 counter arithmetic and missing data. SMART JSON tests cover supported and

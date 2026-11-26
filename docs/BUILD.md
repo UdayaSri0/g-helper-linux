@@ -14,7 +14,7 @@ raw device access. The Flatpak sandbox and real-device behavior need separate
 acceptance, beyond a successful package manifest check.
 The current Flatpak manifest has no system-bus talk permission for UDisks2 or
 PolicyKit; enabling execution there needs a separate permission review.
-The Stage 4A branch could not run the full Flatpak manifest check locally:
+The earlier Stage 4A branch could not run the full Flatpak manifest check locally:
 `flatpak-builder` is missing. Locked Rust checks and synthetic tests do not
 verify live UDisks2 execution or an interactive PolicyKit agent.
 
