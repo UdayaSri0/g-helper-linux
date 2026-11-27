@@ -28,6 +28,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential pkg-config \
             libgtk-4-dev libadwaita-1-dev appstream desktop-file-utils dpkg-dev \
             python3-pil curl dbus-daemon libglib2.0-bin xvfb xauth polkitd pkexec
+      - name: Verify storage GTK selection callbacks
+        run: xvfb-run -a env GTK_A11Y=none GDK_BACKEND=x11 cargo test -p rog-ui --locked storage_ui::tests::production_namespace_buttons_invalidate_and_retire_cross_namespace_previews -- --ignored
       - name: Build exact checkout and record DEB provenance
         run: |
           cat /etc/os-release

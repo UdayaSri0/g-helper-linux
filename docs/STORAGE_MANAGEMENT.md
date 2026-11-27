@@ -52,7 +52,7 @@ the Stage 2 partition map remain read-only.
 
 ## Stage 4A mount and unmount (execution disabled)
 
-The separate GTK controls are insensitive and explain why execution is
+The separate GTK controls are hidden and the page explains that execution is
 disabled. The daemon's `ExecuteStorageOperation` endpoint validates request
 syntax but returns a structured disabled result before authorization or any
 backend call. Read-only Stage 3 previews remain usable. A plan never authorizes
@@ -112,6 +112,8 @@ Only validated interior gaps are shown as unallocated; filesystem free bytes
 are never drawn as unallocated disk space. Selection and details remain
 read-only. The map does not claim that a partition can be mounted, formatted,
 resized, or deleted.
+Selection is coordinated across namespaces of the same physical drive, and
+missing mount-point evidence is labeled as unconfirmed rather than unmounted.
 
 The GTK page stacks a full-width dashboard for every detected physical drive
 below a compact global summary. Each dashboard is retained by opaque device ID
