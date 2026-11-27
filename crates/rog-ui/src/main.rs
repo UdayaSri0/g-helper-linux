@@ -1307,6 +1307,89 @@ async fn complete_display_apply<F>(
     }
 }
 
+async fn save_issue_report(parent: Option<gtk::Window>, status: gtk::Label) {
+    status.set_text("");
+    let Some(parent) = parent else {
+        status.set_text("Could not open the save dialog.");
+        return;
+    };
+    let dialog = gtk::FileChooserNative::new(
+        Some("Save redacted diagnostics"),
+        Some(&parent),
+        gtk::FileChooserAction::Save,
+        Some("Save"),
+        Some("Cancel"),
+    );
+    dialog.set_current_name("g-helper-issue-report.md");
+    let response = dialog.run_future().await;
+    let destination = (response == gtk::ResponseType::Accept)
+        .then(|| dialog.file())
+        .flatten();
+    dialog.destroy();
+    let Some(destination) = destination else {
+        return;
+    };
+
+    if destination.query_exists(None::<&gio::Cancellable>) {
+        let confirm = gtk::MessageDialog::builder()
+            .transient_for(&parent)
+            .modal(true)
+            .message_type(gtk::MessageType::Warning)
+            .buttons(gtk::ButtonsType::YesNo)
+            .text("Replace the existing report?")
+            .build();
+        let accepted = confirm.run_future().await == gtk::ResponseType::Yes;
+        confirm.destroy();
+        if !accepted {
+            return;
+        }
+    }
+
+    let report_command = std::env::current_exe()
+        .ok()
+        .map(|path| path.with_file_name("rog-helper"));
+    let Some(report_command) = report_command else {
+        status.set_text("Could not locate the diagnostics collector.");
+        return;
+    };
+    let command = match gio::Subprocess::newv(
+        &[
+            report_command.as_os_str(),
+            std::ffi::OsStr::new("issue-report"),
+        ],
+        gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_SILENCE,
+    ) {
+        Ok(command) => command,
+        Err(_) => {
+            status.set_text("Could not start the diagnostics collector.");
+            return;
+        }
+    };
+    let report = match command.communicate_utf8_future(None).await {
+        Ok((Some(report), _))
+            if command.is_successful() && report.starts_with("# ROG Helper Issue Report") =>
+        {
+            report
+        }
+        _ => {
+            status.set_text("Could not collect the redacted report.");
+            return;
+        }
+    };
+    match destination
+        .replace_contents_future(
+            report.as_bytes().to_vec(),
+            None,
+            false,
+            gio::FileCreateFlags::REPLACE_DESTINATION,
+        )
+        .await
+    {
+        Ok(_) => status.set_text("Redacted report saved."),
+        Err(_) => status.set_text("Could not save the redacted report."),
+    }
+}
+
 fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
     register_app_icon_paths();
     warn_if_fan_icon_missing();
@@ -3139,6 +3222,21 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         });
     }
 
+    let save_diag_button = gtk::Button::with_label("Save redacted report…");
+    let save_diag_status = gtk::Label::new(None);
+    save_diag_status.set_xalign(1.0);
+    {
+        let app = app.clone();
+        let status = save_diag_status.clone();
+        save_diag_button.connect_clicked(move |_| {
+            let app = app.clone();
+            let status = status.clone();
+            glib::MainContext::default().spawn_local(async move {
+                save_issue_report(app.active_window(), status).await;
+            });
+        });
+    }
+
     let diag_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     diag_root.set_margin_top(24);
     diag_root.set_margin_bottom(32);
@@ -3158,6 +3256,8 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
         });
     }
     diag_root.append(&diag_setup_button);
+    diag_root.append(&save_diag_button);
+    diag_root.append(&save_diag_status);
     let diag_overview = gtk::FlowBox::new();
     diag_overview.set_selection_mode(gtk::SelectionMode::None);
     diag_overview.set_min_children_per_line(1);
@@ -3213,6 +3313,7 @@ fn build_ui(app: &adw::Application, start_minimized_from_cli: bool) {
 
     let diag_report_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     copy_diag_button.set_halign(gtk::Align::End);
+    save_diag_button.set_halign(gtk::Align::End);
     diag_report_box.append(&copy_diag_button);
     diag_report_box.append(&diag_scroller);
     let diag_report_expander = gtk::Expander::new(Some("Raw technical report"));

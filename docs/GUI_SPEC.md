@@ -358,6 +358,7 @@ Current content:
 - notes
 - fan telemetry mapping, including chosen display label, hwmon device, raw sysfs input path, and current RPM or unavailable state
 - warnings
+- save redacted issue report action alongside Diagnostics, separate from the collapsed raw report
 - collapsed raw technical report with copy diagnostics button
 
 ### About
