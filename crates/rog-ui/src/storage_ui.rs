@@ -175,7 +175,8 @@ struct DriveDashboard {
     volume_rows: RefCell<HashMap<String, VolumeWidgets>>,
     topology_box: gtk::Box,
     topology_signature: RefCell<Vec<TopologyView>>,
-    selected_partition: Rc<RefCell<Option<String>>>,
+    selection: Rc<RefCell<DriveSelection>>,
+    topology_generation: Rc<Cell<u128>>,
     advanced: gtk::Label,
     read_graph: HistoryGraph,
     write_graph: HistoryGraph,
@@ -216,6 +217,198 @@ struct MapSegment {
     details: String,
     protection: String,
     gap: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreviewTicket {
+    generation: u64,
+    drive: String,
+    namespace: String,
+    target: String,
+    intent: StorageOperationIntent,
+    start_bytes: u64,
+    length_bytes: u64,
+    protection: String,
+    view_generation: u128,
+}
+
+#[derive(Default)]
+struct PreviewLifecycle {
+    generation: u64,
+    pending: Option<PreviewTicket>,
+    displayed: Option<PreviewTicket>,
+}
+
+#[derive(Default)]
+struct DriveSelection {
+    selected: Option<(String, String)>,
+    revision: u64,
+    views: Vec<NamespaceSelectionView>,
+}
+
+struct NamespaceSelectionView {
+    namespace: String,
+    generation: u128,
+    details: gtk::glib::WeakRef<gtk::Label>,
+    area: gtk::glib::WeakRef<gtk::DrawingArea>,
+    buttons: Vec<(String, gtk::glib::WeakRef<gtk::Button>)>,
+    lifecycle: Rc<RefCell<PreviewLifecycle>>,
+    result: gtk::glib::WeakRef<gtk::Label>,
+    segments: Rc<Vec<MapSegment>>,
+}
+
+fn select_drive_target(
+    state: &mut DriveSelection,
+    namespace: &str,
+    target: &str,
+    generation: u128,
+) -> bool {
+    state.views.retain(|view| view.details.upgrade().is_some());
+    let Some(view) = state
+        .views
+        .iter()
+        .find(|view| view.namespace == namespace && view.generation == generation)
+    else {
+        return false;
+    };
+    if !view.segments.iter().any(|segment| segment.id == target) {
+        return false;
+    }
+    let selected = (namespace.to_owned(), target.to_owned());
+    if state.selected.as_ref() == Some(&selected) {
+        return false;
+    }
+    state.selected = Some(selected.clone());
+    state.revision = state.revision.saturating_add(1);
+    for view in &state.views {
+        view.lifecycle.borrow_mut().invalidate();
+    }
+    true
+}
+
+fn retire_namespace_views(state: &mut DriveSelection) {
+    for view in state.views.drain(..) {
+        view.lifecycle.borrow_mut().invalidate();
+    }
+}
+
+fn mount_points_summary(mount_points: &[String]) -> String {
+    if mount_points.is_empty() {
+        "No confirmed mount points".into()
+    } else {
+        format!("Mounted at {}", mount_points.join(", "))
+    }
+}
+
+fn synchronize_namespace_views(state: &DriveSelection) {
+    for view in &state.views {
+        let selected = state
+            .selected
+            .as_ref()
+            .filter(|(namespace, _)| namespace == &view.namespace);
+        for (id, weak) in &view.buttons {
+            if let Some(button) = weak.upgrade() {
+                if selected.is_some_and(|(_, target)| target == id) {
+                    button.add_css_class("suggested-action");
+                } else {
+                    button.remove_css_class("suggested-action");
+                }
+            }
+        }
+        if let Some(details) = view.details.upgrade() {
+            if let Some((_, target)) = selected {
+                if let Some(segment) = view.segments.iter().find(|segment| &segment.id == target) {
+                    details.set_text(&format!("Selected: {}", segment.details));
+                } else {
+                    details.set_text("Select a partition or unallocated extent for details.");
+                }
+            } else {
+                details.set_text("Select a partition or unallocated extent for details.");
+            }
+        }
+        if let Some(result) = view.result.upgrade() {
+            result.set_text("Selection changed. Request a new assessment.");
+        }
+        if let Some(area) = view.area.upgrade() {
+            area.queue_draw();
+        }
+    }
+}
+
+impl PreviewLifecycle {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.pending = None;
+        self.displayed = None;
+    }
+
+    fn begin(&mut self, mut ticket: PreviewTicket) -> Option<PreviewTicket> {
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.drive == ticket.drive
+                && pending.namespace == ticket.namespace
+                && pending.target == ticket.target
+                && pending.intent == ticket.intent
+                && pending.start_bytes == ticket.start_bytes
+                && pending.length_bytes == ticket.length_bytes
+                && pending.protection == ticket.protection
+                && pending.view_generation == ticket.view_generation
+        }) {
+            return None;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        ticket.generation = self.generation;
+        self.pending = Some(ticket.clone());
+        Some(ticket)
+    }
+
+    fn complete(&mut self, ticket: &PreviewTicket) -> bool {
+        if self.pending.as_ref() != Some(ticket) || self.generation != ticket.generation {
+            return false;
+        }
+        self.pending = None;
+        self.displayed = Some(ticket.clone());
+        true
+    }
+}
+
+fn view_generation_is_current(owning: u128, current: u128) -> bool {
+    owning == current
+}
+
+fn ticket_for_segment(
+    request: &StorageOperationRequest,
+    drive: &str,
+    segment: &MapSegment,
+    view_generation: u128,
+) -> PreviewTicket {
+    PreviewTicket {
+        generation: 0,
+        drive: drive.to_owned(),
+        namespace: request.namespace.clone(),
+        target: segment.id.clone(),
+        intent: request.intent,
+        start_bytes: segment.start_bytes,
+        length_bytes: segment.length_bytes,
+        protection: segment.protection.clone(),
+        view_generation,
+    }
+}
+
+impl PreviewTicket {
+    #[cfg(test)]
+    fn fixture(target: &str, intent: StorageOperationIntent, start: u64, length: u64) -> Self {
+        Self {
+            generation: 0,
+            drive: "drive".into(),
+            namespace: "ns".into(),
+            target: target.into(),
+            intent,
+            start_bytes: start,
+            length_bytes: length,
+            protection: "protected".into(),
+            view_generation: 0,
+        }
+    }
 }
 
 impl StoragePage {
@@ -405,6 +598,10 @@ impl StoragePage {
             .filter(|id| !incoming.contains(id))
         {
             if let Some(dashboard) = dashboards.remove(id) {
+                dashboard
+                    .topology_generation
+                    .set(dashboard.topology_generation.get().saturating_add(1));
+                retire_namespace_views(&mut dashboard.selection.borrow_mut());
                 self.dashboards_box.remove(&dashboard.root);
             }
         }
@@ -652,7 +849,8 @@ impl DriveDashboard {
             volume_rows: RefCell::new(HashMap::new()),
             topology_box,
             topology_signature: RefCell::new(Vec::new()),
-            selected_partition: Rc::new(RefCell::new(None)),
+            selection: Rc::new(RefCell::new(DriveSelection::default())),
+            topology_generation: Rc::new(Cell::new(0)),
             advanced,
             read_graph,
             write_graph,
@@ -918,12 +1116,11 @@ impl DriveDashboard {
         if *self.topology_signature.borrow() == next && self.topology_box.first_child().is_some() {
             return;
         }
-        let selected = if next.iter().any(|topology| topology.status == "verified") {
-            retained_selection(self.selected_partition.borrow().as_deref(), &next)
-        } else {
-            self.selected_partition.borrow().clone()
-        };
-        *self.selected_partition.borrow_mut() = selected;
+        self.topology_generation
+            .set(self.topology_generation.get().saturating_add(1));
+        retire_namespace_views(&mut self.selection.borrow_mut());
+        let retained = retained_selection(self.selection.borrow().selected.as_ref(), &next);
+        self.selection.borrow_mut().selected = retained;
         while let Some(child) = self.topology_box.first_child() {
             self.topology_box.remove(&child);
         }
@@ -939,7 +1136,8 @@ impl DriveDashboard {
             self.topology_box.append(&partition_map(
                 topology,
                 &self.id,
-                self.selected_partition.clone(),
+                self.selection.clone(),
+                self.topology_generation.clone(),
             ));
         }
         *self.topology_signature.borrow_mut() = next;
@@ -1019,32 +1217,13 @@ impl DriveDashboard {
                 );
             }
             if let Some(row) = rows.get(&name) {
+                row.title
+                    .set_text(&dbus_decode::string(volume, "label").unwrap_or(name));
+                row.metadata.set_text(&volume_metadata(volume));
                 let used = dbus_decode::unsigned(volume, "used_bytes");
                 let available = dbus_decode::unsigned(volume, "available_bytes");
                 let total = dbus_decode::unsigned(volume, "filesystem_size_bytes")
                     .filter(|total| *total > 0);
-                let mounts = dbus_decode::strings(volume, "mount_points").unwrap_or_default();
-                row.title
-                    .set_text(&dbus_decode::string(volume, "label").unwrap_or(name));
-                row.metadata.set_text(&format!(
-                    "{} · {}\nPartition size: {} · Filesystem: {} total, {} used, {} available\n{}",
-                    dbus_decode::string(volume, "filesystem")
-                        .unwrap_or_else(|| "Filesystem unavailable".into()),
-                    if mounts.is_empty() {
-                        "Not mounted".into()
-                    } else {
-                        format!("Mounted at {}", mounts.join(", "))
-                    },
-                    dbus_decode::unsigned(volume, "size_bytes")
-                        .map(byte_size)
-                        .unwrap_or_else(|| "Unavailable".into()),
-                    total.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
-                    used.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
-                    available
-                        .map(byte_size)
-                        .unwrap_or_else(|| "Unavailable".into()),
-                    dbus_decode::string(volume, "status").unwrap_or_else(|| "Unknown".into())
-                ));
                 let fraction = volume_usage_fraction(used, available, total);
                 row.usage.set_visible(fraction.is_some());
                 row.usage.set_fraction(fraction.unwrap_or_default());
@@ -1056,6 +1235,27 @@ impl DriveDashboard {
             }
         }
     }
+}
+
+fn volume_metadata(volume: &WireMap) -> String {
+    let used = dbus_decode::unsigned(volume, "used_bytes");
+    let available = dbus_decode::unsigned(volume, "available_bytes");
+    let total = dbus_decode::unsigned(volume, "filesystem_size_bytes").filter(|total| *total > 0);
+    let mounts = dbus_decode::strings(volume, "mount_points").unwrap_or_default();
+    format!(
+        "{} · {}\nPartition size: {} · Filesystem: {} total, {} used, {} available",
+        dbus_decode::string(volume, "filesystem")
+            .unwrap_or_else(|| "Filesystem unavailable".into()),
+        mount_points_summary(&mounts),
+        dbus_decode::unsigned(volume, "size_bytes")
+            .map(byte_size)
+            .unwrap_or_else(|| "Unavailable".into()),
+        total.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
+        used.map(byte_size).unwrap_or_else(|| "Unavailable".into()),
+        available
+            .map(byte_size)
+            .unwrap_or_else(|| "Unavailable".into())
+    )
 }
 
 fn parse_topology(row: &WireMap) -> Option<TopologyView> {
@@ -1086,7 +1286,7 @@ fn parse_topology(row: &WireMap) -> Option<TopologyView> {
             let details = format!(
                 "Partition {number}: {name} · {filesystem} · {partition_type} · {} · {} · {}: {protection_reason}",
                 byte_size(length_bytes),
-                if mounts.is_empty() { "Not mounted".into() } else { format!("Mounted at {}", mounts.join(", ")) },
+                mount_points_summary(&mounts),
                 protection.replace('_', " ")
             );
             segments.push(MapSegment {
@@ -1137,21 +1337,33 @@ fn parse_topology(row: &WireMap) -> Option<TopologyView> {
     })
 }
 
-fn retained_selection(current: Option<&str>, topologies: &[TopologyView]) -> Option<String> {
+fn retained_selection(
+    current: Option<&(String, String)>,
+    topologies: &[TopologyView],
+) -> Option<(String, String)> {
     current
-        .filter(|id| {
-            topologies
-                .iter()
-                .any(|topology| topology.segments.iter().any(|segment| segment.id == *id))
+        .filter(|(namespace, target)| {
+            topologies.iter().any(|topology| {
+                topology.namespace == *namespace
+                    && topology.status == "verified"
+                    && topology
+                        .segments
+                        .iter()
+                        .any(|segment| segment.id == *target)
+            })
         })
-        .map(str::to_owned)
+        .cloned()
 }
 
 fn partition_map(
     topology: &TopologyView,
     drive_id: &str,
-    selected: Rc<RefCell<Option<String>>>,
+    selection: Rc<RefCell<DriveSelection>>,
+    topology_generation: Rc<Cell<u128>>,
 ) -> gtk::Box {
+    let namespace = topology.namespace.clone();
+    let owning_view_generation = topology_generation.get();
+    let current_topology = Rc::new(RefCell::new(topology.clone()));
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     root.add_css_class("metric-card");
     root.set_hexpand(true);
@@ -1174,16 +1386,20 @@ fn partition_map(
         return root;
     }
     let segments = Rc::new(topology.segments.clone());
+    let lifecycle = Rc::new(RefCell::new(PreviewLifecycle::default()));
     let details = gtk::Label::new(Some(
         "Select a partition or unallocated extent for details.",
     ));
     details.set_xalign(0.0);
     details.set_wrap(true);
     details.set_selectable(true);
-    if let Some(segment) = segments
-        .iter()
-        .find(|segment| selected.borrow().as_deref() == Some(segment.id.as_str()))
-    {
+    if let Some(segment) = segments.iter().find(|segment| {
+        selection
+            .borrow()
+            .selected
+            .as_ref()
+            .is_some_and(|(ns, id)| ns == &topology.namespace && id == &segment.id)
+    }) {
         details.set_text(&format!("Selected: {}", segment.details));
     }
     let area = gtk::DrawingArea::new();
@@ -1215,27 +1431,35 @@ fn partition_map(
         }
     });
     let gesture = gtk::GestureClick::new();
-    let buttons = Rc::new(RefCell::new(Vec::<(String, gtk::Button)>::new()));
+    let buttons = Rc::new(RefCell::new(
+        Vec::<(String, gtk::glib::WeakRef<gtk::Button>)>::new(),
+    ));
     let click_segments = segments.clone();
-    let click_details = details.clone();
-    let click_selected = selected.clone();
-    let click_area = area.clone();
-    let click_buttons = buttons.clone();
+    let click_area = area.downgrade();
+    let click_selection = selection.clone();
+    let click_namespace = namespace.clone();
     gesture.connect_released(move |_, _, x, _| {
-        let offset = x / click_area.width().max(1) as f64 * capacity;
+        let Some(area) = click_area.upgrade() else {
+            return;
+        };
+        let offset = x / area.width().max(1) as f64 * capacity;
         if let Some(segment) = click_segments.iter().find(|segment| {
             offset >= segment.start_bytes as f64
                 && offset < (segment.start_bytes + segment.length_bytes) as f64
         }) {
-            *click_selected.borrow_mut() = Some(segment.id.clone());
-            for (id, button) in click_buttons.borrow().iter() {
-                if id == &segment.id {
-                    button.add_css_class("suggested-action");
-                } else {
-                    button.remove_css_class("suggested-action");
-                }
+            let selected = {
+                let mut selection = click_selection.borrow_mut();
+                select_drive_target(
+                    &mut selection,
+                    &click_namespace,
+                    &segment.id,
+                    owning_view_generation,
+                )
+            };
+            if !selected {
+                return;
             }
-            click_details.set_text(&format!("Selected: {}", segment.details));
+            synchronize_namespace_views(&click_selection.borrow());
         }
     });
     area.add_controller(gesture);
@@ -1254,23 +1478,35 @@ fn partition_map(
         ));
         button.set_tooltip_text(Some(&segment.details));
         button.update_property(&[gtk::accessible::Property::Label(&segment.details)]);
-        if selected.borrow().as_deref() == Some(segment.id.as_str()) {
+        if selection
+            .borrow()
+            .selected
+            .as_ref()
+            .is_some_and(|(ns, id)| ns == &topology.namespace && id == &segment.id)
+        {
             button.add_css_class("suggested-action");
         }
-        buttons
-            .borrow_mut()
-            .push((segment.id.clone(), button.clone()));
+        let weak_button = button.downgrade();
+        buttons.borrow_mut().push((segment.id.clone(), weak_button));
         let segment = segment.clone();
-        let details = details.clone();
-        let selected = selected.clone();
-        let buttons_for_click = buttons.clone();
-        button.connect_clicked(move |button| {
-            *selected.borrow_mut() = Some(segment.id.clone());
-            for (_, button) in buttons_for_click.borrow().iter() {
-                button.remove_css_class("suggested-action");
+        let selection = selection.clone();
+        let selection_for_click = selection.clone();
+        let id = segment.id.clone();
+        let button_namespace = namespace.clone();
+        button.connect_clicked(move |_| {
+            let selected = {
+                let mut selection = selection_for_click.borrow_mut();
+                select_drive_target(
+                    &mut selection,
+                    &button_namespace,
+                    &id,
+                    owning_view_generation,
+                )
+            };
+            if !selected {
+                return;
             }
-            button.add_css_class("suggested-action");
-            details.set_text(&format!("Selected: {}", segment.details));
+            synchronize_namespace_views(&selection_for_click.borrow());
         });
         choices.insert(&button, -1);
     }
@@ -1286,7 +1522,7 @@ fn partition_map(
     let preview = gtk::Box::new(gtk::Orientation::Vertical, 8);
     preview.append(&section_title("Operation preview"));
     let warning = gtk::Label::new(Some(
-        "Read-only assessment. Mount and unmount use the separate controls below.",
+        "Read-only assessment. Storage operations are disabled in this version.",
     ));
     warning.set_xalign(0.0);
     warning.set_wrap(true);
@@ -1311,9 +1547,40 @@ fn partition_map(
     result.set_wrap(true);
     result.set_selectable(true);
     preview.append(&result);
-    let preview_topology = topology.clone();
+    selection
+        .borrow_mut()
+        .views
+        .retain(|view| view.details.upgrade().is_some());
+    selection.borrow_mut().views.push(NamespaceSelectionView {
+        namespace: namespace.clone(),
+        generation: owning_view_generation,
+        details: details.downgrade(),
+        area: area.downgrade(),
+        buttons: buttons.borrow().clone(),
+        lifecycle: lifecycle.clone(),
+        result: result.downgrade(),
+        segments: Rc::new(topology.segments.clone()),
+    });
+    let invalidate_preview = {
+        let lifecycle = lifecycle.clone();
+        let result = result.clone();
+        Rc::new(move || {
+            lifecycle.borrow_mut().invalidate();
+            result.set_text("Selection changed. Request a new assessment.");
+        })
+    };
+    {
+        let invalidate = invalidate_preview.clone();
+        operation.connect_notify_local(Some("selected"), move |_, _| invalidate());
+    }
+    let preview_topology = current_topology.clone();
     let preview_drive_id = drive_id.to_owned();
-    let preview_selected = selected.clone();
+    let preview_selected = selection.clone();
+    let preview_topology_for_click = preview_topology.clone();
+    let preview_generation = topology_generation.clone();
+    let preview_drive_for_click = preview_drive_id.clone();
+    let lifecycle_for_click = lifecycle.clone();
+    let result_for_click = result.clone();
     button.connect_clicked(move |_| {
         let intent = match operation.selected() {
             0 => StorageOperationIntent::CreatePartition,
@@ -1325,9 +1592,14 @@ fn partition_map(
             _ => StorageOperationIntent::Unmount,
         };
         let request = match preview_request(
-            &preview_topology,
+            &preview_topology.borrow(),
             &preview_drive_id,
-            preview_selected.borrow().as_deref(),
+            preview_selected
+                .borrow()
+                .selected
+                .as_ref()
+                .filter(|(ns, _)| ns == &namespace)
+                .map(|(_, id)| id.as_str()),
             intent,
         ) {
             Ok(request) => request,
@@ -1336,12 +1608,87 @@ fn partition_map(
                 return;
             }
         };
-        result.set_text("Checking current device identity and safety evidence…");
-        let result = result.clone();
+        let topology_at_request = preview_topology_for_click.borrow().clone();
+        let segment = topology_at_request.segments.iter().find(|s| {
+            if let Some(partition_id) = request.partition_id.as_deref() {
+                s.id == partition_id
+            } else {
+                s.gap
+                    && Some(s.start_bytes) == request.expected_start_bytes
+                    && Some(s.length_bytes) == request.expected_length_bytes
+            }
+        });
+        let Some(segment) = segment else {
+            result_for_click.set_text("Target geometry is unavailable. Request a new assessment.");
+            lifecycle_for_click.borrow_mut().invalidate();
+            return;
+        };
+        if !view_generation_is_current(owning_view_generation, preview_generation.get()) {
+            lifecycle_for_click.borrow_mut().invalidate();
+            result_for_click.set_text(
+                "This partition view is obsolete. Refresh the storage view before previewing.",
+            );
+            return;
+        }
+        let started_generation = owning_view_generation;
+        let ticket = ticket_for_segment(
+            &request,
+            &preview_drive_for_click,
+            segment,
+            owning_view_generation,
+        );
+        let Some(ticket) = lifecycle_for_click.borrow_mut().begin(ticket) else {
+            return;
+        };
+        let verb = format!("{:?}", intent);
+        result_for_click.set_text(&format!(
+            "Checking {verb} preview for {} in {}…",
+            ticket.target, ticket.namespace
+        ));
+        let result = result.downgrade();
+        let lifecycle = lifecycle_for_click.clone();
+        let current_topology = preview_topology_for_click.clone();
+        let selected = preview_selected.clone();
+        let operation = operation.downgrade();
+        let response_generation = preview_generation.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
-            match crate::fetch_storage_plan(&request).await {
-                Ok(plan) => result.set_text(&storage_plan_text(&plan)),
-                Err(error) => result.set_text(&format!("Preview unavailable: {error}")),
+            let text = match crate::fetch_storage_plan(&request).await {
+                Ok(plan) => format!(
+                    "{} · Target {} · {:?}",
+                    storage_plan_text(&plan),
+                    ticket.target,
+                    ticket.intent
+                ),
+                Err(error) => format!("Preview unavailable for {}: {error}", ticket.target),
+            };
+            let topology_still_matches = current_topology.borrow().segments.iter().any(|segment| {
+                segment.id == ticket.target
+                    && segment.start_bytes == ticket.start_bytes
+                    && segment.length_bytes == ticket.length_bytes
+                    && segment.protection == ticket.protection
+            }) && selected.borrow().selected.as_ref()
+                == Some(&(ticket.namespace.clone(), ticket.target.clone()));
+            let intent_still_matches = operation.upgrade().is_some_and(|operation| {
+                let current = match operation.selected() {
+                    0 => StorageOperationIntent::CreatePartition,
+                    1 => StorageOperationIntent::DeletePartition,
+                    2 => StorageOperationIntent::FormatFilesystem,
+                    3 => StorageOperationIntent::ResizePartition,
+                    4 => StorageOperationIntent::RepairFilesystem,
+                    5 => StorageOperationIntent::Mount,
+                    _ => StorageOperationIntent::Unmount,
+                };
+                current == ticket.intent
+            });
+            if view_generation_is_current(ticket.view_generation, response_generation.get())
+                && started_generation == ticket.view_generation
+                && topology_still_matches
+                && intent_still_matches
+                && lifecycle.borrow_mut().complete(&ticket)
+            {
+                if let Some(result) = result.upgrade() {
+                    result.set_text(&text);
+                }
             }
         });
     });
@@ -1353,6 +1700,7 @@ fn partition_map(
     let mount_button = gtk::Button::with_label("Check and continue");
     mount_button.set_sensitive(rog_core::STORAGE_EXECUTION_ENABLED);
     mount_controls.append(&mount_button);
+    mount_controls.set_visible(rog_core::STORAGE_EXECUTION_ENABLED);
     root.append(&mount_controls);
     let mount_result = gtk::Label::new(Some(if rog_core::STORAGE_EXECUTION_ENABLED {
         "Select a partition to mount or unmount."
@@ -1362,7 +1710,16 @@ fn partition_map(
     mount_result.set_xalign(0.0);
     mount_result.set_wrap(true);
     mount_result.set_selectable(true);
-    root.append(&mount_result);
+    mount_result.set_visible(rog_core::STORAGE_EXECUTION_ENABLED);
+    if !rog_core::STORAGE_EXECUTION_ENABLED {
+        let notice = gtk::Label::new(Some("Storage operations are read-only in this version. Mounting, unmounting and other disk modifications are unavailable."));
+        notice.set_xalign(0.0);
+        notice.set_wrap(true);
+        notice.add_css_class("storage-status-caption");
+        root.append(&notice);
+    } else {
+        root.append(&mount_result);
+    }
     let topology = topology.clone();
     let drive_id = drive_id.to_owned();
     mount_button.connect_clicked(move |button| {
@@ -1371,14 +1728,23 @@ fn partition_map(
         } else {
             StorageOperationIntent::Unmount
         };
-        let request =
-            match preview_request(&topology, &drive_id, selected.borrow().as_deref(), intent) {
-                Ok(request) => request,
-                Err(message) => {
-                    mount_result.set_text(message);
-                    return;
-                }
-            };
+        let request = match preview_request(
+            &topology,
+            &drive_id,
+            selection
+                .borrow()
+                .selected
+                .as_ref()
+                .filter(|(ns, _)| ns == &topology.namespace)
+                .map(|(_, id)| id.as_str()),
+            intent,
+        ) {
+            Ok(request) => request,
+            Err(message) => {
+                mount_result.set_text(message);
+                return;
+            }
+        };
         button.set_sensitive(false);
         mount_action.set_sensitive(false);
         mount_result.set_text("Checking current device identity and safety evidence…");
@@ -1657,7 +2023,390 @@ fn history_rates(history: &[WireMap], key: &str) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbus::zvariant::OwnedValue;
+    use zbus::zvariant::{OwnedValue, Value};
+
+    fn owned_value<T: Into<Value<'static>>>(value: T) -> OwnedValue {
+        OwnedValue::try_from(value.into()).expect("test value converts to OwnedValue")
+    }
+
+    #[test]
+    fn missing_mount_points_are_not_described_as_unmounted() {
+        assert_eq!(mount_points_summary(&[]), "No confirmed mount points");
+        assert_eq!(
+            mount_points_summary(&["/media/test".into()]),
+            "Mounted at /media/test"
+        );
+    }
+
+    #[test]
+    fn volume_row_ignores_not_mounted_status_without_mount_evidence() {
+        let mut volume = WireMap::new();
+        volume.insert("mount_points".into(), owned_value(Vec::<String>::new()));
+        volume.insert("status".into(), owned_value("not_mounted".to_string()));
+
+        let metadata = volume_metadata(&volume);
+        assert!(metadata.contains("No confirmed mount points"));
+        assert!(!metadata.contains("not_mounted"));
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly under Xvfb or an active desktop session"]
+    fn production_namespace_buttons_invalidate_and_retire_cross_namespace_previews() {
+        gtk::init().expect("GTK display is required for this integration test");
+        let selection = Rc::new(RefCell::new(DriveSelection::default()));
+        let topology_generation = Rc::new(Cell::new(1));
+        let topology = |namespace: &str, target: &str, details: &str| TopologyView {
+            namespace: namespace.into(),
+            capacity_bytes: 100,
+            table_type: "gpt".into(),
+            status: "verified".into(),
+            segments: vec![MapSegment {
+                id: target.into(),
+                start_bytes: 0,
+                length_bytes: 50,
+                label: target.into(),
+                details: details.into(),
+                protection: "protected".into(),
+                gap: false,
+            }],
+        };
+        let root_a = partition_map(
+            &topology("ns-a", "a1", "Namespace A partition"),
+            "drive",
+            selection.clone(),
+            topology_generation.clone(),
+        );
+        let root_b = partition_map(
+            &topology("ns-b", "b1", "Namespace B partition"),
+            "drive",
+            selection.clone(),
+            topology_generation.clone(),
+        );
+        let other_drive_selection = Rc::new(RefCell::new(DriveSelection::default()));
+        let other_drive_generation = Rc::new(Cell::new(1));
+        let _other_drive_root = partition_map(
+            &topology("ns-other", "other1", "Independent drive partition"),
+            "other-drive",
+            other_drive_selection.clone(),
+            other_drive_generation,
+        );
+        let button = |view: usize| {
+            selection.borrow().views[view].buttons[0]
+                .1
+                .upgrade()
+                .expect("partition button is live")
+        };
+        let click_a = button(0);
+        click_a.emit_clicked();
+        assert_eq!(
+            selection.borrow().selected.as_ref(),
+            Some(&("ns-a".into(), "a1".into()))
+        );
+        assert_eq!(
+            selection.borrow().views[0]
+                .details
+                .upgrade()
+                .unwrap()
+                .text(),
+            "Selected: Namespace A partition"
+        );
+
+        let lifecycle_a = selection.borrow().views[0].lifecycle.clone();
+        let lifecycle_b = selection.borrow().views[1].lifecycle.clone();
+        let other_lifecycle = other_drive_selection.borrow().views[0].lifecycle.clone();
+        let other_button = other_drive_selection.borrow().views[0].buttons[0]
+            .1
+            .upgrade()
+            .unwrap();
+        other_button.emit_clicked();
+        let other_ticket = other_lifecycle
+            .borrow_mut()
+            .begin(PreviewTicket::fixture(
+                "other1",
+                StorageOperationIntent::Mount,
+                0,
+                50,
+            ))
+            .unwrap();
+        let mut ticket_a = PreviewTicket::fixture("a1", StorageOperationIntent::Mount, 0, 50);
+        ticket_a.namespace = "ns-a".into();
+        ticket_a.view_generation = 1;
+        let displayed_a = lifecycle_a.borrow_mut().begin(ticket_a.clone()).unwrap();
+        assert!(lifecycle_a.borrow_mut().complete(&displayed_a));
+        let pending_a = lifecycle_a
+            .borrow_mut()
+            .begin(PreviewTicket {
+                generation: 0,
+                ..ticket_a
+            })
+            .unwrap();
+        assert!(lifecycle_a.borrow().displayed.is_some());
+        let result_a = selection.borrow().views[0].result.upgrade().unwrap();
+        result_a.set_text("Checking preview");
+
+        let click_b = button(1);
+        click_b.emit_clicked();
+        assert_eq!(
+            selection.borrow().selected.as_ref(),
+            Some(&("ns-b".into(), "b1".into()))
+        );
+        assert_eq!(
+            selection.borrow().views[0]
+                .details
+                .upgrade()
+                .unwrap()
+                .text(),
+            "Select a partition or unallocated extent for details."
+        );
+        assert_eq!(
+            selection.borrow().views[1]
+                .details
+                .upgrade()
+                .unwrap()
+                .text(),
+            "Selected: Namespace B partition"
+        );
+        assert_eq!(
+            result_a.text(),
+            "Selection changed. Request a new assessment."
+        );
+        assert!(!button(0).has_css_class("suggested-action"));
+        assert!(button(1).has_css_class("suggested-action"));
+        assert!(lifecycle_a.borrow().pending.is_none());
+        assert!(lifecycle_a.borrow().displayed.is_none());
+        assert!(!lifecycle_a.borrow_mut().complete(&pending_a));
+        assert_eq!(
+            other_lifecycle.borrow().pending.as_ref(),
+            Some(&other_ticket)
+        );
+
+        let mut ticket_b = PreviewTicket::fixture("b1", StorageOperationIntent::Mount, 0, 50);
+        ticket_b.namespace = "ns-b".into();
+        ticket_b.view_generation = 1;
+        let current_b = lifecycle_b.borrow_mut().begin(ticket_b.clone()).unwrap();
+        assert!(lifecycle_b.borrow_mut().complete(&current_b));
+        click_b.emit_clicked();
+        assert_eq!(lifecycle_b.borrow().displayed.as_ref(), Some(&current_b));
+        let pending_same_target = lifecycle_b.borrow_mut().begin(ticket_b.clone()).unwrap();
+        click_b.emit_clicked();
+        assert_eq!(
+            lifecycle_b.borrow().pending.as_ref(),
+            Some(&pending_same_target)
+        );
+
+        click_a.emit_clicked();
+        assert_eq!(
+            selection.borrow().selected.as_ref(),
+            Some(&("ns-a".into(), "a1".into()))
+        );
+        assert!(lifecycle_b.borrow().displayed.is_none());
+
+        let map_area = selection.borrow().views[1].area.upgrade().unwrap();
+        let controllers = map_area.observe_controllers();
+        let map_click = (0..controllers.n_items())
+            .filter_map(|index| controllers.item(index))
+            .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+            .expect("partition map has a click gesture");
+        map_click.emit_by_name::<()>("released", &[&1_i32, &0.0_f64, &0.0_f64]);
+        assert_eq!(
+            selection.borrow().selected.as_ref(),
+            Some(&("ns-b".into(), "b1".into()))
+        );
+
+        click_b.emit_clicked();
+        let pending_before_rebuild = lifecycle_b
+            .borrow_mut()
+            .begin(PreviewTicket {
+                generation: 0,
+                ..ticket_b
+            })
+            .unwrap();
+        let retired_details = selection.borrow().views[0].details.clone();
+        topology_generation.set(2);
+        retire_namespace_views(&mut selection.borrow_mut());
+        let _new_a = partition_map(
+            &topology("ns-a", "a1", "Namespace A refreshed"),
+            "drive",
+            selection.clone(),
+            topology_generation.clone(),
+        );
+        let _new_b = partition_map(
+            &topology("ns-b", "b1", "Namespace B refreshed"),
+            "drive",
+            selection.clone(),
+            topology_generation.clone(),
+        );
+        click_a.emit_clicked();
+        assert_eq!(
+            selection.borrow().selected.as_ref(),
+            Some(&("ns-b".into(), "b1".into()))
+        );
+        assert!(lifecycle_b.borrow().pending.is_none());
+        assert!(!lifecycle_b.borrow_mut().complete(&pending_before_rebuild));
+
+        let pending_before_removal = selection.borrow().views[1]
+            .lifecycle
+            .borrow_mut()
+            .begin(PreviewTicket::fixture(
+                "b1",
+                StorageOperationIntent::Mount,
+                0,
+                50,
+            ))
+            .unwrap();
+        let removal_lifecycle = selection.borrow().views[1].lifecycle.clone();
+        let removal_details = selection.borrow().views[1].details.clone();
+        topology_generation.set(3);
+        retire_namespace_views(&mut selection.borrow_mut());
+        assert!(removal_lifecycle.borrow().pending.is_none());
+        assert!(!removal_lifecycle
+            .borrow_mut()
+            .complete(&pending_before_removal));
+        assert!(!select_drive_target(
+            &mut selection.borrow_mut(),
+            "ns-a",
+            "a1",
+            2
+        ));
+        drop(map_click);
+        drop(controllers);
+        drop(map_area);
+        drop(click_a);
+        drop(click_b);
+        drop(root_a);
+        drop(root_b);
+        assert!(retired_details.upgrade().is_none());
+        drop(_new_a);
+        drop(_new_b);
+        assert!(removal_details.upgrade().is_none());
+    }
+
+    fn request(
+        intent: StorageOperationIntent,
+        partition_id: Option<String>,
+        start: u64,
+        length: u64,
+    ) -> StorageOperationRequest {
+        StorageOperationRequest {
+            intent,
+            drive_id: "drive".into(),
+            namespace: "nvme0n1".into(),
+            partition_id,
+            expected_capacity_bytes: 8_000_000,
+            expected_start_bytes: Some(start),
+            expected_length_bytes: Some(length),
+        }
+    }
+
+    #[test]
+    fn selected_verified_gap_builds_ticket_with_authoritative_id_and_geometry() {
+        let segment = MapSegment {
+            id: "nvme0n1:gap:1048576".into(),
+            start_bytes: 1_048_576,
+            length_bytes: 2_097_152,
+            label: "Unallocated".into(),
+            details: "verified gap".into(),
+            protection: "uncertain".into(),
+            gap: true,
+        };
+        let req = request(
+            StorageOperationIntent::CreatePartition,
+            None,
+            segment.start_bytes,
+            segment.length_bytes,
+        );
+        let ticket = ticket_for_segment(&req, "drive", &segment, 42);
+        assert_eq!(ticket.target, "nvme0n1:gap:1048576");
+        assert_eq!(ticket.view_generation, 42);
+        assert_eq!(
+            (ticket.start_bytes, ticket.length_bytes),
+            (1_048_576, 2_097_152)
+        );
+        assert_eq!(req.partition_id, None);
+    }
+
+    #[test]
+    fn retired_view_generation_cannot_start_or_accept_preview() {
+        assert!(view_generation_is_current(9, 9));
+        assert!(!view_generation_is_current(9, 10));
+        assert!(!view_generation_is_current(9, 11));
+    }
+
+    #[test]
+    fn preview_lifecycle_rejects_obsolete_out_of_order_results_and_recovers() {
+        let mut state = PreviewLifecycle::default();
+        let a = state
+            .begin(PreviewTicket::fixture(
+                "p1",
+                StorageOperationIntent::Mount,
+                0,
+                10,
+            ))
+            .unwrap();
+        assert!(state
+            .begin(PreviewTicket::fixture(
+                "p1",
+                StorageOperationIntent::Mount,
+                0,
+                10
+            ))
+            .is_none());
+        let b = state
+            .begin(PreviewTicket::fixture(
+                "p2",
+                StorageOperationIntent::Unmount,
+                20,
+                10,
+            ))
+            .unwrap();
+        assert!(state.complete(&b));
+        assert!(!state.complete(&a));
+        assert_eq!(state.displayed.as_ref(), Some(&b));
+        let c = state
+            .begin(PreviewTicket::fixture(
+                "p2",
+                StorageOperationIntent::Unmount,
+                20,
+                10,
+            ))
+            .unwrap();
+        assert!(state.complete(&c)); // Errors use the same current-ticket completion path.
+    }
+
+    #[test]
+    fn preview_lifecycle_invalidates_target_intent_and_geometry_changes_only() {
+        let mut state = PreviewLifecycle::default();
+        let a = state
+            .begin(PreviewTicket::fixture(
+                "p1",
+                StorageOperationIntent::Mount,
+                0,
+                10,
+            ))
+            .unwrap();
+        state.invalidate(); // Selection/namespace/intent or topology changed.
+        assert!(!state.complete(&a));
+        let b = state
+            .begin(PreviewTicket::fixture(
+                "p1",
+                StorageOperationIntent::Mount,
+                0,
+                10,
+            ))
+            .unwrap();
+        let c = state
+            .begin(PreviewTicket::fixture(
+                "p1",
+                StorageOperationIntent::Mount,
+                0,
+                11,
+            ))
+            .unwrap();
+        assert!(!state.complete(&b));
+        assert!(state.complete(&c));
+        // Telemetry-only updates do not call invalidate, preserving the current result.
+        assert_eq!(state.displayed.as_ref(), Some(&c));
+    }
 
     #[test]
     fn preview_lists_every_blocker_without_an_action() {
@@ -1743,12 +2492,17 @@ mod tests {
                 gap: false,
             }],
         };
+        let selected = ("nvme0n1".into(), "partition-1".into());
         assert_eq!(
-            retained_selection(Some("partition-1"), std::slice::from_ref(&topology)),
-            Some("partition-1".into())
+            retained_selection(Some(&selected), std::slice::from_ref(&topology)),
+            Some(selected.clone())
         );
-        assert_eq!(retained_selection(Some("partition-1"), &[]), None);
-        assert_eq!(retained_selection(Some("other"), &[topology]), None);
+        assert_eq!(retained_selection(Some(&selected), &[]), None);
+        let other_namespace = ("nvme1n1".into(), "partition-1".into());
+        assert_eq!(
+            retained_selection(Some(&other_namespace), &[topology]),
+            None
+        );
     }
 
     #[test]
@@ -1768,15 +2522,15 @@ mod tests {
                 gap: true,
             }],
         };
-        let selected = "nvme0n1:gap:50";
+        let selected = ("nvme0n1".into(), "nvme0n1:gap:50".into());
         assert_eq!(
-            retained_selection(Some(selected), std::slice::from_ref(&topology)),
-            Some(selected.into())
+            retained_selection(Some(&selected), std::slice::from_ref(&topology)),
+            Some(selected.clone())
         );
         let request = preview_request(
             &topology,
             "drive",
-            Some(selected),
+            Some(&selected.1),
             StorageOperationIntent::CreatePartition,
         )
         .unwrap();
@@ -1786,11 +2540,11 @@ mod tests {
         assert!(preview_request(
             &topology,
             "drive",
-            Some(selected),
+            Some(&selected.1),
             StorageOperationIntent::DeletePartition
         )
         .is_err());
-        assert_eq!(retained_selection(Some(selected), &[]), None);
+        assert_eq!(retained_selection(Some(&selected), &[]), None);
     }
 
     #[test]
