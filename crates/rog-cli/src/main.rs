@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,rog_helper=debug".into()),
         )
+        .with_writer(std::io::stderr)
         .with_target(false)
         .init();
 

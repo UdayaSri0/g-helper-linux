@@ -38,10 +38,10 @@ pub async fn print() -> anyhow::Result<()> {
                 &lighting_summary(&lighting),
             );
         }
-        Err(error) => section(
+        Err(_error) => section(
             &mut report,
             "Capability / lighting probe error",
-            &error.to_string(),
+            "Provider probe unavailable; freeform errors are omitted from the shareable report.",
         ),
     }
     let hwmon = HwmonTelemetryProvider::default();
@@ -49,9 +49,9 @@ pub async fn print() -> anyhow::Result<()> {
         Ok(state) => section(
             &mut report,
             "Fan identity / mapping / readback",
-            &format!("{state:#?}"),
+            &fan_summary(&state),
         ),
-        Err(error) => section(&mut report, "Fan probe error", &error.to_string()),
+        Err(_error) => section(&mut report, "Fan probe error", "Fan probe unavailable."),
     }
 
     match super::daemon_connection().await {
@@ -91,7 +91,7 @@ pub async fn print() -> anyhow::Result<()> {
                 ] {
                     match session_map(&proxy, method).await {
                         Ok(map) => section(&mut report, title, &selected_fields(&map, keys)),
-                        Err(error) => section(&mut report, title, &error),
+                        Err(error) => section(&mut report, title, error),
                     }
                 }
                 match session_map(&proxy, "GetCaps").await {
@@ -128,7 +128,7 @@ pub async fn print() -> anyhow::Result<()> {
                             ],
                         ),
                     ),
-                    Err(error) => section(&mut report, "Daemon capability matrix", &error),
+                    Err(error) => section(&mut report, "Daemon capability matrix", error),
                 }
                 match session_map(&proxy, "GetState").await {
                     Ok(state) => {
@@ -154,21 +154,22 @@ pub async fn print() -> anyhow::Result<()> {
                             &format!("{} warning(s); inspect locally with diagnostics. Freeform provider errors are omitted from the shareable report.", state.get(dbus_keys::state::WARNINGS).cloned().and_then(|value| Vec::<String>::try_from(value).ok()).map_or(0, |warnings| warnings.len())),
                         );
                     }
-                    Err(error) => section(&mut report, "Daemon state", &error),
+                    Err(error) => section(&mut report, "Daemon state", error),
                 }
             }
-            Err(error) => section(
+            Err(_error) => section(
                 &mut report,
                 "Session daemon unavailable",
-                &error.to_string(),
+                "Session daemon unavailable; freeform errors are omitted from the shareable report.",
             ),
         },
-        Err(error) => section(&mut report, "Session bus unavailable", &error.to_string()),
+        Err(_error) => section(&mut report, "Session bus unavailable", "Session bus unavailable."),
     }
+    let snapshot = display::discover();
     section(
         &mut report,
         "Display backend (query only)",
-        &format!("{:#?}", display::discover()),
+        &display_summary(&snapshot),
     );
     section(&mut report, "Hotkey backend", "Desktop-owned custom shortcuts; manual CLI binding. No ROG Helper global registration or keyboard capture. Current mappings are not discoverable.");
     let home = std::env::var("HOME").ok();
@@ -188,11 +189,43 @@ fn lighting_summary(lighting: &rog_core::LightingDiagnostics) -> String {
 async fn session_map(
     proxy: &zbus::Proxy<'_>,
     method: &str,
-) -> Result<HashMap<String, OwnedValue>, String> {
+) -> Result<HashMap<String, OwnedValue>, &'static str> {
     tokio::time::timeout(Duration::from_secs(3), proxy.call(method, &()))
         .await
-        .map_err(|_| format!("{method}: timed out after 3 seconds"))?
-        .map_err(|error| format!("{method}: unavailable ({error})"))
+        .map_err(|_| "Daemon call timed out after 3 seconds.")?
+        .map_err(|_| {
+            "Daemon call unavailable; freeform errors are omitted from the shareable report."
+        })
+}
+
+fn display_summary(snapshot: &display::DisplaySnapshot) -> String {
+    format!(
+        "session type: {}\nbackend: {}\nsupported: {}\ninternal display detected: {}\ncurrent mode: {}\ncurrent refresh rate: {}\nsupported refresh rates: {:?}",
+        snapshot.session_type,
+        snapshot.backend,
+        snapshot.supported(),
+        snapshot.internal_output.is_some(),
+        snapshot.current_mode.as_deref().unwrap_or("unavailable"),
+        snapshot.current_rate.map_or_else(|| "unavailable".into(), |rate| format!("{rate:.2} Hz")),
+        snapshot.supported_rates,
+    )
+}
+
+fn fan_summary(state: &rog_core::FanState) -> String {
+    format!(
+        "fan count: {}\nbackend: {}\nmapping confidence: {}\nmode: {}\nRPM telemetry available: {}\nfan curves available: {}\nmanual percent available: {}\nmanual RPM target available: {}\nindividual fan control available: {}\nsynchronised control available: {}\nboost available: {}",
+        state.caps.fan_count,
+        state.caps.fan_backend,
+        state.caps.fan_mapping_confidence.as_str(),
+        state.mode.as_str(),
+        state.caps.has_fan_reading,
+        state.caps.has_fan_curves,
+        state.caps.has_fan_manual_percent,
+        state.caps.has_fan_manual_rpm_target,
+        state.caps.has_individual_fan_control,
+        state.caps.has_fan_sync_control,
+        state.caps.has_fan_boost,
+    )
 }
 
 fn section(report: &mut String, title: &str, contents: &str) {
@@ -278,6 +311,28 @@ mod tests {
         assert!(!output.contains("telemetry"));
         assert!(!output.contains("configuration"));
         assert!(!output.contains("explanation"));
+    }
+
+    #[test]
+    fn display_summary_omits_private_failure_reason_and_output_name() {
+        let mut snapshot = display::discover();
+        snapshot.reason = "private-hostname.example /home/alice/.Xauthority".into();
+        snapshot.internal_output = Some("private-output-id".into());
+        let output = display_summary(&snapshot);
+        assert!(!output.contains("private-hostname"));
+        assert!(!output.contains("alice"));
+        assert!(!output.contains("private-output-id"));
+    }
+
+    #[test]
+    fn fan_summary_omits_ids_paths_and_freeform_warnings() {
+        let mut state = rog_core::FanState::from_fans(Vec::new());
+        state.caps.endpoints.push("/sys/private-endpoint".into());
+        state.caps.warnings.push("private warning".into());
+        state.warnings.push("another private warning".into());
+        let output = fan_summary(&state);
+        assert!(!output.contains("private"));
+        assert!(!output.contains("/sys"));
     }
 }
 #[test]

@@ -65,7 +65,7 @@ result for that operation; it is not the same as unsupported. Missing `asusd` af
 profiles, but a uniquely verified standard battery threshold may still provide charge-limit support.
 Missing `supergfxd` affects GPU switching only.
 
-For a consolidated issue attachment, use:
+For a consolidated issue attachment, choose **Save redacted report…** on the Diagnostics page, or use:
 
 ```bash
 rog-helper issue-report > issue-report.md
