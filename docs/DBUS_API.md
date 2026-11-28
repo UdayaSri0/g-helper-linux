@@ -41,9 +41,10 @@ The request is a separate `StorageExecutionRequest` object containing `target`
 with the Stage 3 identity and expected geometry fields. Only `mount` and
 `unmount` are accepted. A client cannot submit a device path, UDisks2 object
 path, PolicyKit actor, or preview plan. The dormant execution design obtains
-the caller from the session D-Bus message, independently validates the target,
-requests the operation-specific PolicyKit action, then validates again before
-UDisks2 use.
+the caller from the session D-Bus message, requires a process descriptor from
+the bus credentials, independently validates the target, requests the
+operation-specific PolicyKit action for that actor, then validates again
+before UDisks2 use. Missing process credentials fail closed.
 The response is `StorageExecutionResult`: `outcome` (`succeeded`, `failed`,
 `denied`, `cancelled`, or `uncertain`), `message`, and `mount_points`.
 `succeeded` would require fresh mount-state readback. Malformed, oversized,
